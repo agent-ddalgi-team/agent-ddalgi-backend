@@ -1,6 +1,7 @@
 [project]
-name = "awesomeapp"
+name = "agent-ddalgi-backend"
 version = "0.1.0"
+description = "거산케미칼 회사소개서 초안 도우미 - 백엔드/Agent"
 requires-python = ">=3.13"
 dependencies = [
     "fastapi[standard]>=0.141.1",
