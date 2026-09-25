@@ -57,7 +57,7 @@ Playwright와 python-docx는 필수 의존성으로 확정하지 않는다. Reac
 
 | 결정 ID | 결정할 것 | 담당·작업 |
 |---|---|---|
-| D-01 | 지원 형식·크기·개수 | 백엔드 BE-02/BE-03; TXT·텍스트 PDF·DOCX·PPTX·JPG/PNG는 후보. **BE-02 적용값(2026-09-25)**: TXT/MD만, 파일당 10MB(실제 읽은 바이트 기준), 세션당 10개. `app/config.py`에서 설정. PDF/DOCX/PPTX/JPG/PNG는 BE-03에서 파서와 함께 추가 |
+| D-01 | 지원 형식·크기·개수 | 백엔드 BE-02/BE-03; TXT·텍스트 PDF·DOCX·PPTX·JPG/PNG는 후보. **BE-02 적용값(2026-09-25)**: 파일당 10MB(실제 읽은 바이트 기준), 세션당 10개. **BE-03 확정(2026-09-25)**: 형식 7종 TXT·MD·PDF(텍스트)·DOCX·PPTX·JPG·PNG. 읽기 의존성 pypdf·python-docx(읽기 전용, 출력 도구 D-03과 별개)·python-pptx·Pillow. 스캔 PDF는 partial+IMAGE_ONLY, OCR 없음. 자료당 글자 100,000자 초과는 partial+TEXT_LIMIT. `app/config.py`에서 설정 |
 | D-02 | 세션 만료 시간 | 백엔드 BE-02; 개발 제안은 무활동 120분/생성 후 24시간 중 빠른 때, 실제 운영 전 확정. **BE-02 적용값(2026-09-25)**: 제안값 그대로 `app/config.py` 설정(SESSION_IDLE_MINUTES, SESSION_MAX_HOURS). 상태 변경 요청만 활동으로 세고 GET 조회·작업 폴링은 연장하지 않음 |
 | D-03 | PDF/DOCX 도구 | 백엔드 BE-07; 한글·사진·편집성 비교 |
 | D-04 | 모델·호출 한도 | Agent AG-01; 실제 호출과 평가로 결정 |

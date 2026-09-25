@@ -164,15 +164,16 @@ def test_upload_stores_and_lists_and_creates_job(client, settings):
     assert body["job_id"].startswith("job_") and len(body["items"]) == 2
     item = body["items"][0]
     assert item["scope"] == "session" and item["session_id"] == sid and item["kind"] == "interview"
-    assert item["parse_status"] == "queued" and item["text_available"] is False
+    assert item["parse_status"] == "queued" and item["text_available"] is False  # 202 시점
     assert item["name"] == "메모.txt" and item["size_bytes"] == 20 and item["expires_at"] == s["expires_at"]
     assert "stored_path" not in item
     files_on_disk = sorted(p.name for p in (settings.private_runs_dir / sid).iterdir())
     assert len(files_on_disk) == 2 and all(n.startswith("src_") for n in files_on_disk)
     listing = client.get(f"/api/v1/sessions/{sid}/sources").json()["items"]
     assert [i["source_id"] for i in listing] == [i["source_id"] for i in body["items"]]
+    # BE-03부터 TestClient는 응답 뒤 백그라운드 읽기까지 마치고 돌아오므로 Job은 이미 끝나 있다.
     job = client.get(f"/api/v1/sessions/{sid}/jobs/{body['job_id']}").json()
-    assert job["kind"] == "read" and job["status"] == "queued" and job["progress"]["stage"] == "queued"
+    assert job["kind"] == "read" and job["status"] == "succeeded"
 
 
 def test_upload_rejects_unsupported_type_without_storing(client, settings):

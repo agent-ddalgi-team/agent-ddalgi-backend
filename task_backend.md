@@ -16,7 +16,7 @@
 |---|---|---|---|
 | BE-01 | 없음 | 기존 코드·브랜치·실행 명령·공통 타입·API 확인. Agent와 실제 파일별 담당 경계 기록. contracts.md와 기존 모델 연결, 프론트에 예시 응답 제공. | DONE (2026-09-25, 6.1절 · 예시는 계약 예시이며 실제 응답 아님) |
 | BE-02 | BE-01 | 세션 생성·소유·만료, 첨부 임시 저장과 제한 설정. D-01/D-02 기록. 서로 다른 두 세션의 자료 접근 차단 확인. | DONE (2026-09-25, 6.2절 · 파일 읽기는 BE-03) |
-| BE-03 | BE-02 | 형식별 읽기·구간 위치·complete/partial/failed·사진 asset 제공. 손상/암호/스캔 파일 점검, 지원표 기록. 불확실 수치를 완료로 표시하지 않음. | TODO |
+| BE-03 | BE-02 | 형식별 읽기·구간 위치·complete/partial/failed·사진 asset 제공. 손상/암호/스캔 파일 점검, 지원표 기록. 불확실 수치를 완료로 표시하지 않음. | DONE (2026-09-25, 6.3절 · OCR 없음, 문서 안 그림 추출 없음) |
 | BE-04 | BE-01, BE-02 | AI 작업 실행/상태/사용자 응답 API와 내부 함수 연결 지점 구현. 먼저 계약 예시로 확인하고 AG-03에서 실제 연결. 오래된 입력·중복 재개·만료 요청 처리. | TODO |
 | BE-05 | BE-01, BE-02 | 문서/페이지/블록 저장·버전·수정안 적용·취소·복원 API. 출처 ID 유지, 예상 버전 검사, 중복 적용은 1회만, 트랜잭션 실패 시 원본 보존. | TODO |
 | BE-06 | BE-05, AG-07 | 문제 해결 상태·검증 버전·승인 조건 강제. 부분 검증에서 기존 문제 유지, 필수 누락 제외 불가. 배치 검사는 BE-08 연결 전 계약 예시로만 확인했다고 표시. | TODO |
@@ -48,8 +48,8 @@
 | ID | 검수 내용 | 확인 참여 | 기대 결과 | 결과 |
 |---|---|---|---|---|
 | QA-02 | 세션 A/B 분리 | 백엔드 | 다른 세션 자료·사진·검색 접근 불가 | 부분 PASS (2026-09-25) — `tests/test_be02.py::test_other_owner_cannot_see_session`: 다른 소유자가 세션·자료 목록·작업 조회·삭제 시 404, 쿠키 없으면 401. 사진(asset)·검색은 아직 없어 미검증(BE-03 이후 재실행) |
-| QA-03 | 미지원·손상·암호 파일 | 백엔드 | 원인·보완·제외, 다른 자료 보존 | 미실행 |
-| QA-04 | 불확실한 표·수치 | 백엔드 + Agent | partial, 확인 구간만 사용 | 미실행 |
+| QA-03 | 미지원·손상·암호 파일 | 백엔드 | 원인·보완·제외, 다른 자료 보존 | PASS (2026-09-25) — `tests/test_be03.py`: 미지원 .hwp 415, 암호 PDF failed+ENCRYPTED, 손상 DOCX/PDF/PNG failed+FILE_CORRUPT, 확장자-내용 불일치 failed, 빈 TXT failed+NO_USABLE_TEXT. 같은 업로드의 다른 파일은 정상 읽힘(`test_failed_file_does_not_block_others`). 각 경고에 action(보완·제외 안내) 포함 |
+| QA-04 | 불확실한 표·수치 | 백엔드 + Agent | partial, 확인 구간만 사용 | 부분 PASS (2026-09-25, 백엔드 몫) — 스캔 PDF·글자 없는 쪽은 partial+IMAGE_ONLY, usable_segment_ids에 글자 있는 구간만. 표 셀은 locator로 위치 보존. "수치가 불확실하다"는 판단은 Agent(AG-02) 몫 → 미실행 |
 | QA-07 | 자료/목적 변경 후 옛 점검 사용 | 백엔드 | 이전 확인 무효화 | 미실행 |
 | QA-11 | 오래된 수정안·중복 재개 | 백엔드 | 충돌 처리, 중복 반영 없음 | 미실행 |
 | QA-14 | 순서 변경과 사실 문장 변경 | 백엔드 + Agent | 검사 범위 구분, 둘 다 승인 무효화 | 미실행 |
@@ -68,6 +68,7 @@
 | 2026-09-25 | BE-01 | 브랜치 feat/be-01-inventory · task_backend.md, task.md (코드 변경 없음) | 옛 레포(C:\vscode\Backend_old, 커밋 e8fc52a) 56개 파일 읽음. 파일별 담당·이관 판단, API 연결표, 데이터 항목 목록 작성 → 6.1절. 프론트 예시 응답은 미완료(후속) | Agent: 6.1-5 요청 6건. 팀: 계약 확인 ①~④, 자료사용 허용기록 이관 |
 | 2026-09-25 | BE-01 | 브랜치 feat/be-01-examples · handoff/api_examples_v1.1.json(신규), task_backend.md, task.md | 프론트 전달용 계약 예시 22개 작성(Session·Source·Job·Preflight·Document·Export·오류 8종). JSON 파싱 확인만 했고 실제 서버 응답 아님. BE-01 DONE | 프론트: handoff/api_examples_v1.1.json + contracts.md v1.1 전달. 팀: 계약 확인 ⑤ 추가(6.1-5) |
 | 2026-09-25 | BE-02 | 브랜치 feat/be-02-session · app/(신규 15파일), tests/test_be02.py, main.py, pyproject.toml(pytest dev), .env.example, plan.md 4절 | `uv run pytest` 17/17 PASS. 실서버(uvicorn main:app)에서 curl로 세션 생성→쿠키 조회 200→쿠키 없이 401→TXT 업로드 202→삭제 200 확인. 상세 6.2절 | 프론트: API 6개 실제 동작(6.2-1), 쿠키 필요(credentials 포함 호출). Agent: 없음. 팀: 계약 확인 ⑥⑦(6.2-3) |
+| 2026-09-25 | BE-03 | 브랜치 feat/be-03-parsers · app/parsers/(신규 5), app/services/reading.py·assets.py, app/routers/assets.py, app/db.py(v2), tests/test_be03.py, tests/fixtures/(옛 가짜 TXT 4), plan.md D-01 | `uv run pytest` 36/36. 실서버 가짜 PPTX 20슬라이드→segment 44, 가짜 스캔 PDF→partial+IMAGE_ONLY. BE-02 리뷰 3건 반영(6.3-0). 상세 6.3절 | 프론트: Source.asset_ids·warnings 형식, 읽기 결과는 폴링 후 GET sources. Agent(AG-02): 구간 입력 형태(6.3-5). 팀: 계약 확인 ⑨⑩⑪ |
 
 자료·시스템의 진위를 추정하여 정상 처리하지 않는다. 설명용 이미지 생성·OCR·장기 보관은 별도 범위가 정해지기 전 기본 작업에 추가하지 않는다.
 
@@ -204,6 +205,31 @@ BE-02에서 먼저 필요한 것: 접근 컨텍스트, Session, Brief, Source �
 **6.2-3 계약 확인 추가 요청** — ⑥ 요청 형식 오류(Pydantic 검증 실패)에 쓸 코드가 4절 표에 없어 `400 INVALID_REQUEST`로 임시 배정. ⑦ 같은 Idempotency-Key에 다른 본문일 때 "409"만 있고 코드가 없어 `IDEMPOTENCY_KEY_CONFLICT`로 임시 배정. ⑧ 세션당 파일 개수 초과를 `413 FILE_TOO_LARGE`로 냈는데 별도 코드가 나은지.
 
 **6.2-4 하지 않은 것** — 파일 내용 읽기·Segment(BE-03), 등록 자료 `GET /sources`(적재 방식 미정), 로그인(익명 브라우저 소유자), 만료 세션의 배경 정리 작업(만료는 접근 시점에 판정만 함; 정리 스케줄은 BE-09), 브라우저 실제 클릭 확인(프론트 FE 연동 시).
+
+### 6.3 BE-03 구현 결과 (2026-09-25)
+
+**6.3-0 BE-02 리뷰 반영** — (1) `sources.session_id` nullable + `CHECK(scope='session' ⇔ session_id NOT NULL)`. 등록 자료 테이블을 따로 두지 않음: contracts.md의 Source는 scope로 구분되는 한 객체라 응답 모델·segments/assets FK가 하나면 되고, 분리하면 파서·조회 코드가 두 테이블을 다뤄야 함. (2) `stored_path`는 `private_runs` 기준 상대경로(`<session_id>/<source_id>.ext`). (3) `PRAGMA user_version` 마이그레이션 v1→v2: sources 재생성·행 복사·절대경로→상대경로 변환(`test_v1_db_migrates_to_v2_keeping_rows`).
+
+**6.3-1 지원표** (D-01)
+
+| 형식 | 파서 | segment 단위 · locator | 특수 처리 |
+|---|---|---|---|
+| TXT/MD | 옛 parsers.py 이관 | 행 `{"line_start":n,"line_end":n}` (빈 행은 건너뛰되 번호 유지, MD 기호 보존) | UTF-8 strict 실패→failed UNSUPPORTED_ENCODING, 빈 파일→failed NO_USABLE_TEXT |
+| PDF | pypdf | 페이지 `{"page":n}` | 암호→failed ENCRYPTED. **글자 0자 쪽→IMAGE_ONLY 경고(쪽 목록), 전체가 0자면 partial**(실패 아님). 일부만 0자→partial |
+| DOCX | python-docx | 문단 `{"paragraph":n}`, 표 셀 `{"table":t,"row":r,"col":c}` (병합 셀 1회) | 안 열림(손상·암호)→failed FILE_CORRUPT. 글자 없음: 그림 있으면 partial+IMAGE_ONLY, 없으면 failed |
+| PPTX | python-pptx | 텍스트 상자 `{"slide":s,"shape":n}`, 표 셀 `{…,"row":r,"col":c}`, 그룹 안 `{…,"child":m}` | 이미지만 있는 슬라이드→IMAGE_ONLY(슬라이드 목록)+partial. 노트는 읽지 않음 |
+| JPG/PNG | Pillow | segment 없음. Asset 1개(width/height/hash, status=ready) | complete지만 text_available=false. 확장자-실제 형식 불일치→failed |
+| 공통 | — | 자료당 100,000자 초과→뒤 구간 버리고 partial+TEXT_LIMIT(자르지 않고 표시) | 파서 예외→failed PARSE_ERROR, 다른 파일은 계속 |
+
+**6.3-2 동작** — 업로드 202 후 FastAPI BackgroundTasks로 읽기 Job(kind=read) 실행. 진행 `{"stage":"reading","message":"i/n"}` → `succeeded` + `result_ref {type:"sources", source_ids}`. 파일별 결과는 `GET sources`의 parse_status/warnings/usable_segment_ids/asset_ids. 서버 재시작 시 남은 queued/running Job은 failed(SERVICE_TEMPORARY_FAILURE), 읽던 자료는 failed+INTERRUPTED. `GET /sessions/{sid}/assets/{asset_id}`로 이미지 바이트(소유·세션 확인, `Cache-Control: private, no-store`). 자료 삭제·세션 종료 시 segments 삭제, assets deleted_at.
+
+**6.3-3 확인** — `uv run pytest` 36/36 PASS(BE-03 19개: 형식 7종, 스캔 partial, 암호·손상·빈 파일, locator, 글자 상한, 실패 파일 격리, asset 조회·타 소유자 404·삭제 후 404, 재시작 정리, 마이그레이션). 실서버(uvicorn): 가짜 20슬라이드 PPTX → 202 queued → 폴링 succeeded → segment 44개(상자 40+표 셀 4), 가짜 스캔 PDF → partial+IMAGE_ONLY.
+
+**실제 파일 확인 (2026-09-25, 로컬만·레포 미포함)** — 회사소개서 PPTX(20260921, 9.9MB) 실서버 업로드 → 2.4초 succeeded → complete, 20/20 슬라이드에서 세그먼트 163개(표 셀 52, 그룹 도형 16), 경고 없음. 카탈로그 PDF: 원본(282MB, 8쪽, 폰트 없음·추출 글자 0)에 파서 직접 실행 → partial, IMAGE_ONLY pages 1~8. 원본은 D-01 10MB 초과라 서버 업로드 불가 → 쪽별 스캔 이미지를 축소해 이미지 전용 PDF(0.54MB, 8쪽)로 다시 묶은 축소본을 실서버 업로드 → 0.4초 succeeded → partial, text_available=false, IMAGE_ONLY pages 1~8, 메시지 "이미지만 있음, 글자를 읽지 못함". (Drive의 "축소본 1.4MB"는 존재하지 않아 로컬에서 새로 만듦.) 확인 후 세션 DELETE로 private_runs 사본 삭제.
+
+**6.3-4 하지 않은 것** — OCR(prd 2절 MVP 제외), PDF/DOCX/PPTX 안 그림 추출(다음 단계), 등록 자료 `GET /sources`·적재(요청 항목), Segment 조회 API(계약에 없음, Agent는 `services/sources.segments_for_source`로 내부 사용), PPTX 노트.
+
+**6.3-5 요청** — 팀(계약): ⑨ `Source.asset_ids` 필드 추가 제안(화면이 자료→이미지를 잇는 방법이 계약에 없음) ⑩ 프론트가 구간 텍스트를 볼 API가 필요한지(자료 분석 전 "읽을 수 있는 구간·출처 위치" 표시용) ⑪ 등록 자료 `GET /sources` 적재 방식(누가·어떻게 등록하는지). Agent(AG-02): 구간 입력 형태는 `{segment_id, source_id, source_version, locator, text}` — 옛 `source_units{source_id, locator "N행", text}`와 다르므로 어댑터 필요.
 
 ## 7. 첫 요청
 

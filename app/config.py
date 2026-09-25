@@ -32,10 +32,12 @@ class Settings:
     # D-02: 무활동 120분 / 생성 후 24시간 중 빠른 때. 실제 운영 전 확정.
     session_idle_minutes: int = 120
     session_max_hours: int = 24
-    # D-01: BE-02는 TXT/MD만 받는다. PDF/DOCX/PPTX/JPG/PNG는 BE-03에서 파서와 함께 추가.
+    # D-01: 파일당 10MB, 세션당 10개. 형식 7종(BE-03). 이미지는 저장·asset만, 글자는 읽지 않는다(OCR 없음).
     max_file_bytes: int = 10 * 1024 * 1024
     max_files_per_session: int = 10
-    allowed_extensions: frozenset[str] = frozenset({".txt", ".md"})
+    allowed_extensions: frozenset[str] = frozenset({".txt", ".md", ".pdf", ".docx", ".pptx", ".jpg", ".jpeg", ".png"})
+    # 자료 하나에서 읽는 글자 수 상한. 넘으면 조용히 자르지 않고 partial + 경고(TEXT_LIMIT)로 표시한다.
+    max_source_chars: int = 100_000
     # 프론트(Vite 개발 서버) origin. 배포 시 FRONTEND_ORIGINS로 추가.
     cors_origins: list[str] = field(default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"])
     # 소유자 쿠키. 세션 ID만으로 권한을 믿지 않기 위한 접근 컨텍스트(contracts.md Session절).
@@ -57,6 +59,7 @@ def load_settings() -> Settings:
         session_max_hours=_env_int("SESSION_MAX_HOURS", 24),
         max_file_bytes=_env_int("MAX_FILE_BYTES", 10 * 1024 * 1024),
         max_files_per_session=_env_int("MAX_FILES_PER_SESSION", 10),
+        max_source_chars=_env_int("MAX_SOURCE_CHARS", 100_000),
         cors_origins=_env_list("FRONTEND_ORIGINS", ["http://localhost:5173", "http://127.0.0.1:5173"]),
         owner_cookie_secure=os.environ.get("OWNER_COOKIE_SECURE", "").strip().lower() in {"1", "true", "yes"},
     )
