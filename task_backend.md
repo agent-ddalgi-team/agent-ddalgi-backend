@@ -14,7 +14,7 @@
 
 | 작업 | 선행 | 구현할 것·완료 조건 | 상태 |
 |---|---|---|---|
-| BE-01 | 없음 | 기존 코드·브랜치·실행 명령·공통 타입·API 확인. Agent와 실제 파일별 담당 경계 기록. contracts.md와 기존 모델 연결, 프론트에 예시 응답 제공. | TODO |
+| BE-01 | 없음 | 기존 코드·브랜치·실행 명령·공통 타입·API 확인. Agent와 실제 파일별 담당 경계 기록. contracts.md와 기존 모델 연결, 프론트에 예시 응답 제공. | IN_PROGRESS (2026-09-25, 6.1절) |
 | BE-02 | BE-01 | 세션 생성·소유·만료, 첨부 임시 저장과 제한 설정. D-01/D-02 기록. 서로 다른 두 세션의 자료 접근 차단 확인. | TODO |
 | BE-03 | BE-02 | 형식별 읽기·구간 위치·complete/partial/failed·사진 asset 제공. 손상/암호/스캔 파일 점검, 지원표 기록. 불확실 수치를 완료로 표시하지 않음. | TODO |
 | BE-04 | BE-01, BE-02 | AI 작업 실행/상태/사용자 응답 API와 내부 함수 연결 지점 구현. 먼저 계약 예시로 확인하고 AG-03에서 실제 연결. 오래된 입력·중복 재개·만료 요청 처리. | TODO |
@@ -65,9 +65,120 @@
 
 | 날짜 | 작업 | 파일/커밋 | 실제 확인·결과 | 상대에게 전달/요청할 내용 |
 |---|---|---|---|---|
-| — | — | 실제 저장소 작업 전 | 미실행 | BE-01부터 시작 |
+| 2026-09-25 | BE-01 | 브랜치 feat/be-01-inventory · task_backend.md, task.md (코드 변경 없음) | 옛 레포(C:\vscode\Backend_old, 커밋 e8fc52a) 56개 파일 읽음. 파일별 담당·이관 판단, API 연결표, 데이터 항목 목록 작성 → 6.1절. 프론트 예시 응답은 미완료(후속) | Agent: 6.1-5 요청 6건. 팀: 계약 확인 ①~④, 자료사용 허용기록 이관 |
 
 자료·시스템의 진위를 추정하여 정상 처리하지 않는다. 설명용 이미지 생성·OCR·장기 보관은 별도 범위가 정해지기 전 기본 작업에 추가하지 않는다.
+
+### 6.1 BE-01 확인 결과 (2026-09-25)
+
+옛 레포 `C:\vscode\Backend_old`(= `agent-ddalgi` fork, develop e8fc52a) 기준. 코드는 옮기지 않았고 읽기만 했다. 이관은 별도 PR에서 하며, 옮기기 전 옛 CLAUDE.md 7절(실행 의존성·문서 참조·유일 정보) 확인을 적용한다.
+
+**확인한 사실**
+
+1. `database.py`·`schema.sql`은 옛 레포에 없다. 옛 코드는 DB 없이 메모리 dict(`_jobs`) + `private_runs/<job_id>/` 파일로 동작한다. DB 설계 참고 자료는 없다.
+2. 옛 구조는 "업로드 1회 = 작업 1건 = 결과 1개"다. 세션·input_revision·document_revision·수정안·승인 개념이 없어 `main.py`는 파일째 못 가져오고 패턴만 참고한다.
+3. 옛 담당 표기 A=Agent, C=백엔드, D=검사·문서출력. 새 팀에 D가 없으므로 D 파일은 AGENTS.md 2절에 따라 백엔드로 잡았다(`validators.py`의 근거-원문 대조는 AG-07과 경계가 닿아 Agent 확인 요청).
+4. 옛 `.env.example`의 `OPENAI_MODEL`을 `agent.py`가 필수로 읽는데 새 `.env.example`에 없다.
+5. 실행 확인: 옛 코드는 Python 3.12.10 + pip 기준(`docs/backend_readme.md`). 새 레포(uv, 3.13.5)에서는 실행하지 않았다(미확인).
+
+**6.1-1 파일별 담당·이관 판단** (BE=백엔드, AG=Agent, 공통 / 가져옴·참고만·버림·AG 판단)
+
+| 파일 | 역할 | 담당 | 판단 | 이유 |
+|---|---|---|---|---|
+| backend/main.py | FastAPI 앱, /api/profiles 3개, 업로드 제한(3개·10MB·40k자), 메모리 job, mock/llm 분기, CORS | BE | 참고만 | 새 API 구조가 다름. 재사용 패턴: `_read_limited`(스트리밍 크기 검사), `_write_json`(원자적 쓰기), 오류 봉투, `_check_document_file`, 스레드풀 실행 |
+| backend/parsers.py | TXT/MD → 행 단위 source_units(S001, "N행"), UTF-8 strict | BE | 가져옴 | BE-03 출발점. 행 번호가 EvidenceRef.locator TXT 규칙과 일치 |
+| backend/profile_builder.py | company_info → 13섹션 조립, 질문 생성, 스키마 검사 | BE | 참고만 | 옛 ProfileResult 전용. "supported만 본문·보충 금지" 규칙은 BE-04/05에서 유지 |
+| backend/validators.py | fact_id 참조 검사, (source_id, locator) 원문 존재·quote 포함 검사 | BE (AG 확인) | 참고만→일부 가져옴 | 근거-원문 대조 로직은 새 EvidenceRef 검증에 필요 |
+| backend/document_generator.py | ProfileResult → MD/DOCX(python-docx, 맑은고딕) | BE | 참고만 | BE-07 D-03 비교 자료. 폰트 설정·0바이트 검사·폴더 한정 규칙 재사용 |
+| backend/mock_agent.py, __init__.py | Mock 로더, 빈 파일 | BE | 버림 | 옛 스키마 전용 |
+| backend/agent.py | OpenAI Responses + Structured Outputs 추출·본문 생성·응답 검사·fact_id 부여 | AG | AG 판단 | BE-04 연결 형태: 입력 agent_input{schema_version, company_name_hint, source_units[]} → company_info, 예외 AgentError(code)/AgentInputError |
+| prompts/extract.txt, draft.txt | 추출·본문 프롬프트 | AG | AG 판단 | 수정 금지 |
+| contracts/profile.schema.json | 결과 JSON Schema v1.0(14필드·4상태·evidence·13섹션) | 공통 | 가져옴(보존, 수정 금지) | contracts.md Fact절 "기존 14개 필드 축소 금지, 변환표 작성" → D-05 원본 |
+| contracts/contract.md, day2_addendum.md | 옛 규격 v1.0·보완안 | 공통 | 참고만 | contracts.md v1.1이 대체 |
+| fixtures/mock_source_a.txt, mock_source_b.txt, day2_variant_source_a.txt, day2_variant_source_b.txt | 가짜 회사 자료 TXT | 공통 | 가져옴 | BE-02/03 시험 데이터. 실제 기업 자료 아님 |
+| fixtures/*.json(6개), day2_테스트데이터_사용법.md | 옛 스키마 Mock·입력 예시 | 공통 | 참고만 | 새 Document/Preflight 예시 작성 시 값 참고 |
+| handoff/* (5개) | 옛 API 실제 응답·전달 메모 | BE | 버림 | 새 예시 응답은 후속에서 생성 |
+| docs/day1.md, day2.md | 날짜별 기록 | BE | 버림 | 옛 레포에 남김 |
+| docs/backend_readme.md | 옛 설명·검증 명령 목록 | BE | 참고만 | 스크립트 색인 |
+| docs/자료사용_허용기록.md | 실제 기업 자료 외부 LLM 입력 허용 = 미확인(R10) | 공통 | 참고만→정책 이관 요청 | 새 레포 문서에 이 상태가 없음 |
+| scripts/check_backend.py, check_upload_storage.py, check_document_api.py, check_llm_mode.py, check_llm_pipeline.py, check_profile_builder.py, make_agent_input.py, test_validators.py, test_document.py | 백엔드·D 검증 스크립트 | BE | 참고만 | 옛 API 전용. TestClient 예외 주입·동시성 시험 패턴 참고 |
+| scripts/test_agent.py, check_model_schema.py, check_company_info_rules.py, check_openai_extract.py, check_draft_rules.py, test_openai_connection.py | Agent 시험 | AG | AG 판단 | |
+| validate_fixtures.py | 옛 fixture 검증 | 공통 | 버림 | |
+| requirements.txt, requirements-dev.txt | openai 3.14.0, jsonschema 4.26.0, python-docx 1.2.0, httpx 0.28.1 등 | BE | 참고만 | 이관 시 `uv add`. fastapi·dotenv·httpx·multipart는 lock에 있음 |
+| .env.example | ANTHROPIC_API_KEY, OPENAI_API_KEY, AGENT_MODE, OPENAI_MODEL, FRONTEND_DIR | BE | 참고만 | OPENAI_MODEL 추가 필요 |
+| CLAUDE.md(옛), README.md, .gitignore | 파일 관리 규칙·안내 | 공통 | 참고만/버림 | 7절 "옮기기 전 3가지 확인"은 이관 PR에 적용 |
+
+집계: 가져옴 6 · 참고만 22 · 버림 14 · AG 판단 9 · 정책 이관 검토 1.
+
+**6.1-2 API 연결표** (contracts.md 4절 ↔ 옛 /api/profiles 3개). 대체 가능=옛 코드 위 어댑터 / 새로 / 계약 확인=원본 수정 검토 요청
+
+| 새 API | 옛 대응 | 구분 | 비고 |
+|---|---|---|---|
+| POST /sessions | 없음 | 새로 | |
+| GET /sessions/{sid} | GET job 봉투 패턴 | 새로 | |
+| DELETE /sessions/{sid} | 없음 | 새로 | 옛 코드에 정리 로직 없음 |
+| GET /sources | 없음 | 새로 | 등록 자료 저장소 필요 |
+| POST /sessions/{sid}/sources | POST /api/profiles 업로드 부분 | 대체 가능 | 수신·크기 검사·S001 부여·저장·parsers 호출. 분석 자동 시작 제거, 응답 Source[] |
+| GET /sessions/{sid}/sources | extraction.json 기록 | 대체 가능(부분) | |
+| DELETE .../sources/{source_id} | 없음 | 새로 | |
+| PATCH /sessions/{sid}/inputs | company_name_hint Form | 새로 + 계약 확인 ① | Brief에 company_name_hint 없음(Agent 프롬프트가 사용) |
+| POST .../preflights | analyzing(extract_company_info) | 새로(함수 재사용 후보) | D-05 변환: 옛 status는 항목 단위, 새는 Fact 단위. not_found→missing, quote→excerpt, "N행"→locator{line_start,line_end}, segment_id·source_version 신규 |
+| POST .../drafts | drafting(draft_profile+profile_builder) | 새로 | 13섹션 → Document(page/block) 변환 |
+| GET .../documents/{did} | 없음 | 새로 | |
+| PATCH .../documents/{did} | 없음 | 새로 | |
+| proposals 생성·apply·reject | 없음 | 새로 | |
+| restore | 없음 | 새로 | |
+| issues/{iid}/resolve | needs_confirmation 질문 생성 | 새로(질문 규칙 참고) | |
+| documents/{did}/validate | validating(validators) | 새로(대조 함수 재사용 후보) | 옛은 이진, 새는 Issue 목록·부분 재검증 |
+| layout-checks | 없음 | 새로 | |
+| approvals | 없음 | 새로 | |
+| POST /sessions/{sid}/exports | POST /api/profiles/{job_id}/document | 대체 가능(동기→비동기) | render_document + _check_document_file 재사용 |
+| GET .../jobs/{jid} | GET /api/profiles/{job_id} | 대체 가능 + 계약 확인 ② | 상태 변환 queued→queued, extracting/analyzing/drafting/validating→running, ready→succeeded, error→failed. "진행" 필드 형식 미정 |
+| GET .../assets/{asset_id} | 없음 | 새로 | |
+| GET .../exports/{eid}/download | document 응답(FileResponse) | 대체 가능(부분) | 승인·만료 재확인 추가 |
+
+집계: 대체 가능 5 · 새로 19 · 계약 확인 4건.
+
+오류 변환 (옛 {code,stage,message,retryable} → 새 {code,message,retryable,details,request_id}; stage→details.stage): UNSUPPORTED_FILE→UNSUPPORTED_FILE_TYPE · INPUT_TOO_LARGE→FILE_TOO_LARGE(글자수 초과는 계약 확인 ③) · NEEDS_TEXT_SOURCE→NO_USABLE_TEXT · JOB_NOT_FOUND→RESOURCE_NOT_FOUND · PERMISSION_REQUIRED→FORBIDDEN · LLM_TIMEOUT→SERVICE_TEMPORARY_FAILURE · INVALID_OUTPUT→대응 없음(계약 확인 ④: AI 결과 형식 오류 코드) · DOCUMENT_FAILED→EXPORT_FAILED · BUSY→불필요(Idempotency-Key로 대체).
+
+**6.1-3 저장할 데이터 항목** (스키마 아님. 범위: 영구 / 세션=종료·만료 시 정리)
+
+| 항목 | 핵심 필드 | 범위 | 옛 대응 |
+|---|---|---|---|
+| 접근 컨텍스트 | 소유자·보안 쿠키(세션 ID만으로 권한 판단 금지) | 영구(로그인 범위 미정) | 없음 |
+| Session | session_id, status, input_revision, created/last_activity/expires_at, selected_source_ids | 세션 | `_jobs` dict |
+| Brief | purpose, emphasis[], direction, target_pages, photo_preference (+company_name_hint 확인①) | 세션 | company_name_hint |
+| Source 메타 | source_id, source_version, scope, session_id, name, mime_type, size_bytes, kind, parse_status, text/image_available, usable_segment_ids, warnings, expires_at, content_hash | registered=영구 / session=세션 | stored_files, extraction.json |
+| Source 원본 바이트 | 서버 내부 저장명 | scope 따름 | private_runs/<job>/S001.txt |
+| Segment | segment_id, source_id, source_version, locator, text | scope 따름 | source_units |
+| Asset 메타+바이트 | asset_id, source_id/version, scope, session_id, origin, mime_type, width, height, content_hash, status, expires_at | scope 따름 | 없음 |
+| Fact | fact_id, field_key, value, status, evidence_refs[], conditions, alternatives | 세션 | company_info.<key>.facts[] |
+| EvidenceRef | source_id, source_version, segment_id, locator, excerpt | Fact/Block 안 | evidence{source_id, locator, quote} |
+| Preflight | preflight_id, session_id, input_revision, usable_source_ids, facts, issues, recommendations, can_generate, confirmed_at | 세션 | company_info.json |
+| Document(버전별 보존) | schema_version, document_id, session_id, document_revision, input_revision, title, target_pages, pages, status | 세션 | result.json(단일) |
+| Proposal | proposal_id, document_id, base_document_revision, base_input_revision, target_block_ids, kind, changes, status | 세션 | 없음 |
+| Issue | issue_id, scope, code, severity, status, message, source_ids, fact_ids, block_ids, resolution | 세션 | needs_confirmation[] |
+| Validation | validation_id, document_id, document_revision, input_revision, status, issue_ids | 세션 | validation 플래그 |
+| LayoutCheck | layout_check_id, document_revision, input_revision, format, template_version, render_options_hash, asset_manifest_hash, status, actual_pages, issue_ids | 세션 | 없음 |
+| Approval | approval_id, document_id, document_revision, input_revision, format, validation_id, layout_check_id, template_version, render_options_hash, asset_manifest_hash, approved_at, approved_by, status | 세션 | 없음 |
+| Export+파일 | export_id, approval_id, format, status, artifact_id, expires_at, error; 바이트 | 세션 | documents/*.docx |
+| Job | job_id, session_id, kind, status, 진행 정보(확인②), result 참조, error, 시간 | 세션 | `_jobs[job_id]` |
+| Idempotency 기록 | key + 요청자·세션·경로 + 본문 해시 + 최초 응답 | 세션 | 없음(BUSY) |
+| 정리 재시도 목록 | 대상, 실패 사유, 횟수 | 영구(운영) | 없음 |
+| 실행 기록(로그성) | 모드, LLM 호출 여부, 토큰 수, 오류 코드, 시간(원문·프롬프트 제외) | 로그 | run_meta.json |
+| LangGraph 체크포인트 | thread_id ↔ session/job, 저장 위치 | 세션(AG-03 협의) | 없음 |
+
+BE-02에서 먼저 필요한 것: 접근 컨텍스트, Session, Brief, Source 메타·바이트, Segment, Job, Idempotency 기록.
+
+**6.1-4 남은 일(BE-01 완료 조건 중 미완료)**
+
+- 프론트에 예시 응답 제공: 미완료. 새 계약 기준 예시(Session, Source[], Job, 오류)를 만들어 전달해야 DONE.
+- 옛 코드 새 환경 실행 확인: 미실행(uv, Python 3.13).
+
+**6.1-5 상대에게 요청**
+
+- Agent (AG-01): (a) AG 판단 9개 파일(agent.py, prompts 2, 스크립트 6)의 이관 여부 결정 (b) validators.py의 근거-원문 대조를 백엔드가 가져가도 되는지(AG-07 경계) (c) 계약 확인 ① Brief의 company_name_hint (d) 계약 확인 ④ AI 결과 형식 오류 코드 (e) D-05 변환표 공동 작성(옛 항목 단위 status → Fact 단위) (f) .env.example에 OPENAI_MODEL 추가 시점.
+- 팀(계약 원본): 계약 확인 ② Job 진행 필드 형식, ③ 추출 글자수 초과 코드. `docs/자료사용_허용기록.md`(R10 미확인)를 새 레포 어느 문서에 둘지.
 
 ## 7. 첫 요청
 
