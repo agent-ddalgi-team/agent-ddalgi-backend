@@ -130,7 +130,111 @@ class JobOut(BaseModel):
 
 class JobAccepted(BaseModel):
     job_id: str
-    status: Literal["queued"]
+    status: Literal["queued", "running"]
     kind: str
     session_id: str
     created_at: str
+
+
+# ---------------- 사실·근거·문제 (contracts.md 2절) ----------------
+
+class EvidenceRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_id: str
+    source_version: int
+    segment_id: str
+    locator: dict[str, Any]
+    excerpt: str
+
+
+class Fact(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    fact_id: str
+    field_key: str
+    value: str | None
+    status: Literal["supported", "needs_confirmation", "conflict", "missing"]
+    evidence_refs: list[EvidenceRef] = Field(default_factory=list)
+    conditions: dict[str, Any] | None = None
+    alternatives: list[dict[str, Any]] | None = None
+
+
+class Issue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    issue_id: str
+    scope: Literal["source", "content", "layout"]
+    code: str
+    severity: Literal["blocker", "warning", "info"]
+    status: Literal["open", "resolved", "excluded", "acknowledged"] = "open"
+    message: str
+    source_ids: list[str] = Field(default_factory=list)
+    fact_ids: list[str] = Field(default_factory=list)
+    block_ids: list[str] = Field(default_factory=list)
+    resolution: dict[str, Any] | None = None
+
+
+class Recommendations(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    suggested_pages: Literal[1, 4, 6, 8, 10]
+    reason: str
+    needed: list[str] = Field(default_factory=list)
+
+
+class PreflightCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_input_revision: int
+
+
+class PreflightOut(BaseModel):
+    preflight_id: str
+    session_id: str
+    input_revision: int
+    usable_source_ids: list[str]
+    facts: list[Fact]
+    issues: list[Issue]
+    recommendations: Recommendations
+    can_generate: bool
+    confirmed_at: str | None
+
+
+# ---------------- 문서 (contracts.md Document) ----------------
+
+class Block(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    block_id: str
+    type: Literal["heading", "paragraph", "list", "image", "image_placeholder"]
+    content: dict[str, Any]
+    fact_ids: list[str] = Field(default_factory=list)
+    evidence_refs: list[EvidenceRef] = Field(default_factory=list)
+
+
+class Page(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    page_id: str
+    title: str
+    layout_key: str
+    blocks: list[Block]
+
+
+class Document(BaseModel):
+    schema_version: Literal["1.0"] = "1.0"
+    document_id: str
+    session_id: str
+    document_revision: int
+    input_revision: int
+    title: str
+    target_pages: Literal[1, 4, 6, 8, 10]
+    status: Literal["draft", "review_required", "ready_for_approval", "approved"]
+    pages: list[Page]
+
+
+class DocumentOut(BaseModel):
+    document: Document
+    validation: dict[str, Any] | None = None   # BE-06
+    approval: dict[str, Any] | None = None     # BE-06
+
+
+class DraftCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    preflight_id: str
+    input_revision: int
+    confirmed: bool

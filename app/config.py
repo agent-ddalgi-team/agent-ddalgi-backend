@@ -43,9 +43,15 @@ class Settings:
     # 소유자 쿠키. 세션 ID만으로 권한을 믿지 않기 위한 접근 컨텍스트(contracts.md Session절).
     owner_cookie_name: str = "ddalgi_owner"
     owner_cookie_secure: bool = False
+    # AI 실행 모드. mock = 가짜 결과(실제 호출 없음, 기본) / llm = Agent 구현(app/agent_llm.py) — 없으면 Job failed.
+    agent_mode: str = "mock"
 
 
 def load_settings() -> Settings:
+    agent_mode = (os.environ.get("AGENT_MODE") or "mock").strip().lower()
+    if agent_mode not in {"mock", "llm"}:
+        # 오설정을 조용히 mock으로 바꾸면 실제 분석처럼 보일 수 있어 시작을 중단한다(옛 코드 규칙 유지).
+        raise RuntimeError(f"AGENT_MODE는 mock 또는 llm이어야 합니다(현재: {agent_mode!r}). .env를 확인해 주세요.")
     private_runs = Path(os.environ.get("PRIVATE_RUNS_DIR") or ROOT / "private_runs")
     if not private_runs.is_absolute():
         private_runs = ROOT / private_runs
@@ -62,4 +68,5 @@ def load_settings() -> Settings:
         max_source_chars=_env_int("MAX_SOURCE_CHARS", 100_000),
         cors_origins=_env_list("FRONTEND_ORIGINS", ["http://localhost:5173", "http://127.0.0.1:5173"]),
         owner_cookie_secure=os.environ.get("OWNER_COOKIE_SECURE", "").strip().lower() in {"1", "true", "yes"},
+        agent_mode=agent_mode,
     )
