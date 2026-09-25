@@ -5,6 +5,7 @@
 - v2 (BE-03): sources.session_id nullable(등록 자료용) + scope CHECK, sources.warnings_json,
               stored_path를 private_runs 기준 상대경로로, segments·assets 테이블 추가
 - v3 (BE-04): preflights, documents + document_revisions(처음부터 버전 구조), jobs.input_revision
+- v4 (BE-05): proposals, document_revisions.origin / source_ref
 시간은 모두 UTC ISO 8601 문자열로 저장한다.
 """
 from __future__ import annotations
@@ -14,7 +15,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -135,9 +136,29 @@ CREATE TABLE IF NOT EXISTS document_revisions (
     input_revision  INTEGER NOT NULL,
     status          TEXT NOT NULL,                    -- draft / review_required / ready_for_approval / approved
     content_json    TEXT NOT NULL,                    -- {"title", "pages": [...]}
+    origin          TEXT,                             -- draft / user_edit / proposal_apply / restore
+    source_ref      TEXT,                             -- proposal_id 또는 복원 원본 revision 번호
     created_at      TEXT NOT NULL,
     PRIMARY KEY (document_id, revision)
 );
+
+-- AI 편집안. 적용 전에는 문서를 바꾸지 않는다(contracts.md Proposal절).
+CREATE TABLE IF NOT EXISTS proposals (
+    proposal_id             TEXT PRIMARY KEY,
+    session_id              TEXT NOT NULL REFERENCES sessions(session_id),
+    document_id             TEXT NOT NULL REFERENCES documents(document_id),
+    base_document_revision  INTEGER NOT NULL,
+    base_input_revision     INTEGER NOT NULL,
+    target_block_ids        TEXT NOT NULL,            -- JSON 배열
+    kind                    TEXT NOT NULL,            -- text / structure / image
+    instruction             TEXT NOT NULL,
+    changes_json            TEXT NOT NULL,            -- {"changes": [...ops], "rationale": str, "candidates": [...] | null}
+    status                  TEXT NOT NULL,            -- proposed / applied / rejected / stale
+    applied_revision        INTEGER,
+    created_at              TEXT NOT NULL,
+    updated_at              TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_proposals_document ON proposals(document_id, status);
 
 CREATE TABLE IF NOT EXISTS idempotency_keys (
     idem_key        TEXT NOT NULL,
@@ -200,6 +221,10 @@ def init_db(db_path: Path, private_runs_dir: Path) -> None:
         # v2 → v3: 새 테이블은 IF NOT EXISTS로 생기고, jobs에는 컬럼만 하나 더한다.
         if "input_revision" not in _columns(conn, "jobs"):
             conn.execute("ALTER TABLE jobs ADD COLUMN input_revision INTEGER")
+        # v3 → v4: document_revisions에 감사용 컬럼 2개.
+        if "origin" not in _columns(conn, "document_revisions"):
+            conn.execute("ALTER TABLE document_revisions ADD COLUMN origin TEXT")
+            conn.execute("ALTER TABLE document_revisions ADD COLUMN source_ref TEXT")
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         conn.commit()
     finally:
@@ -207,11 +232,17 @@ def init_db(db_path: Path, private_runs_dir: Path) -> None:
 
 
 @contextmanager
-def connect(db_path: Path) -> Iterator[sqlite3.Connection]:
-    """요청마다 새 연결을 연다. 예외가 나면 롤백, 정상이면 커밋한다."""
-    conn = sqlite3.connect(db_path, timeout=10)
+def connect(db_path: Path, *, immediate: bool = False) -> Iterator[sqlite3.Connection]:
+    """요청마다 새 연결을 연다. 예외가 나면 롤백, 정상이면 커밋한다.
+
+    immediate=True면 시작부터 쓰기 잠금을 잡는다(BEGIN IMMEDIATE). 같은 문서에 동시에 들어온 적용 요청이
+    서로의 중간 상태를 보지 못하게 할 때 쓴다.
+    """
+    conn = sqlite3.connect(db_path, timeout=10, isolation_level=None if immediate else "")
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
+    if immediate:
+        conn.execute("BEGIN IMMEDIATE")
     try:
         yield conn
         conn.commit()

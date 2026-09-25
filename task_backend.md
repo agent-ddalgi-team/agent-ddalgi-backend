@@ -18,7 +18,7 @@
 | BE-02 | BE-01 | 세션 생성·소유·만료, 첨부 임시 저장과 제한 설정. D-01/D-02 기록. 서로 다른 두 세션의 자료 접근 차단 확인. | DONE (2026-09-25, 6.2절 · 파일 읽기는 BE-03) |
 | BE-03 | BE-02 | 형식별 읽기·구간 위치·complete/partial/failed·사진 asset 제공. 손상/암호/스캔 파일 점검, 지원표 기록. 불확실 수치를 완료로 표시하지 않음. | DONE (2026-09-25, 6.3절 · OCR 없음, 문서 안 그림 추출 없음) |
 | BE-04 | BE-01, BE-02 | AI 작업 실행/상태/사용자 응답 API와 내부 함수 연결 지점 구현. 먼저 계약 예시로 확인하고 AG-03에서 실제 연결. 오래된 입력·중복 재개·만료 요청 처리. | DONE (2026-09-25, 6.4절 · mock으로만 확인, 실제 AI 연결은 AG-03) |
-| BE-05 | BE-01, BE-02 | 문서/페이지/블록 저장·버전·수정안 적용·취소·복원 API. 출처 ID 유지, 예상 버전 검사, 중복 적용은 1회만, 트랜잭션 실패 시 원본 보존. | TODO |
+| BE-05 | BE-01, BE-02 | 문서/페이지/블록 저장·버전·수정안 적용·취소·복원 API. 출처 ID 유지, 예상 버전 검사, 중복 적용은 1회만, 트랜잭션 실패 시 원본 보존. | DONE (2026-09-25, 6.5절 · Proposal은 mock, 검증은 BE-06 미연결) |
 | BE-06 | BE-05, AG-07 | 문제 해결 상태·검증 버전·승인 조건 강제. 부분 검증에서 기존 문제 유지, 필수 누락 제외 불가. 배치 검사는 BE-08 연결 전 계약 예시로만 확인했다고 표시. | TODO |
 | BE-07 | BE-01, AG-04 | PDF/DOCX 생성 도구·템플릿 검증 후 D-03/D-06 기록. 한글·사진·1쪽/다쪽·DOCX 본문 편집성을 실제 파일로 비교. 특정 도구를 필수로 전제하지 않음. | TODO |
 | BE-08 | BE-06, BE-07 | 실제 배치 미리보기·검사·승인 스냅샷 출력·다운로드. 실패 재시도/같은 파일 재다운로드에 AI 재생성 없음. 실제 결과로 승인 검사 교체. | TODO |
@@ -51,8 +51,8 @@
 | QA-03 | 미지원·손상·암호 파일 | 백엔드 | 원인·보완·제외, 다른 자료 보존 | PASS (2026-09-25) — `tests/test_be03.py`: 미지원 .hwp 415, 암호 PDF failed+ENCRYPTED, 손상 DOCX/PDF/PNG failed+FILE_CORRUPT, 확장자-내용 불일치 failed, 빈 TXT failed+NO_USABLE_TEXT. 같은 업로드의 다른 파일은 정상 읽힘(`test_failed_file_does_not_block_others`). 각 경고에 action(보완·제외 안내) 포함 |
 | QA-04 | 불확실한 표·수치 | 백엔드 + Agent | partial, 확인 구간만 사용 | 부분 PASS (2026-09-25, 백엔드 몫) — 스캔 PDF·글자 없는 쪽은 partial+IMAGE_ONLY, usable_segment_ids에 글자 있는 구간만. 표 셀은 locator로 위치 보존. "수치가 불확실하다"는 판단은 Agent(AG-02) 몫 → 미실행 |
 | QA-07 | 자료/목적 변경 후 옛 점검 사용 | 백엔드 | 이전 확인 무효화 | PASS (2026-09-25) — `tests/test_be04.py`: 입력 변경 후 옛 preflight로 drafts 요청 → 409 INPUT_REVISION_CONFLICT(`test_draft_requires_confirmation_and_matching_revision`); 점검 Job 도중 입력이 바뀌면 결과 폐기·failed(`test_preflight_job_fails_if_input_changed_while_running`) |
-| QA-11 | 오래된 수정안·중복 재개 | 백엔드 | 충돌 처리, 중복 반영 없음 | 부분 PASS (2026-09-25) — 같은 입력 버전의 진행 중 preflight/draft Job은 새로 만들지 않고 같은 Job 반환, Idempotency-Key 재전송은 최초 응답. 수정안(Proposal) 부분은 BE-05 후 |
-| QA-14 | 순서 변경과 사실 문장 변경 | 백엔드 + Agent | 검사 범위 구분, 둘 다 승인 무효화 | 미실행 |
+| QA-11 | 오래된 수정안·중복 재개 | 백엔드 | 충돌 처리, 중복 반영 없음 | PASS (2026-09-25) — `tests/test_be05.py`: 문서가 바뀐 뒤 옛 편집안 apply → 409 PROPOSAL_STALE + DB status=stale 유지(`test_stale_proposal_rejected_and_stays_stale`, `test_stale_by_input_change_set_during_apply`); 같은 키 재전송은 최초 응답·revision 재증가 없음, 키 없이 재전송 409, 스레드 3개 동시 apply는 1승 2패(`test_concurrent_apply_only_one_wins`); 진행 중 Job 재사용은 BE-04 |
+| QA-14 | 순서 변경과 사실 문장 변경 | 백엔드 + Agent | 검사 범위 구분, 둘 다 승인 무효화 | 부분 PASS (2026-09-25, 백엔드 몫) — 순서 변경(move_block/move_page)도 문장 변경(replace_block_content)도 document_revision +1이고 `on_revision_created` 훅이 편집안을 stale로 전환. 승인 무효화는 Approval 테이블(BE-06)에서 같은 훅에 붙임. "순서만 바꾼 경우 사실 질문 재실행 안 함" 검사 범위 구분은 Validation(BE-06)+Agent 몫 → 미실행 |
 | QA-16 | 승인 API 우회 | 백엔드 | 미해결 필수/배치 문제 시 서버 차단 | 미실행 |
 | QA-17 | 승인 후 변경 | 백엔드 | 옛 승인으로 최신본 출력 불가 | 미실행 |
 | QA-18 | PDF/DOCX 파일 열기 | 백엔드 + 프론트 | 유효한 파일·한글·사진, DOCX 본문 편집 가능 | 미실행 |
@@ -70,6 +70,7 @@
 | 2026-09-25 | BE-02 | 브랜치 feat/be-02-session · app/(신규 15파일), tests/test_be02.py, main.py, pyproject.toml(pytest dev), .env.example, plan.md 4절 | `uv run pytest` 17/17 PASS. 실서버(uvicorn main:app)에서 curl로 세션 생성→쿠키 조회 200→쿠키 없이 401→TXT 업로드 202→삭제 200 확인. 상세 6.2절 | 프론트: API 6개 실제 동작(6.2-1), 쿠키 필요(credentials 포함 호출). Agent: 없음. 팀: 계약 확인 ⑥⑦(6.2-3) |
 | 2026-09-25 | BE-03 | 브랜치 feat/be-03-parsers · app/parsers/(신규 5), app/services/reading.py·assets.py, app/routers/assets.py, app/db.py(v2), tests/test_be03.py, tests/fixtures/(옛 가짜 TXT 4), plan.md D-01 | `uv run pytest` 36/36. 실서버 가짜 PPTX 20슬라이드→segment 44, 가짜 스캔 PDF→partial+IMAGE_ONLY. BE-02 리뷰 3건 반영(6.3-0). 상세 6.3절 | 프론트: Source.asset_ids·warnings 형식, 읽기 결과는 폴링 후 GET sources. Agent(AG-02): 구간 입력 형태(6.3-5). 팀: 계약 확인 ⑨⑩⑪ |
 | 2026-09-25 | BE-04 | 브랜치 feat/be-04-ai-jobs · app/agent_bridge.py·agent_mock.py(신규), services/{preflights,documents,ai_jobs}.py, routers/{preflights,drafts,documents}.py, db.py(v3), tests/test_be04.py | `uv run pytest` 51/51. 실서버(가짜 자료): 업로드→선택→사전 점검 Job→확인→초안 Job→Document rev.1→세션 요약. 개발 DB v2→v3 마이그레이션 확인. 상세 6.4절 | **Agent에게 전달**: 6.4-3 함수 서명(app/agent_bridge.py) — AG-03에서 같은 서명으로 llm 구현. 프론트: preflights/drafts/documents API 실제 동작(mock). 팀: 계약 확인 ⑫⑬ |
+| 2026-09-25 | BE-05 | 브랜치 feat/be-05-document-edit · services/{doc_ops,proposals,refs}.py, routers/proposals.py(신규), routers/documents.py(PATCH·restore·proposals), db.py(v4), agent_bridge.py(propose)·agent_mock.py, tests/test_be05.py | `uv run pytest` 92/92(BE-05 41개). 실서버(가짜 자료): 초안 rev1 → PATCH rev2 → Proposal(text) → apply rev3 → 중복 apply 409 → restore rev4. 개발 DB v3→v4 마이그레이션 확인. 상세 6.5절 | **Agent에게 전달**: 6.5-3 `propose()` 규격. 프론트: 편집 8종·Proposal·restore API(6.5-1), validation은 계속 null. 팀: 계약 확인 ⑭~⑳ |
 
 자료·시스템의 진위를 추정하여 정상 처리하지 않는다. 설명용 이미지 생성·OCR·장기 보관은 별도 범위가 정해지기 전 기본 작업에 추가하지 않는다.
 
@@ -273,6 +274,59 @@ AgentError(code, message, retryable)                         # 실패 통지. co
 **6.4-5 하지 않은 것** — 실제 LLM 호출·LangGraph·waiting_user 재개(AG-03), D-05 변환표(Agent 공동), 문서 편집·버전 증가·Proposal(BE-05), Validation/Issue 해결(BE-06), 사전 점검 재실행 시 기존 문서 영향 검사(계약 3절 "새 자료 추가 시 덮어쓰지 않음" — BE-05/06).
 
 **6.4-6 요청** — 팀(계약): ⑫ 세션에 문서가 이미 있을 때 drafts 재요청 처리(현재 409 DOCUMENT_EXISTS 임시 코드; 계약 3절 "전체 재생성으로 덮어쓰지 않음"과 맞춤) ⑬ AI 결과 검사 실패 코드(AGENT_OUTPUT_INVALID 임시, 계약 확인 ④와 같은 건). 프론트: `handoff/api_examples_v1.1.json`의 문서 조회 예시에 있는 validation 객체는 BE-06까지 null.
+
+### 6.5 BE-05 구현 결과 (2026-09-25)
+
+**6.5-1 실제 동작하는 API** (`/api/v1`, 소유자 쿠키. 멱등 재전송도 소유자·세션·문서 접근 검사를 먼저 통과해야 최초 응답을 돌려줌 — 기존 preflights/inputs 라우트도 같은 순서로 수정)
+
+| API | 동작 | 검사·오류 |
+|---|---|---|
+| PATCH /documents/{did} | operations 8종을 **하나의 트랜잭션**으로 적용 → 새 revision(origin=user_edit). 하나라도 실패하면 무변경 | expected_revision 불일치 409 DOCUMENT_REVISION_CONFLICT · 문서 input_revision < 세션 409 INPUT_REVISION_CONFLICT · 연산 실패 422 INVALID_OPERATION(⑭, details.index/op/reason) · 삽입 블록의 segment/asset/fact가 세션에 없음 422 |
+| POST /documents/{did}/proposals | 202 Job(kind=propose) → Agent `propose()` → Proposal 저장(proposed). **문서 불변** | 대상 블록 없음 422 · Job 도중 문서/입력이 바뀌면 `stale`로 저장(Job은 succeeded, result_ref.status) |
+| GET /proposals/{pid} | Proposal(changes·rationale·candidates·status·applied_revision) | 계약에 없는 경로(⑯) |
+| POST /proposals/{pid}/apply | `BEGIN IMMEDIATE` 한 트랜잭션: 상태 확인 → 기준 버전 확인 → 연산 적용 → 새 revision(origin=proposal_apply, source_ref=pid) → applied → 멱등 응답 저장 | 기준이 바뀜 → **stale로 저장·커밋한 뒤** 409 PROPOSAL_STALE · applied/rejected/stale 409 PROPOSAL_STALE(details.status ⑱) · 후보 미선택 422 CANDIDATE_REQUIRED · 동시 apply는 1건만 성공 |
+| POST /proposals/{pid}/reject | rejected, 문서 무변화. 멱등 | applied면 409 |
+| POST /documents/{did}/restore | 과거 revision 내용 → 새 revision(origin=restore, source_ref=원본 번호). 승인·검증 상태 부활 없음(status는 draft/review_required만), input_revision은 현재 세션 값 | 없는 버전 404 · 현재 버전 복원 422 · 참조 자료가 지금 없음 422 RESTORE_REFERENCE_INVALID(⑲) |
+
+연산 규칙(`app/services/doc_ops.py`, 순수 함수·DB 무관): 없는 대상·자기 뒤 이동·다른 페이지의 after_block_id·중복 ID·type별 content 모양 위반·마지막 페이지 삭제 거부. `replace_block_content`는 content만 바꾸고 `block_id·type·fact_ids·evidence_refs` 보존. 편집 뒤 status: review_required 유지, 그 외 draft(BE-06 전 임시). 모든 새 revision에서 `documents.on_revision_created` 훅이 그 이전 기준의 proposed 편집안을 stale로 — **Approval 무효화는 BE-06에서 이 훅에 붙임**.
+
+**6.5-2 DB v4** — `proposals` 테이블, `document_revisions.origin/source_ref`. `documents`/`document_revisions` 구조는 BE-04 그대로(새 revision = 행 추가 + `current_revision`을 `WHERE current_revision=expected`로 갱신 → 낙관적 잠금).
+
+**6.5-3 Agent에게 전달 — `propose()` 규격** (`app/agent_bridge.py`, analyze/draft와 같은 방식·sync/async 호환·AGENT_MODE=llm 미구현 시 Job failed)
+
+```python
+def propose(self, request: ProposeRequest) -> ProposeResult | Awaitable[ProposeResult]
+
+ProposeRequest(session_id, input_revision, brief, sources: list[SourceIn],
+               document: Document,            # 기준 문서(현재 revision)
+               target_block_ids: list[str],   # 사용자가 선택한 영역
+               instruction: str, kind: "text"|"structure"|"image")
+ProposeResult(changes: list[Operation],       # contracts.md 연산 8종. 대상 블록 안에서만(삽입은 대상 바로 뒤·같은 페이지)
+              rationale: str,                 # 사람이 읽을 이유. 근거 없는 새 주장 금지
+              candidates: list[Candidate] | None)  # kind=image: Candidate(candidate_id, label, changes). 선택 전 문서 불변
+```
+- 서버 검사(`ai_jobs.validate_propose_ops`): 선택 영역 밖 블록을 건드리면 거부, kind=text/image에서 페이지 연산 거부, dry-run 적용 통과·참조(segment/asset/fact) 세션 내 존재. 위반 시 저장하지 않고 Job failed AGENT_OUTPUT_INVALID.
+- 지원하지 않는 요청은 **빈 changes로 성공 처리하지 말고** `AgentError(code)`: mock은 structure → UNSUPPORTED_PROPOSAL, text+비텍스트 블록 → UNSUPPORTED_PROPOSAL, image+asset 없음 → NO_IMAGE_CANDIDATES(⑳).
+- mock(`app/agent_mock.py`)의 text: 대상 블록마다 replace_block_content로 "(정리) "+공백 정돈, 60자 초과 축약 표시. image: 세션 asset마다 후보 1개(placeholder는 delete+insert(image), image는 replace). 실제 회사 단어 없음(테스트로 고정).
+- task_agent.md는 수정하지 않았다.
+
+**6.5-4 확인** — `uv run pytest` 92/92(BE-05 41개: 연산 8종 각각, 실패 8종 422·무변경, 배치 원자성, 세션 밖 참조 거부, 버전·입력 충돌, PATCH 멱등, 동시 PATCH 4건 1승, Proposal 생성 시 문서 불변, apply 후 비선택 영역·출처 보존, 중복 apply(같은 키/키 없음/다른 키), 동시 apply 3건 1승, stale 거부+DB 유지(훅·입력 변경 두 경로), reject 무변화·멱등, 생성 검증, mock 미지원 3종 failed, 이미지 후보·선택, placeholder 교체, 선택 영역 밖 연산 거부, 생성 중 문서 변경 → stale 저장, restore 4건, 참조 삭제 시 복원 거부, 멱등보다 접근 검사 우선(404/410), 타 소유자, v3→v4, mock 실제 단어 없음). 실서버(가짜 자료): rev1 → PATCH rev2 → Proposal → apply rev3 → restore rev4, validation null 유지. 개발 DB v3→v4 마이그레이션 확인.
+
+**실서버 apply 재전송 5가지 경우 (2026-09-25, 가짜 자료. 처음 흐름 확인 때의 "중복 apply 409"는 아래 ④ 경로였음 — 키 없는 재요청)**
+
+| # | 요청 | 응답 | 이후 proposal.status / applied_revision / document.revision |
+|---|---|---|---|
+| ① | 최초 apply, `Idempotency-Key: K1`, `{expected_revision: 2}` | 200 `{document_revision: 3, status: draft}` | applied / 3 / 3 |
+| ② | **같은 키 K1·같은 본문** 재전송 | 200, **①과 바이트 단위로 동일한 본문**(revision 3). 재증가 없음 | applied / 3 / 3 (변화 없음) |
+| ③ | 같은 키 K1·**다른 본문**(selected_candidate_id 추가) | 409 `IDEMPOTENCY_KEY_CONFLICT` | applied / 3 / 3 (변화 없음) |
+| ④ | **키 없음**·같은 본문 | 409 `PROPOSAL_STALE`, details `{status: "applied", applied_revision: 3}` | applied / 3 / 3 (**stale로 바뀌지 않음**) |
+| ⑤ | **다른 키 K2**·같은 본문 | 409 `PROPOSAL_STALE`, details `{status: "applied", applied_revision: 3}` | applied / 3 / 3 (변화 없음) |
+
+정리: 같은 키·같은 본문만 최초 성공 응답을 그대로 돌려주고, 그 외 재요청은 어느 경우에도 revision을 올리거나 applied 상태를 stale로 바꾸지 않는다(④⑤의 오류 코드 `PROPOSAL_STALE`은 상태값이 아니라 응답 코드이며 details.status로 실제 상태 `applied`를 알려줌 — 계약 확인 ⑱).
+
+**6.5-5 하지 않은 것** — Validation·Issue 해결·Approval·승인 무효화 실체(BE-06, `validation`은 계속 null — 검증 완료로 포장하지 않음), 실제 AI·프롬프트·LangGraph·task_agent.md, 등록 자료 적재 스크립트(다음 작업), 문서 안 그림 교체 외 Asset 관리, "입력 변경 후 기존 문서 영향 검사"(지금은 문서 input_revision이 뒤처지면 편집을 409로 막기만 함 — BE-06/AG 협의).
+
+**6.5-6 계약 확인 (임시 구현, contracts.md 원본 미수정)** — ⑭ 연산 실패 코드 없음 → `422 INVALID_OPERATION` · ⑮ insert_block/insert_page의 ID는 클라이언트가 주고 서버가 유일성 검사(서버 발급은 안 함) · ⑯ Proposal 조회 경로 없음 → `GET /sessions/{sid}/proposals/{pid}` · ⑰ Proposal에 `rationale`·`candidates`·`applied_revision` 필드 추가(계약은 changes만; selected_candidate_id가 계약에 있어 candidates 필요) · ⑱ applied/rejected/stale에 apply → `409 PROPOSAL_STALE` + details.status(별도 코드 제안) · ⑲ restore 참조 무효 → `422 RESTORE_REFERENCE_INVALID` · ⑳ mock 미지원 요청 Job 코드 `UNSUPPORTED_PROPOSAL`/`NO_IMAGE_CANDIDATES`, 후보 미선택 `422 CANDIDATE_REQUIRED`(④⑬과 함께 정리). 문서 input_revision이 세션보다 뒤처졌을 때의 편집 처리(현재 409 INPUT_REVISION_CONFLICT)도 계약 3절 "영향 검사"와 맞춰 확정 필요.
 
 ## 7. 첫 요청
 

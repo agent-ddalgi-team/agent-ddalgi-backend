@@ -20,10 +20,10 @@ def create_preflight(request: Request, sid: str, body: PreflightCreate, backgrou
     owner = require_owner(request)
     digest = idempotency.body_hash(body.model_dump())
     with connect(settings.db_path) as conn:
+        row = sessions.load_active(conn, owner, sid)  # 멱등 재전송도 소유자·세션 검사를 먼저 통과해야 한다
         replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest)
         if replay is not None:
             return replay
-        row = sessions.load_active(conn, owner, sid)
         if body.expected_input_revision != row["input_revision"]:
             raise ApiError(409, "INPUT_REVISION_CONFLICT", "입력이 변경되었습니다. 최신 상태를 불러온 뒤 다시 요청해 주세요.",
                            details={"expected_input_revision": body.expected_input_revision,
