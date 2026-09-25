@@ -302,8 +302,9 @@ def test_stale_jobs_failed_on_startup(settings):
     client = TestClient(create_app(settings))
     sid = _session(client)
     with connect(settings.db_path) as conn:
-        conn.execute("INSERT INTO jobs VALUES ('job_stale', ?, 'read', 'running', "
-                     "'{\"stage\": \"reading\", \"message\": \"1/2\"}', NULL, NULL, 'x', 'x')", (sid,))
+        conn.execute("INSERT INTO jobs (job_id, session_id, kind, status, progress_json, created_at, updated_at) "
+                     "VALUES ('job_stale', ?, 'read', 'running', '{\"stage\": \"reading\", \"message\": \"1/2\"}', 'x', 'x')",
+                     (sid,))
     client2 = TestClient(create_app(settings))
     client2.cookies = client.cookies
     job = client2.get(f"/api/v1/sessions/{sid}/jobs/job_stale").json()
@@ -336,7 +337,8 @@ def test_v1_db_migrates_to_v2_keeping_rows(tmp_path):
     init_db(db, runs)
     with sqlite3.connect(db) as conn:
         conn.row_factory = sqlite3.Row
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        from app.db import SCHEMA_VERSION
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         row = conn.execute("SELECT * FROM sources").fetchone()
         assert row["stored_path"] == "sess_1/src_1.txt" and row["warnings_json"] == "[]"
         cols = {r[1]: r[3] for r in conn.execute("PRAGMA table_info(sources)")}  # name -> notnull
@@ -350,7 +352,8 @@ def test_v1_db_migrates_to_v2_keeping_rows(tmp_path):
             conn.execute("INSERT INTO sources (source_id, session_id, source_version, scope, name, mime_type, size_bytes, "
                          "kind, parse_status, text_available, image_available, stored_path, content_hash, created_at) "
                          "VALUES ('src_bad', NULL, 1, 'session', 'x', 'y', 1, 'other', 'queued', 0, 0, 'p', 'h', 't')")
-        for table in ("segments", "assets"):
+        for table in ("segments", "assets", "preflights", "documents", "document_revisions"):
             assert conn.execute("SELECT 1 FROM sqlite_master WHERE name=?", (table,)).fetchone()
+        assert "input_revision" in [r[1] for r in conn.execute("PRAGMA table_info(jobs)")]  # v3 컬럼
     # 두 번째 init_db는 아무것도 바꾸지 않는다
     init_db(db, runs)

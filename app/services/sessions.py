@@ -49,7 +49,7 @@ def _row_to_out(row: sqlite3.Row) -> SessionOut:
         expires_at=row["expires_at"],
         brief=Brief.model_validate_json(row["brief_json"]),
         selected_source_ids=json.loads(row["selected_source_ids"]),
-        document_summary=None,  # BE-05에서 채운다
+        document_summary=None,  # get()에서 채운다
     )
 
 
@@ -70,7 +70,11 @@ def load_active(conn: sqlite3.Connection, owner_id: str, session_id: str) -> sql
 
 
 def get(conn: sqlite3.Connection, owner_id: str, session_id: str) -> SessionOut:
-    return _row_to_out(load_active(conn, owner_id, session_id))
+    from app.services import documents  # 순환 import 방지
+
+    out = _row_to_out(load_active(conn, owner_id, session_id))
+    out.document_summary = documents.summary_for_session(conn, session_id)
+    return out
 
 
 def touch(conn: sqlite3.Connection, settings: Settings, row: sqlite3.Row) -> None:

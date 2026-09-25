@@ -4,6 +4,7 @@
 - v1 (BE-02): sessions, sources(session_id NOT NULL, stored_path 절대경로), jobs, idempotency_keys
 - v2 (BE-03): sources.session_id nullable(등록 자료용) + scope CHECK, sources.warnings_json,
               stored_path를 private_runs 기준 상대경로로, segments·assets 테이블 추가
+- v3 (BE-04): preflights, documents + document_revisions(처음부터 버전 구조), jobs.input_revision
 시간은 모두 UTC ISO 8601 문자열로 저장한다.
 """
 from __future__ import annotations
@@ -13,7 +14,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -95,10 +96,48 @@ CREATE TABLE IF NOT EXISTS jobs (
     progress_json   TEXT NOT NULL,
     result_ref_json TEXT,
     error_json      TEXT,
+    input_revision  INTEGER,                          -- AI 작업이 기준으로 삼은 입력 버전(중복 실행 판정용)
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_jobs_session ON jobs(session_id);
+
+-- 사전 점검 결과(역할 ①). facts/issues/recommendations는 contracts.md 2절 모양의 JSON.
+CREATE TABLE IF NOT EXISTS preflights (
+    preflight_id          TEXT PRIMARY KEY,
+    session_id            TEXT NOT NULL REFERENCES sessions(session_id),
+    input_revision        INTEGER NOT NULL,
+    usable_source_ids     TEXT NOT NULL,              -- JSON 배열
+    facts_json            TEXT NOT NULL,
+    issues_json           TEXT NOT NULL,
+    recommendations_json  TEXT NOT NULL,
+    can_generate          INTEGER NOT NULL,
+    confirmed_at          TEXT,
+    created_at            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_preflights_session ON preflights(session_id, input_revision);
+
+-- 문서는 처음부터 버전 구조. documents는 머리(현재 버전), document_revisions가 내용.
+CREATE TABLE IF NOT EXISTS documents (
+    document_id       TEXT PRIMARY KEY,
+    session_id        TEXT NOT NULL REFERENCES sessions(session_id),
+    current_revision  INTEGER NOT NULL,
+    title             TEXT NOT NULL,
+    target_pages      INTEGER NOT NULL,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_documents_session ON documents(session_id);
+
+CREATE TABLE IF NOT EXISTS document_revisions (
+    document_id     TEXT NOT NULL REFERENCES documents(document_id),
+    revision        INTEGER NOT NULL,
+    input_revision  INTEGER NOT NULL,
+    status          TEXT NOT NULL,                    -- draft / review_required / ready_for_approval / approved
+    content_json    TEXT NOT NULL,                    -- {"title", "pages": [...]}
+    created_at      TEXT NOT NULL,
+    PRIMARY KEY (document_id, revision)
+);
 
 CREATE TABLE IF NOT EXISTS idempotency_keys (
     idem_key        TEXT NOT NULL,
@@ -158,6 +197,9 @@ def init_db(db_path: Path, private_runs_dir: Path) -> None:
             _migrate_v1_to_v2(conn, private_runs_dir)
         else:
             conn.executescript(SCHEMA)
+        # v2 → v3: 새 테이블은 IF NOT EXISTS로 생기고, jobs에는 컬럼만 하나 더한다.
+        if "input_revision" not in _columns(conn, "jobs"):
+            conn.execute("ALTER TABLE jobs ADD COLUMN input_revision INTEGER")
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         conn.commit()
     finally:

@@ -17,7 +17,7 @@
 | BE-01 | 없음 | 기존 코드·브랜치·실행 명령·공통 타입·API 확인. Agent와 실제 파일별 담당 경계 기록. contracts.md와 기존 모델 연결, 프론트에 예시 응답 제공. | DONE (2026-09-25, 6.1절 · 예시는 계약 예시이며 실제 응답 아님) |
 | BE-02 | BE-01 | 세션 생성·소유·만료, 첨부 임시 저장과 제한 설정. D-01/D-02 기록. 서로 다른 두 세션의 자료 접근 차단 확인. | DONE (2026-09-25, 6.2절 · 파일 읽기는 BE-03) |
 | BE-03 | BE-02 | 형식별 읽기·구간 위치·complete/partial/failed·사진 asset 제공. 손상/암호/스캔 파일 점검, 지원표 기록. 불확실 수치를 완료로 표시하지 않음. | DONE (2026-09-25, 6.3절 · OCR 없음, 문서 안 그림 추출 없음) |
-| BE-04 | BE-01, BE-02 | AI 작업 실행/상태/사용자 응답 API와 내부 함수 연결 지점 구현. 먼저 계약 예시로 확인하고 AG-03에서 실제 연결. 오래된 입력·중복 재개·만료 요청 처리. | TODO |
+| BE-04 | BE-01, BE-02 | AI 작업 실행/상태/사용자 응답 API와 내부 함수 연결 지점 구현. 먼저 계약 예시로 확인하고 AG-03에서 실제 연결. 오래된 입력·중복 재개·만료 요청 처리. | DONE (2026-09-25, 6.4절 · mock으로만 확인, 실제 AI 연결은 AG-03) |
 | BE-05 | BE-01, BE-02 | 문서/페이지/블록 저장·버전·수정안 적용·취소·복원 API. 출처 ID 유지, 예상 버전 검사, 중복 적용은 1회만, 트랜잭션 실패 시 원본 보존. | TODO |
 | BE-06 | BE-05, AG-07 | 문제 해결 상태·검증 버전·승인 조건 강제. 부분 검증에서 기존 문제 유지, 필수 누락 제외 불가. 배치 검사는 BE-08 연결 전 계약 예시로만 확인했다고 표시. | TODO |
 | BE-07 | BE-01, AG-04 | PDF/DOCX 생성 도구·템플릿 검증 후 D-03/D-06 기록. 한글·사진·1쪽/다쪽·DOCX 본문 편집성을 실제 파일로 비교. 특정 도구를 필수로 전제하지 않음. | TODO |
@@ -50,8 +50,8 @@
 | QA-02 | 세션 A/B 분리 | 백엔드 | 다른 세션 자료·사진·검색 접근 불가 | 부분 PASS (2026-09-25) — `tests/test_be02.py::test_other_owner_cannot_see_session`: 다른 소유자가 세션·자료 목록·작업 조회·삭제 시 404, 쿠키 없으면 401. 사진(asset)·검색은 아직 없어 미검증(BE-03 이후 재실행) |
 | QA-03 | 미지원·손상·암호 파일 | 백엔드 | 원인·보완·제외, 다른 자료 보존 | PASS (2026-09-25) — `tests/test_be03.py`: 미지원 .hwp 415, 암호 PDF failed+ENCRYPTED, 손상 DOCX/PDF/PNG failed+FILE_CORRUPT, 확장자-내용 불일치 failed, 빈 TXT failed+NO_USABLE_TEXT. 같은 업로드의 다른 파일은 정상 읽힘(`test_failed_file_does_not_block_others`). 각 경고에 action(보완·제외 안내) 포함 |
 | QA-04 | 불확실한 표·수치 | 백엔드 + Agent | partial, 확인 구간만 사용 | 부분 PASS (2026-09-25, 백엔드 몫) — 스캔 PDF·글자 없는 쪽은 partial+IMAGE_ONLY, usable_segment_ids에 글자 있는 구간만. 표 셀은 locator로 위치 보존. "수치가 불확실하다"는 판단은 Agent(AG-02) 몫 → 미실행 |
-| QA-07 | 자료/목적 변경 후 옛 점검 사용 | 백엔드 | 이전 확인 무효화 | 미실행 |
-| QA-11 | 오래된 수정안·중복 재개 | 백엔드 | 충돌 처리, 중복 반영 없음 | 미실행 |
+| QA-07 | 자료/목적 변경 후 옛 점검 사용 | 백엔드 | 이전 확인 무효화 | PASS (2026-09-25) — `tests/test_be04.py`: 입력 변경 후 옛 preflight로 drafts 요청 → 409 INPUT_REVISION_CONFLICT(`test_draft_requires_confirmation_and_matching_revision`); 점검 Job 도중 입력이 바뀌면 결과 폐기·failed(`test_preflight_job_fails_if_input_changed_while_running`) |
+| QA-11 | 오래된 수정안·중복 재개 | 백엔드 | 충돌 처리, 중복 반영 없음 | 부분 PASS (2026-09-25) — 같은 입력 버전의 진행 중 preflight/draft Job은 새로 만들지 않고 같은 Job 반환, Idempotency-Key 재전송은 최초 응답. 수정안(Proposal) 부분은 BE-05 후 |
 | QA-14 | 순서 변경과 사실 문장 변경 | 백엔드 + Agent | 검사 범위 구분, 둘 다 승인 무효화 | 미실행 |
 | QA-16 | 승인 API 우회 | 백엔드 | 미해결 필수/배치 문제 시 서버 차단 | 미실행 |
 | QA-17 | 승인 후 변경 | 백엔드 | 옛 승인으로 최신본 출력 불가 | 미실행 |
@@ -69,6 +69,7 @@
 | 2026-09-25 | BE-01 | 브랜치 feat/be-01-examples · handoff/api_examples_v1.1.json(신규), task_backend.md, task.md | 프론트 전달용 계약 예시 22개 작성(Session·Source·Job·Preflight·Document·Export·오류 8종). JSON 파싱 확인만 했고 실제 서버 응답 아님. BE-01 DONE | 프론트: handoff/api_examples_v1.1.json + contracts.md v1.1 전달. 팀: 계약 확인 ⑤ 추가(6.1-5) |
 | 2026-09-25 | BE-02 | 브랜치 feat/be-02-session · app/(신규 15파일), tests/test_be02.py, main.py, pyproject.toml(pytest dev), .env.example, plan.md 4절 | `uv run pytest` 17/17 PASS. 실서버(uvicorn main:app)에서 curl로 세션 생성→쿠키 조회 200→쿠키 없이 401→TXT 업로드 202→삭제 200 확인. 상세 6.2절 | 프론트: API 6개 실제 동작(6.2-1), 쿠키 필요(credentials 포함 호출). Agent: 없음. 팀: 계약 확인 ⑥⑦(6.2-3) |
 | 2026-09-25 | BE-03 | 브랜치 feat/be-03-parsers · app/parsers/(신규 5), app/services/reading.py·assets.py, app/routers/assets.py, app/db.py(v2), tests/test_be03.py, tests/fixtures/(옛 가짜 TXT 4), plan.md D-01 | `uv run pytest` 36/36. 실서버 가짜 PPTX 20슬라이드→segment 44, 가짜 스캔 PDF→partial+IMAGE_ONLY. BE-02 리뷰 3건 반영(6.3-0). 상세 6.3절 | 프론트: Source.asset_ids·warnings 형식, 읽기 결과는 폴링 후 GET sources. Agent(AG-02): 구간 입력 형태(6.3-5). 팀: 계약 확인 ⑨⑩⑪ |
+| 2026-09-25 | BE-04 | 브랜치 feat/be-04-ai-jobs · app/agent_bridge.py·agent_mock.py(신규), services/{preflights,documents,ai_jobs}.py, routers/{preflights,drafts,documents}.py, db.py(v3), tests/test_be04.py | `uv run pytest` 51/51. 실서버(가짜 자료): 업로드→선택→사전 점검 Job→확인→초안 Job→Document rev.1→세션 요약. 개발 DB v2→v3 마이그레이션 확인. 상세 6.4절 | **Agent에게 전달**: 6.4-3 함수 서명(app/agent_bridge.py) — AG-03에서 같은 서명으로 llm 구현. 프론트: preflights/drafts/documents API 실제 동작(mock). 팀: 계약 확인 ⑫⑬ |
 
 자료·시스템의 진위를 추정하여 정상 처리하지 않는다. 설명용 이미지 생성·OCR·장기 보관은 별도 범위가 정해지기 전 기본 작업에 추가하지 않는다.
 
@@ -230,6 +231,48 @@ BE-02에서 먼저 필요한 것: 접근 컨텍스트, Session, Brief, Source �
 **6.3-4 하지 않은 것** — OCR(prd 2절 MVP 제외), PDF/DOCX/PPTX 안 그림 추출(다음 단계), 등록 자료 `GET /sources`·적재(요청 항목), Segment 조회 API(계약에 없음, Agent는 `services/sources.segments_for_source`로 내부 사용), PPTX 노트.
 
 **6.3-5 요청** — 팀(계약): ⑨ `Source.asset_ids` 필드 추가 제안(화면이 자료→이미지를 잇는 방법이 계약에 없음) ⑩ 프론트가 구간 텍스트를 볼 API가 필요한지(자료 분석 전 "읽을 수 있는 구간·출처 위치" 표시용) ⑪ 등록 자료 `GET /sources` 적재 방식(누가·어떻게 등록하는지). Agent(AG-02): 구간 입력 형태는 `{segment_id, source_id, source_version, locator, text}` — 옛 `source_units{source_id, locator "N행", text}`와 다르므로 어댑터 필요.
+
+### 6.4 BE-04 구현 결과 (2026-09-25)
+
+**6.4-1 실제 동작하는 API** (mock Agent 기준, `/api/v1`)
+
+| API | 동작 | 검사·오류 |
+|---|---|---|
+| POST /sessions/{sid}/preflights | 202 Job(kind=preflight) → 백그라운드 분석 → Preflight 저장. 같은 입력 버전의 진행 중 Job이 있으면 그 Job 반환 | expected_input_revision ≠ 현재 → 409 INPUT_REVISION_CONFLICT. Job 도중 입력이 바뀌면 결과 폐기·failed |
+| GET /sessions/{sid}/preflights/{pid} | Preflight(facts 14·issues·recommendations·can_generate·confirmed_at) | 계약 확인 ⑤ 백엔드 제안 경로 |
+| POST /sessions/{sid}/drafts | preflight_id·input_revision·confirmed 검사 → confirmed_at 기록 → 202 Job(kind=draft) → Document rev.1 | confirmed=false 422 PREFLIGHT_NOT_CONFIRMED · can_generate=false 422 NO_USABLE_TEXT · 버전 불일치 409 · 문서 이미 있음 409 DOCUMENT_EXISTS(⑫) |
+| GET /sessions/{sid}/documents/{did} | 현재 버전 Document + validation/approval(BE-06까지 null) | |
+| GET /sessions/{sid} | document_summary 채움 | |
+
+can_generate = 텍스트 근거가 있는 선택 자료 ≥ 1(사용자 확인은 별도). Document.status는 사전 점검에 open blocker가 있으면 review_required, 없으면 draft(검증 BE-06 전 임시 규칙).
+
+**6.4-2 AI 결과 서버 검사** (AGENTS.md 4절) — segment_id·source_version이 선택 자료에 실제로 있는지, image 블록의 asset_id가 선택 자료 것인지, 블록 fact_ids가 이번 Preflight에 있는지, missing 사실에 값·근거가 없는지, 근거 없는 문단이 없는지(허용 문구 "추가 확인 필요"/"자료에서 확인되지 않음" 제외). 하나라도 어기면 저장하지 않고 Job failed AGENT_OUTPUT_INVALID(⑬). 자동 보정 없음. AGENT_MODE=llm인데 구현이 없으면 failed SERVICE_TEMPORARY_FAILURE — mock으로 대체하지 않음.
+
+**6.4-3 Agent에게 전달 — 연결 지점 함수 서명** (`app/agent_bridge.py`, AG-03에서 같은 서명으로 `app/agent_llm.py`의 `create_bridge(settings) -> AgentBridge` 구현)
+
+```python
+class AgentBridge(Protocol):
+    def analyze(self, request: AnalyzeRequest) -> AnalyzeResult | Awaitable[AnalyzeResult]   # 역할 ① 자료 분석·기획
+    def draft(self, request: DraftRequest) -> DraftResult | Awaitable[DraftResult]           # 역할 ② 초안 작성
+
+AnalyzeRequest(session_id, input_revision, brief: Brief, sources: list[SourceIn])
+SourceIn(source_id, source_version, kind, name, parse_status, segments: list[SegmentIn], asset_ids: list[str])
+SegmentIn(segment_id, locator: dict, text)                   # 글자를 읽은 구간. 이미지 자료는 segments=[]
+AnalyzeResult(facts: list[Fact], issues: list[Issue], recommendations: Recommendations)   # contracts.md 2절 모델
+DraftRequest(session_id, input_revision, brief, sources, preflight: PreflightOut)          # 사용자가 확인한 점검
+DraftResult(title: str, pages: list[Page])                   # Block에 fact_ids·evidence_refs, image는 asset_id
+AgentError(code, message, retryable)                         # 실패 통지. code는 contracts.md 오류 코드
+```
+- 동기·async 구현 모두 가능(실행기가 awaitable이면 이벤트 루프에서 돌림). 백그라운드 스레드에서 호출되므로 자체 루프를 만들지 않아도 됨.
+- 결과에는 서버가 넘긴 segment_id·asset_id·fact_id만 쓸 수 있다(6.4-2 검사). 요청 밖 자료·URL·경로를 만들지 않는다.
+- mock(`app/agent_mock.py`)은 "라벨: 값" 패턴만 읽는 가짜 구현. `field_key`는 옛 14개 키 이름을 그대로 써서 D-05 변환표에 맞추기 쉽게 함. 고정 문구는 전부 가짜("예시 회사"), 실제 회사 정보 없음(`test_mock_never_contains_real_company_terms`).
+- task_agent.md는 백엔드가 수정하지 않았다. 이 절을 Agent 담당에게 알린다.
+
+**6.4-4 확인** — `uv run pytest` 51/51(BE-04 15개: 사실/문제/can_generate, 충돌·필수 누락, 텍스트 없음 422, 오래된 입력 409, 중복 Job 반환, 실행 중 입력 변경 폐기, 없는 segment/asset 거부, AgentError 매핑, llm 미연결 failed, 동기 구현 호환, 미확인 422, 문서 rev.1·근거·asset·요약, blocker→review_required, 타 소유자 404, mock 실제 정보 없음). 실서버(가짜 자료) 전체 흐름 성공, 개발 DB v2→v3 마이그레이션 확인.
+
+**6.4-5 하지 않은 것** — 실제 LLM 호출·LangGraph·waiting_user 재개(AG-03), D-05 변환표(Agent 공동), 문서 편집·버전 증가·Proposal(BE-05), Validation/Issue 해결(BE-06), 사전 점검 재실행 시 기존 문서 영향 검사(계약 3절 "새 자료 추가 시 덮어쓰지 않음" — BE-05/06).
+
+**6.4-6 요청** — 팀(계약): ⑫ 세션에 문서가 이미 있을 때 drafts 재요청 처리(현재 409 DOCUMENT_EXISTS 임시 코드; 계약 3절 "전체 재생성으로 덮어쓰지 않음"과 맞춤) ⑬ AI 결과 검사 실패 코드(AGENT_OUTPUT_INVALID 임시, 계약 확인 ④와 같은 건). 프론트: `handoff/api_examples_v1.1.json`의 문서 조회 예시에 있는 validation 객체는 BE-06까지 null.
 
 ## 7. 첫 요청
 
