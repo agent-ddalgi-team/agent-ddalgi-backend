@@ -15,7 +15,7 @@
 | 작업 | 선행 | 구현할 것·완료 조건 | 상태 |
 |---|---|---|---|
 | BE-01 | 없음 | 기존 코드·브랜치·실행 명령·공통 타입·API 확인. Agent와 실제 파일별 담당 경계 기록. contracts.md와 기존 모델 연결, 프론트에 예시 응답 제공. | DONE (2026-09-25, 6.1절 · 예시는 계약 예시이며 실제 응답 아님) |
-| BE-02 | BE-01 | 세션 생성·소유·만료, 첨부 임시 저장과 제한 설정. D-01/D-02 기록. 서로 다른 두 세션의 자료 접근 차단 확인. | TODO |
+| BE-02 | BE-01 | 세션 생성·소유·만료, 첨부 임시 저장과 제한 설정. D-01/D-02 기록. 서로 다른 두 세션의 자료 접근 차단 확인. | DONE (2026-09-25, 6.2절 · 파일 읽기는 BE-03) |
 | BE-03 | BE-02 | 형식별 읽기·구간 위치·complete/partial/failed·사진 asset 제공. 손상/암호/스캔 파일 점검, 지원표 기록. 불확실 수치를 완료로 표시하지 않음. | TODO |
 | BE-04 | BE-01, BE-02 | AI 작업 실행/상태/사용자 응답 API와 내부 함수 연결 지점 구현. 먼저 계약 예시로 확인하고 AG-03에서 실제 연결. 오래된 입력·중복 재개·만료 요청 처리. | TODO |
 | BE-05 | BE-01, BE-02 | 문서/페이지/블록 저장·버전·수정안 적용·취소·복원 API. 출처 ID 유지, 예상 버전 검사, 중복 적용은 1회만, 트랜잭션 실패 시 원본 보존. | TODO |
@@ -47,7 +47,7 @@
 
 | ID | 검수 내용 | 확인 참여 | 기대 결과 | 결과 |
 |---|---|---|---|---|
-| QA-02 | 세션 A/B 분리 | 백엔드 | 다른 세션 자료·사진·검색 접근 불가 | 미실행 |
+| QA-02 | 세션 A/B 분리 | 백엔드 | 다른 세션 자료·사진·검색 접근 불가 | 부분 PASS (2026-09-25) — `tests/test_be02.py::test_other_owner_cannot_see_session`: 다른 소유자가 세션·자료 목록·작업 조회·삭제 시 404, 쿠키 없으면 401. 사진(asset)·검색은 아직 없어 미검증(BE-03 이후 재실행) |
 | QA-03 | 미지원·손상·암호 파일 | 백엔드 | 원인·보완·제외, 다른 자료 보존 | 미실행 |
 | QA-04 | 불확실한 표·수치 | 백엔드 + Agent | partial, 확인 구간만 사용 | 미실행 |
 | QA-07 | 자료/목적 변경 후 옛 점검 사용 | 백엔드 | 이전 확인 무효화 | 미실행 |
@@ -67,6 +67,7 @@
 |---|---|---|---|---|
 | 2026-09-25 | BE-01 | 브랜치 feat/be-01-inventory · task_backend.md, task.md (코드 변경 없음) | 옛 레포(C:\vscode\Backend_old, 커밋 e8fc52a) 56개 파일 읽음. 파일별 담당·이관 판단, API 연결표, 데이터 항목 목록 작성 → 6.1절. 프론트 예시 응답은 미완료(후속) | Agent: 6.1-5 요청 6건. 팀: 계약 확인 ①~④, 자료사용 허용기록 이관 |
 | 2026-09-25 | BE-01 | 브랜치 feat/be-01-examples · handoff/api_examples_v1.1.json(신규), task_backend.md, task.md | 프론트 전달용 계약 예시 22개 작성(Session·Source·Job·Preflight·Document·Export·오류 8종). JSON 파싱 확인만 했고 실제 서버 응답 아님. BE-01 DONE | 프론트: handoff/api_examples_v1.1.json + contracts.md v1.1 전달. 팀: 계약 확인 ⑤ 추가(6.1-5) |
+| 2026-09-25 | BE-02 | 브랜치 feat/be-02-session · app/(신규 15파일), tests/test_be02.py, main.py, pyproject.toml(pytest dev), .env.example, plan.md 4절 | `uv run pytest` 17/17 PASS. 실서버(uvicorn main:app)에서 curl로 세션 생성→쿠키 조회 200→쿠키 없이 401→TXT 업로드 202→삭제 200 확인. 상세 6.2절 | 프론트: API 6개 실제 동작(6.2-1), 쿠키 필요(credentials 포함 호출). Agent: 없음. 팀: 계약 확인 ⑥⑦(6.2-3) |
 
 자료·시스템의 진위를 추정하여 정상 처리하지 않는다. 설명용 이미지 생성·OCR·장기 보관은 별도 범위가 정해지기 전 기본 작업에 추가하지 않는다.
 
@@ -180,6 +181,29 @@ BE-02에서 먼저 필요한 것: 접근 컨텍스트, Session, Brief, Source �
 
 - Agent (AG-01): (a) AG 판단 9개 파일(agent.py, prompts 2, 스크립트 6)의 이관 여부 결정 (b) validators.py의 근거-원문 대조를 백엔드가 가져가도 되는지(AG-07 경계) (c) 계약 확인 ① Brief의 company_name_hint (d) 계약 확인 ④ AI 결과 형식 오류 코드 (e) D-05 변환표 공동 작성(옛 항목 단위 status → Fact 단위) (f) .env.example에 OPENAI_MODEL 추가 시점.
 - 팀(계약 원본): 계약 확인 ② Job 진행 필드 형식, ③ 추출 글자수 초과 코드, ⑤ Preflight 단독 조회 경로(`GET /sessions/{sid}/preflights/{pid}`)가 4절 표에 없음 — Job result_ref만으로 도달할지 경로를 추가할지. `docs/자료사용_허용기록.md`(R10 미확인)를 새 레포 어느 문서에 둘지.
+
+### 6.2 BE-02 구현 결과 (2026-09-25)
+
+**6.2-1 실제 동작하는 API** (`/api/v1`, 소유자 쿠키 `ddalgi_owner` 필요 — 프론트는 `credentials: 'include'`로 호출)
+
+| API | 동작 | 비고 |
+|---|---|---|
+| POST /sessions | Session 생성(201), 첫 호출에 HttpOnly 쿠키 발급 | Idempotency-Key 지원 |
+| GET /sessions/{sid} | 조회. 활동으로 치지 않음(만료 연장 없음) | document_summary는 BE-05까지 null |
+| DELETE /sessions/{sid} | closed + `private_runs/<sid>/` 삭제. 멱등 | 삭제 실패 시 `cleanup: pending` |
+| PATCH /sessions/{sid}/inputs | expected_input_revision 검사(409), brief·selected_source_ids 갱신, input_revision+1 | 세션에 없는 source_id → 404 |
+| POST /sessions/{sid}/sources | multipart `files`(+`kind`), 검사 후 저장, Job(kind=read, queued) 발급(202) | **읽기는 하지 않음** → parse_status=queued 고정(BE-03) |
+| GET /sessions/{sid}/sources | 세션 첨부 목록 | usable_segment_ids·warnings는 BE-03까지 빈 값 |
+| DELETE /sessions/{sid}/sources/{source_id}?expected_input_revision= | 세션 첨부 삭제. 선택 중이던 자료면 input_revision+1 | |
+| GET /sessions/{sid}/jobs/{jid} | 작업 조회. 활동으로 치지 않음 | progress 형식은 계약 확인 ② 대기 |
+
+접근 규칙: 쿠키 없음 → 401 UNAUTHORIZED / 남의 세션·없는 자원 → 404 RESOURCE_NOT_FOUND(존재 여부 숨김) / 닫힘·만료 → 410 SESSION_EXPIRED(details.status로 구분).
+
+**6.2-2 코드 위치** — `app/config.py`(설정·D-01/D-02 값), `app/db.py`(SQLite 4테이블), `app/models.py`(Pydantic, contracts.md 필드명), `app/errors.py`(오류 봉투·request_id), `app/access.py`(소유자 쿠키), `app/services/{sessions,sources,jobs,idempotency}.py`, `app/routers/{sessions,sources,jobs}.py`, `tests/test_be02.py`(17개). 실행 `uv run uvicorn main:app --host 127.0.0.1 --port 8000`, 시험 `uv run pytest`.
+
+**6.2-3 계약 확인 추가 요청** — ⑥ 요청 형식 오류(Pydantic 검증 실패)에 쓸 코드가 4절 표에 없어 `400 INVALID_REQUEST`로 임시 배정. ⑦ 같은 Idempotency-Key에 다른 본문일 때 "409"만 있고 코드가 없어 `IDEMPOTENCY_KEY_CONFLICT`로 임시 배정. ⑧ 세션당 파일 개수 초과를 `413 FILE_TOO_LARGE`로 냈는데 별도 코드가 나은지.
+
+**6.2-4 하지 않은 것** — 파일 내용 읽기·Segment(BE-03), 등록 자료 `GET /sources`(적재 방식 미정), 로그인(익명 브라우저 소유자), 만료 세션의 배경 정리 작업(만료는 접근 시점에 판정만 함; 정리 스케줄은 BE-09), 브라우저 실제 클릭 확인(프론트 FE 연동 시).
 
 ## 7. 첫 요청
 

@@ -48,7 +48,7 @@
 | 데이터 검사 | Pydantic | 기존 스키마 연결 필요 |
 | AI | 서버의 OpenAI API 호출, 역할별 프롬프트 | 사용 모델·호출 제한 미정 |
 | 흐름 | LangGraph, 필요한 기존 LangChain 코드 재사용 | 요청한 설계 기준; 설치·연동 미확인 |
-| 등록 자료 | 메타데이터 저장소와 파일 저장소, SQLite 후보 | 현재 구조 우선 확인 |
+| 등록 자료 | 메타데이터 저장소와 파일 저장소, SQLite 후보 | **결정(2026-09-25, BE-02)**: 메타데이터는 SQLite 파일(`private_runs/app.sqlite3`, 표준 sqlite3, ORM 없음), 파일 바이트는 `private_runs/<session_id>/`. 테이블은 필요한 작업에서 그때 추가(BE-02: sessions, sources, jobs, idempotency_keys). 등록 자료(scope=registered) 적재 방식은 미정 |
 | 검색 | 선택 자료 범위; 기존 Chroma가 있으면 재사용 검토 | 벡터 DB 새 구축은 필수 아님 |
 | 임시 데이터 | 세션 저장소·임시 검색·만료 정리 | 체크포인트·파생 문서까지 적용 |
 | 출력 | 문서 원본에서 PDF/DOCX 생성하는 어댑터 | 도구 미정; 실제 파일 검증 후 선택 |
@@ -57,8 +57,8 @@ Playwright와 python-docx는 필수 의존성으로 확정하지 않는다. Reac
 
 | 결정 ID | 결정할 것 | 담당·작업 |
 |---|---|---|
-| D-01 | 지원 형식·크기·개수 | 백엔드 BE-02/BE-03; TXT·텍스트 PDF·DOCX·PPTX·JPG/PNG는 후보 |
-| D-02 | 세션 만료 시간 | 백엔드 BE-02; 개발 제안은 무활동 120분/생성 후 24시간 중 빠른 때, 실제 운영 전 확정 |
+| D-01 | 지원 형식·크기·개수 | 백엔드 BE-02/BE-03; TXT·텍스트 PDF·DOCX·PPTX·JPG/PNG는 후보. **BE-02 적용값(2026-09-25)**: TXT/MD만, 파일당 10MB(실제 읽은 바이트 기준), 세션당 10개. `app/config.py`에서 설정. PDF/DOCX/PPTX/JPG/PNG는 BE-03에서 파서와 함께 추가 |
+| D-02 | 세션 만료 시간 | 백엔드 BE-02; 개발 제안은 무활동 120분/생성 후 24시간 중 빠른 때, 실제 운영 전 확정. **BE-02 적용값(2026-09-25)**: 제안값 그대로 `app/config.py` 설정(SESSION_IDLE_MINUTES, SESSION_MAX_HOURS). 상태 변경 요청만 활동으로 세고 GET 조회·작업 폴링은 연장하지 않음 |
 | D-03 | PDF/DOCX 도구 | 백엔드 BE-07; 한글·사진·편집성 비교 |
 | D-04 | 모델·호출 한도 | Agent AG-01; 실제 호출과 평가로 결정 |
 | D-05 | 기존 사실 스키마 연결 | BE-01 + AG-01; 상세 필드 보존 |
