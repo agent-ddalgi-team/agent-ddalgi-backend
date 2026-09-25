@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -238,3 +238,136 @@ class DraftCreate(BaseModel):
     preflight_id: str
     input_revision: int
     confirmed: bool
+
+
+# ---------------- 문서 수정 연산 8종 (contracts.md Document절 허용 목록) ----------------
+
+class OpReplaceBlockContent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    op: Literal["replace_block_content"]
+    block_id: str
+    content: dict[str, Any]
+
+
+class OpInsertBlock(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    op: Literal["insert_block"]
+    page_id: str
+    after_block_id: str | None
+    block: Block
+
+
+class OpDeleteBlock(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    op: Literal["delete_block"]
+    block_id: str
+
+
+class OpMoveBlock(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    op: Literal["move_block"]
+    block_id: str
+    target_page_id: str
+    after_block_id: str | None
+
+
+class OpInsertPage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    op: Literal["insert_page"]
+    after_page_id: str | None
+    page: Page
+
+
+class OpRenamePage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    op: Literal["rename_page"]
+    page_id: str
+    title: str = Field(min_length=1)
+
+
+class OpMovePage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    op: Literal["move_page"]
+    page_id: str
+    after_page_id: str | None
+
+
+class OpDeletePage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    op: Literal["delete_page"]
+    page_id: str
+
+
+Operation = Annotated[
+    OpReplaceBlockContent | OpInsertBlock | OpDeleteBlock | OpMoveBlock
+    | OpInsertPage | OpRenamePage | OpMovePage | OpDeletePage,
+    Field(discriminator="op"),
+]
+
+
+class DocumentPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int
+    operations: list[Operation] = Field(min_length=1)
+
+
+class DocumentChangeOut(BaseModel):
+    document_id: str
+    document_revision: int
+    input_revision: int
+    status: str
+    validation_job_id: str | None = None   # BE-06에서 채운다
+
+
+class RestoreBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int
+    restore_from_revision: int
+
+
+# ---------------- Proposal (contracts.md Proposal절 + 계약 확인 ⑰ rationale·candidates) ----------------
+
+class ProposalCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int
+    input_revision: int
+    target_block_ids: list[str] = Field(min_length=1)
+    instruction: str = Field(min_length=1)
+    kind: Literal["text", "structure", "image"]
+
+
+class Candidate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    candidate_id: str
+    label: str
+    changes: list[Operation]
+
+
+class ProposalOut(BaseModel):
+    proposal_id: str
+    document_id: str
+    base_document_revision: int
+    base_input_revision: int
+    target_block_ids: list[str]
+    kind: Literal["text", "structure", "image"]
+    instruction: str
+    changes: list[Operation]
+    rationale: str
+    candidates: list[Candidate] | None = None
+    status: Literal["proposed", "applied", "rejected", "stale"]
+    applied_revision: int | None = None
+    created_at: str
+    updated_at: str
+
+
+class ApplyBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int
+    selected_candidate_id: str | None = None
+
+
+class ProposalStatusOut(BaseModel):
+    proposal_id: str
+    status: Literal["proposed", "applied", "rejected", "stale"]
+    document_id: str
+    document_revision: int

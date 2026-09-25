@@ -9,7 +9,8 @@
     "①": "Brief에 company_name_hint를 넣을지 미정. 아래 예시에는 넣지 않았다.",
     "②": "Job의 진행 정보(progress) 필드 형식 미정. 아래는 백엔드 제안값이며 계약 확정 전이다.",
     "③": "추출 텍스트 글자수 초과 시 오류 코드 미정(FILE_TOO_LARGE 또는 별도 코드).",
-    "④": "AI 결과 형식 오류(옛 INVALID_OUTPUT)에 대응하는 코드 미정."
+    "④": "AI 결과 형식 오류(옛 INVALID_OUTPUT)에 대응하는 코드 미정.",
+    "⑭~⑳": "BE-05 임시 코드·필드·경로 — task_backend.md 6.5-6 참조 (INVALID_OPERATION, GET proposals/{pid}, rationale·candidates, PROPOSAL_STALE details.status, RESTORE_REFERENCE_INVALID, CANDIDATE_REQUIRED, UNSUPPORTED_PROPOSAL/NO_IMAGE_CANDIDATES)."
   },
   "common_rules": {
     "ids": "불투명 문자열. 형식에 의미를 두지 않는다.",
@@ -508,10 +509,127 @@
           "document_revision": 2,
           "input_revision": 2,
           "status": "review_required",
-          "validation_job_id": "job_demo_validate_01"
+          "validation_job_id": null
         }
       },
-      "_note": "전체 Document를 다시 내려줄지 요약만 줄지는 구현 시 결정. 예시는 요약형."
+      "_note": "BE-05 실제 응답(요약형). operations는 하나의 트랜잭션 — 하나라도 실패하면 422 INVALID_OPERATION(details.index/op/reason)이고 문서는 그대로. validation_job_id는 BE-06까지 null. replace_block_content는 content만 바꾸고 block_id·fact_ids·evidence_refs는 보존된다."
+    },
+    {
+      "name": "문서 수정 실패 (연산 오류 → 전체 무변경)",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/v1/sessions/sess_demo_01/documents/doc_demo_01",
+        "body": {"expected_revision": 2, "operations": [
+          {"op": "rename_page", "page_id": "page_01", "title": "바꿈"},
+          {"op": "move_block", "block_id": "block_02", "target_page_id": "page_01", "after_block_id": "block_02"}
+        ]}
+      },
+      "response": {
+        "http_status": 422,
+        "body": {
+          "error": {
+            "code": "INVALID_OPERATION",
+            "message": "move_block 연산을 적용할 수 없습니다: 자기 자신 뒤로 옮길 수 없습니다",
+            "retryable": false,
+            "details": {"index": 1, "op": "move_block", "reason": "자기 자신 뒤로 옮길 수 없습니다", "block_id": "block_02"},
+            "request_id": "req_demo_015"
+          }
+        }
+      },
+      "_note": "계약 확인 ⑭: 연산 실패 코드가 계약에 없어 임시 배정. 0번 rename_page도 적용되지 않는다(원자성)."
+    },
+    {
+      "name": "AI 편집안 요청 (Proposal 생성 Job)",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/sessions/sess_demo_01/documents/doc_demo_01/proposals",
+        "headers": {"Content-Type": "application/json", "Idempotency-Key": "idem_demo_020"},
+        "body": {"expected_revision": 2, "input_revision": 2, "target_block_ids": ["block_02"], "instruction": "문장을 간결하게", "kind": "text"}
+      },
+      "response": {
+        "http_status": 202,
+        "body": {"job_id": "job_demo_propose_01", "status": "queued", "kind": "propose", "session_id": "sess_demo_01", "created_at": "2026-09-25T09:20:00Z"}
+      },
+      "_note": "Job 완료 시 result_ref = {type: 'proposal', proposal_id, status: 'proposed' | 'stale'}. 생성만으로는 문서가 바뀌지 않는다."
+    },
+    {
+      "name": "편집안 조회",
+      "request": {"method": "GET", "path": "/api/v1/sessions/sess_demo_01/proposals/prop_demo_01"},
+      "response": {
+        "http_status": 200,
+        "body": {
+          "proposal_id": "prop_demo_01",
+          "document_id": "doc_demo_01",
+          "base_document_revision": 2,
+          "base_input_revision": 2,
+          "target_block_ids": ["block_02"],
+          "kind": "text",
+          "instruction": "문장을 간결하게",
+          "changes": [
+            {"op": "replace_block_content", "block_id": "block_02", "content": {"text": "예시 회사는 금속 표면처리 공정을 운영합니다."}}
+          ],
+          "rationale": "중복 표현을 줄였습니다. 새 사실은 넣지 않았습니다.",
+          "candidates": null,
+          "status": "proposed",
+          "applied_revision": null,
+          "created_at": "2026-09-25T09:20:05Z",
+          "updated_at": "2026-09-25T09:20:05Z"
+        }
+      },
+      "_note": "계약 확인 ⑯(조회 경로) ⑰(rationale·candidates·applied_revision 필드). kind=image면 changes=[]이고 candidates[{candidate_id,label,changes}]를 준다 — apply 때 selected_candidate_id 필수(422 CANDIDATE_REQUIRED)."
+    },
+    {
+      "name": "편집안 적용",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/sessions/sess_demo_01/proposals/prop_demo_01/apply",
+        "headers": {"Content-Type": "application/json", "Idempotency-Key": "idem_demo_021"},
+        "body": {"expected_revision": 2}
+      },
+      "response": {
+        "http_status": 200,
+        "body": {"document_id": "doc_demo_01", "document_revision": 3, "input_revision": 2, "status": "review_required", "validation_job_id": null}
+      },
+      "_note": "같은 Idempotency-Key·같은 본문 재전송은 이 응답을 그대로 돌려주고 revision을 다시 올리지 않는다(단, 소유자·세션·문서 접근 검사는 먼저 통과해야 함). 키 없이 재전송하면 409 PROPOSAL_STALE(details.status='applied')."
+    },
+    {
+      "name": "편집안 적용 거부 (기준 문서가 바뀜)",
+      "request": {"method": "POST", "path": "/api/v1/sessions/sess_demo_01/proposals/prop_demo_02/apply", "body": {"expected_revision": 3}},
+      "response": {
+        "http_status": 409,
+        "body": {
+          "error": {
+            "code": "PROPOSAL_STALE",
+            "message": "문서 또는 입력이 바뀌어 이 편집안은 적용할 수 없습니다. 다시 요청해 주세요.",
+            "retryable": false,
+            "details": {"status": "stale", "base_document_revision": 2, "current_revision": 3, "base_input_revision": 2, "current_input_revision": 2},
+            "request_id": "req_demo_022"
+          }
+        }
+      },
+      "_note": "편집안은 stale로 저장된 채 남는다. 문서가 새 버전이 될 때마다 이전 기준의 proposed 편집안은 자동으로 stale이 된다."
+    },
+    {
+      "name": "편집안 거부",
+      "request": {"method": "POST", "path": "/api/v1/sessions/sess_demo_01/proposals/prop_demo_03/reject"},
+      "response": {
+        "http_status": 200,
+        "body": {"proposal_id": "prop_demo_03", "status": "rejected", "document_id": "doc_demo_01", "document_revision": 3}
+      }
+    },
+    {
+      "name": "이전 버전으로 되돌리기",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/sessions/sess_demo_01/documents/doc_demo_01/restore",
+        "headers": {"Content-Type": "application/json", "Idempotency-Key": "idem_demo_023"},
+        "body": {"expected_revision": 3, "restore_from_revision": 1}
+      },
+      "response": {
+        "http_status": 200,
+        "body": {"document_id": "doc_demo_01", "document_revision": 4, "input_revision": 2, "status": "draft", "validation_job_id": null}
+      },
+      "_note": "과거 내용이 새 버전(4)으로 저장된다. 과거의 승인·검증 완료 상태는 부활하지 않는다. 복원할 버전이 지금은 없는 자료·사진을 참조하면 422 RESTORE_REFERENCE_INVALID(계약 확인 ⑲)."
     },
     {
       "name": "문서 수정 충돌",

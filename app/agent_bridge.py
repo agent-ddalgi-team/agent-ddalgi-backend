@@ -2,6 +2,7 @@
 
 역할 ① 자료 분석·기획: analyze(AnalyzeRequest) -> AnalyzeResult   (Preflight의 facts/issues/recommendations)
 역할 ② 초안 작성:      draft(DraftRequest)     -> DraftResult     (Document의 title/pages)
+역할 ② 편집 보조:      propose(ProposeRequest) -> ProposeResult   (Proposal의 changes — 적용 전 문서를 바꾸지 않는다)
 
 규칙
 - 구현은 동기 함수여도, async 함수여도 된다. 실행기(app/services/ai_jobs.py)가 awaitable이면 이벤트 루프에서 돌린다.
@@ -17,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from app.config import Settings
-from app.models import Brief, Fact, Issue, Page, PreflightOut, Recommendations
+from app.models import Brief, Candidate, Document, Fact, Issue, Operation, Page, PreflightOut, Recommendations
 
 
 # ---------------- 입력 ----------------
@@ -72,6 +73,26 @@ class DraftResult:
     pages: list[Page]
 
 
+@dataclass
+class ProposeRequest:
+    session_id: str
+    input_revision: int
+    brief: Brief
+    sources: list[SourceIn]
+    document: Document               # 기준 문서(현재 revision). 결과는 이 문서에 대한 연산이다.
+    target_block_ids: list[str]      # 사용자가 선택한 영역. 이 밖의 블록은 건드리지 않는다.
+    instruction: str
+    kind: str                        # text / structure / image
+
+
+@dataclass
+class ProposeResult:
+    changes: list[Operation]         # contracts.md 허용 연산 8종. target_block_ids 안에서만(삽입은 대상 바로 뒤·같은 페이지)
+    rationale: str                   # 사람이 읽을 이유. 근거 없는 새 주장을 넣지 않는다.
+    candidates: list[Candidate] | None = None   # kind=image: 후보 목록. 사용자가 고르기 전 문서를 바꾸지 않는다.
+    # 지원하지 않는 요청은 빈 changes로 성공 처리하지 말고 AgentError(UNSUPPORTED_PROPOSAL 등)를 던진다.
+
+
 class AgentError(Exception):
     """Agent가 알리는 실패. code는 contracts.md 오류 코드(AI_RATE_LIMIT, SERVICE_TEMPORARY_FAILURE 등)."""
 
@@ -89,6 +110,7 @@ class AgentUnavailable(Exception):
 class AgentBridge(Protocol):
     def analyze(self, request: AnalyzeRequest) -> AnalyzeResult | Awaitable[AnalyzeResult]: ...
     def draft(self, request: DraftRequest) -> DraftResult | Awaitable[DraftResult]: ...
+    def propose(self, request: ProposeRequest) -> ProposeResult | Awaitable[ProposeResult]: ...
 
 
 def get_bridge(settings: Settings) -> AgentBridge:

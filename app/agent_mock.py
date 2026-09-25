@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import re
 
-from app.agent_bridge import AnalyzeRequest, AnalyzeResult, DraftRequest, DraftResult, SourceIn
-from app.models import Block, EvidenceRef, Fact, Issue, Page, Recommendations
+from app.agent_bridge import (AgentError, AnalyzeRequest, AnalyzeResult, DraftRequest, DraftResult, ProposeRequest,
+                              ProposeResult, SourceIn)
+from app.models import (Block, Candidate, EvidenceRef, Fact, Issue, OpDeleteBlock, OpInsertBlock,
+                        OpReplaceBlockContent, Page, Recommendations)
 
 # 옛 상세 회사정보 14개 키(contracts/profile.schema.json). D-05 변환표를 만들 때 이름을 그대로 쓴다.
 FIELD_KEYS = ("company_name", "company_summary", "business_areas", "products_services", "technology",
@@ -142,3 +144,71 @@ class MockAgent:
             pages.append(Page(page_id=f"page_{p + 1:02d}", title=blocks[0].content["text"],
                               layout_key="text_photo" if p == 0 else "text", blocks=blocks))
         return DraftResult(title=title, pages=pages)
+
+    # ---------------- 편집 보조 (BE-05 연결 규격용 mock) ----------------
+    # text: 선택한 텍스트 블록마다 "(정리) " 표시 + 공백 정돈, 60자 넘으면 축약 표시. fact_ids·evidence_refs는 서버가 보존.
+    # structure: mock 미지원 → AgentError. 빈 수정안으로 성공 처리하지 않는다.
+    # image: 세션 asset마다 후보 1개. 후보 선택 전 문서는 바뀌지 않는다. asset이 없으면 AgentError.
+    TEXT_TYPES = {"heading", "paragraph", "list"}
+    IMAGE_TYPES = {"image", "image_placeholder"}
+    SHORTEN_AT = 60
+
+    async def propose(self, request: ProposeRequest) -> ProposeResult:
+        blocks = {b.block_id: (page, b) for page in request.document.pages for b in page.blocks}
+        targets = [blocks[bid] for bid in request.target_block_ids if bid in blocks]
+        if len(targets) != len(request.target_block_ids):
+            raise AgentError("UNSUPPORTED_PROPOSAL", "선택한 블록이 문서에 없습니다.")
+
+        if request.kind == "structure":
+            raise AgentError("UNSUPPORTED_PROPOSAL", "mock은 구성(structure) 편집안을 만들지 않습니다. 실제 Agent 연결(AG-05/06) 필요.")
+
+        if request.kind == "text":
+            if any(b.type not in self.TEXT_TYPES for _, b in targets):
+                raise AgentError("UNSUPPORTED_PROPOSAL", "문구 편집은 heading·paragraph·list 블록에만 요청할 수 있습니다.")
+            changes = []
+            for _, b in targets:
+                if b.type == "list":
+                    items = [self._tidy(i) for i in b.content["items"]]
+                    changes.append(OpReplaceBlockContent(op="replace_block_content", block_id=b.block_id,
+                                                         content={"items": items}))
+                elif b.type == "heading":
+                    changes.append(OpReplaceBlockContent(op="replace_block_content", block_id=b.block_id,
+                                                         content={"text": self._tidy(b.content["text"]),
+                                                                  "level": b.content["level"]}))
+                else:
+                    changes.append(OpReplaceBlockContent(op="replace_block_content", block_id=b.block_id,
+                                                         content={"text": self._tidy(b.content["text"])}))
+            return ProposeResult(changes=changes,
+                                 rationale="(mock) 문장 공백을 정돈하고 긴 문장은 축약 표시했습니다. 새 사실은 넣지 않았습니다.")
+
+        # kind == image
+        if any(b.type not in self.IMAGE_TYPES for _, b in targets):
+            raise AgentError("UNSUPPORTED_PROPOSAL", "사진 편집은 image·image_placeholder 블록에만 요청할 수 있습니다.")
+        asset_ids = [a for src in request.sources for a in src.asset_ids]
+        if not asset_ids:
+            raise AgentError("NO_IMAGE_CANDIDATES", "이 세션에 쓸 수 있는 사진이 없습니다. 사진을 올리거나 자리를 비워 두세요.")
+        candidates: list[Candidate] = []
+        for n, asset_id in enumerate(asset_ids, start=1):
+            ops = []
+            for page, b in targets:
+                image_content = {"asset_id": asset_id, "alt": "자료 사진", "caption": "자료 사진", "fit": "contain"}
+                if b.type == "image":
+                    ops.append(OpReplaceBlockContent(op="replace_block_content", block_id=b.block_id, content=image_content))
+                else:
+                    # placeholder → image는 type이 바뀌므로 지우고 같은 자리에 넣는다.
+                    idx = page.blocks.index(b)
+                    after = page.blocks[idx - 1].block_id if idx > 0 else None
+                    ops.append(OpDeleteBlock(op="delete_block", block_id=b.block_id))
+                    ops.append(OpInsertBlock(op="insert_block", page_id=page.page_id, after_block_id=after,
+                                             block=Block(block_id=f"{b.block_id}_img{n}", type="image", content=image_content)))
+            candidates.append(Candidate(candidate_id=f"cand_{n:02d}", label=f"사진 후보 {n}", changes=ops))
+        return ProposeResult(changes=[], rationale="(mock) 세션 사진마다 후보를 만들었습니다. 고르기 전에는 문서가 바뀌지 않습니다.",
+                             candidates=candidates)
+
+    def _tidy(self, text: str) -> str:
+        tidy = " ".join(text.split())
+        if tidy.startswith("(정리) "):
+            tidy = tidy[len("(정리) "):]
+        if len(tidy) > self.SHORTEN_AT:
+            tidy = tidy[: self.SHORTEN_AT - 1] + "…"
+        return "(정리) " + tidy

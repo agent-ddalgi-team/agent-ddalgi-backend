@@ -55,10 +55,10 @@ def patch_inputs(request: Request, sid: str, body: InputsPatch,
     owner = require_owner(request)
     digest = idempotency.body_hash(body.model_dump())
     with connect(settings.db_path) as conn:
+        row = sessions.load_active(conn, owner, sid)  # 멱등 재전송도 소유자·세션 검사를 먼저 통과해야 한다
         replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest)
         if replay is not None:
             return replay
-        row = sessions.load_active(conn, owner, sid)
         if body.expected_input_revision != row["input_revision"]:
             raise ApiError(
                 409, "INPUT_REVISION_CONFLICT",

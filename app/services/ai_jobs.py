@@ -15,11 +15,12 @@ from collections.abc import Callable
 from typing import Any
 
 from app.agent_bridge import (AgentError, AgentUnavailable, AnalyzeRequest, AnalyzeResult, DraftRequest,
-                              DraftResult, SourceIn, get_bridge)
+                              DraftResult, ProposeRequest, ProposeResult, SourceIn, get_bridge)
 from app.config import Settings
 from app.db import connect
-from app.models import Brief, Page
-from app.services import documents, jobs, preflights
+from app.models import Brief, Document, Operation, Page
+from app.services import documents, jobs, preflights, proposals, refs
+from app.services.doc_ops import OpError, apply_operations, touched_block_ids
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +141,87 @@ def run_preflight_job(settings: Settings, session_id: str, job_id: str, input_re
         logger.exception("preflight job crashed: %s", job_id)
         with connect(settings.db_path) as conn:
             jobs.fail(conn, job_id, "INTERNAL_ERROR", "사전 점검 작업이 실패했습니다.", True)
+
+
+def validate_propose_ops(ops: list[Operation], document: Document, target_block_ids: list[str], kind: str,
+                         session_refs: refs.SessionRefs) -> str | None:
+    """편집안 연산이 선택 영역 안에만 머무르고, 적용 가능하며, 참조가 세션에 있는지."""
+    targets = set(target_block_ids)
+    page_of = {b.block_id: p.page_id for p in document.pages for b in p.blocks}
+    target_pages = {page_of[t] for t in targets if t in page_of}
+    for op in ops:
+        if op.op in ("insert_page", "rename_page", "move_page", "delete_page"):
+            if kind != "structure":
+                return f"kind={kind}에서 페이지 연산은 허용되지 않음: {op.op}"
+        elif op.op == "insert_block":
+            if op.page_id not in target_pages or (op.after_block_id is not None and op.after_block_id not in targets
+                                                  and not op.after_block_id.startswith(tuple(f"{t}_" for t in targets))):
+                return f"선택 영역 밖에 삽입: {op.block.block_id}"
+    if (outside := touched_block_ids(ops) - targets):
+        return f"선택 영역 밖 블록을 건드림: {sorted(outside)}"
+    try:
+        new_pages = apply_operations(document.pages, ops)
+    except OpError as exc:
+        return f"적용 불가 연산 [{exc.index}] {exc.op}: {exc.reason}"
+    return refs.check_pages(new_pages, session_refs)
+
+
+def run_propose_job(settings: Settings, session_id: str, job_id: str, input_revision: int, document_id: str,
+                    base_revision: int, target_block_ids: list[str], instruction: str, kind: str) -> None:
+    try:
+        with connect(settings.db_path) as conn:
+            row, err = _load_session_for_job(conn, session_id, input_revision)
+            if err:
+                jobs.fail(conn, job_id, *err)
+                return
+            jobs.set_progress(conn, job_id, "proposing", "편집안을 만드는 중")
+            brief = Brief.model_validate_json(row["brief_json"])
+            sources = preflights.build_sources(conn, session_id, json.loads(row["selected_source_ids"]))
+            document = documents.get_current(conn, session_id, document_id)
+        if document.document_revision != base_revision:
+            with connect(settings.db_path) as conn:
+                jobs.fail(conn, job_id, "DOCUMENT_REVISION_CONFLICT", "편집안을 만들기 전에 문서가 바뀌었습니다. 다시 요청해 주세요.", False)
+            return
+        try:
+            bridge = get_bridge(settings)
+            result: ProposeResult = _run(bridge.propose, ProposeRequest(
+                session_id, input_revision, brief, sources, document, list(target_block_ids), instruction, kind))
+        except Exception as exc:
+            with connect(settings.db_path) as conn:
+                _fail_agent(conn, job_id, exc)
+            return
+        with connect(settings.db_path) as conn:
+            session_refs = refs.load(conn, session_id)
+            if result.candidates is not None:
+                if not result.candidates:
+                    problem = "후보 목록이 비어 있음"
+                else:
+                    problem = next((p for c in result.candidates
+                                    if (p := validate_propose_ops(c.changes, document, target_block_ids, kind, session_refs))), None)
+                    if problem is None and len({c.candidate_id for c in result.candidates}) != len(result.candidates):
+                        problem = "candidate_id 중복"
+            elif not result.changes:
+                problem = "빈 편집안"
+            else:
+                problem = validate_propose_ops(result.changes, document, target_block_ids, kind, session_refs)
+            if problem:
+                logger.error("agent propose output rejected (%s): %s", job_id, problem)
+                jobs.fail(conn, job_id, "AGENT_OUTPUT_INVALID", "AI 편집안이 문서·자료와 맞지 않아 저장하지 않았습니다.", True)
+                return
+            # 편집안을 만드는 동안 문서나 입력이 바뀌었으면 stale로 저장한다(기준이 달라진 편집안은 적용 불가).
+            current = documents.get_current(conn, session_id, document_id)
+            session_now = conn.execute("SELECT status, input_revision FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+            stale = (current.document_revision != base_revision or session_now["input_revision"] != input_revision
+                     or session_now["status"] != "active")
+            proposal_id = proposals.save(conn, session_id, document_id, base_revision, input_revision, list(target_block_ids),
+                                         kind, instruction, result.changes, result.rationale, result.candidates,
+                                         "stale" if stale else "proposed")
+            jobs.succeed(conn, job_id, {"type": "proposal", "proposal_id": proposal_id,
+                                        "status": "stale" if stale else "proposed"})
+    except Exception:
+        logger.exception("propose job crashed: %s", job_id)
+        with connect(settings.db_path) as conn:
+            jobs.fail(conn, job_id, "INTERNAL_ERROR", "편집안 작업이 실패했습니다.", True)
 
 
 def run_draft_job(settings: Settings, session_id: str, job_id: str, input_revision: int, preflight_id: str) -> None:
