@@ -1,7 +1,9 @@
 """SQLite 저장소. 표준 sqlite3 모듈만 쓰고 ORM은 없다.
 
-테이블은 BE-02에 필요한 4개만 만든다(sessions, sources, jobs, idempotency_keys).
-이후 작업(BE-03~)에서 필요한 테이블·컬럼을 그때 추가하고 plan.md 4절에 기록한다.
+스키마 버전은 PRAGMA user_version으로 관리한다.
+- v1 (BE-02): sessions, sources(session_id NOT NULL, stored_path 절대경로), jobs, idempotency_keys
+- v2 (BE-03): sources.session_id nullable(등록 자료용) + scope CHECK, sources.warnings_json,
+              stored_path를 private_runs 기준 상대경로로, segments·assets 테이블 추가
 시간은 모두 UTC ISO 8601 문자열로 저장한다.
 """
 from __future__ import annotations
@@ -10,6 +12,8 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -27,11 +31,12 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS ix_sessions_owner ON sessions(owner_id);
 
+-- 등록 자료(scope=registered)는 세션이 없다. 세션 자료는 반드시 세션이 있다.
 CREATE TABLE IF NOT EXISTS sources (
     source_id       TEXT PRIMARY KEY,
-    session_id      TEXT NOT NULL REFERENCES sessions(session_id),
+    session_id      TEXT REFERENCES sessions(session_id),
     source_version  INTEGER NOT NULL,
-    scope           TEXT NOT NULL,                    -- registered / session (BE-02는 session만)
+    scope           TEXT NOT NULL,                    -- registered / session
     name            TEXT NOT NULL,
     mime_type       TEXT NOT NULL,
     size_bytes      INTEGER NOT NULL,
@@ -39,13 +44,48 @@ CREATE TABLE IF NOT EXISTS sources (
     parse_status    TEXT NOT NULL,                    -- queued / reading / complete / partial / failed
     text_available  INTEGER NOT NULL,
     image_available INTEGER NOT NULL,
-    stored_path     TEXT NOT NULL,                    -- 서버 내부 경로. 응답에 넣지 않는다.
+    stored_path     TEXT NOT NULL,                    -- private_runs 기준 상대경로. 응답에 넣지 않는다.
     content_hash    TEXT NOT NULL,
+    warnings_json   TEXT NOT NULL DEFAULT '[]',
+    created_at      TEXT NOT NULL,
+    expires_at      TEXT,
+    deleted_at      TEXT,
+    CHECK ((scope = 'session' AND session_id IS NOT NULL) OR (scope = 'registered' AND session_id IS NULL))
+);
+CREATE INDEX IF NOT EXISTS ix_sources_session ON sources(session_id);
+
+-- 파서가 만든 근거 구간. EvidenceRef.segment_id가 가리키는 대상.
+CREATE TABLE IF NOT EXISTS segments (
+    segment_id      TEXT PRIMARY KEY,
+    source_id       TEXT NOT NULL REFERENCES sources(source_id),
+    source_version  INTEGER NOT NULL,
+    session_id      TEXT,
+    ordinal         INTEGER NOT NULL,                 -- 자료 안 순서
+    locator_json    TEXT NOT NULL,                    -- {"line_start","line_end"} / {"page"} / {"slide","shape"} ...
+    text            TEXT NOT NULL,
+    created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_segments_source ON segments(source_id, ordinal);
+
+-- 화면·출력에 쓰는 이미지. BE-03은 업로드한 이미지 파일만 asset으로 만든다.
+CREATE TABLE IF NOT EXISTS assets (
+    asset_id        TEXT PRIMARY KEY,
+    source_id       TEXT NOT NULL REFERENCES sources(source_id),
+    source_version  INTEGER NOT NULL,
+    scope           TEXT NOT NULL,
+    session_id      TEXT,
+    origin          TEXT NOT NULL,                    -- source_image / user_upload / generated_illustration
+    mime_type       TEXT NOT NULL,
+    width           INTEGER NOT NULL,
+    height          INTEGER NOT NULL,
+    content_hash    TEXT NOT NULL,
+    status          TEXT NOT NULL,                    -- processing / ready / failed
+    stored_path     TEXT NOT NULL,                    -- private_runs 기준 상대경로
     created_at      TEXT NOT NULL,
     expires_at      TEXT,
     deleted_at      TEXT
 );
-CREATE INDEX IF NOT EXISTS ix_sources_session ON sources(session_id);
+CREATE INDEX IF NOT EXISTS ix_assets_session ON assets(session_id);
 
 CREATE TABLE IF NOT EXISTS jobs (
     job_id          TEXT PRIMARY KEY,
@@ -73,17 +113,61 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
 """
 
 
-def init_db(db_path: Path) -> None:
+def _columns(conn: sqlite3.Connection, table: str) -> list[str]:
+    return [row[1] for row in conn.execute(f"PRAGMA table_info({table})")]
+
+
+def _relativize(stored_path: str, private_runs_dir: Path, session_id: str | None) -> str:
+    """v1의 절대경로를 private_runs 기준 상대경로로 바꾼다. 기준 폴더 밖이면 <session_id>/<파일명>으로 추정."""
+    path = Path(stored_path)
+    try:
+        return path.resolve().relative_to(private_runs_dir.resolve()).as_posix()
+    except ValueError:
+        return f"{session_id or 'registered'}/{path.name}"
+
+
+def _migrate_v1_to_v2(conn: sqlite3.Connection, private_runs_dir: Path) -> None:
+    """sources를 재생성한다(SQLite는 NOT NULL 해제·CHECK 추가를 ALTER로 못 한다). 행은 보존한다."""
+    rows = conn.execute("SELECT * FROM sources").fetchall()
+    conn.execute("ALTER TABLE sources RENAME TO sources_v1")
+    conn.execute("DROP INDEX IF EXISTS ix_sources_session")
+    conn.executescript(SCHEMA)  # 새 sources(및 나머지 IF NOT EXISTS) 생성
+    for r in rows:
+        conn.execute(
+            "INSERT INTO sources (source_id, session_id, source_version, scope, name, mime_type, size_bytes, kind, "
+            "parse_status, text_available, image_available, stored_path, content_hash, warnings_json, created_at, "
+            "expires_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?)",
+            (r["source_id"], r["session_id"], r["source_version"], r["scope"], r["name"], r["mime_type"],
+             r["size_bytes"], r["kind"], r["parse_status"], r["text_available"], r["image_available"],
+             _relativize(r["stored_path"], private_runs_dir, r["session_id"]), r["content_hash"],
+             r["created_at"], r["expires_at"], r["deleted_at"]),
+        )
+    conn.execute("DROP TABLE sources_v1")
+
+
+def init_db(db_path: Path, private_runs_dir: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(db_path) as conn:
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.executescript(SCHEMA)
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        has_sources = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sources'").fetchone() is not None
+        if version == 0 and has_sources and "warnings_json" not in _columns(conn, "sources"):
+            _migrate_v1_to_v2(conn, private_runs_dir)
+        else:
+            conn.executescript(SCHEMA)
+        conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        conn.commit()
+    finally:
+        conn.close()
 
 
 @contextmanager
 def connect(db_path: Path) -> Iterator[sqlite3.Connection]:
     """요청마다 새 연결을 연다. 예외가 나면 롤백, 정상이면 커밋한다."""
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
     try:

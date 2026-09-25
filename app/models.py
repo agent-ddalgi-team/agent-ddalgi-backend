@@ -83,6 +83,8 @@ class SourceOut(BaseModel):
     text_available: bool
     image_available: bool
     usable_segment_ids: list[str] = Field(default_factory=list)
+    # 계약 확인 ⑨: contracts.md Source에는 없는 필드. 화면이 자료→이미지를 잇기 위해 추가(백엔드 제안).
+    asset_ids: list[str] = Field(default_factory=list)
     warnings: list[SourceWarning] = Field(default_factory=list)
     expires_at: str | None
 

@@ -111,6 +111,8 @@ def close(conn: sqlite3.Connection, settings: Settings, owner_id: str, session_i
     closed_at = to_iso(now())
     conn.execute("UPDATE sessions SET status='closed', closed_at=? WHERE session_id=?", (closed_at, session_id))
     conn.execute("UPDATE sources SET deleted_at=? WHERE session_id=? AND deleted_at IS NULL", (closed_at, session_id))
+    conn.execute("UPDATE assets SET deleted_at=? WHERE session_id=? AND deleted_at IS NULL", (closed_at, session_id))
+    conn.execute("DELETE FROM segments WHERE session_id=?", (session_id,))
 
     cleanup = "done"
     directory = session_dir(settings, session_id)
