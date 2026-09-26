@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+{#- 회사소개서 템플릿 v0 (BE-07, D-06). 이 파일을 바꾸면 app/services/layout_checks.py의 TEMPLATE_VERSION을 올린다.
+    모든 문서 값은 Jinja2 autoescape로 이스케이프된다. 외부 리소스 없음(CSP default-src 'none'), 폰트·이미지는 data URI. -#}
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; script-src 'nonce-{{ nonce }}'">
+<title>{{ title }}</title>
+<style>
+@font-face { font-family: "{{ font_family }}"; font-weight: 400; font-style: normal; src: url("data:font/ttf;base64,{{ font_regular_b64 }}") format("truetype"); }
+@font-face { font-family: "{{ font_family }}"; font-weight: 700; font-style: normal; src: url("data:font/ttf;base64,{{ font_bold_b64 }}") format("truetype"); }
+@page { size: {{ page_size }}; margin: {{ margin_mm }}mm; }
+html, body { margin: 0; padding: 0; background: #fff; }
+body { font-family: "{{ font_family }}", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif; font-size: {{ base_font_pt }}pt;
+       line-height: 1.55; color: #111; width: {{ content_w_mm }}mm; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+section.page { width: {{ content_w_mm }}mm; box-sizing: border-box; padding-top: 0.1mm; }
+section.page + section.page { break-before: page; page-break-before: always; }
+.page-label { font-size: 8pt; color: #8a8a8a; text-align: right; margin: 0 0 3mm 0; }
+h1, h2, h3 { font-weight: 700; line-height: 1.3; margin: 0 0 4mm 0; break-after: avoid; page-break-after: avoid; }
+h1 { font-size: 20pt; } h2 { font-size: 14pt; margin-top: 2mm; } h3 { font-size: 12pt; margin-top: 1mm; }
+p { margin: 0 0 3mm 0; white-space: pre-wrap; word-break: keep-all; overflow-wrap: anywhere; }
+ul { margin: 0 0 3mm 0; padding-left: 6mm; }
+li { margin: 0 0 1mm 0; word-break: keep-all; overflow-wrap: anywhere; }
+figure { margin: 2mm 0 4mm 0; text-align: center; break-inside: avoid; page-break-inside: avoid; }
+figure img { display: block; margin: 0 auto; }
+figure img.contain { max-width: {{ content_w_mm }}mm; max-height: {{ image_max_h_mm }}mm; width: auto; height: auto; }
+figure img.crop { width: {{ content_w_mm }}mm; height: {{ image_crop_h_mm }}mm; object-fit: cover; }
+figcaption { font-size: 9pt; color: #555; margin-top: 1.5mm; word-break: keep-all; }
+.box { box-sizing: border-box; min-height: 30mm; margin: 2mm 0 4mm 0; padding: 6mm; border: 0.5mm dashed #9a9a9a;
+       color: #666; text-align: center; break-inside: avoid; page-break-inside: avoid; word-break: keep-all; }
+.box.broken { border-color: #c0392b; color: #a93226; }
+.box .box-title { font-weight: 700; display: block; margin-bottom: 1mm; }
+</style>
+</head>
+<body>
+{%- for page in pages %}
+<section class="page" data-page-id="{{ page.page_id }}">
+  <div class="page-label">{{ loop.index }} / {{ page.title }}</div>
+{%- for b in page.blocks %}
+{%- if b.type == "heading" %}
+  <h{{ b.level }} class="blk" data-block-id="{{ b.block_id }}">{{ b.text }}</h{{ b.level }}>
+{%- elif b.type == "paragraph" %}
+  <p class="blk" data-block-id="{{ b.block_id }}">{{ b.text }}</p>
+{%- elif b.type == "list" %}
+  <ul class="blk" data-block-id="{{ b.block_id }}">{% for item in b.list_items %}<li>{{ item }}</li>{% endfor %}</ul>
+{%- elif b.type == "image" %}
+  <figure class="blk" data-block-id="{{ b.block_id }}"><img class="{{ b.fit }}" src="data:{{ b.mime_type }};base64,{{ b.data_b64 }}" alt="{{ b.alt }}">{% if b.caption %}<figcaption>{{ b.caption }}</figcaption>{% endif %}</figure>
+{%- elif b.type == "broken_image" %}
+  <div class="blk box broken" data-block-id="{{ b.block_id }}"><span class="box-title">[이미지를 열 수 없음]</span>{{ b.asset_id }} ({{ b.reason }}){% if b.caption %}<br>{{ b.caption }}{% endif %}</div>
+{%- elif b.type == "image_placeholder" %}
+  <div class="blk box placeholder" data-block-id="{{ b.block_id }}"><span class="box-title">[사진 자리]</span>{{ b.description }}</div>
+{%- endif %}
+{%- endfor %}
+</section>
+{%- endfor %}
+<script nonce="{{ nonce }}">
+(function () {
+  // 배치 측정(overflow 검사). 문서 값은 읽기만 하고 실행하지 않는다. load 이벤트와 폰트 로드(fonts.ready) 뒤에 재고,
+  // 결과 JSON을 body 끝에 붙여 --dump-dom으로 회수한다(--virtual-time-budget이 이 시점까지 기다리게 한다).
+  var PX_PER_MM = 96 / 25.4;
+  var limit = {{ content_h_mm }} * PX_PER_MM;
+  function measure() {
+    var out = { limit_px: limit, fonts_ready: document.fonts.check('{{ base_font_pt }}pt "{{ font_family }}"') && document.fonts.check('bold {{ base_font_pt }}pt "{{ font_family }}"'),
+                fonts_status: document.fonts.status, pages: [] };
+    var pages = document.querySelectorAll("section.page");
+    for (var i = 0; i < pages.length; i++) {
+      var pg = pages[i];
+      var pgRect = pg.getBoundingClientRect();
+      var top = pgRect.top;
+      var bottom = pgRect.bottom;
+      var first = null;
+      var blocks = pg.querySelectorAll(".blk");
+      for (var j = 0; j < blocks.length; j++) {
+        var r = blocks[j].getBoundingClientRect();
+        if (r.bottom > bottom) { bottom = r.bottom; }
+        if (first === null && r.bottom - top > limit + 0.5) { first = blocks[j].getAttribute("data-block-id"); }
+      }
+      var height = bottom - top;
+      out.pages.push({ page_id: pg.getAttribute("data-page-id"), height_px: height, overflow: height > limit + 0.5,
+                       excess_px: Math.max(0, height - limit), first_overflow_block_id: first });
+    }
+    var el = document.createElement("script");
+    el.type = "application/json";
+    el.id = "be07-measure";
+    el.textContent = JSON.stringify(out).replace(/</g, "\\u003c");
+    document.body.appendChild(el);
+    document.documentElement.setAttribute("data-be07-measured", "1");
+  }
+  function whenFonts() { document.fonts.ready.then(measure, measure); }
+  if (document.readyState === "complete") { whenFonts(); } else { window.addEventListener("load", whenFonts); }
+})();
+</script>
+</body>
+</html>

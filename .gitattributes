@@ -1,2 +1,4 @@
 # 테스트 fixture는 바이트 그대로(sha256 검증 대상). 줄바꿈 변환 금지.
 tests/fixtures/** -text
+app/templates/fonts/*.ttf -text
+app/templates/export/*.html text eol=lf
