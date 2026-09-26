@@ -102,12 +102,17 @@
               "text_available": true,
               "image_available": false,
               "usable_segment_ids": ["seg_reg_01_0001", "seg_reg_01_0002"],
+              "asset_ids": [],
               "warnings": [],
-              "expires_at": null
+              "expires_at": null,
+              "document_date": "2026-08-20",
+              "use_as_company_evidence": true,
+              "is_mock": false
             }
           ]
         }
-      }
+      },
+      "_note": "등록 자료는 scripts/import_registered.py(백엔드 CLI, 계약 확인 ⑪ 제안값)로 적재된다. document_date·use_as_company_evidence·is_mock은 계약 확인 ㉑(백엔드 제안). use_as_company_evidence=false 자료는 목록에는 보이지만 selected_source_ids에 넣으면 404, 사전 점검·근거에서 제외된다. mock 자료는 name이 [MOCK]로 시작하고 is_mock=true."
     },
     {
       "name": "세션 자료 업로드 (비동기 읽기 시작)",

@@ -6,6 +6,7 @@
               stored_path를 private_runs 기준 상대경로로, segments·assets 테이블 추가
 - v3 (BE-04): preflights, documents + document_revisions(처음부터 버전 구조), jobs.input_revision
 - v4 (BE-05): proposals, document_revisions.origin / source_ref
+- v5 (등록 자료 적재): sources·segments·assets에 등록 자료 메타 컬럼, registered_imports(적재 이력)
 시간은 모두 UTC ISO 8601 문자열로 저장한다.
 """
 from __future__ import annotations
@@ -15,7 +16,22 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
+
+# v5: 등록 자료 적재용 컬럼. 세션 업로드 자료에서는 NULL/기본값이다.
+V5_COLUMNS: dict[str, list[tuple[str, str]]] = {
+    "sources": [
+        ("origin_group", "TEXT"), ("document_date", "TEXT"), ("document_date_verified", "INTEGER"),
+        ("date_from_filename", "TEXT"), ("extraction_method", "TEXT"),
+        ("use_as_company_evidence", "INTEGER NOT NULL DEFAULT 1"),
+        ("hash_verified", "INTEGER"), ("hash_note", "TEXT"), ("is_mock", "INTEGER NOT NULL DEFAULT 0"),
+        ("imported_at", "TEXT"), ("note", "TEXT"),
+    ],
+    "segments": [("chunk_id", "TEXT"), ("evidence_status", "TEXT"), ("document_date", "TEXT"),
+                 ("extraction_method", "TEXT")],
+    "assets": [("photo_id", "TEXT"), ("caption_candidate", "TEXT"), ("selected_as_candidate", "INTEGER"),
+               ("approved_for_external_use", "INTEGER"), ("photo_locator_json", "TEXT")],
+}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -160,6 +176,16 @@ CREATE TABLE IF NOT EXISTS proposals (
 );
 CREATE INDEX IF NOT EXISTS ix_proposals_document ON proposals(document_id, status);
 
+-- 등록 자료 적재 이력(scripts/import_registered.py). 원문·경로는 넣지 않고 건수만 남긴다.
+CREATE TABLE IF NOT EXISTS registered_imports (
+    import_id       TEXT PRIMARY KEY,
+    bundle_label    TEXT NOT NULL,                    -- 묶음 루트 폴더 이름의 해시(경로 비노출)
+    with_mock       INTEGER NOT NULL,
+    dry_run         INTEGER NOT NULL,
+    summary_json    TEXT NOT NULL,                    -- {"added": n, "skipped": {...}, "segments": n, "assets": n}
+    created_at      TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS idempotency_keys (
     idem_key        TEXT NOT NULL,
     owner_id        TEXT NOT NULL,
@@ -225,6 +251,12 @@ def init_db(db_path: Path, private_runs_dir: Path) -> None:
         if "origin" not in _columns(conn, "document_revisions"):
             conn.execute("ALTER TABLE document_revisions ADD COLUMN origin TEXT")
             conn.execute("ALTER TABLE document_revisions ADD COLUMN source_ref TEXT")
+        # v4 → v5: 등록 자료 컬럼(없는 것만 추가).
+        for table, columns in V5_COLUMNS.items():
+            existing = set(_columns(conn, table))
+            for name, ddl in columns:
+                if name not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         conn.commit()
     finally:

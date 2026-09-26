@@ -1,0 +1,90 @@
+{
+  "note": "테스트 입력을 만드는 변형 명세입니다. 적재기에 직접 넣는 정상 데이터가 아닙니다. 오류 코드는 제안입니다.",
+  "cases": [
+    {
+      "case": "unknown_source",
+      "target": "company_chunks.jsonl",
+      "mutation": {
+        "source_id": "MOCK_NOT_FOUND"
+      },
+      "expected": "UNKNOWN_SOURCE_ID"
+    },
+    {
+      "case": "duplicate_chunk",
+      "target": "company_chunks.jsonl",
+      "mutation": {
+        "append_duplicate_of": "MOCK01_C001"
+      },
+      "expected": "DUPLICATE_CHUNK_ID"
+    },
+    {
+      "case": "hash_mismatch",
+      "target": "sources.json",
+      "mutation": {
+        "source_id": "MOCK01",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "expected": "HASH_MISMATCH"
+    },
+    {
+      "case": "id_same_hash_changed",
+      "target": "sources.json",
+      "mutation": {
+        "source_id": "MOCK01",
+        "replace_original_bytes": true
+      },
+      "expected": "SOURCE_ID_CONFLICT"
+    },
+    {
+      "case": "missing_image",
+      "target": "00_이미지목록.csv",
+      "mutation": {
+        "image_id": "MOCK_IMG01",
+        "filename": "images/MOCK_MISSING.png"
+      },
+      "expected": "IMAGE_NOT_FOUND"
+    },
+    {
+      "case": "path_escape",
+      "target": "00_이미지목록.csv",
+      "mutation": {
+        "image_id": "MOCK_IMG01",
+        "filename": "../outside.png"
+      },
+      "expected": "PATH_OUTSIDE_BUNDLE"
+    },
+    {
+      "case": "unknown_status",
+      "target": "company_chunks.jsonl",
+      "mutation": {
+        "evidence_status": "auto_trust_everything"
+      },
+      "expected": "UNKNOWN_EVIDENCE_STATUS"
+    },
+    {
+      "case": "mock_marker_mismatch",
+      "target": "sources.json",
+      "mutation": {
+        "source_id": "MOCK01",
+        "mock": false
+      },
+      "expected": "MOCK_MARKER_CONFLICT"
+    },
+    {
+      "case": "same_bundle_twice",
+      "target": "bundle",
+      "mutation": {
+        "repeat_import": 2
+      },
+      "expected": "SECOND_IMPORT_ADDED_0"
+    },
+    {
+      "case": "mock_disabled",
+      "target": "bundle",
+      "mutation": {
+        "with_mock": false
+      },
+      "expected": "MOCK_IMPORT_ADDED_0"
+    }
+  ]
+}

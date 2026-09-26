@@ -1,0 +1,61 @@
+{
+  "fixture_version": "1.0",
+  "mock": true,
+  "scenario_id": "source_empty",
+  "title": "등록 자료·첨부 없음",
+  "contract_version": "1.1",
+  "baseline_commit": "fe6777b",
+  "implementation_status": "existing_shapes_fixture",
+  "note": "직접 구성한 화면 개발용 데이터입니다. 실제 API 실행 결과가 아닙니다.",
+  "data": {
+    "session": {
+      "session_id": "sess_mock_demo",
+      "status": "active",
+      "input_revision": 3,
+      "created_at": "2026-09-25T01:00:00Z",
+      "last_activity_at": "2026-09-25T01:00:00Z",
+      "expires_at": "2026-09-25T03:00:00Z",
+      "brief": {
+        "purpose": "거래처에 회사와 주요 공정을 소개",
+        "emphasis": [
+          "공정 설명",
+          "근거가 있는 강점"
+        ],
+        "direction": "balanced",
+        "target_pages": 6,
+        "photo_preference": "balanced"
+      },
+      "selected_source_ids": [],
+      "document_summary": null
+    },
+    "source_list": {
+      "items": []
+    },
+    "session_source_list": {
+      "items": []
+    },
+    "preflight": null,
+    "document_response": null,
+    "issues": [],
+    "proposals": [],
+    "layout_check": null,
+    "export": null,
+    "jobs": [],
+    "error_response": null
+  },
+  "ui": {
+    "stage": "source",
+    "selected_page_id": null,
+    "selected_block_ids": [],
+    "unsaved_changes": false,
+    "preflight_acknowledged": false,
+    "final_confirmed": false,
+    "output_format": "pdf",
+    "show_resolved": false,
+    "dialog": null,
+    "disabled_reasons": [
+      "NO_USABLE_TEXT"
+    ],
+    "fixture_only": true
+  }
+}

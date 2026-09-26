@@ -12,12 +12,16 @@ from app.timeutil import now, to_iso
 
 
 def build_sources(conn: sqlite3.Connection, session_id: str, selected_source_ids: list[str]) -> list[SourceIn]:
-    """선택한 자료만 Agent 입력으로 만든다. 읽기가 끝난(complete/partial) 자료만, 세션 밖 자료는 절대 포함하지 않는다."""
+    """선택한 자료만 Agent 입력으로 만든다. 이 세션의 첨부 또는 등록 자료(근거 사용 허용)만.
+
+    다른 세션의 자료와 use_as_company_evidence=false인 등록 자료는 선택돼 있어도 절대 포함하지 않는다.
+    """
     result: list[SourceIn] = []
     for source_id in selected_source_ids:
         row = conn.execute(
-            "SELECT * FROM sources WHERE source_id=? AND session_id=? AND deleted_at IS NULL "
-            "AND parse_status IN ('complete', 'partial')", (source_id, session_id)).fetchone()
+            "SELECT * FROM sources WHERE source_id=? AND deleted_at IS NULL AND parse_status IN ('complete', 'partial') "
+            "AND ((scope='session' AND session_id=?) OR (scope='registered' AND use_as_company_evidence=1))",
+            (source_id, session_id)).fetchone()
         if row is None:
             continue
         segments = [SegmentIn(r["segment_id"], json.loads(r["locator_json"]), r["text"]) for r in conn.execute(

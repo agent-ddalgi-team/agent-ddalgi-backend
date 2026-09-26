@@ -1,0 +1,45 @@
+[
+  {
+    "input": "PPT 12쪽",
+    "expected": {
+      "slide": 12
+    }
+  },
+  {
+    "input": "PPT 1쪽",
+    "expected": {
+      "slide": 1
+    }
+  },
+  {
+    "input": "PDF 3쪽",
+    "expected": {
+      "page": 3
+    }
+  },
+  {
+    "input": "TXT 2행",
+    "expected": {
+      "line_start": 2,
+      "line_end": 2
+    }
+  },
+  {
+    "input": "DOCX 4문단",
+    "expected": {
+      "paragraph": 4
+    }
+  },
+  {
+    "input": "PPT ?쪽",
+    "error": "INVALID_LOCATOR"
+  },
+  {
+    "input": "PPT 0쪽",
+    "error": "INVALID_LOCATOR"
+  },
+  {
+    "input": "12쪽",
+    "error": "AMBIGUOUS_LOCATOR"
+  }
+]

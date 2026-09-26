@@ -71,6 +71,9 @@ def _row_to_out(conn: sqlite3.Connection, row: sqlite3.Row) -> SourceOut:
         asset_ids=_asset_ids(conn, row["source_id"]),
         warnings=json.loads(row["warnings_json"]),
         expires_at=row["expires_at"],
+        document_date=row["document_date"],
+        use_as_company_evidence=bool(row["use_as_company_evidence"]),
+        is_mock=bool(row["is_mock"]),
     )
 
 
@@ -181,13 +184,14 @@ def delete_one(conn: sqlite3.Connection, settings: Settings, session_id: str, so
 
 
 def exist_in_session(conn: sqlite3.Connection, session_id: str, source_ids: list[str]) -> list[str]:
-    """세션에 없는(또는 삭제된) ID 목록을 돌려준다."""
+    """선택할 수 없는 ID 목록을 돌려준다. 선택 가능 = 이 세션의 첨부 또는 등록 자료(근거 사용 허용된 것)."""
     if not source_ids:
         return []
+    marks = ",".join("?" * len(source_ids))
     rows = conn.execute(
-        f"SELECT source_id FROM sources WHERE session_id=? AND deleted_at IS NULL "
-        f"AND source_id IN ({','.join('?' * len(source_ids))})",
-        [session_id, *source_ids],
+        f"SELECT source_id FROM sources WHERE deleted_at IS NULL AND source_id IN ({marks}) "
+        f"AND ((scope='session' AND session_id=?) OR (scope='registered' AND use_as_company_evidence=1))",
+        [*source_ids, session_id],
     ).fetchall()
     found = {r["source_id"] for r in rows}
     return [sid for sid in source_ids if sid not in found]
