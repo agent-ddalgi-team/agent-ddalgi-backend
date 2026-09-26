@@ -231,10 +231,102 @@ class Document(BaseModel):
     pages: list[Page]
 
 
+# ---------------- 검증·문제·승인 (BE-06) ----------------
+
+class CheckRecord(BaseModel):
+    check_key: str
+    kind: Literal["server", "agent"]
+    block_ids: list[str] = Field(default_factory=list)
+    result: Literal["ok", "issue", "skipped"]
+    reused_from_validation_id: str | None = None
+
+
+class ValidationOut(BaseModel):
+    validation_id: str
+    document_id: str
+    document_revision: int
+    input_revision: int
+    status: Literal["pending", "passed", "needs_review", "failed"]
+    issue_ids: list[str]
+    # 계약 확인 ㉓: 재사용/신규 검사 연결(백엔드 제안)
+    checks: list[CheckRecord] = Field(default_factory=list)
+    agent_called: bool = False
+    checked_block_ids: list[str] = Field(default_factory=list)
+    reused_block_ids: list[str] = Field(default_factory=list)
+    base_validation_id: str | None = None
+    created_at: str
+
+
+class IssueOut(Issue):
+    origin: Literal["server", "agent", "preflight"]
+    created_at: str
+    updated_at: str
+
+
+class IssueListOut(BaseModel):
+    document_id: str
+    document_revision: int
+    validation_id: str | None
+    issues: list[IssueOut]
+
+
+class ValidateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int
+    input_revision: int
+
+
+class Resolution(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["resolved", "excluded", "acknowledged"]
+    reason: str = Field(min_length=1)
+
+
+class IssueResolveBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int
+    resolution: Resolution
+    evidence_refs: list[EvidenceRef] = Field(default_factory=list)
+
+
+class IssueResolveOut(BaseModel):
+    issue: IssueOut
+    validation: ValidationOut | None
+    document_status: str
+
+
+class ApprovalCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int
+    input_revision: int
+    format: Literal["pdf", "docx"]
+    validation_id: str
+    layout_check_id: str
+    confirmed: bool
+
+
+class ApprovalOut(BaseModel):
+    approval_id: str
+    document_id: str
+    document_revision: int
+    input_revision: int
+    format: Literal["pdf", "docx"]
+    validation_id: str
+    layout_check_id: str
+    template_version: str
+    render_options_hash: str
+    asset_manifest_hash: str
+    approved_at: str
+    approved_by: str
+    status: Literal["active", "invalidated"]
+    invalidated_at: str | None = None
+    invalidated_reason: str | None = None   # 계약 확인 ㉘
+
+
 class DocumentOut(BaseModel):
     document: Document
-    validation: dict[str, Any] | None = None   # BE-06
-    approval: dict[str, Any] | None = None     # BE-06
+    validation: ValidationOut | None = None   # 현재 문서·입력 버전의 최신 검증. 없으면 null
+    approval: ApprovalOut | None = None       # 현재 문서·입력 버전의 active 승인. 없으면 null
 
 
 class DraftCreate(BaseModel):

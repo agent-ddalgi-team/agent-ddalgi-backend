@@ -38,10 +38,17 @@ def _require_current_input(row, document) -> None:
 
 @router.get("/{did}", response_model=DocumentOut)
 def get_document(request: Request, sid: str, did: str):
+    from app.services import approvals, validation
+
     owner = require_owner(request)
     with connect(settings_of(request).db_path) as conn:
-        sessions.load_active(conn, owner, sid)
-        return DocumentOut(document=documents.get_current(conn, sid, did), validation=None, approval=None)
+        row = sessions.load_active(conn, owner, sid)
+        document = documents.get_current(conn, sid, did)
+        # 현재 문서·입력 버전의 결과만. 과거 검증·승인은 현재 값처럼 돌려주지 않는다.
+        v = validation.latest_validation(conn, did, document.document_revision, row["input_revision"])
+        a = approvals.active_for(conn, did, document.document_revision, row["input_revision"])
+        return DocumentOut(document=document, validation=validation.to_validation_out(v) if v else None,
+                           approval=approvals.to_out(a) if a else None)
 
 
 @router.patch("/{did}", response_model=DocumentChangeOut)

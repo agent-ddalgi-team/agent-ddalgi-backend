@@ -657,6 +657,105 @@
       }
     },
     {
+      "name": "검증 요청 (Validation Job)",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/sessions/sess_demo_01/documents/doc_demo_01/validate",
+        "headers": {"Content-Type": "application/json", "Idempotency-Key": "idem_demo_030"},
+        "body": {"expected_revision": 4, "input_revision": 2}
+      },
+      "response": {
+        "http_status": 202,
+        "body": {"job_id": "job_demo_validate_01", "status": "queued", "kind": "validate", "session_id": "sess_demo_01", "created_at": "2026-09-26T09:00:00Z"}
+      },
+      "_note": "Job 완료 시 result_ref = {type: 'validation', validation_id, status}. 같은 문서·문서 버전·입력 버전의 진행 중 Job이 있으면 그 Job을 돌려준다. 검증 도중 문서/입력이 바뀌면 결과를 버리고 failed(계약 확인 ㉔)."
+    },
+    {
+      "name": "문서 조회 (검증 결과 포함)",
+      "request": {"method": "GET", "path": "/api/v1/sessions/sess_demo_01/documents/doc_demo_01"},
+      "response": {
+        "http_status": 200,
+        "body": {
+          "document": {"...": "Document(status는 읽을 때 계산: draft / review_required / ready_for_approval / approved)"},
+          "validation": {
+            "validation_id": "val_demo_01", "document_id": "doc_demo_01", "document_revision": 4, "input_revision": 2,
+            "status": "failed", "issue_ids": ["iss_demo_10", "iss_demo_11"],
+            "checks": [{"check_key": "required_content", "kind": "server", "block_ids": [], "result": "ok", "reused_from_validation_id": null},
+                       {"check_key": "agent:block_02", "kind": "agent", "block_ids": ["block_02"], "result": "ok", "reused_from_validation_id": "val_demo_00"}],
+            "agent_called": false, "checked_block_ids": [], "reused_block_ids": ["block_01", "block_02"],
+            "base_validation_id": "val_demo_00", "created_at": "2026-09-26T09:00:05Z"
+          },
+          "approval": null
+        }
+      },
+      "_note": "validation·approval은 현재 문서·입력 버전의 것만(없으면 null). checks·agent_called·reused_block_ids는 계약 확인 ㉓(백엔드 제안). 순서만 바꾼 버전은 agent_called=false로 사실 검사를 재사용한다."
+    },
+    {
+      "name": "문제 목록",
+      "request": {"method": "GET", "path": "/api/v1/sessions/sess_demo_01/documents/doc_demo_01/issues"},
+      "response": {
+        "http_status": 200,
+        "body": {
+          "document_id": "doc_demo_01", "document_revision": 4, "validation_id": "val_demo_01",
+          "issues": [
+            {"issue_id": "iss_demo_10", "scope": "content", "code": "UNSUPPORTED_CLAIM", "severity": "blocker", "status": "open",
+             "message": "근거(fact_ids·evidence_refs)가 없는 사실 주장입니다. 주장을 지우거나 근거를 연결한 뒤 다시 검증하세요.",
+             "source_ids": [], "fact_ids": [], "block_ids": ["block_09"], "resolution": null, "origin": "server",
+             "created_at": "2026-09-26T09:00:05Z", "updated_at": "2026-09-26T09:00:05Z"},
+            {"issue_id": "iss_demo_11", "scope": "content", "code": "PLACEHOLDER_TEXT", "severity": "warning", "status": "acknowledged",
+             "message": "안내 문구가 남아 있습니다. 내용을 채우거나 블록을 지우세요.", "source_ids": [], "fact_ids": [], "block_ids": ["block_07"],
+             "resolution": {"action": "acknowledged", "by": "own_demo", "at": "2026-09-26T09:01:00Z", "reason": "검토함", "evidence_refs": [], "document_revision": 4, "input_revision": 2},
+             "origin": "server", "created_at": "2026-09-26T09:00:05Z", "updated_at": "2026-09-26T09:01:00Z"}
+          ]
+        }
+      },
+      "_note": "계약 확인 ㉒(조회 경로)·origin 필드. blocker(UNSUPPORTED_CLAIM·MOCK_VALUE·REQUIRED_MISSING 등)는 acknowledged 불가."
+    },
+    {
+      "name": "문제 해결 요청",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/sessions/sess_demo_01/issues/iss_demo_11/resolve",
+        "headers": {"Content-Type": "application/json", "Idempotency-Key": "idem_demo_031"},
+        "body": {"expected_revision": 4, "resolution": {"action": "acknowledged", "reason": "검토함"}, "evidence_refs": []}
+      },
+      "response": {
+        "http_status": 200,
+        "body": {"issue": {"issue_id": "iss_demo_11", "status": "acknowledged", "...": "IssueOut"},
+                 "validation": {"validation_id": "val_demo_01", "status": "failed", "...": "ValidationOut(전체 문제 재합산)"},
+                 "document_status": "review_required"}
+      },
+      "_note": "계약 확인 ㉗. 거부: 422 RESOLUTION_NOT_ALLOWED(warning 아님·MOCK_VALUE·필수 결핍 제외 등), 422 ISSUE_STILL_PRESENT(원인·주장이 아직 남음), 422 REVALIDATION_REQUIRED(AI 검증 문제는 validate로만)."
+    },
+    {
+      "name": "승인 요청 (배치 검사 미완료 → 거부)",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/sessions/sess_demo_01/documents/doc_demo_01/approvals",
+        "headers": {"Content-Type": "application/json", "Idempotency-Key": "idem_demo_032"},
+        "body": {"expected_revision": 4, "input_revision": 2, "format": "pdf", "validation_id": "val_demo_01", "layout_check_id": "lc_demo_01", "confirmed": true}
+      },
+      "response": {
+        "http_status": 422,
+        "body": {"error": {"code": "LAYOUT_NOT_READY", "message": "요청 형식의 배치 검사가 현재 문서에서 완료되지 않았습니다.", "retryable": false,
+                           "details": {"layout_check_id": "lc_demo_01", "format": "pdf", "reason": "layout_check_not_found"}, "request_id": "req_demo_032"}}
+      },
+      "_note": "승인 7조건 순서: ①접근 ②DOCUMENT_REVISION_CONFLICT ③INPUT_REVISION_CONFLICT/PREFLIGHT_NOT_CONFIRMED ④VALIDATION_NOT_PASSED ⑤UNRESOLVED_REQUIRED ⑥LAYOUT_NOT_READY ⑦APPROVAL_NOT_CONFIRMED. BE-08 연결 전에는 배치 검사 행이 없어 ⑥에서 멈추는 것이 정상."
+    },
+    {
+      "name": "승인 성공 (형식 설명용 — BE-08 연결 후 실제 가능)",
+      "response": {
+        "http_status": 201,
+        "body": {
+          "approval_id": "apr_demo_01", "document_id": "doc_demo_01", "document_revision": 4, "input_revision": 2, "format": "pdf",
+          "validation_id": "val_demo_01", "layout_check_id": "lc_demo_01", "template_version": "template_v0",
+          "render_options_hash": "…", "asset_manifest_hash": "…", "approved_at": "2026-09-26T09:05:00Z", "approved_by": "own_demo",
+          "status": "active", "invalidated_at": null, "invalidated_reason": null
+        }
+      },
+      "_note": "같은 키·같은 본문 재전송은 이 응답 그대로(Approval 1건). 문서 편집·순서 변경·편집안 적용·restore·입력 변경 시 status=invalidated(계약 확인 ㉘ invalidated_reason: document_changed / input_changed)이며 되살아나지 않는다."
+    },
+    {
       "name": "출력 요청",
       "request": {
         "method": "POST",
