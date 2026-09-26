@@ -11,6 +11,9 @@
 - use_as_company_evidence=false는 적재하되 표시만 하고 선택·근거에서 제외한다.
 - document_date는 문자열 그대로("2017"도). date_from_filename은 별도 보존.
 - [MOCK] 라벨은 text·excerpt에서 지우지 않는다. 오류는 하나라도 있으면 아무것도 적재하지 않는다(한 트랜잭션).
+- 재적재(BE-08): 이미 있는 사진은 source_id·photo_id·바이트 해시가 같아야 한다(다르면 PHOTO_ID_CONFLICT). 공개 허가
+  (approved_for_external_use)가 묶음과 다르면 update_publication=True(CLI --update-publication)일 때만 갱신하고, 같은 트랜잭션에서
+  관련 승인 무효화·활성 Export 확정 실패까지 처리한다. 플래그 없이는 건수(publication_pending)만 센다. dry-run은 아무것도 바꾸지 않는다.
 """
 from __future__ import annotations
 
@@ -61,6 +64,10 @@ class ImportSummary:
     skipped: dict[str, int] = field(default_factory=dict)
     excluded_from_evidence: int = 0
     hash_unverified: int = 0
+    publication_updated: int = 0        # 공개 허가를 실제로 갱신한 사진 수(update_publication=True)
+    publication_pending: int = 0        # 묶음과 값이 다르지만 갱신하지 않은 사진 수(플래그 없음 또는 dry-run)
+    approvals_invalidated: int = 0
+    exports_finalized: int = 0
     errors: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -226,6 +233,7 @@ def _read_images(bundle_root: Path, ingest_dir: Path, sources: dict[str, _Source
             raise ImportError_("HASH_MISMATCH", "candidates의 sha256이 파일과 다릅니다", where)
         if c.get("mock") and not with_mock:
             continue
+        _publication_value(c, where)   # 값 형식은 검사 단계에서 거른다(쓰기 전 전체 중단)
         try:
             entry["locator"] = locators.to_object(c["locator"]) if c.get("locator") else None
         except locators.LocatorError as exc:
@@ -245,6 +253,16 @@ def _read_images(bundle_root: Path, ingest_dir: Path, sources: dict[str, _Source
 
 # ---------------- 적재 ----------------
 
+def _publication_value(candidate: dict, where: str) -> int | None:
+    """approved_for_external_use는 JSON boolean/null만. 문자열("false")·숫자·배열·객체는 입력 오류(전체 롤백)."""
+    value = candidate.get("approved_for_external_use")
+    if value is None:
+        return None
+    if type(value) is bool:   # bool은 int의 하위형이라 isinstance(1, bool)로는 못 거른다
+        return int(value)
+    raise ImportError_("INVALID_INPUT", f"approved_for_external_use는 true/false/null만 허용합니다(받은 값: {type(value).__name__})", where)
+
+
 def _display_name(raw: dict) -> str:
     return raw.get("name") or raw.get("filename") or raw["source_id"]
 
@@ -255,7 +273,7 @@ def _mime(path: Path | None, filename: str) -> str:
 
 
 def import_bundle(settings: Settings, bundle_root: Path, ingest_dir: Path | None = None, *,
-                  with_mock: bool = False, dry_run: bool = False) -> ImportSummary:
+                  with_mock: bool = False, dry_run: bool = False, update_publication: bool = False) -> ImportSummary:
     bundle_root = Path(bundle_root)
     ingest_dir = Path(ingest_dir) if ingest_dir else bundle_root
     summary = ImportSummary(dry_run=dry_run, with_mock=with_mock)
@@ -354,12 +372,31 @@ def import_bundle(settings: Settings, bundle_root: Path, ingest_dir: Path | None
         for entry in images:
             c = entry["candidate"]
             owner = c.get("source_id") or IMAGE_PSEUDO_SOURCE
+            photo_id = c.get("photo_id") or entry["csv"]["파일명"]
+            existing_asset = conn.execute(
+                "SELECT asset_id, source_id, content_hash, approved_for_external_use FROM assets "
+                "WHERE photo_id=? AND scope='registered' AND deleted_at IS NULL", (photo_id,)).fetchone()
+            if existing_asset is not None:
+                # 같은 사진인지 확인(source_id + 바이트 해시). 파일 중복 생성은 없고 공개 허가만 명시적 경로로 갱신한다.
+                where = f"photo_candidates.json {photo_id}"
+                if existing_asset["source_id"] != owner or existing_asset["content_hash"] != _sha256(entry["file"]):
+                    raise ImportError_("PHOTO_ID_CONFLICT", "같은 photo_id인데 자료(source_id) 또는 바이트 해시가 다릅니다", where)
+                new_value = _publication_value(c, where)
+                if new_value != existing_asset["approved_for_external_use"]:
+                    if update_publication and not dry_run:
+                        from app.services import publication as publication_service
+
+                        conn.execute("UPDATE assets SET approved_for_external_use=? WHERE asset_id=?", (new_value, existing_asset["asset_id"]))
+                        counts = publication_service.on_publication_changed(conn, existing_asset["asset_id"],
+                                                                             existing_asset["approved_for_external_use"], new_value)
+                        summary.publication_updated += 1
+                        summary.approvals_invalidated += counts["approvals_invalidated"]
+                        summary.exports_finalized += counts["exports_finalized"]
+                    else:
+                        summary.publication_pending += 1
+                continue
             if c.get("source_id") is not None and owner not in added_ids:
                 continue  # 이미 있는 자료의 사진은 다시 넣지 않는다
-            photo_id = c.get("photo_id") or entry["csv"]["파일명"]
-            if conn.execute("SELECT 1 FROM assets WHERE photo_id=? AND scope='registered' AND deleted_at IS NULL",
-                            (photo_id,)).fetchone():
-                continue
             from PIL import Image
             with Image.open(entry["file"]) as img:
                 width, height = img.width, img.height
@@ -379,7 +416,7 @@ def import_bundle(settings: Settings, bundle_root: Path, ingest_dir: Path | None
                 (f"asset_{uuid.uuid4().hex[:16]}", owner, _mime(entry["file"], ""), width, height,
                  _sha256(entry["file"]), rel, stamp, photo_id, c.get("caption_candidate"),
                  int(bool(c.get("selected_as_candidate"))),
-                 None if c.get("approved_for_external_use") is None else int(bool(c["approved_for_external_use"])),
+                 _publication_value(c, f"photo_candidates.json {photo_id}"),
                  json.dumps(entry.get("locator"), ensure_ascii=False) if entry.get("locator") else None))
 
         conn.execute(
@@ -399,10 +436,11 @@ class _DryRun(Exception):
 
 
 def run(settings: Settings, bundle_root: Path, ingest_dir: Path | None = None, *, with_mock: bool = False,
-        dry_run: bool = False) -> ImportSummary:
+        dry_run: bool = False, update_publication: bool = False) -> ImportSummary:
     """import_bundle의 편의 함수. dry-run은 검사·집계만 하고 아무것도 쓰지 않는다."""
     try:
-        return import_bundle(settings, bundle_root, ingest_dir, with_mock=with_mock, dry_run=dry_run)
+        return import_bundle(settings, bundle_root, ingest_dir, with_mock=with_mock, dry_run=dry_run,
+                             update_publication=update_publication)
     except _DryRun as exc:
         return exc.summary
 

@@ -1,5 +1,5 @@
 {
-  "_note": "프론트 전달용 계약 예시. contracts.md v1.1(contract_version 1.1, schema_version 1.0) 기준으로 백엔드 BE-01에서 손으로 작성했다. 실제 서버 응답이 아니며 모든 값은 가짜 데이터다. 실제 구현(BE-02 이후)에서 응답이 달라지면 이 파일을 먼저 갱신하고 프론트에 알린다.",
+  "_note": "프론트 전달용 계약 예시. contracts.md v1.1(contract_version 1.1, schema_version 1.0) 기준으로 백엔드 BE-01에서 손으로 작성했다. 실제 서버 응답이 아니며 모든 값은 가짜 데이터다. 실제 구현(BE-02 이후)에서 응답이 달라지면 이 파일을 먼저 갱신하고 프론트에 알린다. BE-08(2026-09-27) 예시는 실서버 응답(가상 자료) 기반. contracts.md 원본은 미수정, 계약 확인 ㉜~㊳ 참조.",
   "contract_version": "1.1",
   "schema_version": "1.0",
   "base_path": "/api/v1",
@@ -25,11 +25,17 @@
       "request": {
         "method": "POST",
         "path": "/api/v1/sessions",
-        "headers": {"Content-Type": "application/json", "Idempotency-Key": "idem_demo_001"},
+        "headers": {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "idem_demo_001"
+        },
         "body": {
           "brief": {
             "purpose": "신규 거래처 제안용",
-            "emphasis": ["표면처리 공정", "품질 관리"],
+            "emphasis": [
+              "표면처리 공정",
+              "품질 관리"
+            ],
             "direction": "quality_process",
             "target_pages": 4,
             "photo_preference": "balanced"
@@ -47,7 +53,10 @@
           "expires_at": "2026-09-25T11:00:00Z",
           "brief": {
             "purpose": "신규 거래처 제안용",
-            "emphasis": ["표면처리 공정", "품질 관리"],
+            "emphasis": [
+              "표면처리 공정",
+              "품질 관리"
+            ],
             "direction": "quality_process",
             "target_pages": 4,
             "photo_preference": "balanced"
@@ -59,7 +68,10 @@
     },
     {
       "name": "세션 조회",
-      "request": {"method": "GET", "path": "/api/v1/sessions/sess_demo_01"},
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess_demo_01"
+      },
       "response": {
         "http_status": 200,
         "body": {
@@ -71,12 +83,18 @@
           "expires_at": "2026-09-25T11:05:00Z",
           "brief": {
             "purpose": "신규 거래처 제안용",
-            "emphasis": ["표면처리 공정", "품질 관리"],
+            "emphasis": [
+              "표면처리 공정",
+              "품질 관리"
+            ],
             "direction": "quality_process",
             "target_pages": 4,
             "photo_preference": "balanced"
           },
-          "selected_source_ids": ["src_reg_01", "src_sess_01"],
+          "selected_source_ids": [
+            "src_reg_01",
+            "src_sess_01"
+          ],
           "document_summary": null
         }
       },
@@ -84,7 +102,10 @@
     },
     {
       "name": "등록 자료 목록",
-      "request": {"method": "GET", "path": "/api/v1/sources?kind=company"},
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/sources?kind=company"
+      },
       "response": {
         "http_status": 200,
         "body": {
@@ -101,7 +122,10 @@
               "parse_status": "complete",
               "text_available": true,
               "image_available": false,
-              "usable_segment_ids": ["seg_reg_01_0001", "seg_reg_01_0002"],
+              "usable_segment_ids": [
+                "seg_reg_01_0001",
+                "seg_reg_01_0002"
+              ],
               "asset_ids": [],
               "warnings": [],
               "expires_at": null,
@@ -119,8 +143,16 @@
       "request": {
         "method": "POST",
         "path": "/api/v1/sessions/sess_demo_01/sources",
-        "headers": {"Content-Type": "multipart/form-data", "Idempotency-Key": "idem_demo_002"},
-        "form": {"files": ["인터뷰메모.txt", "공장사진.jpg"]}
+        "headers": {
+          "Content-Type": "multipart/form-data",
+          "Idempotency-Key": "idem_demo_002"
+        },
+        "form": {
+          "files": [
+            "인터뷰메모.txt",
+            "공장사진.jpg"
+          ]
+        }
       },
       "response": {
         "http_status": 202,
@@ -166,7 +198,10 @@
     },
     {
       "name": "세션 자료 목록 (읽기 완료 후)",
-      "request": {"method": "GET", "path": "/api/v1/sessions/sess_demo_01/sources"},
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess_demo_01/sources"
+      },
       "response": {
         "http_status": 200,
         "body": {
@@ -183,7 +218,11 @@
               "parse_status": "complete",
               "text_available": true,
               "image_available": false,
-              "usable_segment_ids": ["seg_sess_01_0001", "seg_sess_01_0002", "seg_sess_01_0003"],
+              "usable_segment_ids": [
+                "seg_sess_01_0001",
+                "seg_sess_01_0002",
+                "seg_sess_01_0003"
+              ],
               "warnings": [],
               "expires_at": "2026-09-25T11:05:00Z"
             },
@@ -201,7 +240,12 @@
               "image_available": true,
               "usable_segment_ids": [],
               "warnings": [
-                {"locator": null, "code": "IMAGE_ONLY", "message": "이미지 파일입니다. 글자를 읽지 않았습니다.", "action": "텍스트 근거는 다른 자료에서 제공해 주세요."}
+                {
+                  "locator": null,
+                  "code": "IMAGE_ONLY",
+                  "message": "이미지 파일입니다. 글자를 읽지 않았습니다.",
+                  "action": "텍스트 근거는 다른 자료에서 제공해 주세요."
+                }
               ],
               "expires_at": "2026-09-25T11:05:00Z"
             }
@@ -215,17 +259,27 @@
       "request": {
         "method": "PATCH",
         "path": "/api/v1/sessions/sess_demo_01/inputs",
-        "headers": {"Content-Type": "application/json", "Idempotency-Key": "idem_demo_003"},
+        "headers": {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "idem_demo_003"
+        },
         "body": {
           "expected_input_revision": 1,
           "brief": {
             "purpose": "신규 거래처 제안용",
-            "emphasis": ["표면처리 공정", "품질 관리"],
+            "emphasis": [
+              "표면처리 공정",
+              "품질 관리"
+            ],
             "direction": "quality_process",
             "target_pages": 4,
             "photo_preference": "balanced"
           },
-          "selected_source_ids": ["src_reg_01", "src_sess_01", "src_sess_02"]
+          "selected_source_ids": [
+            "src_reg_01",
+            "src_sess_01",
+            "src_sess_02"
+          ]
         }
       },
       "response": {
@@ -233,7 +287,11 @@
         "body": {
           "session_id": "sess_demo_01",
           "input_revision": 2,
-          "selected_source_ids": ["src_reg_01", "src_sess_01", "src_sess_02"],
+          "selected_source_ids": [
+            "src_reg_01",
+            "src_sess_01",
+            "src_sess_02"
+          ],
           "preflight_invalidated": true
         }
       }
@@ -243,7 +301,12 @@
       "request": {
         "method": "PATCH",
         "path": "/api/v1/sessions/sess_demo_01/inputs",
-        "body": {"expected_input_revision": 1, "selected_source_ids": ["src_reg_01"]}
+        "body": {
+          "expected_input_revision": 1,
+          "selected_source_ids": [
+            "src_reg_01"
+          ]
+        }
       },
       "response": {
         "http_status": 409,
@@ -252,7 +315,10 @@
             "code": "INPUT_REVISION_CONFLICT",
             "message": "입력이 변경되었습니다. 최신 상태를 불러온 뒤 다시 요청해 주세요.",
             "retryable": false,
-            "details": {"expected_input_revision": 1, "current_input_revision": 2},
+            "details": {
+              "expected_input_revision": 1,
+              "current_input_revision": 2
+            },
             "request_id": "req_demo_004"
           }
         }
@@ -263,8 +329,13 @@
       "request": {
         "method": "POST",
         "path": "/api/v1/sessions/sess_demo_01/preflights",
-        "headers": {"Content-Type": "application/json", "Idempotency-Key": "idem_demo_005"},
-        "body": {"expected_input_revision": 2}
+        "headers": {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "idem_demo_005"
+        },
+        "body": {
+          "expected_input_revision": 2
+        }
       },
       "response": {
         "http_status": 202,
@@ -279,14 +350,20 @@
     },
     {
       "name": "작업 조회 (진행 중)",
-      "request": {"method": "GET", "path": "/api/v1/sessions/sess_demo_01/jobs/job_demo_preflight_01"},
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess_demo_01/jobs/job_demo_preflight_01"
+      },
       "response": {
         "http_status": 200,
         "body": {
           "job_id": "job_demo_preflight_01",
           "kind": "preflight",
           "status": "running",
-          "progress": {"stage": "analyzing", "message": "자료에서 사실을 정리하는 중"},
+          "progress": {
+            "stage": "analyzing",
+            "message": "자료에서 사실을 정리하는 중"
+          },
           "result_ref": null,
           "error": null,
           "created_at": "2026-09-25T09:06:00Z",
@@ -297,15 +374,24 @@
     },
     {
       "name": "작업 조회 (완료 → 결과 참조)",
-      "request": {"method": "GET", "path": "/api/v1/sessions/sess_demo_01/jobs/job_demo_preflight_01"},
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess_demo_01/jobs/job_demo_preflight_01"
+      },
       "response": {
         "http_status": 200,
         "body": {
           "job_id": "job_demo_preflight_01",
           "kind": "preflight",
           "status": "succeeded",
-          "progress": {"stage": "done", "message": null},
-          "result_ref": {"type": "preflight", "preflight_id": "pf_demo_01"},
+          "progress": {
+            "stage": "done",
+            "message": null
+          },
+          "result_ref": {
+            "type": "preflight",
+            "preflight_id": "pf_demo_01"
+          },
           "error": null,
           "created_at": "2026-09-25T09:06:00Z",
           "updated_at": "2026-09-25T09:07:10Z"
@@ -314,20 +400,28 @@
     },
     {
       "name": "작업 조회 (실패)",
-      "request": {"method": "GET", "path": "/api/v1/sessions/sess_demo_01/jobs/job_demo_preflight_02"},
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess_demo_01/jobs/job_demo_preflight_02"
+      },
       "response": {
         "http_status": 200,
         "body": {
           "job_id": "job_demo_preflight_02",
           "kind": "preflight",
           "status": "failed",
-          "progress": {"stage": "analyzing", "message": null},
+          "progress": {
+            "stage": "analyzing",
+            "message": null
+          },
           "result_ref": null,
           "error": {
             "code": "SERVICE_TEMPORARY_FAILURE",
             "message": "AI 호출이 시간 안에 끝나지 않았습니다. 잠시 후 다시 시도해 주세요.",
             "retryable": true,
-            "details": {"stage": "analyzing"},
+            "details": {
+              "stage": "analyzing"
+            },
             "request_id": "req_demo_006"
           },
           "created_at": "2026-09-25T09:08:00Z",
@@ -338,14 +432,20 @@
     },
     {
       "name": "사전 점검 결과 (Preflight)",
-      "request": {"method": "GET", "path": "/api/v1/sessions/sess_demo_01/preflights/pf_demo_01"},
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess_demo_01/preflights/pf_demo_01"
+      },
       "response": {
         "http_status": 200,
         "body": {
           "preflight_id": "pf_demo_01",
           "session_id": "sess_demo_01",
           "input_revision": 2,
-          "usable_source_ids": ["src_reg_01", "src_sess_01"],
+          "usable_source_ids": [
+            "src_reg_01",
+            "src_sess_01"
+          ],
           "facts": [
             {
               "fact_id": "fact_demo_01",
@@ -353,7 +453,16 @@
               "value": "예시 회사",
               "status": "supported",
               "evidence_refs": [
-                {"source_id": "src_reg_01", "source_version": 1, "segment_id": "seg_reg_01_0001", "locator": {"line_start": 1, "line_end": 1}, "excerpt": "회사명: 예시 회사"}
+                {
+                  "source_id": "src_reg_01",
+                  "source_version": 1,
+                  "segment_id": "seg_reg_01_0001",
+                  "locator": {
+                    "line_start": 1,
+                    "line_end": 1
+                  },
+                  "excerpt": "회사명: 예시 회사"
+                }
               ]
             },
             {
@@ -363,7 +472,16 @@
               "status": "needs_confirmation",
               "conditions": null,
               "evidence_refs": [
-                {"source_id": "src_sess_01", "source_version": 1, "segment_id": "seg_sess_01_0003", "locator": {"line_start": 5, "line_end": 5}, "excerpt": "납기 표현: 빠른 납기"}
+                {
+                  "source_id": "src_sess_01",
+                  "source_version": 1,
+                  "segment_id": "seg_sess_01_0003",
+                  "locator": {
+                    "line_start": 5,
+                    "line_end": 5
+                  },
+                  "excerpt": "납기 표현: 빠른 납기"
+                }
               ]
             },
             {
@@ -382,8 +500,12 @@
               "severity": "warning",
               "status": "open",
               "message": "납기가 정성 표현('빠른 납기')뿐입니다. 기간·조건을 확인하거나 수치형 주장을 제외하세요.",
-              "source_ids": ["src_sess_01"],
-              "fact_ids": ["fact_demo_02"],
+              "source_ids": [
+                "src_sess_01"
+              ],
+              "fact_ids": [
+                "fact_demo_02"
+              ],
               "block_ids": [],
               "resolution": null
             }
@@ -391,7 +513,10 @@
           "recommendations": {
             "suggested_pages": 4,
             "reason": "텍스트 근거 2개 자료, 사진 1장 기준",
-            "needed": ["인증 자료(있을 경우)", "제품·공정 사진 추가"]
+            "needed": [
+              "인증 자료(있을 경우)",
+              "제품·공정 사진 추가"
+            ]
           },
           "can_generate": true,
           "confirmed_at": null
@@ -404,8 +529,15 @@
       "request": {
         "method": "POST",
         "path": "/api/v1/sessions/sess_demo_01/drafts",
-        "headers": {"Content-Type": "application/json", "Idempotency-Key": "idem_demo_007"},
-        "body": {"preflight_id": "pf_demo_01", "input_revision": 2, "confirmed": true}
+        "headers": {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "idem_demo_007"
+        },
+        "body": {
+          "preflight_id": "pf_demo_01",
+          "input_revision": 2,
+          "confirmed": true
+        }
       },
       "response": {
         "http_status": 202,
@@ -423,7 +555,11 @@
       "request": {
         "method": "POST",
         "path": "/api/v1/sessions/sess_demo_01/drafts",
-        "body": {"preflight_id": "pf_demo_01", "input_revision": 2, "confirmed": false}
+        "body": {
+          "preflight_id": "pf_demo_01",
+          "input_revision": 2,
+          "confirmed": false
+        }
       },
       "response": {
         "http_status": 422,
@@ -432,7 +568,9 @@
             "code": "PREFLIGHT_NOT_CONFIRMED",
             "message": "사전 점검 결과를 확인한 뒤 생성할 수 있습니다.",
             "retryable": false,
-            "details": {"preflight_id": "pf_demo_01"},
+            "details": {
+              "preflight_id": "pf_demo_01"
+            },
             "request_id": "req_demo_008"
           }
         }
@@ -440,7 +578,10 @@
     },
     {
       "name": "문서 조회",
-      "request": {"method": "GET", "path": "/api/v1/sessions/sess_demo_01/documents/doc_demo_01"},
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess_demo_01/documents/doc_demo_01"
+      },
       "response": {
         "http_status": 200,
         "body": {
@@ -462,25 +603,57 @@
                   {
                     "block_id": "block_01",
                     "type": "heading",
-                    "content": {"text": "예시 회사", "level": 1},
-                    "fact_ids": ["fact_demo_01"],
+                    "content": {
+                      "text": "예시 회사",
+                      "level": 1
+                    },
+                    "fact_ids": [
+                      "fact_demo_01"
+                    ],
                     "evidence_refs": [
-                      {"source_id": "src_reg_01", "source_version": 1, "segment_id": "seg_reg_01_0001", "locator": {"line_start": 1, "line_end": 1}, "excerpt": "회사명: 예시 회사"}
+                      {
+                        "source_id": "src_reg_01",
+                        "source_version": 1,
+                        "segment_id": "seg_reg_01_0001",
+                        "locator": {
+                          "line_start": 1,
+                          "line_end": 1
+                        },
+                        "excerpt": "회사명: 예시 회사"
+                      }
                     ]
                   },
                   {
                     "block_id": "block_02",
                     "type": "paragraph",
-                    "content": {"text": "예시 회사는 금속 표면처리 공정을 중심으로 사업을 운영합니다."},
-                    "fact_ids": ["fact_demo_01"],
+                    "content": {
+                      "text": "예시 회사는 금속 표면처리 공정을 중심으로 사업을 운영합니다."
+                    },
+                    "fact_ids": [
+                      "fact_demo_01"
+                    ],
                     "evidence_refs": [
-                      {"source_id": "src_reg_01", "source_version": 1, "segment_id": "seg_reg_01_0002", "locator": {"line_start": 2, "line_end": 2}, "excerpt": "주요 사업: 금속 표면처리"}
+                      {
+                        "source_id": "src_reg_01",
+                        "source_version": 1,
+                        "segment_id": "seg_reg_01_0002",
+                        "locator": {
+                          "line_start": 2,
+                          "line_end": 2
+                        },
+                        "excerpt": "주요 사업: 금속 표면처리"
+                      }
                     ]
                   },
                   {
                     "block_id": "block_03",
                     "type": "image",
-                    "content": {"asset_id": "asset_demo_01", "alt": "공장 전경", "caption": "공장 전경", "fit": "contain"},
+                    "content": {
+                      "asset_id": "asset_demo_01",
+                      "alt": "공장 전경",
+                      "caption": "공장 전경",
+                      "fit": "contain"
+                    },
                     "fact_ids": [],
                     "evidence_refs": []
                   }
@@ -488,7 +661,15 @@
               }
             ]
           },
-          "validation": {"validation_id": "val_demo_01", "document_revision": 1, "input_revision": 2, "status": "needs_review", "issue_ids": ["iss_demo_01"]},
+          "validation": {
+            "validation_id": "val_demo_01",
+            "document_revision": 1,
+            "input_revision": 2,
+            "status": "needs_review",
+            "issue_ids": [
+              "iss_demo_01"
+            ]
+          },
           "approval": null
         }
       },
@@ -499,11 +680,20 @@
       "request": {
         "method": "PATCH",
         "path": "/api/v1/sessions/sess_demo_01/documents/doc_demo_01",
-        "headers": {"Content-Type": "application/json", "Idempotency-Key": "idem_demo_009"},
+        "headers": {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "idem_demo_009"
+        },
         "body": {
           "expected_revision": 1,
           "operations": [
-            {"op": "replace_block_content", "block_id": "block_02", "content": {"text": "예시 회사는 금속 표면처리 공정을 운영합니다."}}
+            {
+              "op": "replace_block_content",
+              "block_id": "block_02",
+              "content": {
+                "text": "예시 회사는 금속 표면처리 공정을 운영합니다."
+              }
+            }
           ]
         }
       },
@@ -524,10 +714,22 @@
       "request": {
         "method": "PATCH",
         "path": "/api/v1/sessions/sess_demo_01/documents/doc_demo_01",
-        "body": {"expected_revision": 2, "operations": [
-          {"op": "rename_page", "page_id": "page_01", "title": "바꿈"},
-          {"op": "move_block", "block_id": "block_02", "target_page_id": "page_01", "after_block_id": "block_02"}
-        ]}
+        "body": {
+          "expected_revision": 2,
+          "operations": [
+            {
+              "op": "rename_page",
+              "page_id": "page_01",
+              "title": "바꿈"
+            },
+            {
+              "op": "move_block",
+              "block_id": "block_02",
+              "target_page_id": "page_01",
+              "after_block_id": "block_02"
+            }
+          ]
+        }
       },
       "response": {
         "http_status": 422,
@@ -536,7 +738,12 @@
             "code": "INVALID_OPERATION",
             "message": "move_block 연산을 적용할 수 없습니다: 자기 자신 뒤로 옮길 수 없습니다",
             "retryable": false,
-            "details": {"index": 1, "op": "move_block", "reason": "자기 자신 뒤로 옮길 수 없습니다", "block_id": "block_02"},
+            "details": {
+              "index": 1,
+              "op": "move_block",
+              "reason": "자기 자신 뒤로 옮길 수 없습니다",
+              "block_id": "block_02"
+            },
             "request_id": "req_demo_015"
           }
         }
@@ -548,18 +755,38 @@
       "request": {
         "method": "POST",
         "path": "/api/v1/sessions/sess_demo_01/documents/doc_demo_01/proposals",
-        "headers": {"Content-Type": "application/json", "Idempotency-Key": "idem_demo_020"},
-        "body": {"expected_revision": 2, "input_revision": 2, "target_block_ids": ["block_02"], "instruction": "문장을 간결하게", "kind": "text"}
+        "headers": {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "idem_demo_020"
+        },
+        "body": {
+          "expected_revision": 2,
+          "input_revision": 2,
+          "target_block_ids": [
+            "block_02"
+          ],
+          "instruction": "문장을 간결하게",
+          "kind": "text"
+        }
       },
       "response": {
         "http_status": 202,
-        "body": {"job_id": "job_demo_propose_01", "status": "queued", "kind": "propose", "session_id": "sess_demo_01", "created_at": "2026-09-25T09:20:00Z"}
+        "body": {
+          "job_id": "job_demo_propose_01",
+          "status": "queued",
+          "kind": "propose",
+          "session_id": "sess_demo_01",
+          "created_at": "2026-09-25T09:20:00Z"
+        }
       },
       "_note": "Job 완료 시 result_ref = {type: 'proposal', proposal_id, status: 'proposed' | 'stale'}. 생성만으로는 문서가 바뀌지 않는다."
     },
     {
       "name": "편집안 조회",
-      "request": {"method": "GET", "path": "/api/v1/sessions/sess_demo_01/proposals/prop_demo_01"},
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess_demo_01/proposals/prop_demo_01"
+      },
       "response": {
         "http_status": 200,
         "body": {
@@ -567,11 +794,19 @@
           "document_id": "doc_demo_01",
           "base_document_revision": 2,
           "base_input_revision": 2,
-          "target_block_ids": ["block_02"],
+          "target_block_ids": [
+            "block_02"
+          ],
           "kind": "text",
           "instruction": "문장을 간결하게",
           "changes": [
-            {"op": "replace_block_content", "block_id": "block_02", "content": {"text": "예시 회사는 금속 표면처리 공정을 운영합니다."}}
+            {
+              "op": "replace_block_content",
+              "block_id": "block_02",
+              "content": {
+                "text": "예시 회사는 금속 표면처리 공정을 운영합니다."
+              }
+            }
           ],
           "rationale": "중복 표현을 줄였습니다. 새 사실은 넣지 않았습니다.",
           "candidates": null,
@@ -588,18 +823,35 @@
       "request": {
         "method": "POST",
         "path": "/api/v1/sessions/sess_demo_01/proposals/prop_demo_01/apply",
-        "headers": {"Content-Type": "application/json", "Idempotency-Key": "idem_demo_021"},
-        "body": {"expected_revision": 2}
+        "headers": {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "idem_demo_021"
+        },
+        "body": {
+          "expected_revision": 2
+        }
       },
       "response": {
         "http_status": 200,
-        "body": {"document_id": "doc_demo_01", "document_revision": 3, "input_revision": 2, "status": "review_required", "validation_job_id": null}
+        "body": {
+          "document_id": "doc_demo_01",
+          "document_revision": 3,
+          "input_revision": 2,
+          "status": "review_required",
+          "validation_job_id": null
+        }
       },
       "_note": "같은 Idempotency-Key·같은 본문 재전송은 이 응답을 그대로 돌려주고 revision을 다시 올리지 않는다(단, 소유자·세션·문서 접근 검사는 먼저 통과해야 함). 키 없이 재전송하면 409 PROPOSAL_STALE(details.status='applied')."
     },
     {
       "name": "편집안 적용 거부 (기준 문서가 바뀜)",
-      "request": {"method": "POST", "path": "/api/v1/sessions/sess_demo_01/proposals/prop_demo_02/apply", "body": {"expected_revision": 3}},
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/sessions/sess_demo_01/proposals/prop_demo_02/apply",
+        "body": {
+          "expected_revision": 3
+        }
+      },
       "response": {
         "http_status": 409,
         "body": {
@@ -607,7 +859,13 @@
             "code": "PROPOSAL_STALE",
             "message": "문서 또는 입력이 바뀌어 이 편집안은 적용할 수 없습니다. 다시 요청해 주세요.",
             "retryable": false,
-            "details": {"status": "stale", "base_document_revision": 2, "current_revision": 3, "base_input_revision": 2, "current_input_revision": 2},
+            "details": {
+              "status": "stale",
+              "base_document_revision": 2,
+              "current_revision": 3,
+              "base_input_revision": 2,
+              "current_input_revision": 2
+            },
             "request_id": "req_demo_022"
           }
         }
@@ -616,10 +874,18 @@
     },
     {
       "name": "편집안 거부",
-      "request": {"method": "POST", "path": "/api/v1/sessions/sess_demo_01/proposals/prop_demo_03/reject"},
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/sessions/sess_demo_01/proposals/prop_demo_03/reject"
+      },
       "response": {
         "http_status": 200,
-        "body": {"proposal_id": "prop_demo_03", "status": "rejected", "document_id": "doc_demo_01", "document_revision": 3}
+        "body": {
+          "proposal_id": "prop_demo_03",
+          "status": "rejected",
+          "document_id": "doc_demo_01",
+          "document_revision": 3
+        }
       }
     },
     {
@@ -627,12 +893,24 @@
       "request": {
         "method": "POST",
         "path": "/api/v1/sessions/sess_demo_01/documents/doc_demo_01/restore",
-        "headers": {"Content-Type": "application/json", "Idempotency-Key": "idem_demo_023"},
-        "body": {"expected_revision": 3, "restore_from_revision": 1}
+        "headers": {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "idem_demo_023"
+        },
+        "body": {
+          "expected_revision": 3,
+          "restore_from_revision": 1
+        }
       },
       "response": {
         "http_status": 200,
-        "body": {"document_id": "doc_demo_01", "document_revision": 4, "input_revision": 2, "status": "draft", "validation_job_id": null}
+        "body": {
+          "document_id": "doc_demo_01",
+          "document_revision": 4,
+          "input_revision": 2,
+          "status": "draft",
+          "validation_job_id": null
+        }
       },
       "_note": "과거 내용이 새 버전(4)으로 저장된다. 과거의 승인·검증 완료 상태는 부활하지 않는다. 복원할 버전이 지금은 없는 자료·사진을 참조하면 422 RESTORE_REFERENCE_INVALID(계약 확인 ⑲)."
     },
@@ -641,7 +919,15 @@
       "request": {
         "method": "PATCH",
         "path": "/api/v1/sessions/sess_demo_01/documents/doc_demo_01",
-        "body": {"expected_revision": 1, "operations": [{"op": "delete_block", "block_id": "block_03"}]}
+        "body": {
+          "expected_revision": 1,
+          "operations": [
+            {
+              "op": "delete_block",
+              "block_id": "block_03"
+            }
+          ]
+        }
       },
       "response": {
         "http_status": 409,
@@ -650,7 +936,10 @@
             "code": "DOCUMENT_REVISION_CONFLICT",
             "message": "문서가 변경되었습니다. 최신 문서에서 다시 요청해 주세요.",
             "retryable": false,
-            "details": {"expected_revision": 1, "current_revision": 2},
+            "details": {
+              "expected_revision": 1,
+              "current_revision": 2
+            },
             "request_id": "req_demo_010"
           }
         }
@@ -661,29 +950,75 @@
       "request": {
         "method": "POST",
         "path": "/api/v1/sessions/sess_demo_01/documents/doc_demo_01/validate",
-        "headers": {"Content-Type": "application/json", "Idempotency-Key": "idem_demo_030"},
-        "body": {"expected_revision": 4, "input_revision": 2}
+        "headers": {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "idem_demo_030"
+        },
+        "body": {
+          "expected_revision": 4,
+          "input_revision": 2
+        }
       },
       "response": {
         "http_status": 202,
-        "body": {"job_id": "job_demo_validate_01", "status": "queued", "kind": "validate", "session_id": "sess_demo_01", "created_at": "2026-09-26T09:00:00Z"}
+        "body": {
+          "job_id": "job_demo_validate_01",
+          "status": "queued",
+          "kind": "validate",
+          "session_id": "sess_demo_01",
+          "created_at": "2026-09-26T09:00:00Z"
+        }
       },
       "_note": "Job 완료 시 result_ref = {type: 'validation', validation_id, status}. 같은 문서·문서 버전·입력 버전의 진행 중 Job이 있으면 그 Job을 돌려준다. 검증 도중 문서/입력이 바뀌면 결과를 버리고 failed(계약 확인 ㉔)."
     },
     {
       "name": "문서 조회 (검증 결과 포함)",
-      "request": {"method": "GET", "path": "/api/v1/sessions/sess_demo_01/documents/doc_demo_01"},
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess_demo_01/documents/doc_demo_01"
+      },
       "response": {
         "http_status": 200,
         "body": {
-          "document": {"...": "Document(status는 읽을 때 계산: draft / review_required / ready_for_approval / approved)"},
+          "document": {
+            "...": "Document(status는 읽을 때 계산: draft / review_required / ready_for_approval / approved)"
+          },
           "validation": {
-            "validation_id": "val_demo_01", "document_id": "doc_demo_01", "document_revision": 4, "input_revision": 2,
-            "status": "failed", "issue_ids": ["iss_demo_10", "iss_demo_11"],
-            "checks": [{"check_key": "required_content", "kind": "server", "block_ids": [], "result": "ok", "reused_from_validation_id": null},
-                       {"check_key": "agent:block_02", "kind": "agent", "block_ids": ["block_02"], "result": "ok", "reused_from_validation_id": "val_demo_00"}],
-            "agent_called": false, "checked_block_ids": [], "reused_block_ids": ["block_01", "block_02"],
-            "base_validation_id": "val_demo_00", "created_at": "2026-09-26T09:00:05Z"
+            "validation_id": "val_demo_01",
+            "document_id": "doc_demo_01",
+            "document_revision": 4,
+            "input_revision": 2,
+            "status": "failed",
+            "issue_ids": [
+              "iss_demo_10",
+              "iss_demo_11"
+            ],
+            "checks": [
+              {
+                "check_key": "required_content",
+                "kind": "server",
+                "block_ids": [],
+                "result": "ok",
+                "reused_from_validation_id": null
+              },
+              {
+                "check_key": "agent:block_02",
+                "kind": "agent",
+                "block_ids": [
+                  "block_02"
+                ],
+                "result": "ok",
+                "reused_from_validation_id": "val_demo_00"
+              }
+            ],
+            "agent_called": false,
+            "checked_block_ids": [],
+            "reused_block_ids": [
+              "block_01",
+              "block_02"
+            ],
+            "base_validation_id": "val_demo_00",
+            "created_at": "2026-09-26T09:00:05Z"
           },
           "approval": null
         }
@@ -692,20 +1027,59 @@
     },
     {
       "name": "문제 목록",
-      "request": {"method": "GET", "path": "/api/v1/sessions/sess_demo_01/documents/doc_demo_01/issues"},
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess_demo_01/documents/doc_demo_01/issues"
+      },
       "response": {
         "http_status": 200,
         "body": {
-          "document_id": "doc_demo_01", "document_revision": 4, "validation_id": "val_demo_01",
+          "document_id": "doc_demo_01",
+          "document_revision": 4,
+          "validation_id": "val_demo_01",
           "issues": [
-            {"issue_id": "iss_demo_10", "scope": "content", "code": "UNSUPPORTED_CLAIM", "severity": "blocker", "status": "open",
-             "message": "근거(fact_ids·evidence_refs)가 없는 사실 주장입니다. 주장을 지우거나 근거를 연결한 뒤 다시 검증하세요.",
-             "source_ids": [], "fact_ids": [], "block_ids": ["block_09"], "resolution": null, "origin": "server",
-             "created_at": "2026-09-26T09:00:05Z", "updated_at": "2026-09-26T09:00:05Z"},
-            {"issue_id": "iss_demo_11", "scope": "content", "code": "PLACEHOLDER_TEXT", "severity": "warning", "status": "acknowledged",
-             "message": "안내 문구가 남아 있습니다. 내용을 채우거나 블록을 지우세요.", "source_ids": [], "fact_ids": [], "block_ids": ["block_07"],
-             "resolution": {"action": "acknowledged", "by": "own_demo", "at": "2026-09-26T09:01:00Z", "reason": "검토함", "evidence_refs": [], "document_revision": 4, "input_revision": 2},
-             "origin": "server", "created_at": "2026-09-26T09:00:05Z", "updated_at": "2026-09-26T09:01:00Z"}
+            {
+              "issue_id": "iss_demo_10",
+              "scope": "content",
+              "code": "UNSUPPORTED_CLAIM",
+              "severity": "blocker",
+              "status": "open",
+              "message": "근거(fact_ids·evidence_refs)가 없는 사실 주장입니다. 주장을 지우거나 근거를 연결한 뒤 다시 검증하세요.",
+              "source_ids": [],
+              "fact_ids": [],
+              "block_ids": [
+                "block_09"
+              ],
+              "resolution": null,
+              "origin": "server",
+              "created_at": "2026-09-26T09:00:05Z",
+              "updated_at": "2026-09-26T09:00:05Z"
+            },
+            {
+              "issue_id": "iss_demo_11",
+              "scope": "content",
+              "code": "PLACEHOLDER_TEXT",
+              "severity": "warning",
+              "status": "acknowledged",
+              "message": "안내 문구가 남아 있습니다. 내용을 채우거나 블록을 지우세요.",
+              "source_ids": [],
+              "fact_ids": [],
+              "block_ids": [
+                "block_07"
+              ],
+              "resolution": {
+                "action": "acknowledged",
+                "by": "own_demo",
+                "at": "2026-09-26T09:01:00Z",
+                "reason": "검토함",
+                "evidence_refs": [],
+                "document_revision": 4,
+                "input_revision": 2
+              },
+              "origin": "server",
+              "created_at": "2026-09-26T09:00:05Z",
+              "updated_at": "2026-09-26T09:01:00Z"
+            }
           ]
         }
       },
@@ -716,14 +1090,34 @@
       "request": {
         "method": "POST",
         "path": "/api/v1/sessions/sess_demo_01/issues/iss_demo_11/resolve",
-        "headers": {"Content-Type": "application/json", "Idempotency-Key": "idem_demo_031"},
-        "body": {"expected_revision": 4, "resolution": {"action": "acknowledged", "reason": "검토함"}, "evidence_refs": []}
+        "headers": {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "idem_demo_031"
+        },
+        "body": {
+          "expected_revision": 4,
+          "resolution": {
+            "action": "acknowledged",
+            "reason": "검토함"
+          },
+          "evidence_refs": []
+        }
       },
       "response": {
         "http_status": 200,
-        "body": {"issue": {"issue_id": "iss_demo_11", "status": "acknowledged", "...": "IssueOut"},
-                 "validation": {"validation_id": "val_demo_01", "status": "failed", "...": "ValidationOut(전체 문제 재합산)"},
-                 "document_status": "review_required"}
+        "body": {
+          "issue": {
+            "issue_id": "iss_demo_11",
+            "status": "acknowledged",
+            "...": "IssueOut"
+          },
+          "validation": {
+            "validation_id": "val_demo_01",
+            "status": "failed",
+            "...": "ValidationOut(전체 문제 재합산)"
+          },
+          "document_status": "review_required"
+        }
       },
       "_note": "계약 확인 ㉗. 거부: 422 RESOLUTION_NOT_ALLOWED(warning 아님·MOCK_VALUE·필수 결핍 제외 등), 422 ISSUE_STILL_PRESENT(원인·주장이 아직 남음), 422 REVALIDATION_REQUIRED(AI 검증 문제는 validate로만)."
     },
@@ -732,13 +1126,34 @@
       "request": {
         "method": "POST",
         "path": "/api/v1/sessions/sess_demo_01/documents/doc_demo_01/approvals",
-        "headers": {"Content-Type": "application/json", "Idempotency-Key": "idem_demo_032"},
-        "body": {"expected_revision": 4, "input_revision": 2, "format": "pdf", "validation_id": "val_demo_01", "layout_check_id": "lc_demo_01", "confirmed": true}
+        "headers": {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "idem_demo_032"
+        },
+        "body": {
+          "expected_revision": 4,
+          "input_revision": 2,
+          "format": "pdf",
+          "validation_id": "val_demo_01",
+          "layout_check_id": "lc_demo_01",
+          "confirmed": true
+        }
       },
       "response": {
         "http_status": 422,
-        "body": {"error": {"code": "LAYOUT_NOT_READY", "message": "요청 형식의 배치 검사가 현재 문서에서 완료되지 않았습니다.", "retryable": false,
-                           "details": {"layout_check_id": "lc_demo_01", "format": "pdf", "reason": "layout_check_not_found"}, "request_id": "req_demo_032"}}
+        "body": {
+          "error": {
+            "code": "LAYOUT_NOT_READY",
+            "message": "요청 형식의 배치 검사가 현재 문서에서 완료되지 않았습니다.",
+            "retryable": false,
+            "details": {
+              "layout_check_id": "lc_demo_01",
+              "format": "pdf",
+              "reason": "layout_check_not_found"
+            },
+            "request_id": "req_demo_032"
+          }
+        }
       },
       "_note": "승인 7조건 순서: ①접근 ②DOCUMENT_REVISION_CONFLICT ③INPUT_REVISION_CONFLICT/PREFLIGHT_NOT_CONFIRMED ④VALIDATION_NOT_PASSED ⑤UNRESOLVED_REQUIRED ⑥LAYOUT_NOT_READY ⑦APPROVAL_NOT_CONFIRMED. BE-08 연결 전에는 배치 검사 행이 없어 ⑥에서 멈추는 것이 정상."
     },
@@ -747,10 +1162,21 @@
       "response": {
         "http_status": 201,
         "body": {
-          "approval_id": "apr_demo_01", "document_id": "doc_demo_01", "document_revision": 4, "input_revision": 2, "format": "pdf",
-          "validation_id": "val_demo_01", "layout_check_id": "lc_demo_01", "template_version": "template_v0",
-          "render_options_hash": "…", "asset_manifest_hash": "…", "approved_at": "2026-09-26T09:05:00Z", "approved_by": "own_demo",
-          "status": "active", "invalidated_at": null, "invalidated_reason": null
+          "approval_id": "apr_demo_01",
+          "document_id": "doc_demo_01",
+          "document_revision": 4,
+          "input_revision": 2,
+          "format": "pdf",
+          "validation_id": "val_demo_01",
+          "layout_check_id": "lc_demo_01",
+          "template_version": "template_v0",
+          "render_options_hash": "…",
+          "asset_manifest_hash": "…",
+          "approved_at": "2026-09-26T09:05:00Z",
+          "approved_by": "own_demo",
+          "status": "active",
+          "invalidated_at": null,
+          "invalidated_reason": null
         }
       },
       "_note": "같은 키·같은 본문 재전송은 이 응답 그대로(Approval 1건). 문서 편집·순서 변경·편집안 적용·restore·입력 변경 시 status=invalidated(계약 확인 ㉘ invalidated_reason: document_changed / input_changed)이며 되살아나지 않는다."
@@ -760,8 +1186,14 @@
       "request": {
         "method": "POST",
         "path": "/api/v1/sessions/sess_demo_01/exports",
-        "headers": {"Content-Type": "application/json", "Idempotency-Key": "idem_demo_011"},
-        "body": {"approval_id": "apr_demo_01", "format": "pdf"}
+        "headers": {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "idem_demo_011"
+        },
+        "body": {
+          "approval_id": "apr_demo_01",
+          "format": "pdf"
+        }
       },
       "response": {
         "http_status": 202,
@@ -781,7 +1213,10 @@
     },
     {
       "name": "출력 다운로드",
-      "request": {"method": "GET", "path": "/api/v1/sessions/sess_demo_01/exports/exp_demo_01/download"},
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess_demo_01/exports/exp_demo_01/download"
+      },
       "response": {
         "http_status": 200,
         "headers": {
@@ -794,7 +1229,10 @@
     },
     {
       "name": "만료된 세션",
-      "request": {"method": "GET", "path": "/api/v1/sessions/sess_demo_old"},
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess_demo_old"
+      },
       "response": {
         "http_status": 410,
         "body": {
@@ -810,7 +1248,10 @@
     },
     {
       "name": "다른 세션 자원 접근",
-      "request": {"method": "GET", "path": "/api/v1/sessions/sess_demo_01/assets/asset_other_session"},
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess_demo_01/assets/asset_other_session"
+      },
       "response": {
         "http_status": 404,
         "body": {
@@ -827,7 +1268,15 @@
     },
     {
       "name": "지원하지 않는 파일 형식",
-      "request": {"method": "POST", "path": "/api/v1/sessions/sess_demo_01/sources", "form": {"files": ["자료.hwp"]}},
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/sessions/sess_demo_01/sources",
+        "form": {
+          "files": [
+            "자료.hwp"
+          ]
+        }
+      },
       "response": {
         "http_status": 415,
         "body": {
@@ -835,12 +1284,484 @@
             "code": "UNSUPPORTED_FILE_TYPE",
             "message": "지원하지 않는 파일 형식입니다. TXT, PDF, DOCX, PPTX, JPG, PNG를 사용해 주세요.",
             "retryable": false,
-            "details": {"file_name": "자료.hwp", "allowed": ["txt", "pdf", "docx", "pptx", "jpg", "png"]},
+            "details": {
+              "file_name": "자료.hwp",
+              "allowed": [
+                "txt",
+                "pdf",
+                "docx",
+                "pptx",
+                "jpg",
+                "png"
+              ]
+            },
             "request_id": "req_demo_014"
           }
         }
       },
       "_note": "허용 목록은 D-01 후보이며 확정 전."
+    },
+    {
+      "name": "배치 검사 요청(pdf) — BE-08 실응답",
+      "request": {
+        "method": "POST",
+        "path": "/sessions/{sid}/documents/{did}/layout-checks",
+        "headers": {
+          "Idempotency-Key": "demo-lc-pdf-1"
+        },
+        "body": {
+          "expected_revision": 2,
+          "format": "pdf"
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "job_id": "job_7053ba25f45b4428",
+          "status": "queued",
+          "kind": "layout_check",
+          "session_id": "sess_f0b32adfcc2b4988",
+          "created_at": "2026-09-26T17:34:04Z"
+        }
+      },
+      "_note": "kind=layout_check Job. 같은 문서@버전@입력@형식의 진행 중 Job이 있으면 그 Job을 돌려준다. 결과는 Job.result_ref와 GET /documents/{did}의 layout_checks{pdf,docx}로 본다(새 조회 경로 없음, 계약 확인 ㉟)."
+    },
+    {
+      "name": "배치 검사 Job 완료(pdf) — BE-08 실응답",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/sessions/{sid}/jobs/{jid}"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "job_id": "job_7053ba25f45b4428",
+          "kind": "layout_check",
+          "status": "succeeded",
+          "progress": {
+            "stage": "done",
+            "message": null
+          },
+          "result_ref": {
+            "layout_check_id": "lc_b80bf068f1214bc6",
+            "format": "pdf",
+            "status": "passed",
+            "layout_ok": true,
+            "publication_policy_ok": true,
+            "actual_pages": 4,
+            "artifact_id": "art_b193e766a8d841bb",
+            "preview_asset_ids": [
+              "prv_97ebccf41c9e4552",
+              "prv_349c1e8336ea4a1f",
+              "prv_aa3bb78d1f9b4ffe",
+              "prv_b28e4cdacc07432f"
+            ],
+            "preview_basis": "pdf",
+            "warnings": []
+          },
+          "error": null,
+          "created_at": "2026-09-26T17:34:04Z",
+          "updated_at": "2026-09-26T17:34:14Z"
+        }
+      },
+      "_note": "result_ref에 layout_check_id·status·layout_ok·publication_policy_ok·actual_pages·artifact_id·preview_asset_ids(GET /assets/{asset_id}로 PNG)·preview_basis. 서버 경로는 넣지 않는다. status=passed ⇔ layout_ok AND publication_policy_ok."
+    },
+    {
+      "name": "문서 조회 + 형식별 배치 검사(BE-08 실응답)",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/sessions/{sid}/documents/{did}"
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "document": {
+            "document_id": "doc_a53f1a5bed454e5e",
+            "document_revision": 2,
+            "status": "ready_for_approval",
+            "...": "(BE-04/05 예시와 같음)"
+          },
+          "validation": {
+            "validation_id": "val_e58a3d30034f4b90",
+            "status": "passed",
+            "...": "(BE-06 예시와 같음)"
+          },
+          "approval": null,
+          "layout_checks": {
+            "pdf": {
+              "layout_check_id": "lc_b80bf068f1214bc6",
+              "document_id": "doc_a53f1a5bed454e5e",
+              "document_revision": 2,
+              "input_revision": 2,
+              "format": "pdf",
+              "status": "passed",
+              "template_version": "template_v0",
+              "render_options_hash": "34673880fdef80f9",
+              "asset_manifest_hash": "72a8be88d00875fd",
+              "actual_pages": 4,
+              "issue_ids": [],
+              "layout_ok": true,
+              "publication_policy_ok": true,
+              "publication_blocks": [],
+              "checks": [
+                {
+                  "check_key": "overflow",
+                  "required": true,
+                  "result": "ok",
+                  "block_ids": [],
+                  "page_ids": [],
+                  "reason": null
+                },
+                {
+                  "check_key": "broken_image",
+                  "required": true,
+                  "result": "ok",
+                  "block_ids": [],
+                  "page_ids": [],
+                  "reason": null
+                },
+                {
+                  "check_key": "placeholder_remaining",
+                  "required": true,
+                  "result": "ok",
+                  "block_ids": [],
+                  "page_ids": [],
+                  "reason": null
+                }
+              ],
+              "findings": [],
+              "fail_reasons": [],
+              "renderer": "chrome/153.0.8010.54",
+              "artifact_id": "art_b193e766a8d841bb",
+              "preview_asset_ids": [
+                "prv_97ebccf41c9e4552",
+                "prv_349c1e8336ea4a1f",
+                "prv_aa3bb78d1f9b4ffe",
+                "prv_b28e4cdacc07432f"
+              ],
+              "preview_basis": "pdf",
+              "warnings": [],
+              "created_at": "2026-09-26T17:34:14Z"
+            },
+            "docx": null
+          }
+        }
+      },
+      "_note": "layout_checks는 현재 문서·입력 버전의 형식별 최신 LayoutCheck(계약 확인 ㉜·㉟). DOCX 예시는 아래 참조. checks[]는 {check_key, required, result: ok/finding/not_checked, block_ids, page_ids, reason}."
+    },
+    {
+      "name": "배치 검사(docx) — 파일 생성·PDF 기준 미리보기, 승인 불가(BE-08 실응답)",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/sessions/{sid}/documents/{did}/layout-checks",
+        "body": {
+          "expected_revision": 2,
+          "format": "docx"
+        }
+      },
+      "response": {
+        "status": 202,
+        "job_result_ref": {
+          "layout_check_id": "lc_13f8345ad7334c3c",
+          "format": "docx",
+          "status": "failed",
+          "layout_ok": false,
+          "publication_policy_ok": true,
+          "actual_pages": null,
+          "artifact_id": "art_6886de9ec8194f64",
+          "preview_asset_ids": [
+            "prv_c28dd7958d894456",
+            "prv_5575693036874fbf",
+            "prv_d53e3c94963e4c62",
+            "prv_0d927c9c98814a52"
+          ],
+          "preview_basis": "pdf",
+          "warnings": [
+            "DOCX 미리보기는 같은 스냅샷의 PDF 렌더 기준이며 DOCX 배치 검사 증거가 아닙니다. DOCX 쪽 나눔은 열람 프로그램에 따라 달라질 수 있습니다.",
+            "DOCX는 넘침 검사를 실제로 수행하지 못해(overflow not_checked) 이 범위에서는 승인·출력할 수 없습니다."
+          ]
+        },
+        "layout_check": {
+          "layout_check_id": "lc_13f8345ad7334c3c",
+          "document_id": "doc_a53f1a5bed454e5e",
+          "document_revision": 2,
+          "input_revision": 2,
+          "format": "docx",
+          "status": "failed",
+          "template_version": "template_v0",
+          "render_options_hash": "34673880fdef80f9",
+          "asset_manifest_hash": "72a8be88d00875fd",
+          "actual_pages": null,
+          "issue_ids": [],
+          "layout_ok": false,
+          "publication_policy_ok": true,
+          "publication_blocks": [],
+          "checks": [
+            {
+              "check_key": "overflow",
+              "required": true,
+              "result": "not_checked",
+              "block_ids": [],
+              "page_ids": [],
+              "reason": "docx_no_layout_engine"
+            },
+            {
+              "check_key": "broken_image",
+              "required": true,
+              "result": "ok",
+              "block_ids": [],
+              "page_ids": [],
+              "reason": null
+            },
+            {
+              "check_key": "placeholder_remaining",
+              "required": true,
+              "result": "ok",
+              "block_ids": [],
+              "page_ids": [],
+              "reason": null
+            }
+          ],
+          "findings": [],
+          "fail_reasons": [
+            "overflow:not_checked"
+          ],
+          "renderer": "python-docx/1.2.0",
+          "artifact_id": "art_6886de9ec8194f64",
+          "preview_asset_ids": [
+            "prv_c28dd7958d894456",
+            "prv_5575693036874fbf",
+            "prv_d53e3c94963e4c62",
+            "prv_0d927c9c98814a52"
+          ],
+          "preview_basis": "pdf",
+          "warnings": [
+            "DOCX 미리보기는 같은 스냅샷의 PDF 렌더 기준이며 DOCX 배치 검사 증거가 아닙니다. DOCX 쪽 나눔은 열람 프로그램에 따라 달라질 수 있습니다.",
+            "DOCX는 넘침 검사를 실제로 수행하지 못해(overflow not_checked) 이 범위에서는 승인·출력할 수 없습니다."
+          ],
+          "created_at": "2026-09-26T17:34:26Z"
+        }
+      },
+      "_note": "DOCX는 overflow가 required·not_checked라 status=failed(fail_reasons overflow:not_checked), actual_pages=null. preview_basis=pdf는 같은 스냅샷의 PDF 렌더이며 DOCX 검사 증거가 아니다(warnings). 승인·Export·다운로드는 이 범위에서 차단(계약 확인 ㉞)."
+    },
+    {
+      "name": "승인 요청 거부(docx, status_failed) — BE-08 실응답",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/sessions/{sid}/documents/{did}/approvals",
+        "body": {
+          "expected_revision": 2,
+          "input_revision": 2,
+          "format": "docx",
+          "validation_id": "val_e58a3d30034f4b90",
+          "layout_check_id": "lc_13f8345ad7334c3c",
+          "confirmed": true
+        }
+      },
+      "response": {
+        "status": 422,
+        "body": {
+          "error": {
+            "code": "LAYOUT_NOT_READY",
+            "message": "요청 형식의 배치 검사가 현재 문서에서 완료되지 않았습니다.",
+            "retryable": false,
+            "details": {
+              "layout_check_id": "lc_13f8345ad7334c3c",
+              "format": "docx",
+              "reason": "status_failed"
+            },
+            "request_id": "req_f8b91ff859a7"
+          }
+        }
+      },
+      "_note": "⑥ reason 값: layout_check_not_found / …_mismatch / status_failed / open_layout_blockers / publication_policy(details.blocked에 asset_id·block_ids·reason not_decided|denied)."
+    },
+    {
+      "name": "승인 성공(pdf, 실제 배치 검사 행) — BE-08 실응답",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/sessions/{sid}/documents/{did}/approvals",
+        "headers": {
+          "Idempotency-Key": "demo-apr-1"
+        },
+        "body": {
+          "expected_revision": 2,
+          "input_revision": 2,
+          "format": "pdf",
+          "validation_id": "val_e58a3d30034f4b90",
+          "layout_check_id": "lc_b80bf068f1214bc6",
+          "confirmed": true
+        }
+      },
+      "response": {
+        "status": 201,
+        "body": {
+          "approval_id": "apr_7d56d3ce73ea40f3",
+          "document_id": "doc_a53f1a5bed454e5e",
+          "document_revision": 2,
+          "input_revision": 2,
+          "format": "pdf",
+          "validation_id": "val_e58a3d30034f4b90",
+          "layout_check_id": "lc_b80bf068f1214bc6",
+          "template_version": "template_v0",
+          "render_options_hash": "34673880fdef80f9",
+          "asset_manifest_hash": "72a8be88d00875fd",
+          "approved_at": "2026-09-26T17:34:26Z",
+          "approved_by": "own_ed3e1df9299c431c8f68ebc611863c1f",
+          "status": "active",
+          "invalidated_at": null,
+          "invalidated_reason": null,
+          "renderer": "chrome/153.0.8010.54",
+          "artifact_id": "art_b193e766a8d841bb"
+        }
+      },
+      "_note": "처음으로 실서버 경로에서 승인 성공(201). renderer·artifact_id는 검사한 렌더러·불변 산출물(식별값 아님). 같은 형식·검증·배치 검사의 active 승인은 재사용, 다른 배치 검사를 명시적으로 승인하면 이전 승인은 superseded."
+    },
+    {
+      "name": "출력 요청(신규, 202) — BE-08 실응답",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/sessions/{sid}/exports",
+        "headers": {
+          "Idempotency-Key": "demo-exp-1"
+        },
+        "body": {
+          "approval_id": "apr_7d56d3ce73ea40f3",
+          "format": "pdf"
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "export": {
+            "export_id": "exp_a466e2aa3db44a4d",
+            "approval_id": "apr_0db064ffa3bb4375",
+            "format": "pdf",
+            "status": "queued",
+            "artifact_id": null,
+            "expires_at": "2026-09-26T20:10:12Z",
+            "error": null,
+            "attempt": 1,
+            "warnings": [],
+            "created_at": "2026-09-26T18:10:12Z",
+            "updated_at": "2026-09-26T18:10:12Z"
+          },
+          "job_id": "job_24fe83e71c3847a6"
+        }
+      },
+      "_note": "Export Job은 렌더·AI 호출 없이 승인이 참조한 artifact를 검증해 발행한다. 요청 순서: 접근 → 같은 키·다른 본문 409 → 현재 필수 조건(승인 active·현재 버전·출력 식별값 일관성·공개 허가·무결성) → 같은 키·같은 본문이면 저장된 최초 응답 그대로 → 재사용 키(approval_id|format|식별값 3종)의 queued/generating/ready 재사용. expires_at=min(세션 만료, 생성+EXPORT_TTL_MINUTES)."
+    },
+    {
+      "name": "출력 요청(같은 Idempotency-Key 재전송) — BE-08 실응답",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/sessions/{sid}/exports",
+        "headers": {
+          "Idempotency-Key": "demo-exp-1"
+        },
+        "body": {
+          "approval_id": "apr_0db064ffa3bb4375",
+          "format": "pdf"
+        }
+      },
+      "response": {
+        "status": 202,
+        "body": {
+          "export": {
+            "export_id": "exp_a466e2aa3db44a4d",
+            "approval_id": "apr_0db064ffa3bb4375",
+            "format": "pdf",
+            "status": "queued",
+            "artifact_id": null,
+            "expires_at": "2026-09-26T20:10:12Z",
+            "error": null,
+            "attempt": 1,
+            "warnings": [],
+            "created_at": "2026-09-26T18:10:12Z",
+            "updated_at": "2026-09-26T18:10:12Z"
+          },
+          "job_id": "job_24fe83e71c3847a6"
+        }
+      },
+      "_note": "Export가 이미 ready가 된 뒤에도 같은 키·같은 본문 재전송은 저장된 최초 응답(202 queued)을 그대로 돌려준다(현재 필수 조건 통과가 먼저, 만료면 410). 현재 상태는 새 키 요청 또는 GET /jobs/{jid}로 본다."
+    },
+    {
+      "name": "출력 요청(ready 재사용, 200) — BE-08 실응답",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/sessions/{sid}/exports",
+        "headers": {
+          "Idempotency-Key": "demo-exp-2"
+        },
+        "body": {
+          "approval_id": "apr_7d56d3ce73ea40f3",
+          "format": "pdf"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "export": {
+            "export_id": "exp_a466e2aa3db44a4d",
+            "approval_id": "apr_0db064ffa3bb4375",
+            "format": "pdf",
+            "status": "ready",
+            "artifact_id": "art_dc95951f4e324c14",
+            "expires_at": "2026-09-26T20:10:12Z",
+            "error": null,
+            "attempt": 1,
+            "warnings": [],
+            "created_at": "2026-09-26T18:10:12Z",
+            "updated_at": "2026-09-26T18:10:12Z"
+          },
+          "job_id": "job_24fe83e71c3847a6"
+        }
+      },
+      "_note": "새 Idempotency-Key로 같은 승인본을 다시 요청: ready면 200, 아니면 202. 만료된 ready는 재사용·캐시 반환하지 않고 failed(expired)로 확정 → 같은 키 410, 새 키는 조건이 유효할 때 새 Export. failed(retryable)는 새 키로 재시도(attempt+1). 브라우저 버전만 바뀐 경우는 식별값이 아니라 온전한 artifact를 그대로 쓴다."
+    },
+    {
+      "name": "출력 다운로드(200) — BE-08 실응답",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/sessions/{sid}/exports/{eid}/download"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/pdf",
+          "Content-Disposition": "attachment; filename=\"company_intro_draft.pdf\"; filename*=UTF-8''%ED%9A%8C%EC%82%AC%EC%86%8C%EA%B0%9C%EC%84%9C_%EC%B4%88%EC%95%88.pdf",
+          "Cache-Control": "private, no-store"
+        },
+        "body": "(PDF 바이트 18566)"
+      },
+      "_note": "매번 소유·세션 유효·Export ready·미만료·Approval active·현재 버전·출력 식별값 일관성·공개 허가·artifact sha256/크기를 재확인하고 파일을 다시 만들지 않는다. 오류: 410 ARTIFACT_EXPIRED / 409 EXPORT_NOT_READY / 409 APPROVAL_NOT_ACTIVE / 422 RENDER_IDENTITY_MISMATCH(reason·recheck_required) / 422 ARTIFACT_INVALID(recheck_required) / 422 IMAGE_PUBLICATION_UNCONFIRMED."
+    },
+    {
+      "name": "승인 후 문서 변경 → 출력 요청 거부(409) — BE-08 실응답",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/sessions/{sid}/exports",
+        "body": {
+          "approval_id": "apr_7d56d3ce73ea40f3",
+          "format": "pdf"
+        }
+      },
+      "response": {
+        "status": 409,
+        "body": {
+          "error": {
+            "code": "APPROVAL_NOT_ACTIVE",
+            "message": "승인이 무효화되었습니다. 배치 검사와 승인을 다시 진행해 주세요.",
+            "retryable": false,
+            "details": {
+              "approval_id": "apr_7d56d3ce73ea40f3",
+              "invalidated_reason": "document_changed"
+            },
+            "request_id": "req_39bda8274007"
+          }
+        }
+      },
+      "_note": "승인이 무효화되면(document_changed/input_changed/superseded/artifact_invalid/publication_changed) APPROVAL_NOT_ACTIVE. 기존 Export는 failed(approval_invalid)로 확정되고 다운로드도 409."
     }
   ]
 }

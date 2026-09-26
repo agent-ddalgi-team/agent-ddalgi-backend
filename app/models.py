@@ -258,7 +258,8 @@ class ValidationOut(BaseModel):
 
 
 class IssueOut(Issue):
-    origin: Literal["server", "agent", "preflight"]
+    origin: Literal["server", "agent", "preflight", "layout"]   # layout = 배치 검사(BE-08, 계약 확인 ㊳)
+    layout_format: Literal["pdf", "docx"] | None = None          # scope=layout Issue의 형식. 공개 허가 Issue는 None(형식 무관)
     created_at: str
     updated_at: str
 
@@ -320,13 +321,98 @@ class ApprovalOut(BaseModel):
     approved_by: str
     status: Literal["active", "invalidated"]
     invalidated_at: str | None = None
-    invalidated_reason: str | None = None   # 계약 확인 ㉘
+    invalidated_reason: str | None = None   # 계약 확인 ㉘. BE-08: superseded / artifact_invalid / publication_changed 추가
+    renderer: str | None = None             # BE-08(㉝ 근거): 검사한 렌더러. 식별값 아님
+    artifact_id: str | None = None          # BE-08: 검사한 불변 산출물
+
+
+# ---------------- 배치 검사·출력 (BE-08, 계약 확인 ㉜·㉟·㊲) ----------------
+
+class LayoutCheckCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int
+    format: Literal["pdf", "docx"]
+
+
+class LayoutCheckRecordOut(BaseModel):
+    check_key: Literal["overflow", "broken_image", "placeholder_remaining"]
+    required: bool
+    result: Literal["ok", "finding", "not_checked"]
+    block_ids: list[str] = Field(default_factory=list)
+    page_ids: list[str] = Field(default_factory=list)
+    reason: str | None = None
+
+
+class FindingOut(BaseModel):
+    kind: Literal["overflow", "broken_image", "placeholder_remaining"]
+    page_id: str
+    block_id: str | None = None
+    message: str
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class PublicationBlockOut(BaseModel):
+    asset_id: str
+    block_ids: list[str] = Field(default_factory=list)
+    reason: Literal["not_decided", "denied"]
+
+
+class LayoutCheckOut(BaseModel):
+    layout_check_id: str
+    document_id: str
+    document_revision: int
+    input_revision: int
+    format: Literal["pdf", "docx"]
+    status: Literal["pending", "passed", "failed"]
+    template_version: str
+    render_options_hash: str
+    asset_manifest_hash: str
+    actual_pages: int | None
+    issue_ids: list[str] = Field(default_factory=list)
+    layout_ok: bool
+    publication_policy_ok: bool
+    publication_blocks: list[PublicationBlockOut] = Field(default_factory=list)
+    checks: list[LayoutCheckRecordOut] = Field(default_factory=list)
+    findings: list[FindingOut] = Field(default_factory=list)
+    fail_reasons: list[str] = Field(default_factory=list)
+    renderer: str | None = None
+    artifact_id: str | None = None
+    preview_asset_ids: list[str] = Field(default_factory=list)
+    preview_basis: Literal["pdf"] | None = None    # DOCX도 같은 스냅샷의 PDF 렌더로 미리보기(검사 증거 아님)
+    warnings: list[str] = Field(default_factory=list)
+    created_at: str
 
 
 class DocumentOut(BaseModel):
     document: Document
     validation: ValidationOut | None = None   # 현재 문서·입력 버전의 최신 검증. 없으면 null
-    approval: ApprovalOut | None = None       # 현재 문서·입력 버전의 active 승인. 없으면 null
+    approval: ApprovalOut | None = None       # 현재 문서·입력 버전의 active 승인(어느 형식이든). 없으면 null
+    layout_checks: dict[str, LayoutCheckOut | None] = Field(default_factory=lambda: {"pdf": None, "docx": None})   # 형식별 최신(BE-08)
+
+
+class ExportCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    approval_id: str
+    format: Literal["pdf", "docx"]
+
+
+class ExportOut(BaseModel):
+    export_id: str
+    approval_id: str
+    format: Literal["pdf", "docx"]
+    status: Literal["queued", "generating", "ready", "failed"]
+    artifact_id: str | None
+    expires_at: str
+    error: JobError | None = None
+    attempt: int = 1
+    warnings: list[str] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+
+
+class ExportAccepted(BaseModel):
+    export: ExportOut
+    job_id: str | None
 
 
 class DraftCreate(BaseModel):

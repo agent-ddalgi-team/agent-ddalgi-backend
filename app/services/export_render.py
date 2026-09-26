@@ -22,6 +22,7 @@ import base64
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import secrets
@@ -448,11 +449,44 @@ def _win_file_version(path: Path) -> str | None:
     return f"{ms >> 16}.{ms & 0xFFFF}.{ls >> 16}.{ls & 0xFFFF}"
 
 
+_last_rmtree_error: dict[str, str] = {}
+
+
+def _force_writable_and_retry(func, target, exc_info):
+    """rmtree 오류 처리: 브라우저 프로필의 읽기 전용 파일(_metadata 등)은 쓰기 가능으로 바꾼 뒤 다시 지운다."""
+    import stat
+
+    try:
+        os.chmod(target, stat.S_IWRITE | stat.S_IREAD)
+        func(target)
+    except OSError as exc:
+        _last_rmtree_error["error"] = f"{func.__name__} {os.path.basename(str(target))}: {type(exc).__name__} {getattr(exc, 'winerror', '')}"
+
+
+def rmtree_retry(path: Path, attempts: int = 5, delay_s: float = 0.2) -> bool:
+    """Windows에서 브라우저 자식 프로세스가 파일을 잠깐 더 잡거나 읽기 전용 파일을 남기는 경우가 있어 지우기를 재시도한다.
+    끝내 못 지우면 False(경고 로그)."""
+    for i in range(attempts):
+        _last_rmtree_error.clear()
+        try:
+            shutil.rmtree(path, onexc=_force_writable_and_retry)
+        except OSError as exc:
+            _last_rmtree_error.setdefault("error", f"rmtree: {type(exc).__name__} {getattr(exc, 'winerror', '')}")
+        if not path.exists():
+            return True
+        time.sleep(delay_s * (i + 1))
+    logging.getLogger(__name__).warning("temp cleanup failed: %s (%s)", path.name, _last_rmtree_error.get("error", "unknown"))
+    return not path.exists()
+
+
 def _browser_args(browser: Path, profile_dir: Path) -> list[str]:
     args = [str(browser), "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
             "--disable-extensions", "--disable-sync", "--disable-background-networking", "--disable-component-update",
             f"--user-data-dir={profile_dir}", f"--window-size={PDF_RENDER_CONSTANTS['window_size']}", "--hide-scrollbars",
-            f"--virtual-time-budget={PDF_RENDER_CONSTANTS['virtual_time_budget_ms']}"]
+            f"--virtual-time-budget={PDF_RENDER_CONSTANTS['virtual_time_budget_ms']}",
+            # 프로필에 구성요소를 내려받거나 백그라운드 작업을 남기지 않게(배치와 무관한 환경 인자, 지문 밖)
+            "--disable-features=OptimizationHints,OptimizationGuideModelDownloading,Translate,MediaRouter,InterestFeedContentSuggestions",
+            "--no-service-autorun", "--password-store=basic", "--disable-breakpad", "--disable-crash-reporter"]
     # 샌드박스를 끄는 인자(--no-sandbox)는 넣지 않는다. Chromium은 root로 실행되면 샌드박스 때문에 시작을 거부하므로
     # 서버는 비root 사용자로 실행해야 한다(README·task_backend.md 6.8-6).
     return args
@@ -569,8 +603,8 @@ def _render_pdf(snapshot: RenderSnapshot, out_dir: Path, settings: Settings | No
     html = build_html(snapshot)
     findings = _snapshot_findings(snapshot)
     details: dict[str, Any] = {"browser_path": str(browser)}
-    with tempfile.TemporaryDirectory(prefix=".render_", dir=out_dir) as tmp:
-        tmp_dir = Path(tmp)
+    tmp_dir = Path(tempfile.mkdtemp(prefix=".render_", dir=out_dir))
+    try:
         html_path = tmp_dir / "page.html"
         html_path.write_text(html, encoding="utf-8")
         pdf_tmp = tmp_dir / "out.pdf"
@@ -591,6 +625,15 @@ def _render_pdf(snapshot: RenderSnapshot, out_dir: Path, settings: Settings | No
             os.replace(pdf_tmp, final)
         except OSError as exc:
             raise RenderError("save_failed", f"파일 저장에 실패했습니다: {final.name}") from exc
+    finally:
+        # 문서 내용이 든 HTML·임시 PDF는 즉시 지운다. 브라우저 프로필 폴더는 자식 프로세스가 잠깐 더 잡을 수 있어 재시도 후
+        # 남으면 호출자(BE-08 Job 임시 폴더 정리·서버 시작 정리)가 마저 지운다.
+        for leftover in (html_path, pdf_tmp):
+            try:
+                leftover.unlink(missing_ok=True)
+            except OSError:
+                pass
+        rmtree_retry(tmp_dir)
     details["fonts"] = info["fonts"]
     checks = [_record("overflow", "pdf", findings, not_checked_reason=overflow_reason),
               _record("broken_image", "pdf", findings), _record("placeholder_remaining", "pdf", findings)]

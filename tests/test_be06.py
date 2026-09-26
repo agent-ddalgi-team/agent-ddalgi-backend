@@ -179,7 +179,7 @@ def test_v5_to_v6_migration_keeps_data_and_is_rerunnable(tmp_path):
     init_db(db, runs)
     init_db(db, runs)  # 재실행 안전
     with sqlite3.connect(db) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 6
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION >= 6   # v7(BE-08)에서도 v5→v6 경로 유지
         assert conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 1
         assert "target_key" in [r[1] for r in conn.execute("PRAGMA table_info(jobs)")]
         for t in ("issues", "validations", "layout_checks", "approvals"):
