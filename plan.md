@@ -51,18 +51,28 @@
 | 등록 자료 | 메타데이터 저장소와 파일 저장소, SQLite 후보 | **결정(2026-09-25, BE-02)**: 메타데이터는 SQLite 파일(`private_runs/app.sqlite3`, 표준 sqlite3, ORM 없음), 파일 바이트는 `private_runs/<session_id>/`. 테이블은 필요한 작업에서 그때 추가(BE-02: sessions, sources, jobs, idempotency_keys). **등록 자료 적재 결정(2026-09-26, 계약 확인 ⑪ 제안값)**: 백엔드 CLI `scripts/import_registered.py`가 팀 자료 묶음(sources.json·company_chunks.jsonl·00_이미지목록.csv·photo_candidates.json, INGEST_SCHEMA v1.1)을 읽어 sources/segments/assets에 scope=registered로 넣는다. status=ready만, mock은 `--with-mock`일 때만. 원본은 `private_runs/registered/`에 복사. 실제 묶음은 gitignore된 `private_runs/registered_src/`에서만. **DB v6(2026-09-26, BE-06)**: `validations`(문서·문서버전·입력버전당 검증 1행, 블록 지문으로 부분 재검증), `issues`(identity_key로 한 행 갱신 → 해결 기록 보존), `approvals`(active/invalidated, 문서·입력 변경 훅에서 무효화), `layout_checks`(저장 구조와 승인 시 조회만 — 실행·API는 BE-08), `jobs.target_key`(문서@버전@입력 단위 Job 중복 방지). Document.status는 저장하지 않고 읽을 때 검증·승인으로 계산(`document_revisions.status`는 캐시) |
 | 검색 | 선택 자료 범위; 기존 Chroma가 있으면 재사용 검토 | 벡터 DB 새 구축은 필수 아님 |
 | 임시 데이터 | 세션 저장소·임시 검색·만료 정리 | 체크포인트·파생 문서까지 적용 |
-| 출력 | 문서 원본에서 PDF/DOCX 생성하는 어댑터 | 도구 미정; 실제 파일 검증 후 선택 |
+| 출력 | 문서 원본에서 PDF/DOCX 생성하는 어댑터 | **결정(2026-09-26, BE-07, D-03)**: `app/services/export_render.py`. DOCX는 python-docx, PDF는 HTML 템플릿(`app/templates/export/company_intro_v0.html`) + 시스템 Chromium 계열 브라우저(Chrome/Edge) headless 인쇄. 새 런타임 Python 의존성 없음(jinja2 명시 선언만). 동봉 폰트 Pretendard v1.3.9(OFL, `app/templates/fonts/`). Export API·LayoutCheck Job·다운로드는 BE-08 |
 
-Playwright와 python-docx는 필수 의존성으로 확정하지 않는다. React 화면 코드는 이 레포의 개발 범위가 아니다. 레포 분리 자체가 서로 다른 도메인 배포를 뜻하지는 않는다. 실제 브라우저/API origin이 다르면 CORS와 인증 전달을 맞춘다.
+Playwright는 필수 의존성이 아니다(BE-07 실험에서 시스템 브라우저 직접 실행으로 대체). python-docx는 읽기(D-01)와 DOCX 쓰기(D-03) 의존성으로 확정했다. React 화면 코드는 이 레포의 개발 범위가 아니다. 레포 분리 자체가 서로 다른 도메인 배포를 뜻하지는 않는다. 실제 브라우저/API origin이 다르면 CORS와 인증 전달을 맞춘다.
 
 | 결정 ID | 결정할 것 | 담당·작업 |
 |---|---|---|
 | D-01 | 지원 형식·크기·개수 | 백엔드 BE-02/BE-03; TXT·텍스트 PDF·DOCX·PPTX·JPG/PNG는 후보. **BE-02 적용값(2026-09-25)**: 파일당 10MB(실제 읽은 바이트 기준), 세션당 10개. **BE-03 확정(2026-09-25)**: 형식 7종 TXT·MD·PDF(텍스트)·DOCX·PPTX·JPG·PNG. 읽기 의존성 pypdf·python-docx(읽기 전용, 출력 도구 D-03과 별개)·python-pptx·Pillow. 스캔 PDF는 partial+IMAGE_ONLY, OCR 없음. 자료당 글자 100,000자 초과는 partial+TEXT_LIMIT. `app/config.py`에서 설정 |
 | D-02 | 세션 만료 시간 | 백엔드 BE-02; 개발 제안은 무활동 120분/생성 후 24시간 중 빠른 때, 실제 운영 전 확정. **BE-02 적용값(2026-09-25)**: 제안값 그대로 `app/config.py` 설정(SESSION_IDLE_MINUTES, SESSION_MAX_HOURS). 상태 변경 요청만 활동으로 세고 GET 조회·작업 폴링은 연장하지 않음 |
-| D-03 | PDF/DOCX 도구 | 백엔드 BE-07; 한글·사진·편집성 비교 |
+| D-03 | PDF/DOCX 도구 | 백엔드 BE-07; 한글·사진·편집성 비교. **BE-07 확정(2026-09-26)**: DOCX=python-docx(쓰기), PDF=HTML 템플릿+인쇄 CSS를 시스템 Chromium 계열 브라우저(Chrome/Edge)로 headless 인쇄(`--print-to-pdf`·`--dump-dom` 1회 실행, 새 Python 의존성 없음). 근거는 아래 D-03 비교표. reportlab은 검증된 대체 후보(브라우저를 둘 수 없는 서버용), Playwright는 같은 결과를 더 빨리 내지만 37MB 패키지·상주 브라우저 관리가 필요해 BE-08에서 성능이 문제될 때 검토. LibreOffice·Playwright 번들 Chromium은 미설치·미실행. 상세 task_backend.md 6.8절 |
 | D-04 | 모델·호출 한도 | Agent AG-01; 실제 호출과 평가로 결정 |
 | D-05 | 기존 사실 스키마 연결 | BE-01 + AG-01; 상세 필드 보존 |
-| D-06 | 출력 템플릿·서체·넘침 | 백엔드 BE-07 + 프론트 FE-07 협의 |
+| D-06 | 출력 템플릿·서체·넘침 | 백엔드 BE-07 + 프론트 FE-07 협의. **BE-07 백엔드 확인(2026-09-26)**: 서체 Pretendard v1.3.9(OFL) 동봉·PDF 임베드 확인(pypdf 폰트명 Pretendard-Regular/Bold 서브셋). DOCX는 글꼴 이름만 지정(이번 구현에서 임베딩 미지원; 로컬 Word 실측에서 Pretendard 미설치 시 한글 바탕·라틴 Cambria로 대체 표시). 넘침 규칙: 논리 Page 1개 = A4 본문 267mm(여백 15mm), 넘치면 잘라내지 않고 다음 물리 쪽으로 흐르며 `overflow` finding(페이지·첫 초과 블록·초과 mm)과 실측 `actual_pages`를 함께 보고. DOCX는 배치 엔진이 없어 overflow=not_checked(required)·actual_pages=null. 템플릿 v0: 페이지 라벨, 제목 3단계(20/14/12pt), 본문 10.5pt, 목록, 이미지(contain 180×120mm 안 비율 유지 / crop 180×100mm cover, 삽입 시 긴 변 1600px 상한)+캡션, 사진 자리·깨진 이미지 점선 상자. **프론트 협의 남은 항목(FE-07)**: ① 최종 서체(Pretendard 유지·굵기 추가 여부) ② 넘침과 target_pages≠actual_pages를 화면에 보이는 방식과 '수용' 흐름(수용이 overflow 검사 면제는 아님) ③ 미리보기 형태(쪽 이미지 여부·해상도) ④ 페이지 라벨 표시 여부 ⑤ DOCX crop 미지원(contain 대체)과 글꼴 대체 안내 문구 ⑥ 표지·헤더·푸터 디자인 |
+
+**D-03 비교표(2026-09-26, BE-07)** — 같은 가상 문서 4종(fixture 1쪽·10쪽, 스트레스 4쪽(넘침·가로/세로/배너 사진·깨진 이미지·사진 자리), mock 업로드 PDF로 만든 실제 흐름 4쪽). 이 PC(Windows 11, Chrome 153) 기준. 생성 시간은 문서당 1회, 브라우저 cold start 포함.
+
+| 후보 | 한글 서체 | 사진(가로·세로·깨진) | 1쪽/다쪽·넘침 | 실제 쪽수 측정 | Windows 설치 부담 | 생성 시간 | 판정 |
+|---|---|---|---|---|---|---|---|
+| (a) HTML+CSS → 시스템 Chrome/Edge CLI | Pretendard 임베드, 어절 단위 줄바꿈(keep-all) | 정상·정상·상자 표시 | 1·10쪽 정확, 넘침은 DOM 측정(페이지·블록·mm) | pypdf, 논리 4쪽→물리 8쪽 검출 | Python 0, 브라우저 실행 파일 필요(Chrome 또는 Edge) | 8.4~12.3초 | **채택** |
+| (a′) HTML → Playwright(channel=chrome) | (a)와 동일 | 동일 | 동일 | 동일 | playwright 36.8MB+greenlet·pyee, 브라우저 별도 | cold 5.8~13.6초 · warm 2.2~3.0초 | 보류(BE-08 성능 필요 시) |
+| (b) reportlab 5.0.1 | Pretendard 임베드, 문자 단위 줄바꿈(라틴 단어 중간 분리) | 정상·정상·상자 표시 | wrap() 사전 측정으로 넘침 검출 | pypdf, 4쪽→8쪽 | 1.9MB 순수 Python | 0.4~0.7초 | 대체 후보(브라우저 불가 서버) |
+| (c) DOCX → LibreOffice | — | — | — | — | 미설치(약 350MB) | — | 미실행/설치 제약 |
+| Playwright 번들 Chromium | — | — | — | — | +150MB 이상(공식 안내), 미다운로드 | — | 미실행 |
 
 임의의 기본 제안을 사용자 확정 값으로 기록하지 않는다. 설정으로 분리하여 후속 변경이 가능하게 한다.
 
