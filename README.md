@@ -50,10 +50,19 @@ uv run pytest
   - 다른 위치면 `.env`에 `EXPORT_BROWSER_PATH=<실행 파일 경로>`를 지정한다. 시간 제한은 `EXPORT_RENDER_TIMEOUT_S`(기본 90초).
 - 한글 서체는 레포에 동봉한 OFL 폰트(Pretendard v1.3.9, `app/templates/fonts/`)를 PDF에 임베드한다.
   DOCX는 글꼴 이름만 지정하므로(이번 구현에서 임베딩 미지원) 받는 사람 환경에 Pretendard가 없으면 다른 글꼴로 대체될 수 있다.
-- 렌더 어댑터는 `app/services/export_render.py`이며 Export API·다운로드는 BE-08에서 연결한다.
+- 렌더 어댑터는 `app/services/export_render.py`이며 배치 검사·Export·다운로드 API는 BE-08에서 연결했다(아래).
 - 도구 비교 실험은 `uv run python scripts/experiments/be07_render_candidates.py`로 재현할 수 있다(출력은 `private_runs/be07/`).
   reportlab·playwright 후보는 설치돼 있을 때만 실행되고 없으면 "미실행/설치 제약"으로 기록된다.
-- PDF 페이지를 그림으로 확인하려면 dev 의존성 pypdfium2를 쓴다(`uv sync`에 포함).
+- 배치 검사 미리보기(쪽 PNG)는 pypdfium2로 만든다(런타임 의존성, `uv sync`에 포함).
+
+### 배치 검사·승인·출력 흐름 (BE-08)
+- `POST /documents/{did}/layout-checks`(202 Job) → `GET /jobs/{jid}` → `GET /documents/{did}`의 `layout_checks.pdf` → 미리보기 `GET /assets/{preview_asset_id}`
+  → `POST /documents/{did}/approvals`(201) → `POST /exports`(202, ready면 200) → `GET /exports/{eid}/download`.
+- PDF만 승인·출력이 열린다. DOCX는 파일 생성과 PDF 기준 미리보기까지이며 승인·출력은 차단된다(task_backend.md 6.9절 ㉞).
+- Export는 배치 검사 때 만든 불변 산출물(`private_runs/<sid>/artifacts/`)을 그대로 내려준다. 파일이 없거나 바뀌면 자동으로 다시 만들지 않고
+  재검사·재승인이 필요하다. `EXPORT_TTL_MINUTES`(기본 120)로 만료.
+- 등록 사진은 `approved_for_external_use=true`일 때만 출력할 수 있다. 값을 바꾸려면 `uv run python scripts/import_registered.py --source-dir <묶음> --update-publication`
+  (같은 사진만 갱신, 관련 승인·출력은 함께 무효화). 공개 API로는 바꿀 수 없다.
 
 ## 문서
 AGENTS.md(작업 규칙) · plan.md · prd.md · contracts.md(API 계약 원본) · task_backend.md · task_agent.md · agent.md · task.md

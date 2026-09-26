@@ -121,6 +121,11 @@ def close(conn: sqlite3.Connection, settings: Settings, owner_id: str, session_i
     conn.execute("UPDATE sources SET deleted_at=? WHERE session_id=? AND deleted_at IS NULL", (closed_at, session_id))
     conn.execute("UPDATE assets SET deleted_at=? WHERE session_id=? AND deleted_at IS NULL", (closed_at, session_id))
     conn.execute("DELETE FROM segments WHERE session_id=?", (session_id,))
+    # BE-08: 미리보기·활성 Export도 즉시 차단 상태로 확정(바이트 삭제·정리 재시도는 BE-09).
+    conn.execute("UPDATE layout_previews SET deleted_at=? WHERE session_id=? AND deleted_at IS NULL", (closed_at, session_id))
+    from app.services import exports as exports_service  # 순환 import 방지
+
+    exports_service.finalize_for_session(conn, session_id, "session_closed")
 
     cleanup = "done"
     directory = session_dir(settings, session_id)

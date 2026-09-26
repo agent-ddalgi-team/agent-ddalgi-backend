@@ -32,7 +32,8 @@ MOCK_LABEL = "[MOCK]"
 REQUIRED_NAME_KEYS = ("company_name",)
 REQUIRED_BUSINESS_KEYS = ("company_summary", "business_areas", "processes", "products_services", "technology")
 NON_ACKNOWLEDGEABLE = {"MOCK_VALUE", "UNSUPPORTED_CLAIM"}   # blocker는 원래 확인 클릭 불가. 명시적으로도 막는다
-NON_EXCLUDABLE = {"MOCK_VALUE", "REQUIRED_MISSING"}
+LAYOUT_ISSUE_CODES = {"LAYOUT_OVERFLOW", "BROKEN_IMAGE", "PLACEHOLDER_REMAINING", "IMAGE_PUBLICATION_UNCONFIRMED"}   # BE-08 ㉜·㊱
+NON_EXCLUDABLE = {"MOCK_VALUE", "REQUIRED_MISSING"} | LAYOUT_ISSUE_CODES
 
 # 계약 확인 ㉛ — 비사실 안내·연결 문장의 제한된 규칙: 아래 머리말로 시작하고 서술형으로 끝나며 숫자·%·주장 키워드가 없고 40자 이하.
 _CONNECTOR_HEAD = re.compile(r"^(다음은|아래는|이어서|이 장에서는|이 페이지에서는|본 자료는|여기서는|다음 페이지에서는)")
@@ -150,15 +151,19 @@ class IssueDraft:
     fact_ids: list[str] = field(default_factory=list)
     source_ids: list[str] = field(default_factory=list)
     origin: str = "server"
+    layout_format: str | None = None   # origin=layout일 때 형식(pdf/docx). 공개 허가 Issue는 None(형식 무관)
 
     @property
     def identity_key(self) -> str:
         # origin이 앞에 온다: 서버 Issue와 Agent Issue는 같은 code·대상이어도 다른 행이다(Agent가 서버 행을 갱신할 수 없다).
-        return "|".join([self.origin, self.scope, self.code, ",".join(sorted(self.block_ids)),
-                         ",".join(sorted(self.fact_ids)), ",".join(sorted(self.source_ids))])
+        key = "|".join([self.origin, self.scope, self.code, ",".join(sorted(self.block_ids)),
+                        ",".join(sorted(self.fact_ids)), ",".join(sorted(self.source_ids))])
+        if self.origin == "layout":
+            key += f"|{self.layout_format or ''}"   # PDF·DOCX 배치 Issue는 서로 다른 행
+        return key
 
 
-KEY_ORIGINS = ("server", "agent", "preflight")
+KEY_ORIGINS = ("server", "agent", "preflight", "layout")   # layout: BE-08 배치 검사. 키 마이그레이션도 이 목록으로 판정한다
 
 
 def migrate_legacy_issue_keys(conn: sqlite3.Connection) -> int:
@@ -332,6 +337,8 @@ def _covered_by_this_validation(row: sqlite3.Row, agent_covered_blocks: set[str]
     서버 검사는 매번 문서 전체를 다시 보므로 항상 True. Agent 검사는 이번에 넘긴 블록(agent_covered_blocks)에 한하고,
     block_ids가 없는 문서 전체 Agent Issue는 전체 검사(agent_full)였을 때만 True.
     """
+    if row["origin"] == "layout":
+        return False   # 배치 Issue는 내용 Validation이 닫지 않는다. 그 형식의 배치 재검사만 닫는다(BE-08)
     if row["origin"] != "agent":
         return True
     blocks = set(json.loads(row["block_ids_json"]))
@@ -398,7 +405,8 @@ def persist_issues(conn: sqlite3.Connection, session_id: str, document: Document
 
 
 def compute_validation_status(conn: sqlite3.Connection, document_id: str) -> str:
-    rows = conn.execute("SELECT severity FROM issues WHERE document_id=? AND status='open'", (document_id,)).fetchall()
+    # 내용 검증 상태. 배치(scope=layout) Issue는 형식별 LayoutCheck·승인 ⑥에서 판단한다(BE-08).
+    rows = conn.execute("SELECT severity FROM issues WHERE document_id=? AND status='open' AND scope<>'layout'", (document_id,)).fetchall()
     if any(r["severity"] == "blocker" for r in rows):
         return "failed"
     if any(r["severity"] == "warning" for r in rows):
@@ -446,7 +454,8 @@ def issue_to_out(row: sqlite3.Row) -> IssueOut:
                     status=row["status"], message=row["message"], source_ids=json.loads(row["source_ids_json"]),
                     fact_ids=json.loads(row["fact_ids_json"]), block_ids=json.loads(row["block_ids_json"]),
                     resolution=json.loads(row["resolution_json"]) if row["resolution_json"] else None,
-                    origin=row["origin"], created_at=row["created_at"], updated_at=row["updated_at"])
+                    origin=row["origin"], layout_format=(row["layout_format"] if "layout_format" in row.keys() else None),
+                    created_at=row["created_at"], updated_at=row["updated_at"])
 
 
 def list_issues(conn: sqlite3.Connection, document_id: str) -> list[IssueOut]:

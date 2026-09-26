@@ -47,11 +47,13 @@ def resolve(conn: sqlite3.Connection, session_row: sqlite3.Row, owner_id: str, d
     doc_blocks = {b.block_id: b for p in document.pages for b in p.blocks}
 
     if action == "acknowledged":
+        if origin == "layout":
+            raise _not_allowed("배치 문제는 확인 클릭으로 넘길 수 없습니다. 해당 형식의 배치 검사를 다시 실행하세요.", code=code, severity=severity)
         if severity != "warning" or code in validation.NON_ACKNOWLEDGEABLE:
             raise _not_allowed("확인 클릭으로 넘길 수 있는 것은 허용된 warning뿐입니다.", code=code, severity=severity)
     elif action == "excluded":
-        if code in validation.NON_EXCLUDABLE:
-            raise _not_allowed("필수 내용 결핍과 mock 자료 문제는 제외로 처리할 수 없습니다.", code=code)
+        if origin == "layout" or code in validation.NON_EXCLUDABLE:
+            raise _not_allowed("필수 내용 결핍·mock 자료·배치 문제는 제외로 처리할 수 없습니다.", code=code)
         remaining_blocks = sorted(b for b in block_ids if b in doc_blocks)
         referencing = sorted(b.block_id for b in doc_blocks.values() if fact_ids & set(b.fact_ids))
         selected = set(json.loads(session_row["selected_source_ids"]))
@@ -62,6 +64,9 @@ def resolve(conn: sqlite3.Connection, session_row: sqlite3.Row, owner_id: str, d
                                  remaining_block_ids=remaining_blocks, referencing_block_ids=referencing,
                                  still_selected_source_ids=still_selected, evidence_block_ids=evidence_using)
     else:  # resolved
+        if origin == "layout":
+            raise ApiError(422, "LAYOUT_RECHECK_REQUIRED", "배치 문제는 해당 형식의 배치 검사를 다시 실행해야 해결됩니다.",
+                           details={"issue_id": issue["issue_id"], "format": issue["layout_format"] if "layout_format" in issue.keys() else None})
         if origin == "agent":
             raise ApiError(422, "REVALIDATION_REQUIRED", "AI 의미 검증 문제는 검증을 다시 실행해야 해결됩니다.",
                            details={"issue_id": issue["issue_id"]})

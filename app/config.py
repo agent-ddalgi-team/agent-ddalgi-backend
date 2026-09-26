@@ -49,6 +49,8 @@ class Settings:
     # 렌더 옵션(용지·여백·폰트)은 설정이 아니라 app/services/layout_checks.py의 DEFAULT_RENDER_OPTIONS(해시 대상)다.
     export_browser_path: str | None = None
     export_render_timeout_s: int = 90
+    # BE-08: Export 만료(분). 세션 만료와 같거나 그 이전으로 잘린다.
+    export_ttl_minutes: int = 120
 
 
 def load_settings() -> Settings:
@@ -75,4 +77,5 @@ def load_settings() -> Settings:
         agent_mode=agent_mode,
         export_browser_path=(os.environ.get("EXPORT_BROWSER_PATH") or "").strip() or None,
         export_render_timeout_s=_env_int("EXPORT_RENDER_TIMEOUT_S", 90),
+        export_ttl_minutes=_env_int("EXPORT_TTL_MINUTES", 120),
     )

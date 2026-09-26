@@ -8,6 +8,7 @@
 - v4 (BE-05): proposals, document_revisions.origin / source_ref
 - v5 (등록 자료 적재): sources·segments·assets에 등록 자료 메타 컬럼, registered_imports(적재 이력)
 - v6 (BE-06): issues, validations, layout_checks(저장 구조만; 실행은 BE-08), approvals, jobs.target_key
+- v7 (BE-08): artifacts(불변 산출물), exports, layout_previews(미리보기; assets와 분리), layout_checks·approvals·issues 컬럼 보강
 시간은 모두 UTC ISO 8601 문자열로 저장한다.
 """
 from __future__ import annotations
@@ -17,7 +18,19 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
+
+# v7: 배치 검사·승인·Issue 보강 컬럼(없는 것만 추가). 기존 v6 행은 NULL로 남고 읽는 쪽이 기본값으로 다룬다.
+V7_COLUMNS: dict[str, list[tuple[str, str]]] = {
+    "layout_checks": [
+        ("layout_ok", "INTEGER"), ("publication_policy_ok", "INTEGER"), ("checks_json", "TEXT"), ("findings_json", "TEXT"),
+        ("fail_reasons_json", "TEXT"), ("renderer", "TEXT"), ("artifact_id", "TEXT"), ("preview_basis", "TEXT"),
+        ("preview_ids_json", "TEXT"), ("job_id", "TEXT"), ("publication_checked_at", "TEXT"), ("warnings_json", "TEXT"),
+        ("publication_blocks_json", "TEXT"),
+    ],
+    "approvals": [("renderer", "TEXT"), ("artifact_id", "TEXT"), ("publication_checked_at", "TEXT")],
+    "issues": [("layout_format", "TEXT")],   # scope=layout Issue의 형식(pdf/docx). 공개 허가 Issue는 NULL(형식 무관)
+}
 
 # v5: 등록 자료 적재용 컬럼. 세션 업로드 자료에서는 NULL/기본값이다.
 V5_COLUMNS: dict[str, list[tuple[str, str]]] = {
@@ -271,6 +284,73 @@ CREATE TABLE IF NOT EXISTS registered_imports (
     created_at      TEXT NOT NULL
 );
 
+-- 불변 산출물(BE-08). 한 번 쓰고 덮어쓰지 않는다. 승인·Export는 artifact_id·sha256·크기로 파일을 고정한다.
+CREATE TABLE IF NOT EXISTS artifacts (
+    artifact_id         TEXT PRIMARY KEY,
+    session_id          TEXT NOT NULL REFERENCES sessions(session_id),
+    document_id         TEXT NOT NULL REFERENCES documents(document_id),
+    document_revision   INTEGER NOT NULL,
+    input_revision      INTEGER NOT NULL,
+    format              TEXT NOT NULL,                -- pdf / docx
+    stored_path         TEXT NOT NULL,                -- private_runs 기준 상대경로. 응답에 넣지 않는다.
+    sha256              TEXT NOT NULL,
+    size_bytes          INTEGER NOT NULL,
+    template_version    TEXT NOT NULL,
+    render_options_hash TEXT NOT NULL,
+    asset_manifest_hash TEXT NOT NULL,
+    renderer            TEXT NOT NULL,
+    actual_pages        INTEGER,
+    layout_check_id     TEXT,
+    created_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_artifacts_session ON artifacts(session_id);
+
+-- 출력 요청(BE-08). 같은 재사용 키의 활성 행(queued/generating/ready)은 하나만(부분 UNIQUE). 만료·실패 행은 ID·시각을 보존한다.
+CREATE TABLE IF NOT EXISTS exports (
+    export_id               TEXT PRIMARY KEY,
+    session_id              TEXT NOT NULL REFERENCES sessions(session_id),
+    approval_id             TEXT NOT NULL,
+    document_id             TEXT NOT NULL,
+    document_revision       INTEGER NOT NULL,
+    input_revision          INTEGER NOT NULL,
+    format                  TEXT NOT NULL,
+    status                  TEXT NOT NULL,            -- queued / generating / ready / failed
+    artifact_id             TEXT,
+    reuse_key               TEXT NOT NULL,            -- approval_id|format|template_version|render_options_hash|asset_manifest_hash
+    attempt                 INTEGER NOT NULL DEFAULT 1,
+    job_id                  TEXT,
+    expires_at              TEXT NOT NULL,
+    error_json              TEXT,
+    renderer                TEXT,
+    publication_checked_at  TEXT,
+    finalized_reason        TEXT,                     -- expired / session_closed / publication_changed ... (failed로 확정한 사유)
+    created_at              TEXT NOT NULL,
+    updated_at              TEXT NOT NULL,
+    published_at            TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_exports_session ON exports(session_id, status);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_exports_active ON exports(reuse_key) WHERE status IN ('queued', 'generating', 'ready');
+
+-- 배치 검사 미리보기(쪽 PNG). assets와 분리해 자료 목록·근거·사진 후보에 섞이지 않는다. GET /assets/{asset_id}가 함께 제공한다.
+CREATE TABLE IF NOT EXISTS layout_previews (
+    asset_id            TEXT PRIMARY KEY,             -- prv_…
+    session_id          TEXT NOT NULL REFERENCES sessions(session_id),
+    layout_check_id     TEXT NOT NULL,
+    artifact_id         TEXT,
+    page_no             INTEGER NOT NULL,
+    stored_path         TEXT NOT NULL,
+    sha256              TEXT NOT NULL,
+    size_bytes          INTEGER NOT NULL,
+    width               INTEGER NOT NULL,
+    height              INTEGER NOT NULL,
+    mime_type           TEXT NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'ready',
+    created_at          TEXT NOT NULL,
+    expires_at          TEXT,
+    deleted_at          TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_layout_previews_session ON layout_previews(session_id);
+
 CREATE TABLE IF NOT EXISTS idempotency_keys (
     idem_key        TEXT NOT NULL,
     owner_id        TEXT NOT NULL,
@@ -349,6 +429,12 @@ def init_db(db_path: Path, private_runs_dir: Path) -> None:
         from app.services.validation import migrate_legacy_issue_keys
 
         migrate_legacy_issue_keys(conn)
+        # v6 → v7: 새 테이블은 IF NOT EXISTS, 기존 테이블은 없는 컬럼만 추가(v6 행 보존).
+        for table, columns in V7_COLUMNS.items():
+            existing = set(_columns(conn, table))
+            for name, ddl in columns:
+                if name not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         conn.commit()
     finally:

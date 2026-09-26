@@ -15,13 +15,13 @@ dependencies = [
     { name = "jinja2" },
     { name = "pillow" },
     { name = "pypdf" },
+    { name = "pypdfium2" },
     { name = "python-docx" },
     { name = "python-pptx" },
 ]
 
 [package.dev-dependencies]
 dev = [
-    { name = "pypdfium2" },
     { name = "pytest" },
 ]
 
@@ -31,15 +31,13 @@ requires-dist = [
     { name = "jinja2", specifier = ">=3.1" },
     { name = "pillow", specifier = ">=12.3.0" },
     { name = "pypdf", specifier = ">=6.19.0" },
+    { name = "pypdfium2", specifier = ">=5.13" },
     { name = "python-docx", specifier = ">=1.2.0" },
     { name = "python-pptx", specifier = ">=1.0.2" },
 ]
 
 [package.metadata.requires-dev]
-dev = [
-    { name = "pypdfium2", specifier = ">=5.13" },
-    { name = "pytest", specifier = ">=9.1.1" },
-]
+dev = [{ name = "pytest", specifier = ">=9.1.1" }]
 
 [[package]]
 name = "agent-detector"
