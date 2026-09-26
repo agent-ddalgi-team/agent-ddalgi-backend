@@ -586,7 +586,8 @@ def test_v3_db_gets_v4_columns_and_table(tmp_path):
         cols = [r[1] for r in conn.execute("PRAGMA table_info(document_revisions)")]
         assert "origin" in cols and "source_ref" in cols
         assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='proposals'").fetchone()
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        from app.db import SCHEMA_VERSION
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
 
 
 def test_mock_source_has_no_real_company_terms():

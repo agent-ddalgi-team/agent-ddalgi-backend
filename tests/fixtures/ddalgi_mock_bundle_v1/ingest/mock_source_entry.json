@@ -1,0 +1,18 @@
+{
+  "source_id": "MOCK01",
+  "filename": "MOCK01.txt",
+  "available_in_package": true,
+  "status": "mock",
+  "path": "originals/MOCK01.txt",
+  "sha256": "946dabef6d96ccbd4f32e906005b71bfa1bc48f3df5d8767e9c2d52d0ff6f628",
+  "date_from_filename": null,
+  "document_date_verified": false,
+  "extraction_method": "mock",
+  "origin_group": "MOCK01",
+  "use_as_company_evidence": true,
+  "note": "[MOCK] 예시 회사의 가상 자료. 자료 기재·회사 확인·공개 허가는 별개이며 --with-mock에서만 사용.",
+  "mock": true,
+  "name": "[MOCK] 예시 회사 소개",
+  "document_date": "2026-08-20",
+  "document_date_note": "[MOCK] 가상 자료 시점. 연도만 있는 값은 정밀도를 유지하며 임의의 월·일을 추가하지 않음."
+}

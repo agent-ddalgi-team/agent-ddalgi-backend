@@ -26,6 +26,7 @@ LABELS = {
     "대응 범위": "capabilities", "납기": "lead_time",
 }
 REQUIRED = ("company_name", "company_summary")  # prd 6절: 최소 필수 = 회사명 + 주요 사업/공정 설명
+MOCK_PREFIX = "[MOCK] "
 FALLBACK_TITLE = "예시 회사"
 _LABEL_RE = re.compile(r"^\s*([^:：]{1,20})\s*[:：]\s*(.+?)\s*$")
 
@@ -39,7 +40,8 @@ def _collect(sources: list[SourceIn]) -> dict[str, list[tuple[str, EvidenceRef]]
     found: dict[str, list[tuple[str, EvidenceRef]]] = {k: [] for k in FIELD_KEYS}
     for src in sources:
         for seg in src.segments:
-            m = _LABEL_RE.match(seg.text)
+            # 등록 mock 자료의 "[MOCK] 회사명: …" — 라벨을 찾을 때만 접두어를 벗긴다. 저장된 text·excerpt는 그대로다.
+            m = _LABEL_RE.match(seg.text.removeprefix(MOCK_PREFIX))
             if not m:
                 continue
             label, value = m.group(1), m.group(2)

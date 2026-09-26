@@ -87,6 +87,10 @@ class SourceOut(BaseModel):
     asset_ids: list[str] = Field(default_factory=list)
     warnings: list[SourceWarning] = Field(default_factory=list)
     expires_at: str | None
+    # 계약 확인 ㉑: 등록 자료 메타(백엔드 제안). 세션 업로드 자료는 document_date=None, is_mock=False, evidence=True.
+    document_date: str | None = None          # "2017"처럼 연도만 있는 값도 문자열 그대로
+    use_as_company_evidence: bool = True      # False면 선택·검색·근거에서 제외(목록에는 표시)
+    is_mock: bool = False
 
 
 class SourceListOut(BaseModel):

@@ -1,0 +1,191 @@
+[
+  {
+    "scenario_id": "source_normal",
+    "stage": "source",
+    "title": "등록 자료로 시작",
+    "path": "ui/scenarios/source_normal.json",
+    "implementation_status": "existing_shapes_fixture"
+  },
+  {
+    "scenario_id": "source_upload",
+    "stage": "source",
+    "title": "이번 세션에만 첨부",
+    "path": "ui/scenarios/source_upload.json",
+    "implementation_status": "existing_shapes_fixture"
+  },
+  {
+    "scenario_id": "source_preflight",
+    "stage": "source",
+    "title": "목적·분량 사전 확인",
+    "path": "ui/scenarios/source_preflight.json",
+    "implementation_status": "existing_shapes_fixture"
+  },
+  {
+    "scenario_id": "source_unread",
+    "stage": "source",
+    "title": "파일 내용을 읽지 못함",
+    "path": "ui/scenarios/source_unread.json",
+    "implementation_status": "existing_shapes_fixture"
+  },
+  {
+    "scenario_id": "source_photoonly",
+    "stage": "source",
+    "title": "사진만 선택함",
+    "path": "ui/scenarios/source_photoonly.json",
+    "implementation_status": "existing_shapes_fixture"
+  },
+  {
+    "scenario_id": "edit_normal",
+    "stage": "edit",
+    "title": "목차·페이지·블록 편집",
+    "path": "ui/scenarios/edit_normal.json",
+    "implementation_status": "existing_shapes_fixture"
+  },
+  {
+    "scenario_id": "edit_conflict",
+    "stage": "edit",
+    "title": "인증 날짜 불일치 비교",
+    "path": "ui/scenarios/edit_conflict.json",
+    "implementation_status": "future_ui_fixture"
+  },
+  {
+    "scenario_id": "edit_required",
+    "stage": "edit",
+    "title": "필수 본문 누락",
+    "path": "ui/scenarios/edit_required.json",
+    "implementation_status": "future_ui_fixture"
+  },
+  {
+    "scenario_id": "edit_nophoto",
+    "stage": "edit",
+    "title": "사진 없이 글 중심 편집",
+    "path": "ui/scenarios/edit_nophoto.json",
+    "implementation_status": "existing_shapes_fixture"
+  },
+  {
+    "scenario_id": "edit_overflow",
+    "stage": "edit",
+    "title": "페이지 넘침",
+    "path": "ui/scenarios/edit_overflow.json",
+    "implementation_status": "future_ui_fixture"
+  },
+  {
+    "scenario_id": "approve_ready",
+    "stage": "approve",
+    "title": "최종 확인·형식 선택",
+    "path": "ui/scenarios/approve_ready.json",
+    "implementation_status": "future_ui_fixture"
+  },
+  {
+    "scenario_id": "approve_blocked",
+    "stage": "approve",
+    "title": "미해결 2건으로 승인 차단",
+    "path": "ui/scenarios/approve_blocked.json",
+    "implementation_status": "future_ui_fixture"
+  },
+  {
+    "scenario_id": "approve_approved",
+    "stage": "approve",
+    "title": "승인 완료·출력 준비",
+    "path": "ui/scenarios/approve_approved.json",
+    "implementation_status": "future_ui_fixture"
+  },
+  {
+    "scenario_id": "approve_modified",
+    "stage": "approve",
+    "title": "승인 후 편집·재승인 필요",
+    "path": "ui/scenarios/approve_modified.json",
+    "implementation_status": "future_ui_fixture"
+  },
+  {
+    "scenario_id": "approve_failure",
+    "stage": "approve",
+    "title": "출력 실패·같은 승인본 재시도",
+    "path": "ui/scenarios/approve_failure.json",
+    "implementation_status": "future_ui_fixture"
+  },
+  {
+    "scenario_id": "edit_proposal",
+    "stage": "edit",
+    "title": "AI 수정안 전후 비교·적용·거절",
+    "path": "ui/scenarios/edit_proposal.json",
+    "implementation_status": "existing_shapes_fixture"
+  },
+  {
+    "scenario_id": "edit_image_candidates",
+    "stage": "edit",
+    "title": "사진 후보 선택·가로세로 비율 비교",
+    "path": "ui/scenarios/edit_image_candidates.json",
+    "implementation_status": "existing_shapes_fixture"
+  },
+  {
+    "scenario_id": "edit_no_image_candidates",
+    "stage": "edit",
+    "title": "사진 후보 없음·추가 업로드 안내",
+    "path": "ui/scenarios/edit_no_image_candidates.json",
+    "implementation_status": "existing_shapes_fixture"
+  },
+  {
+    "scenario_id": "edit_stale_proposal",
+    "stage": "edit",
+    "title": "오래된 수정안 적용 거부",
+    "path": "ui/scenarios/edit_stale_proposal.json",
+    "implementation_status": "existing_shapes_fixture"
+  },
+  {
+    "scenario_id": "edit_save_conflict",
+    "stage": "edit",
+    "title": "저장 충돌·사용자 입력 보존",
+    "path": "ui/scenarios/edit_save_conflict.json",
+    "implementation_status": "existing_shapes_fixture"
+  },
+  {
+    "scenario_id": "edit_unsaved",
+    "stage": "edit",
+    "title": "저장되지 않은 수정",
+    "path": "ui/scenarios/edit_unsaved.json",
+    "implementation_status": "existing_shapes_fixture"
+  },
+  {
+    "scenario_id": "edit_resolved_history",
+    "stage": "edit",
+    "title": "처리한 문제 접기·해결 기록 보기",
+    "path": "ui/scenarios/edit_resolved_history.json",
+    "implementation_status": "future_ui_fixture"
+  },
+  {
+    "scenario_id": "source_empty",
+    "stage": "source",
+    "title": "등록 자료·첨부 없음",
+    "path": "ui/scenarios/source_empty.json",
+    "implementation_status": "existing_shapes_fixture"
+  },
+  {
+    "scenario_id": "source_loading",
+    "stage": "source",
+    "title": "읽기 진행·작업 폴링",
+    "path": "ui/scenarios/source_loading.json",
+    "implementation_status": "existing_shapes_fixture"
+  },
+  {
+    "scenario_id": "edit_input_changed",
+    "stage": "edit",
+    "title": "자료 변경 후 사전 확인 해제",
+    "path": "ui/scenarios/edit_input_changed.json",
+    "implementation_status": "existing_shapes_fixture"
+  },
+  {
+    "scenario_id": "source_expired",
+    "stage": "source",
+    "title": "세션 만료·새 세션 안내",
+    "path": "ui/scenarios/source_expired.json",
+    "implementation_status": "existing_shapes_fixture"
+  },
+  {
+    "scenario_id": "source_old_material",
+    "stage": "source",
+    "title": "2017년 자료·현재 적용 여부 안내",
+    "path": "ui/scenarios/source_old_material.json",
+    "implementation_status": "existing_shapes_fixture"
+  }
+]
