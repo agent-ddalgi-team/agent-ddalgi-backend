@@ -16,23 +16,32 @@ from app.timeutil import now, to_iso
 
 
 def create(conn: sqlite3.Connection, session_id: str, kind: str, stage_message: str,
-           input_revision: int | None = None) -> JobOut:
+           input_revision: int | None = None, target_key: str | None = None) -> JobOut:
     job_id = f"job_{uuid.uuid4().hex[:16]}"
     stamp = to_iso(now())
     progress = {"stage": "queued", "message": stage_message}
     conn.execute(
-        "INSERT INTO jobs (job_id, session_id, kind, status, progress_json, input_revision, created_at, updated_at) "
-        "VALUES (?, ?, ?, 'queued', ?, ?, ?, ?)",
-        (job_id, session_id, kind, json.dumps(progress, ensure_ascii=False), input_revision, stamp, stamp),
+        "INSERT INTO jobs (job_id, session_id, kind, status, progress_json, input_revision, target_key, created_at, updated_at) "
+        "VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?)",
+        (job_id, session_id, kind, json.dumps(progress, ensure_ascii=False), input_revision, target_key, stamp, stamp),
     )
     return get(conn, session_id, job_id)
+
+
+def find_active_by_key(conn: sqlite3.Connection, session_id: str, kind: str, target_key: str) -> JobOut | None:
+    """같은 대상 키(예: 문서@문서버전@입력버전)로 아직 끝나지 않은 작업. 다른 버전의 Job과 섞이지 않는다."""
+    row = conn.execute(
+        "SELECT job_id FROM jobs WHERE session_id=? AND kind=? AND target_key=? "
+        "AND status IN ('queued', 'running', 'waiting_user') ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        (session_id, kind, target_key)).fetchone()
+    return get(conn, session_id, row["job_id"]) if row else None
 
 
 def find_active(conn: sqlite3.Connection, session_id: str, kind: str, input_revision: int) -> JobOut | None:
     """같은 세션·종류·입력 버전으로 아직 끝나지 않은 작업. 중복 실행 대신 이 작업을 돌려준다."""
     row = conn.execute(
         "SELECT job_id FROM jobs WHERE session_id=? AND kind=? AND input_revision=? "
-        "AND status IN ('queued', 'running', 'waiting_user') ORDER BY created_at DESC LIMIT 1",
+        "AND status IN ('queued', 'running', 'waiting_user') ORDER BY created_at DESC, rowid DESC LIMIT 1",
         (session_id, kind, input_revision)).fetchone()
     return get(conn, session_id, row["job_id"]) if row else None
 

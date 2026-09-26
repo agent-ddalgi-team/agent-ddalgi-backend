@@ -10,7 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import Settings, load_settings
 from app.db import connect, init_db
 from app.errors import install_error_handlers
-from app.routers import assets, documents, drafts, jobs, preflights, proposals, registered_sources, sessions, sources
+from app.routers import (approvals, assets, documents, drafts, issues, jobs, preflights, proposals, registered_sources,
+                         sessions, sources, validations)
 from app.services import jobs as jobs_service
 
 API_PREFIX = "/api/v1"
@@ -54,6 +55,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(documents.router, prefix=API_PREFIX)
     app.include_router(proposals.router, prefix=API_PREFIX)
     app.include_router(registered_sources.router, prefix=API_PREFIX)
+    app.include_router(validations.router, prefix=API_PREFIX)
+    app.include_router(issues.router, prefix=API_PREFIX)
+    app.include_router(approvals.router, prefix=API_PREFIX)
 
     @app.get("/", include_in_schema=False)
     def index() -> dict:

@@ -7,6 +7,7 @@
 - v3 (BE-04): preflights, documents + document_revisions(처음부터 버전 구조), jobs.input_revision
 - v4 (BE-05): proposals, document_revisions.origin / source_ref
 - v5 (등록 자료 적재): sources·segments·assets에 등록 자료 메타 컬럼, registered_imports(적재 이력)
+- v6 (BE-06): issues, validations, layout_checks(저장 구조만; 실행은 BE-08), approvals, jobs.target_key
 시간은 모두 UTC ISO 8601 문자열로 저장한다.
 """
 from __future__ import annotations
@@ -16,7 +17,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # v5: 등록 자료 적재용 컬럼. 세션 업로드 자료에서는 NULL/기본값이다.
 V5_COLUMNS: dict[str, list[tuple[str, str]]] = {
@@ -176,6 +177,90 @@ CREATE TABLE IF NOT EXISTS proposals (
 );
 CREATE INDEX IF NOT EXISTS ix_proposals_document ON proposals(document_id, status);
 
+-- 검증 결과. (document_id, document_revision, input_revision)마다 한 번의 검증이 한 행.
+CREATE TABLE IF NOT EXISTS validations (
+    validation_id       TEXT PRIMARY KEY,
+    session_id          TEXT NOT NULL REFERENCES sessions(session_id),
+    document_id         TEXT NOT NULL REFERENCES documents(document_id),
+    document_revision   INTEGER NOT NULL,
+    input_revision      INTEGER NOT NULL,
+    status              TEXT NOT NULL,                -- pending / passed / needs_review / failed
+    issue_ids_json      TEXT NOT NULL,                -- 이 검증 시점의 현재 Issue ID 목록
+    checks_json         TEXT NOT NULL,                -- [{check_key, kind, block_ids, result, reused_from_validation_id}]
+    fingerprints_json   TEXT NOT NULL,                -- {block_id: 지문} — 다음 부분 재검증의 비교 기준
+    base_validation_id  TEXT,                         -- 재사용한 마지막 유효 검증
+    agent_called        INTEGER NOT NULL DEFAULT 0,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_validations_document ON validations(document_id, document_revision, input_revision);
+
+-- 확인할 내용. 같은 identity_key는 검증을 거듭해도 한 행을 갱신한다(해결 기록 보존).
+CREATE TABLE IF NOT EXISTS issues (
+    issue_id                TEXT PRIMARY KEY,
+    session_id              TEXT NOT NULL REFERENCES sessions(session_id),
+    document_id             TEXT NOT NULL REFERENCES documents(document_id),
+    identity_key            TEXT NOT NULL,            -- code + scope + 대상 ID(정렬)
+    scope                   TEXT NOT NULL,            -- source / content / layout
+    code                    TEXT NOT NULL,
+    severity                TEXT NOT NULL,            -- blocker / warning / info
+    status                  TEXT NOT NULL,            -- open / resolved / excluded / acknowledged
+    message                 TEXT NOT NULL,
+    source_ids_json         TEXT NOT NULL,
+    fact_ids_json           TEXT NOT NULL,
+    block_ids_json          TEXT NOT NULL,
+    origin                  TEXT NOT NULL,            -- server / agent / preflight
+    anchor_fingerprint      TEXT,                     -- 관련 내용·근거·입력의 지문. 바뀌면 재확인(open)
+    resolution_json         TEXT,
+    resolution_history_json TEXT NOT NULL DEFAULT '[]',
+    first_validation_id     TEXT,
+    last_validation_id      TEXT,
+    created_at              TEXT NOT NULL,
+    updated_at              TEXT NOT NULL,
+    UNIQUE (document_id, identity_key)
+);
+CREATE INDEX IF NOT EXISTS ix_issues_document ON issues(document_id, status);
+
+-- 배치 검사 결과. BE-06은 저장 구조와 승인 시 조회만 두고, 실행·Job·API는 BE-08.
+CREATE TABLE IF NOT EXISTS layout_checks (
+    layout_check_id     TEXT PRIMARY KEY,
+    session_id          TEXT NOT NULL REFERENCES sessions(session_id),
+    document_id         TEXT NOT NULL REFERENCES documents(document_id),
+    document_revision   INTEGER NOT NULL,
+    input_revision      INTEGER NOT NULL,
+    format              TEXT NOT NULL,                -- pdf / docx
+    template_version    TEXT NOT NULL,
+    render_options_hash TEXT NOT NULL,
+    asset_manifest_hash TEXT NOT NULL,
+    status              TEXT NOT NULL,                -- pending / passed / failed
+    actual_pages        INTEGER,
+    issue_ids_json      TEXT NOT NULL DEFAULT '[]',
+    created_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_layout_checks_document ON layout_checks(document_id, document_revision, format);
+
+-- 승인. 문서/입력 버전이 바뀌면 invalidated로 바뀌고 다시 active가 되지 않는다.
+CREATE TABLE IF NOT EXISTS approvals (
+    approval_id         TEXT PRIMARY KEY,
+    session_id          TEXT NOT NULL REFERENCES sessions(session_id),
+    document_id         TEXT NOT NULL REFERENCES documents(document_id),
+    document_revision   INTEGER NOT NULL,
+    input_revision      INTEGER NOT NULL,
+    format              TEXT NOT NULL,
+    validation_id       TEXT NOT NULL,
+    layout_check_id     TEXT NOT NULL,
+    template_version    TEXT NOT NULL,
+    render_options_hash TEXT NOT NULL,
+    asset_manifest_hash TEXT NOT NULL,
+    approved_at         TEXT NOT NULL,
+    approved_by         TEXT NOT NULL,                -- 서버가 확인한 소유자 ID
+    status              TEXT NOT NULL,                -- active / invalidated
+    invalidated_at      TEXT,
+    invalidated_reason  TEXT,                         -- document_changed / input_changed
+    created_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_approvals_document ON approvals(document_id, status);
+
 -- 등록 자료 적재 이력(scripts/import_registered.py). 원문·경로는 넣지 않고 건수만 남긴다.
 CREATE TABLE IF NOT EXISTS registered_imports (
     import_id       TEXT PRIMARY KEY,
@@ -257,6 +342,13 @@ def init_db(db_path: Path, private_runs_dir: Path) -> None:
             for name, ddl in columns:
                 if name not in existing:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+        # v5 → v6: 새 테이블은 IF NOT EXISTS, jobs에 대상 키(문서@버전@입력) 컬럼.
+        if "target_key" not in _columns(conn, "jobs"):
+            conn.execute("ALTER TABLE jobs ADD COLUMN target_key TEXT")
+        # v6 안에서 identity_key 형식이 origin 포함으로 바뀜(BE-06 리뷰). 옛 형식 행을 한 번 변환한다(재실행 안전).
+        from app.services.validation import migrate_legacy_issue_keys
+
+        migrate_legacy_issue_keys(conn)
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         conn.commit()
     finally:

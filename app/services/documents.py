@@ -38,12 +38,22 @@ def _head(conn: sqlite3.Connection, session_id: str, document_id: str) -> sqlite
     return head
 
 
-def _to_document(head: sqlite3.Row, rev: sqlite3.Row) -> Document:
+def _session_input_revision(conn: sqlite3.Connection, session_id: str) -> int:
+    return conn.execute("SELECT input_revision FROM sessions WHERE session_id=?", (session_id,)).fetchone()[0]
+
+
+def _to_document(conn: sqlite3.Connection, head: sqlite3.Row, rev: sqlite3.Row, *, computed_status: bool) -> Document:
+    from app.services import validation  # 순환 import 방지
+
     content = json.loads(rev["content_json"])
+    # Document.status는 저장값이 아니라 현재 revision + 세션 최신 input_revision 기준의 검증·승인으로 계산한다(BE-06).
+    status = (validation.compute_document_status(conn, head["document_id"], rev["revision"],
+                                                 _session_input_revision(conn, head["session_id"]))
+              if computed_status else rev["status"])
     return Document(
         document_id=head["document_id"], session_id=head["session_id"], document_revision=rev["revision"],
         input_revision=rev["input_revision"], title=content["title"], target_pages=head["target_pages"],
-        status=rev["status"], pages=[Page.model_validate(p) for p in content["pages"]],
+        status=status, pages=[Page.model_validate(p) for p in content["pages"]],
     )
 
 
@@ -51,7 +61,19 @@ def get_current(conn: sqlite3.Connection, session_id: str, document_id: str) -> 
     head = _head(conn, session_id, document_id)
     rev = conn.execute("SELECT * FROM document_revisions WHERE document_id=? AND revision=?",
                        (document_id, head["current_revision"])).fetchone()
-    return _to_document(head, rev)
+    return _to_document(conn, head, rev, computed_status=True)
+
+
+def refresh_status_cache(conn: sqlite3.Connection, session_id: str, document_id: str) -> str:
+    """document_revisions.status는 호환용 캐시. 판정의 원본이 아니며 여기서 계산값을 써 둔다."""
+    from app.services import validation
+
+    head = _head(conn, session_id, document_id)
+    status = validation.compute_document_status(conn, document_id, head["current_revision"],
+                                                _session_input_revision(conn, session_id))
+    conn.execute("UPDATE document_revisions SET status=? WHERE document_id=? AND revision=?",
+                 (status, document_id, head["current_revision"]))
+    return status
 
 
 def get_revision(conn: sqlite3.Connection, session_id: str, document_id: str, revision: int) -> Document:
@@ -61,7 +83,7 @@ def get_revision(conn: sqlite3.Connection, session_id: str, document_id: str, re
     if rev is None:
         raise ApiError(404, "RESOURCE_NOT_FOUND", "요청한 문서 버전이 없습니다.",
                        details={"restore_from_revision": revision})
-    return _to_document(head, rev)
+    return _to_document(conn, head, rev, computed_status=False)  # 과거 버전의 저장 캐시값(참고용)
 
 
 def next_status(previous: str) -> str:
@@ -99,25 +121,27 @@ def add_revision(conn: sqlite3.Connection, session_id: str, document_id: str, ex
 
 
 def on_revision_created(conn: sqlite3.Connection, document_id: str, new_revision: int) -> None:
-    """문서가 바뀌면 그 이전 버전을 기준으로 만든 편집안은 더 이상 적용할 수 없다(stale).
+    """문서가 바뀌면: 이전 기준 편집안은 stale, active 승인은 invalidated(document_changed)."""
+    from app.services import approvals  # 순환 import 방지
 
-    승인 무효화(Approval.status=invalidated)는 BE-06에서 Approval 테이블이 생기면 여기에 붙인다.
-    """
     conn.execute(
         "UPDATE proposals SET status='stale', updated_at=? "
         "WHERE document_id=? AND status='proposed' AND base_document_revision<>?",
         (to_iso(now()), document_id, new_revision))
+    approvals.invalidate_for_document(conn, document_id, "document_changed")
 
 
 def summary_for_session(conn: sqlite3.Connection, session_id: str) -> DocumentSummary | None:
-    row = conn.execute(
-        "SELECT d.document_id, d.current_revision, r.status FROM documents d "
-        "JOIN document_revisions r ON r.document_id=d.document_id AND r.revision=d.current_revision "
-        "WHERE d.session_id=? ORDER BY d.created_at DESC LIMIT 1", (session_id,)).fetchone()
+    from app.services import validation
+
+    row = conn.execute("SELECT document_id, current_revision FROM documents WHERE session_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                       (session_id,)).fetchone()
     if row is None:
         return None
-    return DocumentSummary(document_id=row["document_id"], document_revision=row["current_revision"],
-                           status=row["status"])
+    # 문서 조회와 같은 함수로 계산한다.
+    status = validation.compute_document_status(conn, row["document_id"], row["current_revision"],
+                                                _session_input_revision(conn, session_id))
+    return DocumentSummary(document_id=row["document_id"], document_revision=row["current_revision"], status=status)
 
 
 def exists_for_session(conn: sqlite3.Connection, session_id: str) -> str | None:

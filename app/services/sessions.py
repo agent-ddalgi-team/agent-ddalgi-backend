@@ -98,6 +98,10 @@ def bump_input_revision(conn: sqlite3.Connection, session_id: str, *, brief: Bri
          json.dumps(selected_source_ids) if selected_source_ids is not None else row["selected_source_ids"],
          session_id),
     )
+    # 입력이 바뀌면(자료 선택·정정·제외, 목적 변경 — PATCH inputs·첨부 삭제 모두 이 함수를 지난다) 승인은 무효.
+    from app.services import approvals  # 순환 import 방지
+
+    approvals.invalidate_for_session(conn, session_id, "input_changed")
     return new_revision
 
 

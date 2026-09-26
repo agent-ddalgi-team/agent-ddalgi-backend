@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 
 from app.agent_bridge import (AgentError, AnalyzeRequest, AnalyzeResult, DraftRequest, DraftResult, ProposeRequest,
-                              ProposeResult, SourceIn)
+                              ProposeResult, SourceIn, ValidateRequest, ValidateResult)
 from app.models import (Block, Candidate, EvidenceRef, Fact, Issue, OpDeleteBlock, OpInsertBlock,
                         OpReplaceBlockContent, Page, Recommendations)
 
@@ -29,6 +29,17 @@ REQUIRED = ("company_name", "company_summary")  # prd 6절: 최소 필수 = 회�
 MOCK_PREFIX = "[MOCK] "
 FALLBACK_TITLE = "예시 회사"
 _LABEL_RE = re.compile(r"^\s*([^:：]{1,20})\s*[:：]\s*(.+?)\s*$")
+
+
+def _block_texts(block: Block) -> list[str]:
+    c = block.content
+    if block.type in ("heading", "paragraph"):
+        return [str(c.get("text", ""))]
+    if block.type == "list":
+        return [str(i) for i in c.get("items", [])]
+    if block.type == "image":
+        return [str(c.get("caption", "")), str(c.get("alt", ""))]
+    return [str(c.get("description", ""))]
 
 
 def _evidence(src: SourceIn, seg) -> EvidenceRef:
@@ -206,6 +217,31 @@ class MockAgent:
             candidates.append(Candidate(candidate_id=f"cand_{n:02d}", label=f"사진 후보 {n}", changes=ops))
         return ProposeResult(changes=[], rationale="(mock) 세션 사진마다 후보를 만들었습니다. 고르기 전에는 문서가 바뀌지 않습니다.",
                              candidates=candidates)
+
+    # ---------------- 초안 검증 (BE-06 연결 규격용 mock) ----------------
+    # 결정적 규칙: 바뀐 블록의 텍스트에 최상급·보장 표현이 있으면 warning. 그 외 Issue를 만들지 않는다.
+    # 서버 일반 검사(필수 내용·근거·MOCK)는 서버 몫이며 mock은 그 결과를 건드리지 않는다.
+    SUPERLATIVES = ("최고", "1위", "보장", "최상", "유일")
+    validate_calls = 0  # 테스트에서 호출 횟수를 세는 용도(부분 재검증 시 생략 확인)
+
+    async def validate(self, request: ValidateRequest) -> ValidateResult:
+        type(self).validate_calls += 1
+        changed = set(request.changed_block_ids)
+        issues = []
+        n = 0
+        for page in request.document.pages:
+            for block in page.blocks:
+                if block.block_id not in changed:
+                    continue
+                text = " ".join(_block_texts(block))
+                hit = next((w for w in self.SUPERLATIVES if w in text), None)
+                if hit:
+                    n += 1
+                    issues.append(Issue(issue_id=f"agent_{n:03d}", scope="content", code="UNVERIFIED_SUPERLATIVE",
+                                        severity="warning",
+                                        message=f"'{hit}' 같은 최상급·보장 표현은 근거 조건을 확인해야 합니다.",
+                                        block_ids=[block.block_id], fact_ids=list(block.fact_ids)))
+        return ValidateResult(issues=issues, notes="(mock) 최상급 표현 검사만 수행. 실제 의미 검증 아님.")
 
     def _tidy(self, text: str) -> str:
         tidy = " ".join(text.split())
