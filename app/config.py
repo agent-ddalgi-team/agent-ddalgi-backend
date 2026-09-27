@@ -51,6 +51,10 @@ class Settings:
     export_render_timeout_s: int = 90
     # BE-08: Export 만료(분). 세션 만료와 같거나 그 이전으로 잘린다.
     export_ttl_minutes: int = 120
+    # BE-09: 세션 종료·만료 정리. 배경 sweep 주기(초, 0이면 배경 스레드 없음 — 테스트·CLI 전용), 삭제 재시도 상한, 처리 중 점유 유효시간(초).
+    cleanup_sweep_interval_s: int = 60
+    cleanup_max_attempts: int = 10
+    cleanup_claim_ttl_s: int = 600
 
 
 def load_settings() -> Settings:
@@ -78,4 +82,7 @@ def load_settings() -> Settings:
         export_browser_path=(os.environ.get("EXPORT_BROWSER_PATH") or "").strip() or None,
         export_render_timeout_s=_env_int("EXPORT_RENDER_TIMEOUT_S", 90),
         export_ttl_minutes=_env_int("EXPORT_TTL_MINUTES", 120),
+        cleanup_sweep_interval_s=_env_int("CLEANUP_SWEEP_INTERVAL_S", 60),
+        cleanup_max_attempts=_env_int("CLEANUP_MAX_ATTEMPTS", 10),
+        cleanup_claim_ttl_s=_env_int("CLEANUP_CLAIM_TTL_S", 600),
     )

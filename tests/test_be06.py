@@ -174,7 +174,7 @@ def test_v5_to_v6_migration_keeps_data_and_is_rerunnable(tmp_path):
             conn.execute(f"DROP TABLE {t}")
         conn.execute("ALTER TABLE jobs DROP COLUMN target_key")
         conn.execute("PRAGMA user_version=5")
-        conn.execute("INSERT INTO sessions VALUES ('s1','o1','active',1,'{}','[]','t','t','t',NULL,NULL)")
+        conn.execute("INSERT INTO sessions (session_id, owner_id, status, input_revision, brief_json, selected_source_ids, created_at, last_activity_at, expires_at, closed_at, cleanup_status) VALUES ('s1','o1','active',1,'{}','[]','t','t','t',NULL,NULL)")
         conn.execute("INSERT INTO jobs (job_id, session_id, kind, status, progress_json, created_at, updated_at) VALUES ('j1','s1','read','succeeded','{}','t','t')")
     init_db(db, runs)
     init_db(db, runs)  # 재실행 안전

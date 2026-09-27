@@ -50,12 +50,13 @@ def discard_temp(path: Path) -> None:
     rmtree_retry(path)
 
 
-def cleanup_temp_dirs(settings: Settings, older_than_s: float | None = None) -> int:
+def cleanup_temp_dirs(settings: Settings, older_than_s: float | None = None, protected_job_ids: set[str] | None = None) -> int:
     """임시 폴더 정리. older_than_s=None이면 전부(서버 시작 시: 실행 중인 Job이 없다), 값을 주면 그보다 오래된 것만(실행 중 정기 정리).
-    브라우저 자식 프로세스가 프로필 폴더를 잠깐 더 잡아 즉시 지우지 못한 폴더를 여기서 마저 지운다."""
+    브라우저 자식 프로세스가 프로필 폴더를 잠깐 더 잡아 즉시 지우지 못한 폴더를 여기서 마저 지운다.
+    protected_job_ids(queued/running Job)의 폴더는 나이와 무관하게 지우지 않는다(BE-09)."""
     import time
 
-    from app.services.export_render import rmtree_retry
+    from app.services.export_render import is_link, rmtree_retry
 
     removed = 0
     root = settings.private_runs_dir
@@ -64,12 +65,14 @@ def cleanup_temp_dirs(settings: Settings, older_than_s: float | None = None) -> 
     now_ts = time.time()
     for session in root.iterdir():
         adir = session / ARTIFACT_DIR
-        if not adir.is_dir():
+        if is_link(session) or not adir.is_dir() or is_link(adir):   # 링크(junction/symlink)를 따라 등록 자료·다른 세션에 닿지 않는다(BE-09)
             continue
         for tmp in adir.glob(f"{TEMP_PREFIX}*"):
-            if not tmp.is_dir():
+            if not tmp.is_dir() or is_link(tmp):
                 continue
             if older_than_s is not None and now_ts - tmp.stat().st_mtime < older_than_s:
+                continue
+            if protected_job_ids and tmp.name[len(TEMP_PREFIX):] in protected_job_ids:
                 continue
             if rmtree_retry(tmp, attempts=2):
                 removed += 1

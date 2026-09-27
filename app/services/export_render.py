@@ -463,10 +463,48 @@ def _force_writable_and_retry(func, target, exc_info):
         _last_rmtree_error["error"] = f"{func.__name__} {os.path.basename(str(target))}: {type(exc).__name__} {getattr(exc, 'winerror', '')}"
 
 
+def is_link(path: Path | str) -> bool:
+    """symlink 또는 Windows junction(디렉터리 재분석 지점). 링크 대상은 등록 자료·다른 세션일 수 있어 삭제가 닿으면 안 된다."""
+    p = Path(path)
+    try:
+        if p.is_symlink():
+            return True
+        isjunction = getattr(os.path, "isjunction", None)
+        return bool(isjunction and isjunction(str(p)))
+    except OSError:
+        return True
+
+
+def _detach_links(path: Path) -> int:
+    """path 아래(재귀)의 symlink·junction을 링크 자체만 제거한다(대상은 건드리지 않음). rmtree가 링크를 따라 내려가지 않도록 먼저 끊는다."""
+    removed = 0
+    try:
+        entries = list(os.scandir(path))
+    except OSError:
+        return 0
+    for entry in entries:
+        if is_link(entry.path):
+            try:
+                os.unlink(entry.path)
+            except OSError:
+                try:
+                    os.rmdir(entry.path)
+                except OSError:
+                    continue
+            removed += 1
+        elif entry.is_dir(follow_symlinks=False):
+            removed += _detach_links(Path(entry.path))
+    return removed
+
+
 def rmtree_retry(path: Path, attempts: int = 5, delay_s: float = 0.2) -> bool:
     """Windows에서 브라우저 자식 프로세스가 파일을 잠깐 더 잡거나 읽기 전용 파일을 남기는 경우가 있어 지우기를 재시도한다.
-    끝내 못 지우면 False(경고 로그)."""
+    끝내 못 지우면 False(경고 로그). path 자체가 symlink/junction이면 지우지 않는다(False). 안쪽 링크는 링크만 끊고 대상에는 닿지 않는다(BE-09)."""
+    if is_link(path):
+        logging.getLogger(__name__).warning("refusing to remove a link: %s", path.name)
+        return False
     for i in range(attempts):
+        _detach_links(path)
         _last_rmtree_error.clear()
         try:
             shutil.rmtree(path, onexc=_force_writable_and_retry)

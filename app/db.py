@@ -9,6 +9,8 @@
 - v5 (등록 자료 적재): sources·segments·assets에 등록 자료 메타 컬럼, registered_imports(적재 이력)
 - v6 (BE-06): issues, validations, layout_checks(저장 구조만; 실행은 BE-08), approvals, jobs.target_key
 - v7 (BE-08): artifacts(불변 산출물), exports, layout_previews(미리보기; assets와 분리), layout_checks·approvals·issues 컬럼 보강
+- v8 (BE-09): cleanup_queue(세션 폴더·임시 폴더 삭제 재시도 큐), sessions.purged_at(내용 제거 시각),
+              idempotency_keys.session_id/purged_at(세션 연결·응답 본문 제거) + 기존 행 backfill
 시간은 모두 UTC ISO 8601 문자열로 저장한다.
 """
 from __future__ import annotations
@@ -18,7 +20,13 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
+
+# v8: 세션 정리 컬럼(없는 것만 추가).
+V8_COLUMNS: dict[str, list[tuple[str, str]]] = {
+    "sessions": [("purged_at", "TEXT")],                                  # 세션 내용(원문·파생·초안·응답 캐시) 제거 시각
+    "idempotency_keys": [("session_id", "TEXT"), ("purged_at", "TEXT")],   # 연결 세션·응답 본문 제거 시각
+}
 
 # v7: 배치 검사·승인·Issue 보강 컬럼(없는 것만 추가). 기존 v6 행은 NULL로 남고 읽는 쪽이 기본값으로 다룬다.
 V7_COLUMNS: dict[str, list[tuple[str, str]]] = {
@@ -59,9 +67,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     last_activity_at      TEXT NOT NULL,
     expires_at            TEXT NOT NULL,
     closed_at             TEXT,
-    cleanup_status        TEXT                        -- done / pending (삭제 실패 재시도 대상)
+    cleanup_status        TEXT,                       -- done / pending (마지막 확인 시점의 폴더·큐 상태; BE-09 cleanup.verify_state)
+    purged_at             TEXT                        -- BE-09: 내용 제거(purge) 완료 시각. 종료·만료 확정 트랜잭션에서 함께 기록
 );
 CREATE INDEX IF NOT EXISTS ix_sessions_owner ON sessions(owner_id);
+CREATE INDEX IF NOT EXISTS ix_sessions_status_expires ON sessions(status, expires_at);
 
 -- 등록 자료(scope=registered)는 세션이 없다. 세션 자료는 반드시 세션이 있다.
 CREATE TABLE IF NOT EXISTS sources (
@@ -359,8 +369,30 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
     status_code     INTEGER NOT NULL,
     response_json   TEXT NOT NULL,
     created_at      TEXT NOT NULL,
+    session_id      TEXT,                             -- BE-09: 연결 세션(POST /sessions는 만든 세션). 재전송 시 세션 상태를 함께 본다
+    purged_at       TEXT,                             -- BE-09: 세션 정리로 response_json을 비운 시각
     PRIMARY KEY (idem_key, owner_id, path)
 );
+
+-- 세션 정리 큐(BE-09). 종료·만료 확정 트랜잭션에서 등록되고 배경 sweep·DELETE 직후·CLI가 처리한다. 한 대상의 활성 작업은 하나만.
+CREATE TABLE IF NOT EXISTS cleanup_queue (
+    task_id         TEXT PRIMARY KEY,
+    session_id      TEXT NOT NULL,
+    kind            TEXT NOT NULL,                    -- session_dir(세션 폴더 전체) / orphan_tmp(활성 세션의 끝난 Job 임시 폴더)
+    target_rel      TEXT NOT NULL,                    -- private_runs 기준 상대경로. 항상 <session_id>/ 아래로 제한
+    status          TEXT NOT NULL,                    -- pending / running / done / failed(재시도 상한 도달, 자동 재등록 없음)
+    attempt         INTEGER NOT NULL DEFAULT 0,
+    next_retry_at   TEXT NOT NULL,
+    last_error      TEXT,                             -- 오류 종류만(경로·파일명 없음)
+    claimed_by      TEXT,
+    claimed_at      TEXT,
+    claim_token     TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    done_at         TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_cleanup_queue_status ON cleanup_queue(status, next_retry_at);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_cleanup_queue_active ON cleanup_queue(session_id, kind, target_rel) WHERE status IN ('pending', 'running');
 """
 
 
@@ -394,6 +426,36 @@ def _migrate_v1_to_v2(conn: sqlite3.Connection, private_runs_dir: Path) -> None:
              r["created_at"], r["expires_at"], r["deleted_at"]),
         )
     conn.execute("DROP TABLE sources_v1")
+
+
+def session_id_from_path(path: str, response_json: str | None = None) -> str | None:
+    """멱등 키 경로에서 연결 세션 ID를 얻는다. /api/v1/sessions/{sid}/... → sid, POST /sessions → 응답 본문의 session_id."""
+    import json
+
+    parts = [p for p in path.split("/") if p]
+    if "sessions" in parts:
+        i = parts.index("sessions")
+        if i + 1 < len(parts):
+            return parts[i + 1]
+        if response_json:
+            try:
+                value = json.loads(response_json).get("session_id")
+            except (ValueError, AttributeError):
+                return None
+            return value if isinstance(value, str) else None
+    return None
+
+
+def _backfill_idempotency_sessions(conn: sqlite3.Connection) -> int:
+    """v8 이전 멱등 행에 session_id를 채운다(재실행 안전: NULL인 행만)."""
+    rows = conn.execute("SELECT rowid, path, response_json FROM idempotency_keys WHERE session_id IS NULL").fetchall()
+    filled = 0
+    for r in rows:
+        sid = session_id_from_path(r["path"], r["response_json"])
+        if sid:
+            conn.execute("UPDATE idempotency_keys SET session_id=? WHERE rowid=?", (sid, r["rowid"]))
+            filled += 1
+    return filled
 
 
 def init_db(db_path: Path, private_runs_dir: Path) -> None:
@@ -435,6 +497,14 @@ def init_db(db_path: Path, private_runs_dir: Path) -> None:
             for name, ddl in columns:
                 if name not in existing:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+        # v7 → v8: cleanup_queue는 IF NOT EXISTS, sessions·idempotency_keys는 없는 컬럼만 추가하고 기존 멱등 행의 세션을 backfill.
+        for table, columns in V8_COLUMNS.items():
+            existing = set(_columns(conn, table))
+            for name, ddl in columns:
+                if name not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_idempotency_session ON idempotency_keys(session_id)")   # 새 컬럼 위 인덱스는 컬럼 추가 뒤
+        _backfill_idempotency_sessions(conn)
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         conn.commit()
     finally:

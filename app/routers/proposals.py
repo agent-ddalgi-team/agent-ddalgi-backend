@@ -25,9 +25,10 @@ def _not_applicable(row) -> ApiError:
 
 @router.get("/{pid}", response_model=ProposalOut)
 def get_proposal(request: Request, sid: str, pid: str):
+    settings = settings_of(request)
     owner = require_owner(request)
-    with connect(settings_of(request).db_path) as conn:
-        sessions.load_active(conn, owner, sid)
+    with connect(settings.db_path) as conn:
+        sessions.load_active(conn, owner, sid, settings)
         return proposals.to_out(proposals.get_row(conn, sid, pid))
 
 
@@ -38,10 +39,10 @@ def apply_proposal(request: Request, sid: str, pid: str, body: ApplyBody,
     owner = require_owner(request)
     digest = idempotency.body_hash(body.model_dump())
     with connect(settings.db_path, immediate=True) as conn:
-        row = sessions.load_active(conn, owner, sid)
+        row = sessions.load_active(conn, owner, sid, settings)
         prop = proposals.get_row(conn, sid, pid)
         documents.get_current(conn, sid, prop["document_id"])  # 문서 접근 검사
-        replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest)
+        replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest, settings)
         if replay is not None:
             return replay
         if prop["status"] != "proposed":
@@ -77,7 +78,7 @@ def apply_proposal(request: Request, sid: str, pid: str, body: ApplyBody,
         sessions.touch(conn, settings, row)
         out = DocumentChangeOut(document_id=prop["document_id"], document_revision=new_revision,
                                 input_revision=current.input_revision, status=status, validation_job_id=None)
-        idempotency.remember(conn, idempotency_key, owner, request.url.path, digest, 200, out.model_dump())
+        idempotency.remember(conn, idempotency_key, owner, request.url.path, digest, 200, out.model_dump(), session_id=sid)
     return out
 
 
@@ -86,7 +87,7 @@ def reject_proposal(request: Request, sid: str, pid: str):
     settings = settings_of(request)
     owner = require_owner(request)
     with connect(settings.db_path, immediate=True) as conn:
-        row = sessions.load_active(conn, owner, sid)
+        row = sessions.load_active(conn, owner, sid, settings)
         prop = proposals.get_row(conn, sid, pid)
         current = documents.get_current(conn, sid, prop["document_id"])
         if prop["status"] == "applied":

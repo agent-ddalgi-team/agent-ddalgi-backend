@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,8 +14,10 @@ from app.errors import install_error_handlers
 from app.routers import (approvals, assets, documents, drafts, exports, issues, jobs, layout_checks, preflights, proposals,
                          registered_sources, sessions, sources, validations)
 from app.services import artifacts as artifacts_service
+from app.services import cleanup as cleanup_service
 from app.services import exports as exports_service
 from app.services import jobs as jobs_service
+from app.services import sweeper as sweeper_service
 
 API_PREFIX = "/api/v1"
 logger = logging.getLogger(__name__)
@@ -28,12 +31,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         stale = jobs_service.fail_stale(conn)
         # BE-08: 발행 중이던 Export는 유효 조건을 전부 재확인해 ready(연결 Job 복구) 또는 실제 사유로 failed.
         recovered = exports_service.recover_after_restart(conn, settings)
+    # BE-09: 이전 프로세스의 정리 점유는 모두 무효(단일 프로세스), v8 이전에 닫힌·만료된 세션도 첫 실행에서 내용 제거·큐 등록.
+    with connect(settings.db_path, immediate=True) as conn:
+        reclaimed = cleanup_service.reclaim_stale(conn, settings.cleanup_claim_ttl_s, all_running=True)
+        purged = cleanup_service.purge_unpurged(conn, settings)
     removed = artifacts_service.cleanup_temp_dirs(settings)
-    if stale or recovered["ready"] or recovered["failed"] or removed:
-        logger.warning("startup: %d unfinished job(s) marked failed, exports recovered ready=%d failed=%d, temp dirs removed=%d",
-                       stale, recovered["ready"], recovered["failed"], removed)
+    if stale or recovered["ready"] or recovered["failed"] or removed or reclaimed or purged:
+        logger.warning("startup: %d unfinished job(s) marked failed, exports recovered ready=%d failed=%d, temp dirs removed=%d, "
+                       "cleanup claims reclaimed=%d, sessions purged=%d",
+                       stale, recovered["ready"], recovered["failed"], removed, reclaimed, purged)
 
-    app = FastAPI(title="agent-ddalgi-backend", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        # 배경 정리 스레드(BE-09). CLEANUP_SWEEP_INTERVAL_S=0이면 시작하지 않는다(테스트·CLI는 sweeper.sweep_once를 직접 부른다).
+        sweeper = sweeper_service.Sweeper(settings)
+        sweeper.start()
+        _app.state.sweeper = sweeper
+        try:
+            yield
+        finally:
+            sweeper.stop()
+
+    app = FastAPI(title="agent-ddalgi-backend", version="0.1.0", lifespan=lifespan)
     app.state.settings = settings
 
     app.add_middleware(

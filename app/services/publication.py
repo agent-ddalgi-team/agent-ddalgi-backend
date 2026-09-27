@@ -69,8 +69,10 @@ def check_revision(conn: sqlite3.Connection, document_id: str, revision: int) ->
     if row is None:
         return PublicationResult(ok=False, blocked=[], checked_at=to_iso(now()))
     content = json.loads(row["content_json"])
+    if "pages" not in content:   # BE-09: 세션 정리로 내용이 비워진 버전 — 이미지 참조가 없다
+        return PublicationResult(ok=True, blocked=[], checked_at=to_iso(now()))
     pages = [Page.model_validate(p) for p in content["pages"]]
-    doc = Document(document_id=document_id, session_id="", document_revision=revision, input_revision=0, title=content["title"],
+    doc = Document(document_id=document_id, session_id="", document_revision=revision, input_revision=0, title=content.get("title", ""),
                    target_pages=1, status="draft", pages=pages)
     return check_document(conn, doc)
 

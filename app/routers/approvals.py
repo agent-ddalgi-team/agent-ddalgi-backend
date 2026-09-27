@@ -19,12 +19,12 @@ def create_approval(request: Request, sid: str, did: str, body: ApprovalCreate,
     owner = require_owner(request)
     digest = idempotency.body_hash(body.model_dump())
     with connect(settings.db_path, immediate=True) as conn:
-        row = sessions.load_active(conn, owner, sid)          # ① 세션 유효·접근 가능
+        row = sessions.load_active(conn, owner, sid, settings)          # ① 세션 유효·접근 가능
         document = documents.get_current(conn, sid, did)
         # 등록 사진 공개 허가는 멱등 재전송보다 먼저 현재 값을 본다(BE-08). 깨졌으면 캐시 응답을 돌려주지 않고
         # 조건 ②~⑦을 다시 검사한다(오류 순서는 BE-06 그대로: ④ 내용 검증 → ⑥ 배치·허가).
         pub_now = publication.check_document(conn, document)
-        replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest) if pub_now.ok else None
+        replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest, settings) if pub_now.ok else None
         if replay is not None:
             return replay                                       # 최초 성공 응답. invalidated를 되살리지 않는다
         v, manifest, lc_row, pub = approvals.check_conditions(conn, row, document, body)   # ②~⑦
@@ -37,5 +37,5 @@ def create_approval(request: Request, sid: str, did: str, body: ApprovalCreate,
             out = approvals.create(conn, row, owner, document, body, manifest, lc_row, pub)
         documents.refresh_status_cache(conn, sid, did)
         sessions.touch(conn, settings, row)
-        idempotency.remember(conn, idempotency_key, owner, request.url.path, digest, 201, out.model_dump())
+        idempotency.remember(conn, idempotency_key, owner, request.url.path, digest, 201, out.model_dump(), session_id=sid)
     return JSONResponse(status_code=201, content=out.model_dump())

@@ -32,8 +32,8 @@ def create_export(request: Request, sid: str, body: ExportCreate, background_tas
     digest = idempotency.body_hash(body.model_dump())
     need_job, job_id, export_id = False, None, None
     with connect(settings.db_path, immediate=True) as conn:
-        row = sessions.load_active(conn, owner, sid)                                      # ① 접근·세션
-        replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest)   # ② 같은 키·다른 본문 409
+        row = sessions.load_active(conn, owner, sid, settings)                                      # ① 접근·세션
+        replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest, settings)   # ② 같은 키·다른 본문 409
         approval = conn.execute("SELECT * FROM approvals WHERE approval_id=?", (body.approval_id,)).fetchone()
         verdict = exports.approval_validity(conn, settings, row, approval, body.format)   # ③ 현재 필수 조건(캐시보다 먼저)
         if not verdict.ok:
@@ -60,7 +60,7 @@ def create_export(request: Request, sid: str, body: ExportCreate, background_tas
         status_code = 200 if fresh["status"] == "ready" else 202
         out = ExportAccepted(export=exports.to_out(fresh), job_id=job_id)
         sessions.touch(conn, settings, row)
-        idempotency.remember(conn, idempotency_key, owner, request.url.path, digest, status_code, out.model_dump())
+        idempotency.remember(conn, idempotency_key, owner, request.url.path, digest, status_code, out.model_dump(), session_id=sid)
     if need_job:
         background_tasks.add_task(exports.run_export_job, settings, sid, job_id, export_id)
     return JSONResponse(status_code=status_code, content=out.model_dump())
@@ -71,7 +71,7 @@ def download_export(request: Request, sid: str, eid: str):
     settings = settings_of(request)
     owner = require_owner(request)
     with connect(settings.db_path, immediate=True) as conn:
-        row = sessions.load_active(conn, owner, sid)                       # 소유·세션 유효(만료 410)
+        row = sessions.load_active(conn, owner, sid, settings)                       # 소유·세션 유효(만료 410)
         erow = exports.get(conn, sid, eid)
         artifact = exports.download_check(conn, settings, row, erow)      # ready·미만료·승인 active·현재 버전·허가·무결성
         path = artifacts.path_of(settings, artifact)

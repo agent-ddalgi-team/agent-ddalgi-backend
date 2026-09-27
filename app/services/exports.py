@@ -329,20 +329,19 @@ def recover_after_restart(conn: sqlite3.Connection, settings: Settings) -> dict[
         fresh = conn.execute("SELECT * FROM exports WHERE export_id=?", (row["export_id"],)).fetchone()
         if verdict.ok:
             counts["ready"] += 1
-            if row["job_id"]:
-                conn.execute("UPDATE jobs SET status='succeeded', progress_json=?, result_ref_json=?, error_json=NULL, updated_at=? WHERE job_id=?",
-                             (json.dumps({"stage": "done", "message": None}),
-                              json.dumps({"export_id": row["export_id"], "artifact_id": fresh["artifact_id"], "format": row["format"]}),
-                              to_iso(now()), row["job_id"]))
+            if row["job_id"]:   # fail_stale이 failed로 바꾼 Job을 실제 결과로 덮어쓴다(cancelled는 제외, BE-09)
+                jobs.succeed(conn, row["job_id"], {"export_id": row["export_id"], "artifact_id": fresh["artifact_id"], "format": row["format"]},
+                             allow=jobs.RECOVERABLE)
         else:
             counts["failed"] += 1
             if row["job_id"]:
-                jobs.fail(conn, row["job_id"], verdict.code or "EXPORT_FAILED", verdict.message or "", verdict.retryable, verdict.details)
+                jobs.fail(conn, row["job_id"], verdict.code or "EXPORT_FAILED", verdict.message or "", verdict.retryable, verdict.details,
+                          allow=jobs.RECOVERABLE)
     return counts
 
 
 def finalize_for_session(conn: sqlite3.Connection, session_id: str, reason: str) -> int:
-    """세션 종료·만료 시 활성 Export를 failed로 확정한다(접근 차단은 load_active가 즉시 한다; 바이트 정리는 BE-09)."""
+    """세션 종료·만료 시 활성 Export를 failed로 확정한다(cleanup.finalize가 같은 트랜잭션에서 부른다; 바이트 정리는 정리 큐)."""
     error = {"code": "SESSION_EXPIRED", "message": "세션이 종료되어 출력 결과를 더 이상 제공하지 않습니다.", "retryable": False,
              "details": {}, "request_id": None}
     cur = conn.execute("UPDATE exports SET status='failed', finalized_reason=?, error_json=?, updated_at=? "

@@ -64,5 +64,16 @@ uv run pytest
 - 등록 사진은 `approved_for_external_use=true`일 때만 출력할 수 있다. 값을 바꾸려면 `uv run python scripts/import_registered.py --source-dir <묶음> --update-publication`
   (같은 사진만 갱신, 관련 승인·출력은 함께 무효화). 공개 API로는 바꿀 수 없다.
 
+### 세션 종료·만료 정리 (BE-09)
+- 세션은 `DELETE /sessions/{sid}` 또는 만료(무활동 `SESSION_IDLE_MINUTES` / 생성 후 `SESSION_MAX_HOURS` 중 빠른 때)로 끝난다. 끝나면 한 트랜잭션에서
+  접근 차단(이후 모든 요청 410 `SESSION_EXPIRED`)·내용 제거(brief·원문 구간·사실·초안 본문·편집안·문제 문구·저장된 멱등 응답)·진행 중 Job `cancelled`·활성 Export failed를
+  확정하고 `private_runs/<sid>/` 삭제를 정리 큐(`cleanup_queue`)에 넣는다. 검증·배치 검사·승인·Export·artifact 행(ID·시각·해시)과 등록 자료(`private_runs/registered/`)는 남는다.
+- 만료는 두 곳에서 잡는다. 요청이 들어오면 그 자리에서 확정하고 410을 내며, 요청이 없어도 배경 sweep 스레드가 `CLEANUP_SWEEP_INTERVAL_S`(기본 60초, 0이면 없음)마다
+  만료 확정·큐 처리·폴더 점검을 한다.
+- 폴더 삭제가 실패하면 지수 백오프(2^n분, 최대 60분)로 재시도하고 `CLEANUP_MAX_ATTEMPTS`(기본 10) 뒤 failed로 남는다(자동 재등록 없음).
+  DELETE 응답과 410 `details.cleanup`은 done(내용 제거 + 폴더 없음 + 미완료 작업 없음) 또는 pending이다.
+- 운영 도구: `uv run python scripts/cleanup_sessions.py --once [--dry-run]` · `--list-failed` · `--retry-failed`(ID·건수만 출력). 서버가 떠 있으면 배경 sweep이 같은 일을 한다.
+- 서버 시작 시 이전 프로세스의 정리 점유를 되찾고, 내용 제거가 안 된 closed/expired 세션(v8 이전 DB)을 한 번 정리한다. sweep 요약 로그는 INFO 수준(ID·건수만)이다.
+
 ## 문서
 AGENTS.md(작업 규칙) · plan.md · prd.md · contracts.md(API 계약 원본) · task_backend.md · task_agent.md · agent.md · task.md

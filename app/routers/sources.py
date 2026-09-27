@@ -25,20 +25,20 @@ async def upload_sources(request: Request, sid: str, background_tasks: Backgroun
     settings = settings_of(request)
     owner = require_owner(request)
     with connect(settings.db_path) as conn:
-        row = sessions.load_active(conn, owner, sid)
+        row = sessions.load_active(conn, owner, sid, settings)
         existing = sources.count_for_session(conn, sid)
         uploads = await sources.validate_uploads(settings, existing, files, kind)
         digest = hashlib.sha256(
             json.dumps([(name, hashlib.sha256(content).hexdigest()) for _, name, _, content in uploads]).encode()
         ).hexdigest()
-        replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest)
+        replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest, settings)
         if replay is not None:
             return replay
         items = sources.store(conn, settings, sid, row["expires_at"], kind, uploads)
         job = jobs.create(conn, sid, "read", f"파일 읽기 대기 중 (0/{len(items)})")
         sessions.touch(conn, settings, row)
         out = UploadOut(job_id=job.job_id, items=items)
-        idempotency.remember(conn, idempotency_key, owner, request.url.path, digest, 202, out.model_dump())
+        idempotency.remember(conn, idempotency_key, owner, request.url.path, digest, 202, out.model_dump(), session_id=sid)
     # DB 커밋이 끝난 뒤(with 블록 밖) 백그라운드 읽기를 예약한다.
     background_tasks.add_task(reading.run_read_job, settings, sid, job.job_id, [i.source_id for i in items])
     return JSONResponse(status_code=202, content=out.model_dump())
@@ -46,9 +46,10 @@ async def upload_sources(request: Request, sid: str, background_tasks: Backgroun
 
 @router.get("", response_model=SourceListOut)
 def list_sources(request: Request, sid: str):
+    settings = settings_of(request)
     owner = require_owner(request)
-    with connect(settings_of(request).db_path) as conn:
-        sessions.load_active(conn, owner, sid)
+    with connect(settings.db_path) as conn:
+        sessions.load_active(conn, owner, sid, settings)
         return SourceListOut(items=sources.list_for_session(conn, sid))
 
 
@@ -56,8 +57,8 @@ def list_sources(request: Request, sid: str):
 def delete_source(request: Request, sid: str, source_id: str, expected_input_revision: int):
     settings = settings_of(request)
     owner = require_owner(request)
-    with connect(settings.db_path) as conn:
-        row = sessions.load_active(conn, owner, sid)
+    with connect(settings.db_path, immediate=True) as conn:   # 세션 검사부터 쓰기까지 한 잠금(BE-09 리뷰 1)
+        row = sessions.load_active(conn, owner, sid, settings)
         if expected_input_revision != row["input_revision"]:
             raise ApiError(
                 409, "INPUT_REVISION_CONFLICT",

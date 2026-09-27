@@ -19,12 +19,12 @@ def resolve_issue(request: Request, sid: str, iid: str, body: IssueResolveBody,
     owner = require_owner(request)
     digest = idempotency.body_hash(body.model_dump())
     with connect(settings.db_path, immediate=True) as conn:
-        row = sessions.load_active(conn, owner, sid)
+        row = sessions.load_active(conn, owner, sid, settings)
         issue = conn.execute("SELECT * FROM issues WHERE issue_id=? AND session_id=?", (iid, sid)).fetchone()
         if issue is None:
             raise ApiError(404, "RESOURCE_NOT_FOUND", "요청한 자원을 찾을 수 없습니다.")
         document = documents.get_current(conn, sid, issue["document_id"])
-        replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest)
+        replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest, settings)
         if replay is not None:
             return replay
         pf_row = conn.execute("SELECT preflight_id FROM preflights WHERE session_id=? AND input_revision=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
@@ -36,5 +36,5 @@ def resolve_issue(request: Request, sid: str, iid: str, body: IssueResolveBody,
         sessions.touch(conn, settings, row)
         out = IssueResolveOut(issue=issue_out, validation=validation.to_validation_out(latest) if latest else None,
                               document_status=doc_status)
-        idempotency.remember(conn, idempotency_key, owner, request.url.path, digest, 200, out.model_dump())
+        idempotency.remember(conn, idempotency_key, owner, request.url.path, digest, 200, out.model_dump(), session_id=sid)
     return out

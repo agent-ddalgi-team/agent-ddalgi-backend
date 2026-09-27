@@ -20,10 +20,10 @@ def create_layout_check(request: Request, sid: str, did: str, body: LayoutCheckC
     settings = settings_of(request)
     owner = require_owner(request)
     digest = idempotency.body_hash(body.model_dump())
-    with connect(settings.db_path) as conn:
-        row = sessions.load_active(conn, owner, sid)
+    with connect(settings.db_path, immediate=True) as conn:   # 세션 검사부터 Job 생성·멱등 저장까지 한 잠금(BE-09 리뷰 1)
+        row = sessions.load_active(conn, owner, sid, settings)
         current = documents.get_current(conn, sid, did)
-        replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest)
+        replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest, settings)
         if replay is not None:
             return replay
         if body.expected_revision != current.document_revision:
@@ -40,7 +40,7 @@ def create_layout_check(request: Request, sid: str, did: str, body: LayoutCheckC
         job = jobs.create(conn, sid, "layout_check", "배치 검사 대기 중", input_revision=row["input_revision"], target_key=key)
         sessions.touch(conn, settings, row)
         out = JobAccepted(job_id=job.job_id, status="queued", kind="layout_check", session_id=sid, created_at=job.created_at)
-        idempotency.remember(conn, idempotency_key, owner, request.url.path, digest, 202, out.model_dump())
+        idempotency.remember(conn, idempotency_key, owner, request.url.path, digest, 202, out.model_dump(), session_id=sid)
     background_tasks.add_task(layout_check_jobs.run_layout_check_job, settings, sid, job.job_id, did, current.document_revision,
                               row["input_revision"], body.format)
     return JSONResponse(status_code=202, content=out.model_dump())

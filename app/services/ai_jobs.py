@@ -24,6 +24,7 @@ from app.db import connect
 from app.models import Brief, CheckRecord, Document, Issue, Operation, Page
 from app.services import documents, jobs, preflights, proposals, refs, validation
 from app.services.doc_ops import OpError, apply_operations, touched_block_ids
+from app.timeutil import from_iso, now
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ def _run(fn: Callable[[Any], Any], request: Any) -> Any:
 
 def _load_session_for_job(conn, session_id: str, input_revision: int):
     row = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
-    if row is None or row["status"] != "active":
+    if row is None or row["status"] != "active" or now() >= from_iso(row["expires_at"]):
         return None, ("SESSION_EXPIRED", "세션이 종료되었거나 만료되었습니다.", False)
     if row["input_revision"] != input_revision:
         return None, ("INPUT_REVISION_CONFLICT", "작업 중 입력이 바뀌어 결과를 버렸습니다. 다시 요청해 주세요.", False)
@@ -126,7 +127,7 @@ def run_preflight_job(settings: Settings, session_id: str, job_id: str, input_re
                 _fail_agent(conn, job_id, exc)
             return
         problem = validate_analyze(result, sources)
-        with connect(settings.db_path) as conn:
+        with connect(settings.db_path, immediate=True) as conn:   # 세션 확인과 저장을 한 잠금 안에서(BE-09: 종료 확정과 직렬화)
             if problem:
                 logger.error("agent analyze output rejected (%s): %s", job_id, problem)
                 jobs.fail(conn, job_id, "AGENT_OUTPUT_INVALID", "AI 분석 결과가 자료와 맞지 않아 저장하지 않았습니다.", True)
@@ -193,7 +194,7 @@ def run_propose_job(settings: Settings, session_id: str, job_id: str, input_revi
             with connect(settings.db_path) as conn:
                 _fail_agent(conn, job_id, exc)
             return
-        with connect(settings.db_path) as conn:
+        with connect(settings.db_path, immediate=True) as conn:   # 세션 확인과 저장을 한 잠금 안에서(BE-09)
             session_refs = refs.load(conn, session_id)
             if result.candidates is not None:
                 if not result.candidates:
@@ -211,11 +212,14 @@ def run_propose_job(settings: Settings, session_id: str, job_id: str, input_revi
                 logger.error("agent propose output rejected (%s): %s", job_id, problem)
                 jobs.fail(conn, job_id, "AGENT_OUTPUT_INVALID", "AI 편집안이 문서·자료와 맞지 않아 저장하지 않았습니다.", True)
                 return
+            # 세션이 그 사이 종료·만료됐으면 저장하지 않는다(BE-09: 늦은 결과 폐기, Job은 이미 cancelled라 아래 fail은 무시된다).
+            session_now = conn.execute("SELECT status, expires_at, input_revision FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+            if session_now is None or session_now["status"] != "active" or now() >= from_iso(session_now["expires_at"]):
+                jobs.fail(conn, job_id, "SESSION_EXPIRED", "세션이 종료되었거나 만료되어 편집안을 저장하지 않았습니다.", False)
+                return
             # 편집안을 만드는 동안 문서나 입력이 바뀌었으면 stale로 저장한다(기준이 달라진 편집안은 적용 불가).
             current = documents.get_current(conn, session_id, document_id)
-            session_now = conn.execute("SELECT status, input_revision FROM sessions WHERE session_id=?", (session_id,)).fetchone()
-            stale = (current.document_revision != base_revision or session_now["input_revision"] != input_revision
-                     or session_now["status"] != "active")
+            stale = current.document_revision != base_revision or session_now["input_revision"] != input_revision
             proposal_id = proposals.save(conn, session_id, document_id, base_revision, input_revision, list(target_block_ids),
                                          kind, instruction, result.changes, result.rationale, result.candidates,
                                          "stale" if stale else "proposed")
@@ -331,7 +335,7 @@ def run_draft_job(settings: Settings, session_id: str, job_id: str, input_revisi
                 _fail_agent(conn, job_id, exc)
             return
         problem = validate_draft(result, sources, {f.fact_id for f in preflight.facts})
-        with connect(settings.db_path) as conn:
+        with connect(settings.db_path, immediate=True) as conn:   # 세션 확인과 저장을 한 잠금 안에서(BE-09)
             if problem:
                 logger.error("agent draft output rejected (%s): %s", job_id, problem)
                 jobs.fail(conn, job_id, "AGENT_OUTPUT_INVALID", "AI 초안이 자료와 맞지 않아 저장하지 않았습니다.", True)
