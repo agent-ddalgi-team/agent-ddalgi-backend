@@ -513,6 +513,7 @@ PDF 폰트: 모든 문서 `Pretendard-Regular`/`Pretendard-Bold` 서브셋 임�
 
 - multipart `role=evidence|instruction`, 생략은 evidence. instruction은 파서로 읽고 원본 조회는 허용하되 선택·preflight.build_sources·refs·검증 근거·문서 이미지 snapshot에서 제외한다. 새 화면은 작성 조건 업로드에 instruction을 명시해야 한다. 자연어 조건 추출·Brief 반영은 미구현/미검증이며 업로드만으로 자동 반영되지 않는다.
 - 업로드 evidence는 기존 파일명+바이트 해시를 유지한다. instruction만 `sha256("role=instruction|" + 기존 해시)`를 써 같은 키의 역할 변경은 409가 된다. 기존 저장 키·role 생략/evidence 호환을 유지했다. kind는 기존처럼 해시에 없으며 후속 계약 확인으로 남긴다.
+- 기존 동작 변경: `refs.load()`는 근거 ref의 `source_version`이 현재와 다르거나 범위 밖이면 그 fact는 없는 것으로 취급한다(유효 fact 집합에서 제외, DB 원본 삭제 아님). 필수 내용 인정·문서 근거 검사에서 각각 `REQUIRED_MISSING` / `EVIDENCE_INVALID`로 이어진다.
 - SourceOut/SourceIn.origin_kind로 출처를 전달한다. 서버 DB의 source·segment·asset·fact 참조를 따라 DEMO_VALUE를 추가한다(시연 세션에서 warning). 개별 warning 확인은 새 승인 조건이 아니다. MOCK_VALUE·참조 오류·필수 내용·수치 충돌·공개 허가 blocker를 유지한다. mock의 `[시연]` 접두 해석만 추가했고 실제 LLM·프롬프트·LangGraph·task_agent.md는 수정하지 않았다.
 - Agent 담당에게 전달: SourceIn.origin_kind는 real/mock/demo(default real)이며 text 라벨과 evidence ID를 그대로 보존해야 한다. instruction은 회사 사실 입력으로 전달하지 않는다. 조건 해석·구성 반영은 후속 입출력 합의가 필요하다. AGENT_MODE=llm의 미구현 실패 원칙을 유지한다.
 

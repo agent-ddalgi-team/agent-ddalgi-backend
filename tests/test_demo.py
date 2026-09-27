@@ -465,7 +465,7 @@ def test_mode_off_blocks_approved_export_replays_and_download_but_preserves_appr
     assert flow.download(export["export_id"]).status_code == 200
 
 
-def test_v8_migration_preserves_rows_backfills_origins_and_is_idempotent(app, settings):
+def test_v9_migration_preserves_rows_backfills_origins_and_is_idempotent(app, settings):
     _seed_registered(settings, "REAL01", origin="real")
     _seed_registered(settings, "MOCK01", origin="mock")
     c = TestClient(app)
