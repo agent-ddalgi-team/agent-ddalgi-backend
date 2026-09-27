@@ -13,7 +13,8 @@ router = APIRouter(prefix="/sessions/{sid}/jobs", tags=["jobs"])
 
 @router.get("/{jid}", response_model=JobOut)
 def get_job(request: Request, sid: str, jid: str):
+    settings = settings_of(request)
     owner = require_owner(request)
-    with connect(settings_of(request).db_path) as conn:
-        sessions.load_active(conn, owner, sid)
+    with connect(settings.db_path) as conn:
+        sessions.load_active(conn, owner, sid, settings)
         return jobs.get(conn, sid, jid)

@@ -172,8 +172,7 @@ def persist_layout_issues(conn: sqlite3.Connection, session_id: str, document: D
 
 def run_layout_check_job(settings: Settings, session_id: str, job_id: str, document_id: str, document_revision: int,
                          input_revision: int, fmt: str) -> None:
-    tmp = artifacts.temp_dir(settings, session_id, job_id)
-    artifacts.cleanup_temp_dirs(settings, older_than_s=300)   # 이전 Job이 남긴 브라우저 프로필 찌꺼기 정리(5분 지난 것)
+    tmp: Path | None = None
     try:
         with connect(settings.db_path) as conn:
             jobs.set_progress(conn, job_id, "rendering", "배치 검사용 파일을 만드는 중")
@@ -181,6 +180,11 @@ def run_layout_check_job(settings: Settings, session_id: str, job_id: str, docum
             document = _document_current(conn, session_row, document_id, document_revision, input_revision)
             snapshot = export_render.build_snapshot(conn, settings, session_id, document)
             pub_start = publication.check_document(conn, document)
+            active_jobs = {r["job_id"] for r in conn.execute(
+                f"SELECT job_id FROM jobs WHERE status IN ({','.join('?' * len(jobs.ACTIVE))})", jobs.ACTIVE).fetchall()}
+        # 임시 폴더는 세션이 살아 있음을 확인한 뒤 만든다(BE-09: 닫힌 세션 폴더 재생성 방지). 실행 중 Job의 폴더는 지우지 않는다.
+        tmp = artifacts.temp_dir(settings, session_id, job_id)
+        artifacts.cleanup_temp_dirs(settings, older_than_s=300, protected_job_ids=active_jobs)
 
         # 렌더는 DB 잠금 밖에서(수초). 산출물은 Job 전용 임시 폴더로.
         result = export_render.render(snapshot, fmt, tmp / "out", settings)
@@ -227,16 +231,19 @@ def run_layout_check_job(settings: Settings, session_id: str, job_id: str, docum
                                          "preview_asset_ids": preview_ids, "preview_basis": "pdf", "warnings": warnings})
             _ = pub_start  # 시작 시 값은 참고용. 저장은 완료 직전 값으로만 한다.
     except _Failure as exc:
-        artifacts.discard_temp(tmp)          # 임시 산출물을 먼저 지운 뒤 실패를 기록한다(공개·연결되지 않음)
+        if tmp is not None:
+            artifacts.discard_temp(tmp)      # 임시 산출물을 먼저 지운 뒤 실패를 기록한다(공개·연결되지 않음)
         with connect(settings.db_path) as conn:
             jobs.fail(conn, job_id, exc.code, exc.message, exc.retryable, exc.details)
     except export_render.RenderError as exc:
-        artifacts.discard_temp(tmp)
+        if tmp is not None:
+            artifacts.discard_temp(tmp)
         with connect(settings.db_path) as conn:
             jobs.fail(conn, job_id, "LAYOUT_RENDER_FAILED", f"배치 검사용 파일을 만들지 못했습니다({exc.code}).",
                       exc.code in ("render_timeout", "render_failed"), {"reason": exc.code})
     except Exception as exc:  # noqa: BLE001
-        artifacts.discard_temp(tmp)
+        if tmp is not None:
+            artifacts.discard_temp(tmp)
         with connect(settings.db_path) as conn:
             # 세션이 도중에 종료·만료되면 세션 폴더(임시 산출물 포함)가 지워져 파일 오류로 나타난다 → 실제 사유로 기록
             row = conn.execute("SELECT status, expires_at FROM sessions WHERE session_id=?", (session_id,)).fetchone()
@@ -246,7 +253,8 @@ def run_layout_check_job(settings: Settings, session_id: str, job_id: str, docum
                 logger.exception("layout_check job failed")
                 jobs.fail(conn, job_id, "INTERNAL_ERROR", "배치 검사 중 오류가 났습니다.", True, {"error": type(exc).__name__})
     finally:
-        artifacts.discard_temp(tmp)
+        if tmp is not None:
+            artifacts.discard_temp(tmp)
 
 
 def _store_previews(conn: sqlite3.Connection, settings: Settings, session_id: str, layout_check_id: str, artifact_id: str,

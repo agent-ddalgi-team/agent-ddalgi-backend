@@ -16,7 +16,7 @@ from app.db import connect
 from app.parsers import TEXT_LIMIT, ParseResult, parse, warning
 from app.services import jobs
 from app.services.sources import resolve_path
-from app.timeutil import now, to_iso
+from app.timeutil import from_iso, now, to_iso
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +65,11 @@ def _apply_result(conn: sqlite3.Connection, row: sqlite3.Row, result: ParseResul
     )
 
 
+def _session_alive(conn: sqlite3.Connection, session_id: str) -> bool:
+    row = conn.execute("SELECT status, expires_at FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+    return row is not None and row["status"] == "active" and now() < from_iso(row["expires_at"])
+
+
 def run_read_job(settings: Settings, session_id: str, job_id: str, source_ids: list[str]) -> None:
     try:
         total = len(source_ids)
@@ -85,7 +90,11 @@ def run_read_job(settings: Settings, session_id: str, job_id: str, source_ids: l
                 logger.exception("read failed: %s", source_id)
                 result = ParseResult(status="failed", warnings=[warning(
                     "PARSE_ERROR", "파일을 읽는 중 오류가 났습니다.", None, "파일을 다시 올리거나 이 자료를 제외해 주세요.")])
-            with connect(settings.db_path) as conn:
+            with connect(settings.db_path, immediate=True) as conn:   # 세션 확인과 저장을 한 잠금 안에서(BE-09)
+                if not _session_alive(conn, session_id):
+                    # 종료·만료 뒤 늦은 결과는 저장하지 않는다. Job은 finalize가 이미 cancelled로 바꿨으므로 아래 fail은 무시된다.
+                    jobs.fail(conn, job_id, "SESSION_EXPIRED", "세션이 종료되어 읽기 결과를 저장하지 않았습니다.", False)
+                    return
                 current = conn.execute("SELECT * FROM sources WHERE source_id=? AND deleted_at IS NULL",
                                        (source_id,)).fetchone()
                 if current is not None:

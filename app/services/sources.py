@@ -21,7 +21,7 @@ from app.config import Settings
 from app.errors import ApiError
 from app.models import SourceOut
 from app.services.sessions import session_dir
-from app.timeutil import now, to_iso
+from app.timeutil import from_iso, now, to_iso
 
 _READ_CHUNK = 1024 * 1024
 KINDS = {"company", "interview", "certificate", "photo", "other"}
@@ -137,7 +137,16 @@ async def validate_uploads(settings: Settings, existing_count: int, files: list[
 
 def store(conn: sqlite3.Connection, settings: Settings, session_id: str, expires_at: str, kind: str | None,
           uploads: list[tuple[str, str, str, bytes]]) -> list[SourceOut]:
-    """검사를 통과한 파일을 세션 폴더에 쓰고 레코드를 만든다(parse_status=queued). 쓰기 실패 시 이번 파일만 지운다."""
+    """검사를 통과한 파일을 세션 폴더에 쓰고 레코드를 만든다(parse_status=queued). 쓰기 실패 시 이번 파일만 지운다.
+
+    BE-09: 파일을 쓰기 전에 BEGIN IMMEDIATE로 세션 확정(종료·만료)과 직렬화하고 세션이 살아 있는지 다시 본다.
+    닫힌 세션 폴더에 늦게 파일을 쓰지 않는다(폴더 삭제 뒤 재생성 방지)."""
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    alive = conn.execute("SELECT status, expires_at FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+    if alive is None or alive["status"] != "active" or now() >= from_iso(alive["expires_at"]):
+        status = "expired" if alive is None or alive["status"] == "active" else alive["status"]
+        raise ApiError(410, "SESSION_EXPIRED", "세션이 종료되었거나 만료되어 파일을 저장하지 않았습니다.", details={"status": status})
     directory = session_dir(settings, session_id)
     written: list[Path] = []
     created: list[str] = []

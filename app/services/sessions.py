@@ -2,11 +2,12 @@
 
 만료(D-02): expires_at = min(마지막 활동 + idle, 생성 + max). 상태를 바꾸는 요청만 활동으로 친다.
 GET 조회·작업 폴링은 활동으로 치지 않아 배경 폴링만으로 만료가 무한 연장되지 않는다.
+BE-09: 요청 경로에서 만료·종료를 발견하면(raise_gone) 요청 트랜잭션을 롤백해 끝내고 정리 전용 트랜잭션에서 만료 확정·내용 제거·
+큐 등록을 커밋한 뒤 410을 낸다(잠금 중첩·관련 없는 변경 커밋 없음). 바이트 삭제는 services/cleanup.py 큐가 한다.
 """
 from __future__ import annotations
 
 import json
-import shutil
 import sqlite3
 import uuid
 from datetime import datetime
@@ -36,7 +37,7 @@ def create(conn: sqlite3.Connection, settings: Settings, owner_id: str, brief: B
         (session_id, owner_id, brief.model_dump_json(), to_iso(created), to_iso(created),
          to_iso(_expires_at(settings, created, created))),
     )
-    return get(conn, owner_id, session_id)
+    return get(conn, owner_id, session_id, settings)
 
 
 def _row_to_out(row: sqlite3.Row) -> SessionOut:
@@ -53,26 +54,54 @@ def _row_to_out(row: sqlite3.Row) -> SessionOut:
     )
 
 
-def load_active(conn: sqlite3.Connection, owner_id: str, session_id: str) -> sqlite3.Row:
-    """소유자가 맞고 살아 있는 세션 행을 돌려준다. 남의 세션은 존재 여부를 숨기려고 404."""
+def _gone_error(status: str, cleanup: str) -> ApiError:
+    message = "종료된 세션입니다. 새 세션을 시작해 주세요." if status == "closed" else "세션이 만료되었습니다. 새 세션을 시작해 주세요."
+    return ApiError(410, "SESSION_EXPIRED", message, details={"status": status, "cleanup": cleanup})
+
+
+def raise_gone(conn: sqlite3.Connection, settings: Settings, owner_id: str, session_id: str) -> sqlite3.Row:
+    """종료·만료로 보이는 세션(BE-09). 요청 트랜잭션을 롤백해 끝내고(잠금 해제, 관련 없는 변경은 커밋되지 않음), 정리 전용
+    BEGIN IMMEDIATE 트랜잭션에서 현재 상태를 다시 확인해 만료 확정·내용 제거·큐 등록(cleanup.finalize)·정리 상태 판정을 커밋한 뒤
+    410을 낸다. 그 사이 연장돼 살아 있으면(경쟁, 드묾) 이 트랜잭션을 요청 트랜잭션으로 이어 쓰고 행을 돌려준다.
+
+    호출 조건: 요청이 아직 아무것도 쓰지 않았을 때(load_active는 모든 세션 경로의 첫 DB 작업이다)."""
+    from app.services import cleanup  # 순환 import 방지
+
+    conn.rollback()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+        if row is None or row["owner_id"] != owner_id:
+            conn.commit()
+            raise ApiError(404, "RESOURCE_NOT_FOUND", "요청한 자원을 찾을 수 없습니다.")
+        if row["status"] == "active" and now() < from_iso(row["expires_at"]):
+            return row
+        reason = cleanup.REASON_CLOSED if row["status"] == "closed" else cleanup.REASON_EXPIRED
+        result = cleanup.finalize(conn, settings, session_id, reason)
+        state = cleanup.verify_state(conn, settings, session_id)
+        conn.commit()
+    except ApiError:
+        raise
+    except Exception:
+        conn.rollback()
+        raise
+    raise _gone_error(result["status"], state)
+
+
+def load_active(conn: sqlite3.Connection, owner_id: str, session_id: str, settings: Settings) -> sqlite3.Row:
+    """소유자가 맞고 살아 있는 세션 행을 돌려준다. 남의 세션은 존재 여부를 숨기려고 404. 종료·만료면 raise_gone(410)."""
     row = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
     if row is None or row["owner_id"] != owner_id:
         raise ApiError(404, "RESOURCE_NOT_FOUND", "요청한 자원을 찾을 수 없습니다.")
-    if row["status"] == "closed":
-        raise ApiError(410, "SESSION_EXPIRED", "종료된 세션입니다. 새 세션을 시작해 주세요.",
-                       details={"status": "closed"})
-    if row["status"] == "expired" or now() >= from_iso(row["expires_at"]):
-        if row["status"] != "expired":
-            conn.execute("UPDATE sessions SET status='expired' WHERE session_id=?", (session_id,))
-        raise ApiError(410, "SESSION_EXPIRED", "세션이 만료되었습니다. 새 세션을 시작해 주세요.",
-                       details={"status": "expired"})
+    if row["status"] != "active" or now() >= from_iso(row["expires_at"]):
+        return raise_gone(conn, settings, owner_id, session_id)
     return row
 
 
-def get(conn: sqlite3.Connection, owner_id: str, session_id: str) -> SessionOut:
+def get(conn: sqlite3.Connection, owner_id: str, session_id: str, settings: Settings) -> SessionOut:
     from app.services import documents  # 순환 import 방지
 
-    out = _row_to_out(load_active(conn, owner_id, session_id))
+    out = _row_to_out(load_active(conn, owner_id, session_id, settings))
     out.document_summary = documents.summary_for_session(conn, session_id)
     return out
 
@@ -105,33 +134,13 @@ def bump_input_revision(conn: sqlite3.Connection, session_id: str, *, brief: Bri
     return new_revision
 
 
-def close(conn: sqlite3.Connection, settings: Settings, owner_id: str, session_id: str) -> tuple[str, str]:
-    """접근을 즉시 막고 임시 바이트를 지운다. 이미 닫힌 세션이면 같은 결과를 돌려준다(멱등).
-
-    반환: (status, cleanup) — cleanup은 done 또는 pending(삭제 실패, 재시도 목록).
-    """
-    row = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+def close(conn: sqlite3.Connection, settings: Settings, owner_id: str, session_id: str) -> str:
+    """DELETE: 세션을 closed로 확정한다(BEGIN IMMEDIATE 안, 커밋은 호출자). 상태·내용 제거·Job 취소·Export 확정·멱등 본문 비움·
+    큐 등록이 한 트랜잭션이다. 바이트 삭제는 커밋 뒤 cleanup.run_for_session이 즉시 시도하고 실패하면 큐가 재시도한다.
+    이미 닫힌 세션이면 상태만 맞춘다(멱등)."""
+    row = conn.execute("SELECT owner_id FROM sessions WHERE session_id=?", (session_id,)).fetchone()
     if row is None or row["owner_id"] != owner_id:
         raise ApiError(404, "RESOURCE_NOT_FOUND", "요청한 자원을 찾을 수 없습니다.")
-    if row["status"] == "closed":
-        return "closed", row["cleanup_status"] or "done"
+    from app.services import cleanup  # 순환 import 방지
 
-    closed_at = to_iso(now())
-    conn.execute("UPDATE sessions SET status='closed', closed_at=? WHERE session_id=?", (closed_at, session_id))
-    conn.execute("UPDATE sources SET deleted_at=? WHERE session_id=? AND deleted_at IS NULL", (closed_at, session_id))
-    conn.execute("UPDATE assets SET deleted_at=? WHERE session_id=? AND deleted_at IS NULL", (closed_at, session_id))
-    conn.execute("DELETE FROM segments WHERE session_id=?", (session_id,))
-    # BE-08: 미리보기·활성 Export도 즉시 차단 상태로 확정(바이트 삭제·정리 재시도는 BE-09).
-    conn.execute("UPDATE layout_previews SET deleted_at=? WHERE session_id=? AND deleted_at IS NULL", (closed_at, session_id))
-    from app.services import exports as exports_service  # 순환 import 방지
-
-    exports_service.finalize_for_session(conn, session_id, "session_closed")
-
-    cleanup = "done"
-    directory = session_dir(settings, session_id)
-    if directory.exists():
-        shutil.rmtree(directory, ignore_errors=True)
-        if directory.exists():
-            cleanup = "pending"
-    conn.execute("UPDATE sessions SET cleanup_status=? WHERE session_id=?", (cleanup, session_id))
-    return "closed", cleanup
+    return cleanup.finalize(conn, settings, session_id, cleanup.REASON_CLOSED)["status"]

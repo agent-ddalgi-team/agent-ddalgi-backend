@@ -589,10 +589,11 @@ def test_layout_check_discards_late_results(app, settings, monkeypatch):
     with connect(settings.db_path) as conn:
         for _ in range(600):
             j = conn.execute("SELECT status, error_json FROM jobs WHERE job_id=?", (r.json()["job_id"],)).fetchone()
-            if j["status"] in ("succeeded", "failed"):
+            if j["status"] in ("succeeded", "failed", "cancelled"):
                 break
             time.sleep(0.05)
-    assert j["status"] == "failed" and json.loads(j["error_json"])["code"] == "SESSION_EXPIRED"
+    # BE-09: 세션 종료가 진행 중 Job을 cancelled(SESSION_EXPIRED)로 확정하고, 늦은 결과는 저장되지 않는다
+    assert j["status"] == "cancelled" and json.loads(j["error_json"])["code"] == "SESSION_EXPIRED"
     assert _count(settings, "SELECT COUNT(*) FROM layout_checks") == 0
 
 

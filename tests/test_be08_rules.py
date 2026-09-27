@@ -395,7 +395,7 @@ def test_publication_value_rejects_non_boolean_on_reimport_and_keeps_everything(
 
 def _seed_document(settings) -> tuple[str, Document]:
     with connect(settings.db_path) as conn:
-        conn.execute("INSERT INTO sessions VALUES ('s1','o1','active',1,'{}','[]','t','t','2099-01-01T00:00:00Z',NULL,NULL)")
+        conn.execute("INSERT INTO sessions (session_id, owner_id, status, input_revision, brief_json, selected_source_ids, created_at, last_activity_at, expires_at, closed_at, cleanup_status) VALUES ('s1','o1','active',1,'{}','[]','t','t','2099-01-01T00:00:00Z',NULL,NULL)")
         conn.execute("INSERT INTO documents VALUES ('d1','s1',1,'t',4,'t','t')")
     doc = Document(document_id="d1", session_id="s1", document_revision=1, input_revision=1, title="t", target_pages=4, status="draft",
                    pages=[Page(page_id="p", title="t", layout_key="text", blocks=[Block(block_id="b1", type="paragraph", content={"text": "x"})])])
@@ -481,7 +481,7 @@ def test_layout_check_job_keeps_issue_open_when_measure_not_checked(app, setting
 
 def test_layout_issue_keys_survive_db_reinit(settings, app):
     with connect(settings.db_path) as conn:
-        conn.execute("INSERT INTO sessions VALUES ('s1','o1','active',1,'{}','[]','t','t','2099-01-01T00:00:00Z',NULL,NULL)")
+        conn.execute("INSERT INTO sessions (session_id, owner_id, status, input_revision, brief_json, selected_source_ids, created_at, last_activity_at, expires_at, closed_at, cleanup_status) VALUES ('s1','o1','active',1,'{}','[]','t','t','2099-01-01T00:00:00Z',NULL,NULL)")
         conn.execute("INSERT INTO documents VALUES ('d1','s1',1,'t',4,'t','t')")
         conn.execute("INSERT INTO issues (issue_id, session_id, document_id, identity_key, scope, code, severity, status, message, "
                      "source_ids_json, fact_ids_json, block_ids_json, origin, created_at, updated_at, layout_format) "
@@ -491,7 +491,7 @@ def test_layout_issue_keys_survive_db_reinit(settings, app):
     with connect(settings.db_path) as conn:
         rows = conn.execute("SELECT identity_key, layout_format FROM issues").fetchall()
         assert [(r["identity_key"], r["layout_format"]) for r in rows] == [("layout|layout|LAYOUT_OVERFLOW|b1|||pdf", "pdf")]
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 7
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION >= 7   # v8(BE-09)에서도 재실행 안전
 
 
 def test_v6_to_v7_migration_adds_columns_and_tables_keeping_rows(tmp_path):
@@ -510,7 +510,7 @@ def test_v6_to_v7_migration_adds_columns_and_tables_keeping_rows(tmp_path):
     init_db(db, runs)
     with sqlite3.connect(db) as conn:
         conn.row_factory = sqlite3.Row
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION >= 7   # v8(BE-09)에서도 v6→v7 경로 유지
         cols = [r[1] for r in conn.execute("PRAGMA table_info(layout_checks)")]
         assert {"layout_ok", "publication_policy_ok", "checks_json", "artifact_id", "preview_ids_json"} <= set(cols)
         row = conn.execute("SELECT * FROM layout_checks WHERE layout_check_id='lc1'").fetchone()
@@ -523,7 +523,7 @@ def test_v6_to_v7_migration_adds_columns_and_tables_keeping_rows(tmp_path):
 
 def test_publication_check_semantics(settings, app):
     with connect(settings.db_path) as conn:
-        conn.execute("INSERT INTO sessions VALUES ('s1','o1','active',1,'{}','[]','t','t','2099-01-01T00:00:00Z',NULL,NULL)")
+        conn.execute("INSERT INTO sessions (session_id, owner_id, status, input_revision, brief_json, selected_source_ids, created_at, last_activity_at, expires_at, closed_at, cleanup_status) VALUES ('s1','o1','active',1,'{}','[]','t','t','2099-01-01T00:00:00Z',NULL,NULL)")
         conn.execute("INSERT INTO sources (source_id, session_id, source_version, scope, name, mime_type, size_bytes, kind, parse_status, "
                      "text_available, image_available, stored_path, content_hash, created_at) VALUES ('R1',NULL,1,'registered','r','image/png',1,'photo','complete',0,1,'x','h','t')")
         conn.execute("INSERT INTO sources (source_id, session_id, source_version, scope, name, mime_type, size_bytes, kind, parse_status, "
