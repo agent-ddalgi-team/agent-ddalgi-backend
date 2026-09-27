@@ -42,4 +42,16 @@ uv run pytest
 실제 LLM 연결은 Agent 작업에서 별도로 구현·검증한다.
 
 ## 문서
-AGENTS.md(작업 규칙) · plan.md · prd.md · contracts.md(API 계약 원본) · task_backend.md · task_agent.md · agent.md · task.md
+
+처음에는 다음 순서로 읽는다. 코드 변경 전에는 [AGENTS.md](AGENTS.md)의 작업 규칙을 확인한다.
+
+| 순서 | 문서 | 알 수 있는 것 |
+|---|---|---|
+| 1 | [프로젝트 아이디어](docs/idea.md) | 무엇을 만들고 누가 사용하는지; 범위 축소안은 제안 |
+| 2 | [전체 구조 그림](docs/site_design.png) | 화면·서버·AI·저장소의 관계와 현재 상태 |
+| 3 | [개발 계획](plan.md) · [제품 요구사항](prd.md) | 확정 범위·미정 결정·사용자 흐름·완료 기준 |
+| 4 | [공통 계약](contracts.md) | 데이터·API 기준; 7절은 현행 코드와의 차이 및 합의 대기 목록 |
+| 5 | [백엔드 작업](task_backend.md) 또는 [Agent 작업](task_agent.md) · [Agent 설계](agent.md) | 내 담당 작업·코드 위치·남은 연결·검증할 내용 |
+| 6 | [공통 연결표](task.md) | 담당자 간 연결 지점과 결과 기록 위치 |
+
+2026-09-27에는 개발 전 문서를 정리했다. 기존 BE/AG 작업 상태와 테스트 기록은 유지했으며 실행 코드·의존성·DB는 바꾸지 않았다. 공통 계약의 확정 버전은 1.1, 데이터 schema_version은 1.0이며, 검토 메모의 제안은 합의 후 반영한다.

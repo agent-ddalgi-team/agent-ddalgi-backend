@@ -2,6 +2,8 @@
 
 기준일: 2026-09-23 · 문서 v1.1 · contract_version: 1.1 · 데이터 schema_version: 1.0
 
+개발 전 대조 메모: 2026-09-27, 7절. 1~6절의 규격과 계약/스키마 버전은 유지한다. 7절은 현재 코드와의 차이 및 합의 대기 목록이며, 새로운 API나 상태를 확정한 규격이 아니다.
+
 원본 위치는 백엔드 레포의 contracts.md이며 프론트 레포에는 동일 버전의 사본을 둔다. 원본 변경 주 담당은 백엔드이고 AI 입출력은 Agent, 화면 영향은 프론트 담당과 협의한다. 사본만 독자 수정하지 않는다.
 
 이 문서는 프론트·백엔드·Agent의 데이터 교환 기준이다. 기존 API와 필드가 이미 있다면 백엔드 BE-01에서 연결표를 만들고 호환 어댑터를 우선한다. 아래 이름은 현재 코드에 구현되어 있다는 뜻이 아니다.
@@ -321,3 +323,52 @@ source 업로드만으로 자동 선택하지 않는 UI를 택하면 사용자�
 원본과 사본은 동일한 문서 버전과 내용으로 유지한다. API 변경 시 원본·실제 서버 모델·예시 응답을 먼저 맞추고, 프론트 사본·타입·호출부를 갱신한다. 이 문서의 contract_version과 문서 JSON의 schema_version은 서로 다른 개념이다.
 
 레포 분리로 API 경로를 임의 변경하지 않는다. 실행 환경별 API 기본 주소, 필요한 인증 전달, 실제 origin이 다를 때 CORS 설정을 함께 확인한다. 프론트에 모델 API 키를 넣지 않는다.
+
+## 7. 개발 전 대조 및 합의 대기 (2026-09-27)
+
+검토안 r2와 현재 저장소를 읽고 비교한 결과다. 현재 코드·타입은 확인했지만 서버 실행·테스트를 새로 수행하지 않았다. P0는 프론트·백엔드·Agent 연결 전에 맞출 항목, P1은 해당 기능 착수 전까지 정할 항목이다. 구현된 기능과 미합의 규격을 구분해서 작업한다.
+
+### 7.1 코드에 이미 있는 연결
+
+아래는 `app/models.py`와 라우터의 현행 구현이다. 이 표를 기준으로 채택 여부·빈 값·오류·예시를 확인한 뒤 2절과 4절의 규격에 함께 반영한다.
+
+| ID | 우선순위 | 현행 코드에서 확인한 내용 | 합의·반영할 것 |
+|---|---|---|---|
+| C-01 | P0 | `SourceOut.asset_ids: list[str]`가 있고, ready 이미지 ID와 `GET /sessions/{sid}/assets/{asset_id}`로 사진을 연결함 | 기존 목록 방식의 계약 반영. 별도 목록 API가 필요한지 확인. 원본 PDF/DOCX·추출문 미리보기는 이미지 조회와 구분 |
+| C-02 | P0 | `Candidate(candidate_id, label, changes)`, `ProposalOut.rationale`, `candidates`, `applied_revision`이 있음 | 후보 없음의 null/빈 목록 규칙, 선택 적용·취소·재요청과 실제 응답 필드 정의 |
+| C-03 | P0 | `JobOut`에 kind/status/progress/result_ref/error/시각이 있음. progress는 stage/message이며 백분율 없음. Preflight·Proposal 단독 GET 구현 | 작업 종류별 result_ref와 완료 결과 조회 방식, 진행률을 모를 때의 표시. `GET /sessions/{sid}/preflights/{pid}`, `GET /sessions/{sid}/proposals/{pid}`를 API 표에 반영할지 확정 |
+| C-04 | P0 | `SourceWarning(locator, code, message, action)`, `Recommendations(suggested_pages, reason, needed: list[str])`가 있음 | 기존 구조로 화면을 연결할지 확인. 보완자료 종류를 새 고정 분류로 확장하는 경우 별도 합의 |
+| C-07 | P0 | 추가 필드·GET·임시 오류 코드가 작업 기록과 코드에 있으나 본문·예시 반영이 일부 지연됨 | 유지/변경할 항목을 정하고 모델·계약·예시·프론트 사본을 함께 맞춤 |
+
+`Source.asset_ids`, 경고, 추천, 후보 구조를 다시 만드는 작업부터 시작하지 않는다. 원본 코드의 현재 형태를 읽고 필요한 변경만 적용한다. 등록 자료 `GET /sources`와 적재·선택 전달은 아직 미구현이며 `services/preflights.build_sources()`는 현재 세션 자료만 준비한다.
+
+### 7.2 기존 원칙을 실행 절차로 연결할 항목
+
+| ID | 우선순위 | 현재 상태 | 합의·구현할 것 |
+|---|---|---|---|
+| C-05 | P0 | 기존 문서의 입력이 오래되면 편집·제안 요청을 409로 차단. 문서가 있으면 초안 재생성은 `DOCUMENT_EXISTS`. 편집 보존 원칙은 3절에 있음 | 기존 문서용 재점검 확인 → 영향 확인 → 수정안 적용 또는 현 내용 유지 근거 → 최신 입력 연결 → 재검증의 API·중간 상태·문서 버전 증가·재시도 규칙 |
+| C-06 | P0 | 사전 점검·초안 완료 전 입력 버전을 재검사하고, 생성 중 기준이 바뀐 Proposal은 stale 처리함 | 시작/완료 버전 기록과 오래된 결과의 공통 취급. 실행기의 실제 만료 시각 재확인, 종료 후 결과 저장·재노출 방지 보완 |
+| C-08 | P1 | 승인 조건과 부분 검증 시 다른 blocker 유지 원칙은 2~3절에 있음. 실제 Validation/Approval 및 승인 무효화는 미구현 | Validation·LayoutCheck 상태 조합, needs_review·warning 처리, 필수 내용 목록과 승인 통과 조건. 검사 중·실패·오래된 결과로 승인되지 않게 함 |
+| C-09 | P1 | PDF/DOCX와 형식별 검사·승인은 기존 요구사항. 실제 배치·출력 기능은 미구현 | format 허용값, actual_pages가 null인 경우의 판단, 미리보기 조회, 템플릿·설정·사진 버전 일치와 Approval/Export 형식 일치 |
+| C-10 | P1 | 보완 메모가 근거·수명 정책에 등장하지만 전용 API/모델은 없음 | 지원 여부부터 결정. 지원하면 원자료 버전·근거 위치·수명 연결, 미지원이면 텍스트 파일 첨부로 안내 |
+| C-11 | P1 | 직접 삽입 ID는 클라이언트가 전달하고 서버가 중복 검사. 초안 ID는 Agent 결과에 포함. 페이지 구조 제안의 범위가 불명확함 | ID 발급 책임과 블록/페이지 구조 편집 범위. 빈 페이지·페이지 단독 요청 표현도 합의 후 모델·검사와 맞춤 |
+
+C-05는 기존 문서를 새 초안으로 덮어쓰는 기능이 아니다. 사용자 흐름은 [prd.md 3.1절](prd.md), Agent 내부 연결의 현황과 미합의 부분은 [agent.md](agent.md)를 따른다. 현재 되돌리기는 참조 존재를 확인한 뒤 과거 내용을 최신 입력 버전에 연결하므로, 복원만으로 새 자료의 영향 검사가 완료되었다고 판단하지 않도록 C-05와 함께 정리한다.
+
+### 7.3 오류·예시·표시에서 확인할 차이
+
+- `Brief.company_name_hint`는 현재 필드가 없다. 추가한다면 회사명 사실 근거로 인정할지, 원문 비교용 힌트로만 쓸지부터 정한다.
+- 파일 개수 초과도 현재 `413 FILE_TOO_LARGE`를 사용한다. 안내 문구는 개수 제한을 설명하므로 코드 구분 필요성을 확인한다. 추출 글자 제한은 `partial + TEXT_LIMIT` 경고이며 업로드 크기 초과와 다르다.
+- `INVALID_REQUEST`, `IDEMPOTENCY_KEY_CONFLICT`, `AGENT_OUTPUT_INVALID`, `INVALID_OPERATION`, `DOCUMENT_EXISTS`, `RESTORE_REFERENCE_INVALID`, `CANDIDATE_REQUIRED`, `UNSUPPORTED_PROPOSAL`, `NO_IMAGE_CANDIDATES` 등 현행 코드를 C-07에서 정리한다.
+- 적용/거절/오래된 수정안의 재적용은 현재 `PROPOSAL_STALE + details.status`로 구분한다. 같은 멱등 키·같은 본문의 재전송은 기존 성공 결과를 반환한다. 코드 통합 여부와 사용자 안내를 함께 결정한다.
+- `handoff/api_examples_v1.1.json`은 계약용 가상 예시와 일부 현행 응답 설명이 섞여 있다. Source 예시에 asset_ids가 없고, 문서 조회 validation 예시는 현재 null 응답과 다르다. 미구현 등록 자료·출력 예시도 있으므로 실제/예정 표시와 후보 선택 예시를 갱신해야 한다.
+- 프론트가 현재 적용 중인 파일 제한·만료 설정을 어느 응답에서 읽을지도 정한다. 제한값 자체는 plan.md D-01/D-02에서 관리한다.
+
+### 7.4 반영 순서와 담당
+
+1. 백엔드가 현행 모델·경로·오류·예시 연결표를 확인하고 Agent·프론트와 C-01~C-07을 맞춘다.
+2. 해당 기능 착수 전에 C-08~C-11을 확정한다. 도구·보관 기간 등 제품 결정은 [plan.md 4.1절](plan.md)에 기록한다.
+3. 합의한 내용을 1~6절·실제 모델·응답 예시에 반영하고 contract_version 변경과 schema_version 변경을 각각 판단한다.
+4. 프론트 계약 사본·타입·호출부를 갱신하고 실제 연결을 확인한다. 이번 문서 준비에서 프론트 사본·JSON 예시·코드는 수정하지 않았다.
+
+진행과 완료 조건은 [task_backend.md 6.6절](task_backend.md), [task_agent.md 6.1절](task_agent.md)에 기록한다. 기존 BE/AG 상태와 QA 결과는 문서 준비만으로 바꾸지 않는다.

@@ -1,6 +1,6 @@
 # 백엔드 담당 전용 작업 목록
 
-기준일: 2026-09-23 · v1.2 · 이 파일의 작업 상태·결과 기록 담당: 백엔드 담당
+기준일: 2026-09-27 · v1.3 · 이 파일의 작업 상태·결과 기록 담당: 백엔드 담당
 
 범위: 파일·세션·파서·API·문서/버전 저장·승인·PDF/DOCX 출력. Agent 상세 작업은 [task_agent.md](task_agent.md)에 있다.
 
@@ -25,7 +25,7 @@
 | BE-09 | BE-02, BE-04, BE-08, AG-03 | 종료/만료 시 원본·파생문·초안·사진·체크포인트·출력 캐시 접근 차단 및 정리. 삭제 실패 재시도, 기록/외부 추적 보관 범위 확인. | TODO |
 | BE-10 | BE-08, BE-09, AG-08, 프론트 FE-08 | 실제 프론트와 세 단계·오류·승인·출력 연결 확인. 모든 QA 항목의 개발 책임자가 결과 기록. 실행 안내·미정 결정·계약 버전·남은 제한 갱신. | TODO |
 
-기존 작업 ID·선행 조건·상태를 유지했다. 현재 구현 여부는 미확인이며 기존 파일의 TODO를 완료로 바꾸지 않았다. 상태는 TODO / IN_PROGRESS / DONE / BLOCKED로 관리한다. 예시 데이터로만 확인한 경우 실제 연동 완료와 구분한다.
+기존 작업 ID·선행 조건·상태를 유지했다. 2026-09-27 문서 준비에서는 현재 코드를 읽어 기존 기록과 대조했으며 실행 테스트는 하지 않았다. BE-01~BE-05의 DONE은 6.1~6.5절의 당시 검증 범위를 뜻한다. 이번에 찾은 후속 보완은 6.6절에 기록하고, BE-06~BE-10의 TODO와 과거 검증 결과는 유지한다. 상태는 TODO / IN_PROGRESS / DONE / BLOCKED로 관리한다. 예시 데이터로만 확인한 경우 실제 연동 완료와 구분한다.
 
 ## 3. 상대 담당에게 전달할 것
 
@@ -71,6 +71,7 @@
 | 2026-09-25 | BE-03 | 브랜치 feat/be-03-parsers · app/parsers/(신규 5), app/services/reading.py·assets.py, app/routers/assets.py, app/db.py(v2), tests/test_be03.py, tests/fixtures/(옛 가짜 TXT 4), plan.md D-01 | `uv run pytest` 36/36. 실서버 가짜 PPTX 20슬라이드→segment 44, 가짜 스캔 PDF→partial+IMAGE_ONLY. BE-02 리뷰 3건 반영(6.3-0). 상세 6.3절 | 프론트: Source.asset_ids·warnings 형식, 읽기 결과는 폴링 후 GET sources. Agent(AG-02): 구간 입력 형태(6.3-5). 팀: 계약 확인 ⑨⑩⑪ |
 | 2026-09-25 | BE-04 | 브랜치 feat/be-04-ai-jobs · app/agent_bridge.py·agent_mock.py(신규), services/{preflights,documents,ai_jobs}.py, routers/{preflights,drafts,documents}.py, db.py(v3), tests/test_be04.py | `uv run pytest` 51/51. 실서버(가짜 자료): 업로드→선택→사전 점검 Job→확인→초안 Job→Document rev.1→세션 요약. 개발 DB v2→v3 마이그레이션 확인. 상세 6.4절 | **Agent에게 전달**: 6.4-3 함수 서명(app/agent_bridge.py) — AG-03에서 같은 서명으로 llm 구현. 프론트: preflights/drafts/documents API 실제 동작(mock). 팀: 계약 확인 ⑫⑬ |
 | 2026-09-25 | BE-05 | 브랜치 feat/be-05-document-edit · services/{doc_ops,proposals,refs}.py, routers/proposals.py(신규), routers/documents.py(PATCH·restore·proposals), db.py(v4), agent_bridge.py(propose)·agent_mock.py, tests/test_be05.py | `uv run pytest` 92/92(BE-05 41개). 실서버(가짜 자료): 초안 rev1 → PATCH rev2 → Proposal(text) → apply rev3 → 중복 apply 409 → restore rev4. 개발 DB v3→v4 마이그레이션 확인. 상세 6.5절 | **Agent에게 전달**: 6.5-3 `propose()` 규격. 프론트: 편집 8종·Proposal·restore API(6.5-1), validation은 계속 null. 팀: 계약 확인 ⑭~⑳ |
+| 2026-09-27 | 개발 전 문서 준비 | task_backend.md 6.6절 | 기존 문서·모델·라우트·서비스를 읽고 남은 작업과 확인 기준 정리. 코드 변경·실행 테스트 없음. BE 상태·선행 조건·과거 QA 결과 유지 | 백엔드·Agent: contracts.md 7절 C-01~C-11을 함께 검토한 뒤 각자 구현. 프론트 계약 사본·예시는 후속 갱신 필요 |
 
 자료·시스템의 진위를 추정하여 정상 처리하지 않는다. 설명용 이미지 생성·OCR·장기 보관은 별도 범위가 정해지기 전 기본 작업에 추가하지 않는다.
 
@@ -327,6 +328,30 @@ ProposeResult(changes: list[Operation],       # contracts.md 연산 8종. 대상
 **6.5-5 하지 않은 것** — Validation·Issue 해결·Approval·승인 무효화 실체(BE-06, `validation`은 계속 null — 검증 완료로 포장하지 않음), 실제 AI·프롬프트·LangGraph·task_agent.md, 등록 자료 적재 스크립트(다음 작업), 문서 안 그림 교체 외 Asset 관리, "입력 변경 후 기존 문서 영향 검사"(지금은 문서 input_revision이 뒤처지면 편집을 409로 막기만 함 — BE-06/AG 협의).
 
 **6.5-6 계약 확인 (임시 구현, contracts.md 원본 미수정)** — ⑭ 연산 실패 코드 없음 → `422 INVALID_OPERATION` · ⑮ insert_block/insert_page의 ID는 클라이언트가 주고 서버가 유일성 검사(서버 발급은 안 함) · ⑯ Proposal 조회 경로 없음 → `GET /sessions/{sid}/proposals/{pid}` · ⑰ Proposal에 `rationale`·`candidates`·`applied_revision` 필드 추가(계약은 changes만; selected_candidate_id가 계약에 있어 candidates 필요) · ⑱ applied/rejected/stale에 apply → `409 PROPOSAL_STALE` + details.status(별도 코드 제안) · ⑲ restore 참조 무효 → `422 RESTORE_REFERENCE_INVALID` · ⑳ mock 미지원 요청 Job 코드 `UNSUPPORTED_PROPOSAL`/`NO_IMAGE_CANDIDATES`, 후보 미선택 `422 CANDIDATE_REQUIRED`(④⑬과 함께 정리). 문서 input_revision이 세션보다 뒤처졌을 때의 편집 처리(현재 409 INPUT_REVISION_CONFLICT)도 계약 3절 "영향 검사"와 맞춰 확정 필요.
+
+### 6.6 개발 전 문서 정리 (2026-09-27)
+
+이번 기록은 **개발을 시작할 때 참고할 작업 준비 목록**이다. 현재 코드를 읽어 확인한 부분과 앞으로 구현·검증할 부분을 나눴다. 기능 구현 완료나 새 계약 확정을 뜻하지 않는다. 아래 완료 확인 사례는 앞으로 실행할 항목이며 이번에는 실행하지 않았다.
+
+공통 검토 항목 C-01~C-11의 원본은 [contracts.md](contracts.md) 7절이다. 6.1~6.5절의 계약 확인 ①~⑳은 당시 기록으로 보존한다. 기존 DONE 작업의 후속 보완과 TODO 작업을 아래처럼 연결하되, 2절의 상태·선행 조건은 바꾸지 않는다.
+
+| 준비할 내용 | 현재 코드에서 확인한 것 | 남은 작업·완료 확인 사례 | 연결할 기존 작업·주요 기존 파일 |
+|---|---|---|---|
+| 계약·예시 맞추기 — C-01~C-04, C-07 | `SourceOut.asset_ids`, `Candidate`, 수정안의 `rationale`·`candidates`·`applied_revision`, Job의 진행·결과·오류, 추천·읽기 경고 모델이 있다. 사전 점검·수정안 GET 경로도 있다. | 이미 있는 필드와 경로를 계약에 반영할 범위를 합의하고 예시를 갱신한다. 코드에 있는 임시 오류와 계약 오류의 차이도 정리한다. 실제 조회 응답과 예시의 일치, `validation`·`approval`이 현재 `null`인 점을 확인한다. | BE-01·BE-03~BE-05 후속 문서 정리. `app/models.py`, `app/routers/{jobs,preflights,proposals,documents}.py`, `handoff/api_examples_v1.1.json` |
+| 등록 자료 준비·선택 전달 | 세션 첨부 저장·조회는 있지만 등록 자료의 적재·조회 흐름은 없다. Agent 입력 조립은 현재 세션의 선택 자료만 읽는다. | 등록 주체·적재 방법·접근 범위를 먼저 정한다. 선택한 등록 자료와 세션 자료를 함께 전달하고, 미선택 자료·다른 세션 자료가 섞이지 않는지 확인한다. 등록 스크립트나 새 검색 도구는 아직 확정하지 않는다. | BE-01~BE-03 후속 보완, AG-02와 연결. `app/routers/sources.py`, `app/services/{sources,preflights,assets}.py` |
+| 새 자료를 반영한 뒤 편집 복귀 — C-05 | 입력이 뒤처진 문서 편집은 `409 INPUT_REVISION_CONFLICT`, 기존 문서의 초안 재생성은 `409 DOCUMENT_EXISTS`로 막는다. | 재점검 확인 → 기존 문서 영향 확인 → 수정안 적용 또는 기존 내용 유지 → 최신 입력 연결 절차를 합의·구현한다. 새 자료 추가 후 기존 직접 수정과 블록 ID를 보존한 채 편집을 이어갈 수 있어야 한다. | BE-04·BE-05 후속 보완, BE-06, AG-03·AG-07. `app/routers/{preflights,drafts,documents}.py`, `app/services/{preflights,documents,ai_jobs}.py`, `app/agent_bridge.py` |
+| 늦게 완료된 작업·만료 — C-06 | 사전 점검·초안은 입력 버전을 다시 확인하고, 수정안은 생성 중 문서·입력 변경 시 `stale`로 저장한다. AI 작업 내부 검사는 `expires_at`을 직접 확인하지 않으며, 종료된 세션의 수정안도 `stale`로 저장하는 경로가 있다. | 저장 직전에 만료 시각·종료·기준 버전을 확인하도록 보완한다. 실행 중 입력/문서 변경, 실행 중 세션 종료, 조회 없이 만료 시각 경과를 각각 확인한다. 늦은 결과가 최신 문서·검사·승인을 바꾸거나 정리된 데이터를 다시 만들면 안 된다. | BE-04·BE-05 후속 보완, BE-09, AG-03. `app/services/{ai_jobs,sessions,jobs}.py` |
+| 검증·승인·배치·출력 — C-08, C-09 | 문서 조회의 `validation`·`approval`은 `null`이다. 문서 버전 변경 훅은 있으나 검증·승인 저장과 무효화 실체, 실제 배치 검사·PDF/DOCX 생성은 미구현이다. | 검사 상태·버전·출력 형식에 따른 승인 조건을 합의하고 구현한다. 부분 재검증의 다른 미해결 blocker 보존, 검사 대기/실패·옛 버전의 승인 차단, 승인 후 변경 차단을 확인한다. 한글·사진·편집 가능한 DOCX, 출력 재시도 시 AI 재생성 없음도 실제 파일로 확인한다. | BE-06~BE-08, AG-07·AG-08. `app/models.py`, `app/db.py`, `app/agent_bridge.py`, `app/services/documents.py`. 새 구현 파일이 필요하면 경로·목적을 별도 확인한다. |
+| 보완 메모·구조 편집 범위 — C-10, C-11 | 보완 메모를 근거로 등록하는 전용 흐름은 없다. 직접 삽입의 ID는 요청자가 제공하고 서버가 중복을 검사한다. `target_block_ids`와 구조 연산 규칙은 있으나 mock의 구조 수정안은 지원하지 않는다. | 메모의 MVP 포함 여부, 근거 위치·버전, ID 발급 책임, 페이지 전체와 선택 블록의 허용 범위를 먼저 합의한다. 구현 시 중복 ID·선택 범위 밖 변경을 거부하고, 미지원 요청을 빈 수정안 성공으로 처리하지 않는지 확인한다. | BE-01·BE-05 후속 협의, AG-01·AG-05. `app/models.py`, `app/services/{doc_ops,ai_jobs}.py`, `app/agent_bridge.py` |
+| 전체 파생 데이터 정리 | 종료 시 접근 차단, 자료·자산 삭제 표시, 추출 구간 삭제, 세션 파일 정리는 있다. 삭제 실패는 `cleanup_status=pending`으로 남긴다. 전체 파생 데이터 정리·주기 실행·실패 재시도는 미구현이다. | 사실·문서/버전·수정안·Job 결과·체크포인트·출력 캐시의 정리 범위를 연결한다. 명시적 종료와 아무 요청 없는 만료, 파일 삭제 실패 후 재시도, 정리 중 AI 완료를 확인한다. 등록 자료는 유지하고 세션 결과는 다시 저장되지 않아야 한다. | BE-09, AG-03. `app/services/{sessions,ai_jobs,jobs}.py`, `app/db.py`; 체크포인트 정리는 실제 Agent 구현과 함께 연결 |
+
+**다음 작업 순서**
+
+1. BE-01 후속으로 C-01~C-04·C-07의 계약·모델·예시 차이를 맞춘다. 계약 변경을 확정할 때 버전과 프론트 사본·타입·호출부의 갱신 필요를 함께 알린다.
+2. Agent와 등록 자료 전달, C-05·C-06의 저장/재개 경계, C-10·C-11의 미정 범위를 합의한다. 의미 판단은 Agent가, 접근·참조·버전·저장 조건은 백엔드가 맡는다.
+3. 기존 선행 조건을 따라 BE-06~BE-09를 구현하고 각 담당이 필수 확인을 수행한다. BE-10에서 실제 프론트·Agent·출력을 연결해 확인한다.
+
+**이번 확인 범위와 남은 일** — Markdown과 현재 모델·라우트·서비스를 읽어 대조했다. 서버·pytest·실제 AI·프론트·출력 파일 확인은 실행하지 않았다. 계약 예시 JSON, 실행 코드, 의존성, DB 스키마를 수정하지 않았다. 위 구현과 검증은 남은 작업이며, 6.1~6.5절의 과거 PASS를 이번 실행 결과로 재사용하지 않는다.
 
 ## 7. 첫 요청
 
