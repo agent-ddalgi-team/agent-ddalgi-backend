@@ -10,6 +10,9 @@
 - 서버가 넘긴 segment_id·asset_id·fact_id만 결과에 쓸 수 있다. 결과는 서버가 다시 검사하며(ai_jobs), 없는 ID는 거부한다.
 - 실패는 AgentError(code, message, retryable)로 알린다. mock으로 몰래 대체하지 않는다.
 - AGENT_MODE=llm인데 구현(app/agent_llm.py의 create_bridge())이 없으면 AgentUnavailable → Job failed.
+- 선택적 동기 훅 wait_for_confirmation(conn, sid, revision, preflight_id) / resume_draft(conn, request, job_id)는
+  서버 BEGIN IMMEDIATE 안에서 체크포인트만 처리한다. resume_draft가 False면 같은 Job의 중복 실행이므로
+  모델을 호출하지 않고 기존 Job 상태를 유지한다. 훅 안에서 AI 호출·문서 저장·서버 트랜잭션 종료를 하지 않는다.
 """
 from __future__ import annotations
 

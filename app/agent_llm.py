@@ -12,13 +12,21 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
+import sqlite3
 import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any
+from typing import Any, TypedDict
+
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, interrupt
+from langsmith import tracing_context
 
 from openai import (APIConnectionError, APIStatusError, APITimeoutError, AuthenticationError,
                     BadRequestError, OpenAI, PermissionDeniedError, RateLimitError)
@@ -32,6 +40,31 @@ from app.models import Block, EvidenceRef, Fact, Issue, Page, Recommendations
 
 JsonRequester = Callable[[str, dict, dict, str], dict]
 _BUSINESS_KEYS = ("company_summary", "business_areas", "processes", "products_services", "technology")
+# 추천 전용 기준이다. 렌더링한 쪽수·최종 승인 기준으로 사용하지 않는다.
+_PAGE_GUIDE = ((10, 8400, 11), (8, 6000, 9), (6, 3600, 6), (4, 1200, 3))
+_DIRECTION_FOCUS = {
+    "balanced": ("균형형", ()),
+    "quality_process": ("품질·공정 중심", ("technology", "processes", "capabilities", "certifications")),
+    "customer_response": ("고객 대응 중심", ("products_services", "lead_time", "capabilities", "customers_markets")),
+}
+_FOCUS_TERMS = {
+    "company_summary": ("회사 개요",), "business_areas": ("사업",),
+    "products_services": ("제품", "서비스"), "technology": ("기술",),
+    "strengths": ("강점",), "customers_markets": ("고객", "시장", "거래처"),
+    "certifications": ("인증", "인증서", "인허가", "특허"), "history": ("연혁",),
+    "processes": ("공정", "품질",), "process_count": ("공정 수",),
+    "capabilities": ("대응 범위", "역량"), "lead_time": ("납기", "납품",),
+    "other_info": ("기타 핵심 정보",),
+}
+
+
+def _mention(text: str, term: str) -> tuple[bool, bool]:
+    """작성 요청의 명시적 항목과 간단한 제외 표현만 인식한다. 사실 판단에 쓰지 않는다."""
+    text, term = "".join(text.casefold().split()), "".join(term.casefold().split())
+    excluded = re.search(re.escape(term) + r"(?:은|는|을|를|이|가|도)?(?:제외|생략|빼|없이|불필요|필요없|강조하지|하지|아닌|아니)", text)
+    return term in text, bool(excluded)
+
+
 _LEGACY_INPUT_LIMIT = 40_000
 _TRIAL_MODEL = "gpt-6-luna"
 # 2026-09-28 D-04: Standard 텍스트 단가. 실제 청구액(세금 포함)과 구분한다.
@@ -348,10 +381,124 @@ def _unique_refs(refs: list[EvidenceRef]) -> list[EvidenceRef]:
     return list(found.values())
 
 
+class ConfirmationState(TypedDict):
+    session_id: str
+    input_revision: int
+    preflight_id: str
+    consumed: bool
+    job_id: str
+
+
+class DraftConfirmationGraph:
+    """서버의 짧은 BEGIN IMMEDIATE 구간에서만 실행하는 참조 전용 확인 그래프.
+
+    AI 호출·문서 저장은 그래프 밖에 둬 interrupt 재실행이 외부 작업을 반복하지 않게 한다.
+    세션 폴더의 DB/WAL/SHM은 기존 BE-09 삭제 큐가 함께 정리한다.
+    """
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+
+    @staticmethod
+    def _confirm(state: ConfirmationState):
+        expected = {key: state[key] for key in ("session_id", "input_revision", "preflight_id")}
+        answer = interrupt({"action": "confirm_draft", **expected})
+        if (not isinstance(answer, dict) or answer.get("action") != "generate"
+                or any(answer.get(key) != value for key, value in expected.items()) or not answer.get("job_id")):
+            raise AgentError("PREFLIGHT_NOT_CONFIRMED", "현재 사전 점검을 확인한 뒤 생성해 주세요.", False)
+        return {"consumed": True, "job_id": answer["job_id"]}
+
+    @contextmanager
+    def _open(self, conn, session_id: str, revision: int, *, create: bool):
+        from app.services import sessions
+        from app.services.export_render import is_link
+
+        # 호출자는 세션 종료·다른 재개와 같은 서버 DB 쓰기 잠금을 유지해야 한다.
+        if not conn.in_transaction:
+            raise RuntimeError("confirmation graph requires the server transaction")
+        row = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+        policy = sessions.usable(self.settings, row)
+        if policy:
+            code = "DEMO_MODE_DISABLED" if policy == "demo_disabled" else "SESSION_EXPIRED"
+            raise AgentError(code, "현재 세션에서는 그래프를 재개할 수 없습니다.", False)
+        if row["input_revision"] != revision:
+            raise AgentError("INPUT_REVISION_CONFLICT", "입력이 바뀌었습니다. 사전 점검을 다시 실행해 주세요.", False)
+        root = self.settings.private_runs_dir
+        folder = sessions.session_dir(self.settings, session_id)
+        path = folder / "agent_checkpoints.sqlite3"
+        if (folder.resolve().parent != root.resolve() or is_link(root) or is_link(folder)
+                or any(is_link(p) for p in (path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")))):
+            raise AgentError("SERVICE_TEMPORARY_FAILURE", "체크포인트 저장 경로를 사용할 수 없습니다.", False)
+        if not create and not path.is_file():
+            raise AgentError("PREFLIGHT_NOT_CONFIRMED", "저장된 확인 지점이 없습니다. 사전 점검을 다시 실행해 주세요.", False)
+        if create:
+            folder.mkdir(parents=True, exist_ok=True)
+        # 외부 추적을 끄고 원문·Fact·본문 대신 내부 참조만 저장한다.
+        with closing(sqlite3.connect(path, check_same_thread=False)) as checkpoint_conn, tracing_context(enabled=False):
+            builder = StateGraph(ConfirmationState)
+            builder.add_node("confirm", self._confirm)
+            builder.add_edge(START, "confirm")
+            builder.add_edge("confirm", END)
+            graph = builder.compile(checkpointer=SqliteSaver(checkpoint_conn))
+            yield graph, {"configurable": {"thread_id": session_id}}
+
+    def wait(self, conn, session_id: str, revision: int, preflight_id: str) -> None:
+        from app.services import preflights
+
+        preflight = preflights.get(conn, session_id, preflight_id)
+        if preflight.input_revision != revision:
+            raise AgentError("INPUT_REVISION_CONFLICT", "사전 점검의 입력 버전이 다릅니다.", False)
+        if not preflight.can_generate:
+            return
+        with self._open(conn, session_id, revision, create=True) as (graph, config):
+            state = graph.get_state(config)
+            if state.values and state.values.get("preflight_id") == preflight_id:
+                return  # 같은 분석 완료 통지는 소비된 확인을 되살리지 않는다.
+            result = graph.invoke({"session_id": session_id, "input_revision": revision,
+                                   "preflight_id": preflight_id, "consumed": False, "job_id": ""}, config)
+            if len(result.get("__interrupt__", ())) != 1:
+                raise AgentError("SERVICE_TEMPORARY_FAILURE", "사용자 확인 지점을 저장하지 못했습니다.", False)
+
+    def resume(self, conn, request: DraftRequest, job_id: str) -> bool:
+        from app.services import preflights
+
+        stored = preflights.get(conn, request.session_id, request.preflight.preflight_id)
+        if not stored.confirmed_at or stored.model_dump() != request.preflight.model_dump():
+            raise AgentError("PREFLIGHT_NOT_CONFIRMED", "저장된 사전 점검의 사용자 확인이 필요합니다.", False)
+        if not stored.can_generate:
+            raise AgentError("NO_USABLE_TEXT", "텍스트 근거 자료를 추가해 주세요.", False)
+        with self._open(conn, request.session_id, request.input_revision, create=False) as (graph, config):
+            state = graph.get_state(config)
+            expected = {"session_id": request.session_id, "input_revision": request.input_revision,
+                        "preflight_id": stored.preflight_id}
+            if any(state.values.get(key) != value for key, value in expected.items()):
+                raise AgentError("INPUT_REVISION_CONFLICT", "최신 확인 지점과 다릅니다. 사전 점검을 다시 실행해 주세요.", False)
+            if state.values.get("consumed"):
+                if state.values.get("job_id") == job_id:
+                    return False  # 같은 Job의 중복 실행은 진행 중인 원래 Job을 실패 처리하지 않는다.
+                raise AgentError("PREFLIGHT_NOT_CONFIRMED", "이미 사용한 확인입니다. 사전 점검을 다시 실행해 주세요.", False)
+            if state.next != ("confirm",) or len(state.interrupts) != 1:
+                raise AgentError("PREFLIGHT_NOT_CONFIRMED", "재개할 확인 지점이 없습니다. 사전 점검을 다시 실행해 주세요.", False)
+            result = graph.invoke(Command(resume={state.interrupts[0].id:
+                                  {"action": "generate", "job_id": job_id, **expected}}), config)
+            if not result.get("consumed") or result.get("job_id") != job_id:
+                raise AgentError("PREFLIGHT_NOT_CONFIRMED", "확인 지점을 재개하지 못했습니다.", False)
+            return True
+
+
 class LlmAgent:
-    def __init__(self, request_json: JsonRequester, *, max_input_chars: int = _LEGACY_INPUT_LIMIT):
+    def __init__(self, request_json: JsonRequester, *, max_input_chars: int = _LEGACY_INPUT_LIMIT,
+                 settings: Settings | None = None):
         self.request_json = request_json
         self.max_input_chars = max_input_chars
+        self.confirmation_graph = DraftConfirmationGraph(settings) if settings is not None else None
+
+    def wait_for_confirmation(self, conn, session_id: str, revision: int, preflight_id: str) -> None:
+        if self.confirmation_graph is not None:
+            self.confirmation_graph.wait(conn, session_id, revision, preflight_id)
+
+    def resume_draft(self, conn, request: DraftRequest, job_id: str) -> bool:
+        return self.confirmation_graph is None or self.confirmation_graph.resume(conn, request, job_id)
 
     def _run_trial_operation(self, operation: Callable, request: Any) -> Any:
         if not isinstance(self.request_json, OpenAIRequester):
@@ -385,10 +532,8 @@ class LlmAgent:
             # 사진만 있는 경우도 사전 확인 결과를 반환한다. 생성 가능 여부는 서버가 계산한다.
             facts = self._facts({key: {"status": "not_found", "facts": []}
                                  for key in legacy.COMPANY_INFO_KEYS}, index)
-            return AnalyzeResult(facts=facts, issues=self._issues(facts), recommendations=Recommendations(
-                suggested_pages=request.brief.target_pages, reason="텍스트 근거가 있는 자료를 추가해 주세요.",
-                needed=["텍스트 근거 자료"],
-            ))
+            return AnalyzeResult(facts=facts, issues=self._issues(facts),
+                                 recommendations=self._recommendations(request, facts, has_text=False))
         if sum(len(unit["text"]) for unit in index.units) > self.max_input_chars:
             raise AgentError("INVALID_REQUEST", "선택 자료가 현재 AI 입력 한도를 넘었습니다. 자료 범위를 줄여 주세요.", False)
         try:
@@ -400,13 +545,90 @@ class LlmAgent:
         except (legacy.AgentError, legacy.AgentInputError, ValidationError, KeyError, TypeError, ValueError):
             raise _invalid() from None
         issues = self._issues(facts)
-        needed = list(dict.fromkeys(f.field_key for f in facts if f.status != "supported"))
-        reason = "요청한 목표 분량을 유지합니다. 이번 연결은 글 중심이며 실제 출력 쪽수는 배치 검사로 확인합니다."
-        if request.brief.photo_preference != "none":
-            reason += " 사진 추천·배치는 아직 연결되지 않았습니다."
         return AnalyzeResult(facts=facts, issues=issues,
-                             recommendations=Recommendations(suggested_pages=request.brief.target_pages,
-                                                             reason=reason, needed=needed))
+                             recommendations=self._recommendations(request, facts, has_text=True))
+
+    @staticmethod
+    def _recommendations(request: AnalyzeRequest, facts: list[Fact], *, has_text: bool) -> Recommendations:
+        brief = request.brief
+        if not has_text:
+            return Recommendations(suggested_pages=brief.target_pages,
+                                   reason="읽을 수 있는 텍스트 근거가 없어 분량·구성 추천을 보류합니다. 텍스트 자료를 추가한 뒤 다시 점검해 주세요.",
+                                   needed=["텍스트 근거 자료: 회사명과 사업·공정 설명이 담긴 읽을 수 있는 파일을 첨부해 주세요."])
+
+        titles = {"company_name": "회사명", **legacy.SECTION_TITLES}
+        supported = [f for f in facts if f.field_key in titles and f.status == "supported"
+                     and f.value and f.value.strip() and f.evidence_refs]
+        supported_keys = {f.field_key for f in supported}
+        focus, excluded = [], set()
+        # 구체적인 강조 항목을 목적 문구보다 먼저 반영한다.
+        for text in [*brief.emphasis, brief.purpose]:
+            for key, aliases in _FOCUS_TERMS.items():
+                mentions = [_mention(text, term) for term in (key, *aliases)]
+                if any(negative for _, negative in mentions):
+                    excluded.add(key)
+                if any(present for present, _ in mentions):
+                    focus.append(key)
+        direction_label, direction_keys = _DIRECTION_FOCUS[brief.direction]
+        focus = [key for key in dict.fromkeys([*focus, *direction_keys]) if key not in excluded]
+        body = [f for f in supported if f.field_key != "company_name" and f.field_key not in excluded]
+        # 같은 사실/근거의 반복이나 여러 Fact로의 분리가 분량을 늘리지 않도록 양쪽을 제한한다.
+        values = {"".join(f.value.split()) for f in body}
+        excerpts = {"".join(ref.excerpt.split()) for f in body for ref in f.evidence_refs}
+        chars = min(sum(map(len, values)), sum(map(len, excerpts)))
+        fields = {f.field_key for f in body}
+        capacity = next((pages for pages, min_chars, min_fields in _PAGE_GUIDE
+                         if chars >= min_chars and len(fields) >= min_fields), 1)
+        # '보유한 장비'나 '11쪽'을 '한 장'·'1쪽' 요청으로 해석하지 않는다.
+        page_terms = [match.group() for match in re.finditer(
+            r"(?<!\w)(?:한\s*장|1\s*쪽)(?=$|\s|[,.]|으로|로|만|에|짜리)", brief.purpose)]
+        summary = any(present and not negative for present, negative in
+                      (_mention(brief.purpose, term) for term in ("요약", "간단", "한눈", *page_terms)))
+        suggested = min(brief.target_pages, capacity, 1 if summary else 10)
+        order = [key for key in dict.fromkeys(["company_summary", *focus, *legacy.SECTION_ORDER])
+                 if key in fields]
+        if suggested == 1:
+            order = order[:4]
+        reason = [f"근거가 연결된 본문 {len(fields)}개 항목과 중복을 줄인 내용 약 {chars}자를 기준으로 {suggested}쪽을 권합니다."]
+        if summary:
+            reason.append("요약 목적에 맞춰 핵심 내용부터 간결하게 구성하세요.")
+        reason.append(f"작성 방향은 {direction_label}입니다.")
+        if order:
+            reason.append("추천 구성: " + " → ".join(titles[key] for key in order) + ".")
+        else:
+            reason.append("본문에 사용할 항목의 근거를 보완해 주세요.")
+        if suggested < brief.target_pages:
+            reason.append(f"현재 목표 {brief.target_pages}쪽을 유지하려면 내용을 반복해 채우기보다 관련 근거 자료를 보완해 주세요.")
+        reason.append("추천 적용은 작성 설정 변경과 재점검 후 진행하세요. 실제 출력 쪽수는 배치 확인이 필요합니다.")
+
+        needed = []
+        if "company_name" not in supported_keys:
+            needed.append("회사명: 이름이 적힌 텍스트 근거 자료를 첨부해 주세요.")
+        if not supported_keys.intersection(_BUSINESS_KEYS):
+            needed.append("주요 사업·공정 설명: 실제 사업이나 공정을 설명하는 텍스트 근거 자료를 첨부해 주세요.")
+        for key in legacy.COMPANY_INFO_KEYS:
+            statuses = {f.status for f in facts if f.field_key == key}
+            if "conflict" in statuses:
+                needed.append(f"{titles[key]}: 서로 다른 값의 원문·적용 기준·기준일을 대조해 주세요.")
+            elif "needs_confirmation" in statuses:
+                needed.append(f"{titles[key]}: 조건·적용 범위를 확인할 수 있는 텍스트 원문을 보완해 주세요.")
+            elif key in focus and key not in supported_keys:
+                needed.append(f"선택 보완 — {titles[key]}: 목적·강조·방향에 맞춰 다루려면 텍스트 근거 자료를 첨부해 주세요.")
+        if any(f.status != "supported" for f in facts):
+            reason.append("부족하거나 불명확한 항목을 표시한 검토용 초안을 만들 수 있습니다. 필수 누락·충돌은 보완 전까지 남습니다.")
+        if any(source.parse_status == "partial" for source in request.sources):
+            needed.append("일부 자료의 읽기가 완전하지 않습니다. 확인할 부분의 텍스트본을 첨부해 주세요.")
+
+        assets = {asset_id for source in request.sources for asset_id in source.asset_ids}
+        if brief.photo_preference == "none":
+            reason.append("사진 사용 안 함에 맞춰 글 중심으로 구성하세요.")
+        elif not assets:
+            reason.append("선택 자료에 사용 가능한 사진이 없어 글 중심 구성을 권합니다.")
+            needed.append("사진: 사진을 사용하려면 실제 사진을 첨부하고, 없으면 글 중심 구성을 선택해 주세요.")
+        else:
+            placement = "사진 비중을 높일 영역" if brief.photo_preference == "many" else "본문을 보조할 위치"
+            reason.append(f"선택 자료의 사진 {len(assets)}개는 내용과 관련성을 확인한 뒤 {placement}을 정하세요. 사진 선택·배치 후 분량을 다시 검토하세요.")
+        return Recommendations(suggested_pages=suggested, reason=" ".join(reason), needed=needed)
 
     @staticmethod
     def _facts(info: dict, index: SourceIndex) -> list[Fact]:
@@ -553,4 +775,4 @@ class LlmAgent:
 
 def create_bridge(settings: Settings) -> LlmAgent:
     options = LlmOptions.from_env(os.environ)
-    return LlmAgent(OpenAIRequester(options), max_input_chars=options.max_input_chars)
+    return LlmAgent(OpenAIRequester(options), max_input_chars=options.max_input_chars, settings=settings)

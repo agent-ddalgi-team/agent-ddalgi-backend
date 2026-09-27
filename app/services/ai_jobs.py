@@ -113,7 +113,11 @@ def validate_draft(result: DraftResult, sources: list[SourceIn], fact_ids: set[s
     return None
 
 
-def _fail_agent(conn, job_id: str, exc: Exception) -> None:
+def _fail_agent(conn, job_id: str, exc: Exception, *, requires_reanalysis: bool = False) -> None:
+    if requires_reanalysis:
+        code = exc.code if isinstance(exc, AgentError) else "SERVICE_TEMPORARY_FAILURE"
+        message = exc.message if isinstance(exc, AgentError) else "AI 초안 작업이 실패했습니다."
+        exc = AgentError(code, message + " 원인을 확인한 뒤 사전 점검부터 다시 진행해 주세요.", False)
     if isinstance(exc, AgentError):
         jobs.fail(conn, job_id, exc.code, exc.message, exc.retryable)
     elif isinstance(exc, AgentUnavailable):
@@ -160,6 +164,8 @@ def run_preflight_job(settings: Settings, session_id: str, job_id: str, input_re
             can_generate = bool(usable)  # 생성 조건: 텍스트 근거가 있는 선택 자료 1개 이상(사용자 확인은 별도)
             preflight_id = preflights.save(conn, session_id, input_revision, usable, result.facts, result.issues,
                                            result.recommendations, can_generate)
+            if (wait_for_confirmation := getattr(bridge, "wait_for_confirmation", None)) is not None:
+                wait_for_confirmation(conn, session_id, input_revision, preflight_id)
             jobs.succeed(conn, job_id, {"type": "preflight", "preflight_id": preflight_id})
     except Exception:
         logger.exception("preflight job crashed: %s", job_id)
@@ -359,6 +365,7 @@ def run_validate_job(settings: Settings, session_id: str, job_id: str, input_rev
 
 
 def run_draft_job(settings: Settings, session_id: str, job_id: str, input_revision: int, preflight_id: str) -> None:
+    resumed = False
     try:
         with connect(settings.db_path, immediate=True) as conn:
             if _policy_failure(conn, settings, session_id, job_id):
@@ -371,14 +378,23 @@ def run_draft_job(settings: Settings, session_id: str, job_id: str, input_revisi
             brief = Brief.model_validate_json(row["brief_json"])
             sources = preflights.build_sources(conn, session_id, json.loads(row["selected_source_ids"]))
             preflight = preflights.get(conn, session_id, preflight_id)
+            request = DraftRequest(session_id, input_revision, brief, sources, preflight)
+            try:
+                bridge = get_bridge(settings)
+                if (resume := getattr(bridge, "resume_draft", None)) is not None:
+                    resumed = resume(conn, request, job_id)
+                    if not resumed:
+                        return
+            except Exception as exc:
+                _fail_agent(conn, job_id, exc)
+                return
         try:
-            bridge = get_bridge(settings)
-            result: DraftResult = _run(bridge.draft, DraftRequest(session_id, input_revision, brief, sources, preflight))
+            result: DraftResult = _run(bridge.draft, request)
         except Exception as exc:
             with connect(settings.db_path, immediate=True) as conn:
                 if _policy_failure(conn, settings, session_id, job_id):
                     return
-                _fail_agent(conn, job_id, exc)
+                _fail_agent(conn, job_id, exc, requires_reanalysis=resumed)
             return
         problem = validate_draft(result, sources, {f.fact_id for f in preflight.facts})
         with connect(settings.db_path, immediate=True) as conn:   # 세션 확인과 저장을 한 잠금 안에서(BE-09)
@@ -386,7 +402,10 @@ def run_draft_job(settings: Settings, session_id: str, job_id: str, input_revisi
                 return
             if problem:
                 logger.error("agent draft output rejected (%s): %s", job_id, problem)
-                jobs.fail(conn, job_id, "AGENT_OUTPUT_INVALID", "AI 초안이 자료와 맞지 않아 저장하지 않았습니다.", True)
+                message = "AI 초안이 자료와 맞지 않아 저장하지 않았습니다."
+                if resumed:
+                    message += " 사전 점검부터 다시 진행해 주세요."
+                jobs.fail(conn, job_id, "AGENT_OUTPUT_INVALID", message, not resumed)
                 return
             _, err = _load_session_for_job(conn, session_id, input_revision, settings)
             if err:
@@ -405,4 +424,7 @@ def run_draft_job(settings: Settings, session_id: str, job_id: str, input_revisi
         with connect(settings.db_path, immediate=True) as conn:
             if _policy_failure(conn, settings, session_id, job_id):
                 return
-            jobs.fail(conn, job_id, "INTERNAL_ERROR", "초안 생성 작업이 실패했습니다.", True)
+            message = "초안 생성 작업이 실패했습니다."
+            if resumed:
+                message += " 사전 점검부터 다시 진행해 주세요."
+            jobs.fail(conn, job_id, "INTERNAL_ERROR", message, not resumed)

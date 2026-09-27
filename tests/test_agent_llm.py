@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import socket
 import threading
@@ -24,8 +25,12 @@ from app import create_app
 from app import agent_legacy as legacy, agent_llm as llm
 from app.agent_bridge import AgentError, AnalyzeRequest, DraftRequest, SegmentIn, SourceIn
 from app.config import Settings
+from app.db import connect
+from app.errors import ApiError
 from app.models import Brief, PreflightOut
+from app.services import ai_jobs, cleanup, jobs, preflights, sweeper
 from app.services.ai_jobs import validate_analyze, validate_draft
+from app.services.registered import import_bundle
 
 BRIEF = Brief(purpose="가짜 회사 소개", emphasis=[], direction="balanced", target_pages=6, photo_preference="none")
 TEXTS = {
@@ -164,6 +169,138 @@ def analyzed(model=None):
                       issues=result.issues, recommendations=result.recommendations, can_generate=True,
                       confirmed_at="2026-09-28T00:00:00Z")
     return agent, DraftRequest(request.session_id, 2, BRIEF, request.sources, pf), model
+
+
+def analyze_recommendations(brief, texts, *, change=None, assets=(), parse_status="complete"):
+    """추천 검사도 기존 추출·근거 변환을 거친다. 응답은 가짜 자료에서만 만든다."""
+    selected = [SourceIn("src_recommend", 1, "company", "추천 검사 자료", parse_status, [
+        SegmentIn(f"seg_recommend_{key}", {"line_start": n, "line_end": n}, value)
+        for n, (key, value) in enumerate(texts.items(), 1)
+    ], asset_ids=list(assets), origin_kind="mock")]
+    def fill(info):
+        for key, value in texts.items():
+            info[key] = {"status": "supported", "facts": [{"text": value, "evidence": [{
+                "source_id": "src_recommend", "locator": f"segment:seg_recommend_{key}", "quote": value,
+            }]}]}
+        if change:
+            change(info)
+    model = FakeModel(extract_change=fill)
+    request = AnalyzeRequest("ses_recommend", 1, brief, selected)
+    before = copy.deepcopy(request)
+    result = llm.LlmAgent(model).analyze(request)
+    assert request == before and len(model.calls) == 1
+    assert validate_analyze(result, selected) is None
+    return result
+
+
+@pytest.mark.parametrize("fields,chars_per_field,expected", [(3, 100, 1), (3, 500, 4),
+                                                           (6, 650, 6), (9, 700, 8), (11, 800, 10)])
+def test_recommendations_follow_supported_content_without_changing_requested_pages(fields, chars_per_field, expected):
+    texts = {"company_name": "추천 검사 회사", **{
+        key: key + "검사용내용" * (chars_per_field // 5) for key in legacy.SECTION_ORDER[:fields]
+    }}
+    brief = BRIEF.model_copy(update={"target_pages": 10})
+    result = analyze_recommendations(brief, texts)
+    assert result.recommendations.suggested_pages == expected
+    assert brief.target_pages == 10
+    assert "추천 구성:" in result.recommendations.reason
+    assert "작성 설정 변경과 재점검" in result.recommendations.reason
+
+
+def test_recommendations_deduplicate_facts_and_shared_evidence():
+    texts = {"company_name": "추천 검사 회사", **{
+        key: key + "검사용내용" * 100 for key in legacy.SECTION_ORDER[:3]
+    }}
+    baseline = analyze_recommendations(BRIEF, texts)
+    def duplicate(info):
+        for item in info.values():
+            item["facts"] *= 10
+    repeated = analyze_recommendations(BRIEF, texts, change=duplicate)
+    assert repeated.recommendations == baseline.recommendations
+    # 같은 짧은 원문을 길게 풀어 쓴 응답도 근거 분량까지만 고려한다.
+    short = {key: value[:30] for key, value in texts.items()}
+    def expand(info):
+        for key, item in info.items():
+            if key != "company_name" and item["facts"]:
+                item["facts"][0]["text"] *= 100
+    expanded = analyze_recommendations(BRIEF, short, change=expand)
+    assert expanded.recommendations.suggested_pages == 1
+
+
+@pytest.mark.parametrize("purpose,expected", [("상세 소개", 6), ("한 장 요약", 1), ("요약하지 말고 상세 소개", 6),
+                                             ("보유한 장비와 상세한 공정 소개", 6), ("한 장으로 소개", 1),
+                                             ("11쪽 자료를 활용한 소개", 6), ("1쪽으로 소개", 1)])
+def test_recommendations_use_summary_purpose_without_changing_brief(purpose, expected):
+    texts = {"company_name": "추천 검사 회사", **{
+        key: key + "검사용내용" * 140 for key in legacy.SECTION_ORDER[:6]
+    }}
+    brief = BRIEF.model_copy(update={"purpose": purpose})
+    assert analyze_recommendations(brief, texts).recommendations.suggested_pages == expected
+
+
+@pytest.mark.parametrize("settings,first", [
+    ({"direction": "quality_process"}, "기술"),
+    ({"direction": "customer_response"}, "납기 조건"),
+    ({"purpose": "납기 안내용 소개"}, "납기 조건"),
+    ({"direction": "quality_process", "emphasis": ["납기"]}, "납기 조건"),
+])
+def test_recommendations_order_supported_sections_by_direction_purpose_and_emphasis(settings, first):
+    texts = {"company_name": "추천 검사 회사", "company_summary": "회사 소개입니다.",
+             "technology": "검사 기술 A", "processes": "검사 공정 B", "lead_time": "주문 승인 후 7일"}
+    result = analyze_recommendations(BRIEF.model_copy(update=settings), texts)
+    assert f"추천 구성: 회사 개요 → {first}" in result.recommendations.reason
+    assert "인증" not in result.recommendations.reason.split("추천 구성: ")[1].split(".")[0]
+
+
+@pytest.mark.parametrize("excluded", ["인증 제외", "인증서 제외", "인증은 필요 없음"])
+def test_recommendations_respect_explicit_exclusions_and_keep_certification_optional(excluded):
+    brief = BRIEF.model_copy(update={"direction": "quality_process", "emphasis": [excluded]})
+    result = analyze_recommendations(brief, TEXTS)
+    assert all("인증" not in item for item in result.recommendations.needed)
+    assert all(not item.startswith("사진:") for item in result.recommendations.needed)
+    without_exclusion = analyze_recommendations(BRIEF.model_copy(update={"direction": "quality_process"}), TEXTS)
+    assert any(item.startswith("선택 보완 — 인증") for item in without_exclusion.recommendations.needed)
+    assert not without_exclusion.issues
+
+
+def test_order_approval_purpose_does_not_request_certifications():
+    result = analyze_recommendations(BRIEF.model_copy(update={"purpose": "주문 승인 후 납기 안내"}), TEXTS)
+    assert "추천 구성: 회사 개요 → 납기 조건" in result.recommendations.reason
+    assert all("인증" not in item for item in result.recommendations.needed)
+
+
+def test_recommendations_keep_conflicts_uncertainty_and_partial_reading_as_supplements():
+    texts = TEXTS | {"technology": "검사 기술의 조건은 확인이 필요합니다." * 100,
+                     "processes": "공정 A와 공정 B 중 적용 대상은 확인이 필요합니다." * 100}
+    def uncertain(info):
+        info["technology"]["status"] = "needs_confirmation"
+        item = info["processes"]["facts"][0]
+        info["processes"] = {"status": "conflict", "facts": [dict(item, text="공정 A"), dict(item, text="공정 B")]}
+    result = analyze_recommendations(BRIEF.model_copy(update={"direction": "quality_process"}), texts,
+                                     change=uncertain, parse_status="partial")
+    assert result.recommendations.suggested_pages == 1
+    needed = " ".join(result.recommendations.needed)
+    assert "서로 다른 값의 원문" in needed and "조건·적용 범위" in needed and "읽기가 완전하지" in needed
+    assert {issue.code for issue in result.issues} == {"VALUE_CONFLICT", "UNSUPPORTED_CLAIM"}
+    assert all(issue.severity == "blocker" and issue.status == "open" for issue in result.issues)
+    outline = result.recommendations.reason.split("추천 구성: ")[1].split(".")[0]
+    assert "기술" not in outline and "공정 목록" not in outline
+
+
+@pytest.mark.parametrize("preference,assets", [("none", ["asset_a", "asset_b"]), ("balanced", []),
+                                             ("many", ["asset_a", "asset_a", "asset_b"])])
+def test_recommendations_use_photo_availability_without_assuming_contents(preference, assets):
+    brief = BRIEF.model_copy(update={"photo_preference": preference})
+    result = analyze_recommendations(brief, TEXTS, assets=assets)
+    rec = result.recommendations
+    assert rec.suggested_pages == 1
+    assert not any("asset_" in text for text in [rec.reason, *rec.needed])
+    if preference == "none":
+        assert "사진 사용 안 함" in rec.reason and all(not item.startswith("사진:") for item in rec.needed)
+    elif not assets:
+        assert "사용 가능한 사진이 없어" in rec.reason and any(item.startswith("사진:") for item in rec.needed)
+    else:
+        assert "사진 2개" in rec.reason and "내용과 관련성을 확인" in rec.reason and "사진 비중을 높일 영역" in rec.reason
 
 
 def test_extract_restores_source_version_location_and_keeps_conditions():
@@ -516,6 +653,7 @@ def test_d04_trial_case_preserves_expected_facts_issues_and_draft(monkeypatch, c
     assert validate_draft(draft, request.sources, {fact.fact_id for fact in analysis.facts}) is None
     assert all(source.origin_kind == "mock" and source.kind == "company" and not source.asset_ids
                for source in request.sources)
+    assert analysis.recommendations.suggested_pages == 1
     assert 0 < sum(len(segment.text) for source in request.sources for segment in source.segments) <= 10_000
     assert {fact.field_key for fact in analysis.facts} == set(legacy.COMPANY_INFO_KEYS)
     expected = D04_EXPECTED[case_id]
@@ -548,6 +686,7 @@ def test_d04_trial_case_preserves_expected_facts_issues_and_draft(monkeypatch, c
         assert draft.title == "회사소개서 초안" and "테스트 회사" not in body
         assert any(issue.code == "REQUIRED_MISSING" and issue.severity == "blocker"
                    and by_key["company_name"].fact_id in issue.fact_ids for issue in analysis.issues)
+        assert any(item.startswith("회사명:") for item in analysis.recommendations.needed)
         assert "자료에서 확인되지 않음" in body
     elif case_id == "T03":
         conflict = by_key["process_count"]
@@ -843,38 +982,383 @@ def test_last_successful_result_is_returned_after_postprocessing(monkeypatch):
     assert len(calls) == 2
 
 
-def test_stopped_trial_preserves_existing_document_through_server(tmp_path, monkeypatch):
-    def respond(**kwargs):
-        payload = json.loads(kwargs["input"])
-        body = extraction(payload) if kwargs["text"]["format"]["name"] == "company_info" else draft_response(payload)
-        return metered_response(output_text=json.dumps(body, ensure_ascii=False))
-    calls = fake_sdk(monkeypatch, response=respond)
-    options = llm.LlmOptions.from_env(config_env())
-    monkeypatch.setattr(llm.LlmOptions, "from_env", classmethod(lambda cls, env: options))
-    settings = Settings(private_runs_dir=tmp_path / "runs", db_path=tmp_path / "db.sqlite3",
+@pytest.fixture
+def graph_flow(tmp_path, monkeypatch):
+    settings = Settings(private_runs_dir=tmp_path / "runs", db_path=tmp_path / "app.sqlite3",
                         agent_mode="llm", cleanup_sweep_interval_s=0)
+    model = FakeModel()
+    # Job마다 실제 graph를 가진 Agent를 새로 만든다. 모델 응답만 가짜다.
+    monkeypatch.setattr(ai_jobs, "get_bridge", lambda settings: llm.LlmAgent(model, settings=settings))
     with TestClient(create_app(settings)) as client:
         sid = client.post("/api/v1/sessions", json={"brief": BRIEF.model_dump()}).json()["session_id"]
         base = f"/api/v1/sessions/{sid}"
         upload = client.post(base + "/sources", files=[("files", ("fake.txt", "\n".join(TEXTS.values()).encode()))]).json()
         selected = client.patch(base + "/inputs", json={"expected_input_revision": 1,
-            "selected_source_ids": [item["source_id"] for item in upload["items"]]}).json()
+            "selected_source_ids": [i["source_id"] for i in upload["items"]]}).json()
         rev = selected["input_revision"]
-        pending = client.post(base + "/preflights", json={"expected_input_revision": rev}).json()
+        accepted = client.post(base + "/preflights", json={"expected_input_revision": rev}).json()
+        job = client.get(base + "/jobs/" + accepted["job_id"]).json()
+        assert job["status"] == "succeeded", job
+        pfid = job["result_ref"]["preflight_id"]
+        yield SimpleNamespace(settings=settings, client=client, model=model, sid=sid, base=base, rev=rev,
+                              pfid=pfid, path=settings.private_runs_dir / sid / "agent_checkpoints.sqlite3",
+                              body={"preflight_id": pfid, "input_revision": rev, "confirmed": True})
+
+
+def graph_request(flow, conn, *, confirm=True):
+    if confirm:
+        preflights.confirm(conn, flow.pfid)
+    pf = preflights.get(conn, flow.sid, flow.pfid)
+    return DraftRequest(flow.sid, flow.rev, BRIEF,
+                        preflights.build_sources(conn, flow.sid, pf.usable_source_ids), pf)
+
+
+def graph_job(flow, accepted):
+    return flow.client.get(flow.base + "/jobs/" + accepted.json()["job_id"]).json()
+
+
+def test_graph_wait_survives_new_app_and_contains_only_references(graph_flow, monkeypatch):
+    flow = graph_flow
+    attempts = []
+    def record_forbidden(*args, **kwargs):
+        attempts.append(True)
+        raise AssertionError("graph must not send external traces")
+    monkeypatch.setattr(socket.socket, "connect", record_forbidden)
+    monkeypatch.setattr(socket, "create_connection", record_forbidden)
+    assert flow.path.is_file()
+    assert len(flow.model.calls) == 1
+    contents = flow.path.read_bytes()
+    assert all(value.encode() not in contents for value in TEXTS.values())
+    denied = flow.client.post(flow.base + "/drafts", json=flow.body | {"confirmed": False})
+    assert denied.status_code == 422 and len(flow.model.calls) == 1
+    with connect(flow.settings.db_path, immediate=True) as conn:
+        with llm.DraftConfirmationGraph(flow.settings)._open(conn, flow.sid, flow.rev, create=False) as (graph, config):
+            state = graph.get_state(config)
+            assert state.next == ("confirm",) and len(state.interrupts) == 1
+            assert state.values == {"session_id": flow.sid, "input_revision": flow.rev,
+                                    "preflight_id": flow.pfid, "consumed": False, "job_id": ""}
+    # 환경에 추적 설정이 있어도 외부 소켓 차단 하에서 graph가 실행된다.
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    with TestClient(create_app(flow.settings)) as reopened:
+        reopened.cookies.update(dict(flow.client.cookies))
+        accepted = reopened.post(flow.base + "/drafts", json=flow.body, headers={"Idempotency-Key": "graph-resume"})
+        job = reopened.get(flow.base + "/jobs/" + accepted.json()["job_id"]).json()
+        assert job["status"] == "succeeded", job
+        assert reopened.post(flow.base + "/drafts", json=flow.body,
+                             headers={"Idempotency-Key": "graph-resume"}).json() == accepted.json()
+    assert [name for name, _ in flow.model.calls] == ["company_info", "draft_sections"]
+    assert attempts == []
+
+
+@pytest.mark.parametrize("failure", ["model", "validation", "storage"])
+def test_graph_failed_draft_requires_reanalysis_and_does_not_retry_model(graph_flow, monkeypatch, failure):
+    flow = graph_flow
+    def fail_model(_):
+        raise AgentError("AI_RATE_LIMIT", "가짜 요청 한도 오류", True)
+    def fail_storage(*args, **kwargs):
+        raise RuntimeError("fake storage error")
+    with monkeypatch.context() as patch:
+        if failure == "model":
+            patch.setattr(flow.model, "draft_change", fail_model)
+        elif failure == "validation":
+            patch.setattr(ai_jobs, "validate_draft", lambda *args: "fake rejected output")
+        else:
+            patch.setattr(ai_jobs.documents, "create_initial", fail_storage)
+        headers = {"Idempotency-Key": "graph-failed-draft"}
+        first = flow.client.post(flow.base + "/drafts", json=flow.body, headers=headers)
+        result = graph_job(flow, first)
+        assert result["status"] == "failed" and not result["error"]["retryable"]
+        assert "사전 점검부터" in result["error"]["message"]
+        assert flow.client.post(flow.base + "/drafts", json=flow.body, headers=headers).json() == first.json()
+        second = graph_job(flow, flow.client.post(flow.base + "/drafts", json=flow.body,
+                                                headers={"Idempotency-Key": "graph-failed-draft-new"}))
+        assert second["status"] == "failed" and second["error"]["code"] == "PREFLIGHT_NOT_CONFIRMED"
+        assert len(flow.model.calls) == 2
+    recheck = graph_job(flow, flow.client.post(flow.base + "/preflights", json={"expected_input_revision": flow.rev}))
+    current = flow.body | {"preflight_id": recheck["result_ref"]["preflight_id"]}
+    assert graph_job(flow, flow.client.post(flow.base + "/drafts", json=current))["status"] == "succeeded"
+
+
+def test_graph_concurrent_same_job_calls_model_once(graph_flow):
+    flow = graph_flow
+    entered, release = threading.Event(), threading.Event()
+    def hold(_):
+        entered.set()
+        assert release.wait(10)
+    flow.model.draft_change = hold
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        running = pool.submit(flow.client.post, flow.base + "/drafts", json=flow.body)
+        try:
+            assert entered.wait(10)
+            with connect(flow.settings.db_path) as conn:
+                job = jobs.find_active(conn, flow.sid, "draft", flow.rev)
+            ai_jobs.run_draft_job(flow.settings, flow.sid, job.job_id, flow.rev, flow.pfid)
+            with connect(flow.settings.db_path) as conn:
+                assert jobs.get(conn, flow.sid, job.job_id).status == "running"
+            assert len(flow.model.calls) == 2
+        finally:
+            release.set()
+        assert graph_job(flow, running.result(timeout=10))["status"] == "succeeded"
+
+
+def test_graph_rejects_old_preflight_after_new_analysis_at_same_revision(graph_flow):
+    flow = graph_flow
+    new_job = graph_job(flow, flow.client.post(flow.base + "/preflights", json={"expected_input_revision": flow.rev}))
+    assert new_job["status"] == "succeeded", new_job
+    rejected = graph_job(flow, flow.client.post(flow.base + "/drafts", json=flow.body))
+    assert rejected["status"] == "failed" and rejected["error"]["code"] == "INPUT_REVISION_CONFLICT"
+    assert len(flow.model.calls) == 2
+    current = flow.body | {"preflight_id": new_job["result_ref"]["preflight_id"]}
+    assert graph_job(flow, flow.client.post(flow.base + "/drafts", json=current))["status"] == "succeeded"
+    assert len(flow.model.calls) == 3
+
+
+@pytest.mark.parametrize("failure", ["missing", "corrupt", "unconfirmed", "revision", "foreign_session"])
+def test_graph_rejects_invalid_resume_without_model_call(graph_flow, failure):
+    flow = graph_flow
+    if failure in {"missing", "corrupt"}:
+        flow.path.unlink()
+        if failure == "corrupt":
+            flow.path.write_bytes(b"invalid sqlite checkpoint")
+        result = graph_job(flow, flow.client.post(flow.base + "/drafts", json=flow.body))
+        assert result["status"] == "failed"
+        if failure == "missing":
+            assert not flow.path.exists()
+    else:
+        with connect(flow.settings.db_path, immediate=True) as conn:
+            request = graph_request(flow, conn, confirm=failure != "unconfirmed")
+            if failure == "unconfirmed":
+                request.preflight.confirmed_at = "2026-09-28T00:00:00Z"  # 요청만 위조해도 DB 확인이 필요하다.
+            elif failure == "revision":
+                conn.execute("UPDATE sessions SET input_revision=input_revision+1 WHERE session_id=?", (flow.sid,))
+            else:
+                request.session_id = "sess_another"
+            error_type = ApiError if failure == "foreign_session" else AgentError
+            error_code = {"foreign_session": "RESOURCE_NOT_FOUND", "revision": "INPUT_REVISION_CONFLICT",
+                          "unconfirmed": "PREFLIGHT_NOT_CONFIRMED"}[failure]
+            with pytest.raises(error_type) as caught:
+                llm.DraftConfirmationGraph(flow.settings).resume(conn, request, "job_invalid")
+            assert caught.value.code == error_code
+    assert len(flow.model.calls) == 1
+
+
+@pytest.mark.parametrize("stage", ["wait", "resume"])
+def test_graph_server_rollback_requires_reanalysis_without_repeating_call(graph_flow, stage):
+    flow = graph_flow
+    class SimulatedCrash(Exception):
+        pass
+    with pytest.raises(SimulatedCrash):
+        with connect(flow.settings.db_path, immediate=True) as conn:
+            request = graph_request(flow, conn)
+            graph = llm.DraftConfirmationGraph(flow.settings)
+            if stage == "wait":
+                pf = request.preflight
+                new_id = preflights.save(conn, flow.sid, flow.rev, pf.usable_source_ids, pf.facts, pf.issues,
+                                         pf.recommendations, True)
+                graph.wait(conn, flow.sid, flow.rev, new_id)
+            else:
+                assert graph.resume(conn, request, "job_before_crash")
+            raise SimulatedCrash()
+    rejected = graph_job(flow, flow.client.post(flow.base + "/drafts", json=flow.body))
+    assert rejected["status"] == "failed" and not rejected["error"]["retryable"]
+    assert "다시 실행" in rejected["error"]["message"] and len(flow.model.calls) == 1
+    new_job = graph_job(flow, flow.client.post(flow.base + "/preflights", json={"expected_input_revision": flow.rev}))
+    current = flow.body | {"preflight_id": new_job["result_ref"]["preflight_id"]}
+    assert graph_job(flow, flow.client.post(flow.base + "/drafts", json=current))["status"] == "succeeded"
+
+
+@pytest.mark.parametrize("end", ["close", "expire"])
+def test_graph_waiting_checkpoint_deleted_on_session_end(graph_flow, end):
+    flow = graph_flow
+    if end == "close":
+        assert flow.client.delete(flow.base).status_code == 200
+    else:
+        with connect(flow.settings.db_path, immediate=True) as conn:
+            conn.execute("UPDATE sessions SET expires_at='2000-01-01T00:00:00Z' WHERE session_id=?", (flow.sid,))
+        assert sweeper.sweep_once(flow.settings)["expired"] == 1
+    assert not flow.path.parent.exists()
+    assert flow.client.post(flow.base + "/drafts", json=flow.body).status_code == 410
+    assert not flow.path.parent.exists() and len(flow.model.calls) == 1
+
+
+def test_graph_checkpoint_delete_failure_retries_existing_cleanup_queue(graph_flow, monkeypatch):
+    flow = graph_flow
+    remove = cleanup._remove_tree
+    monkeypatch.setattr(cleanup, "_remove_tree", lambda path: False)
+    response = flow.client.delete(flow.base)
+    assert response.status_code == 200 and response.json()["cleanup"] == "pending"
+    assert flow.path.exists()
+    assert flow.client.post(flow.base + "/drafts", json=flow.body).status_code == 410
+    monkeypatch.setattr(cleanup, "_remove_tree", remove)
+    assert cleanup.run_for_session(flow.settings, flow.sid)["done"] == 1
+    with connect(flow.settings.db_path, immediate=True) as conn:
+        assert cleanup.verify_state(conn, flow.settings, flow.sid) == "done"
+    assert not flow.path.parent.exists()
+
+
+@pytest.mark.parametrize("stage", ["analysis", "draft"])
+@pytest.mark.parametrize("end", ["close", "expire"])
+def test_graph_late_model_result_does_not_restore_deleted_checkpoint(graph_flow, stage, end):
+    flow = graph_flow
+    def finish_session(_):
+        if end == "close":
+            with connect(flow.settings.db_path, immediate=True) as conn:
+                cleanup.finalize(conn, flow.settings, flow.sid, cleanup.REASON_CLOSED)
+            cleanup.run_for_session(flow.settings, flow.sid)
+        else:
+            with connect(flow.settings.db_path, immediate=True) as conn:
+                conn.execute("UPDATE sessions SET expires_at='2000-01-01T00:00:00Z' WHERE session_id=?", (flow.sid,))
+            sweeper.sweep_once(flow.settings)
+        assert not flow.path.parent.exists()
+    if stage == "analysis":
+        flow.model.extract_change = finish_session
+        response = flow.client.post(flow.base + "/preflights", json={"expected_input_revision": flow.rev})
+    else:
+        flow.model.draft_change = finish_session
+        response = flow.client.post(flow.base + "/drafts", json=flow.body)
+    with connect(flow.settings.db_path) as conn:
+        assert jobs.get(conn, flow.sid, response.json()["job_id"]).status == "cancelled"
+        assert conn.execute("SELECT COUNT(*) FROM documents WHERE session_id=?", (flow.sid,)).fetchone()[0] == 0
+    assert not flow.path.parent.exists() and len(flow.model.calls) == 2
+
+
+@pytest.mark.parametrize("stop_mode", ["manual", "call_limit"])
+@pytest.mark.parametrize("source_scope", ["session", "registered"])
+def test_stopped_trial_preserves_existing_document_through_server(tmp_path, monkeypatch, stop_mode, source_scope):
+    # T04 원문을 세션 파일 읽기 또는 mock 등록 후 Job·저장 경로로 보낸다. SDK 응답만 대체한다.
+    case = D04_TRIAL_CASES["T04"]
+    def respond(**kwargs):
+        payload = json.loads(kwargs["input"])
+        if kwargs["text"]["format"]["name"] == "company_info":
+            body = {key: {"status": "not_found", "facts": []} for key in legacy.COMPANY_INFO_KEYS}
+            for key, (status, items) in D04_EXPECTED["T04"].items():
+                facts = []
+                for value, _, _ in items:
+                    unit = next(u for u in payload["source_units"] if value in u["text"])
+                    facts.append({"text": value, "evidence": [{"source_id": unit["source_id"],
+                                  "locator": unit["locator"], "quote": value}]})
+                body[key] = {"status": status, "facts": facts}
+        else:
+            body = draft_response(payload)
+        return metered_response(output_text=json.dumps(body, ensure_ascii=False))
+    calls = fake_sdk(monkeypatch, response=respond)
+    options = llm.LlmOptions.from_env(config_env() | {"OPENAI_TIMEOUT_SECONDS": "60",
+                                                   "OPENAI_MAX_OUTPUT_TOKENS": "8000"})
+    monkeypatch.setattr(llm.LlmOptions, "from_env", classmethod(lambda cls, env: options))
+    ledger = llm.TrialLedger(max_calls=2 if stop_mode == "call_limit" else 3,
+                            budget_usd=Decimal("0.729005075"))
+    monkeypatch.setattr(llm, "_trial", ledger)
+    settings = Settings(private_runs_dir=tmp_path / "runs", db_path=tmp_path / "db.sqlite3",
+                        agent_mode="llm", cleanup_sweep_interval_s=0)
+    with TestClient(create_app(settings)) as client:
+        sid = client.post("/api/v1/sessions", json={"brief": BRIEF.model_dump()}).json()["session_id"]
+        base = f"/api/v1/sessions/{sid}"
+        if source_scope == "session":
+            upload = client.post(base + "/sources", files=[("files", ("T04.txt", case["texts"][0].encode()))]).json()
+            assert client.get(base + "/jobs/" + upload["job_id"]).json()["status"] == "succeeded"
+            source = client.get(base + "/sources").json()["items"][0]
+        else:
+            # 등록 원문·목록·구간은 저장소 밖 pytest 임시 경로에만 만든다.
+            bundle = tmp_path / "bundle"
+            bundle.mkdir()
+            content = case["texts"][0].encode()
+            (bundle / "T04.txt").write_bytes(content)
+            (bundle / "sources.json").write_text(json.dumps([{
+                "source_id": "MOCK_T04", "name": "[MOCK] T04", "filename": "T04.txt",
+                "path": "T04.txt", "status": "mock", "mock": True,
+                "use_as_company_evidence": True, "available_in_package": True,
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }]), encoding="utf-8")
+            (bundle / "company_chunks.jsonl").write_text("\n".join(json.dumps({
+                "chunk_id": f"MOCK_T04_C{line_no}", "source_id": "MOCK_T04", "text": line,
+                "locator": f"TXT {line_no}행", "evidence_status": "자료에 기재됨",
+            }, ensure_ascii=False) for line_no, line in enumerate(case["texts"][0].splitlines(), 1)), encoding="utf-8")
+            imported = import_bundle(settings, bundle, with_mock=True)
+            assert imported.added_sources == 1 and imported.added_segments == 4
+            assert imported.hash_unverified == 0 and imported.errors == []
+            source = client.get("/api/v1/sources").json()["items"][0]
+            assert source["origin_kind"] == "mock" and source["is_mock"]
+        assert source["scope"] == source_scope
+        assert source["parse_status"] == "complete" and source["usable_segment_ids"]
+        selected = client.patch(base + "/inputs", json={"expected_input_revision": 1,
+            "selected_source_ids": [source["source_id"]]}).json()
+        rev = selected["input_revision"]
+        preflight_body = {"expected_input_revision": rev}
+        preflight_headers = {"Idempotency-Key": "offline-server-trial-preflight"}
+        pending = client.post(base + "/preflights", json=preflight_body, headers=preflight_headers).json()
         job = client.get(base + "/jobs/" + pending["job_id"]).json()
         assert job["status"] == "succeeded", job
-        generated = client.post(base + "/drafts", json={"preflight_id": job["result_ref"]["preflight_id"],
-            "input_revision": rev, "confirmed": True}).json()
+        preflight_url = base + "/preflights/" + job["result_ref"]["preflight_id"]
+        pf = client.get(preflight_url).json()
+        assert pf["input_revision"] == rev and pf["can_generate"] and pf["confirmed_at"] is None
+        assert pf["recommendations"]["suggested_pages"] == 1
+        assert "납기 조건" in pf["recommendations"]["reason"]
+        assert client.get(base).json()["brief"]["target_pages"] == 6
+        assert pf["usable_source_ids"] == [source["source_id"]]
+        assert client.post(base + "/preflights", json=preflight_body, headers=preflight_headers).json() == pending
+        draft_body = {"preflight_id": pf["preflight_id"], "input_revision": rev, "confirmed": False}
+        unconfirmed = client.post(base + "/drafts", json=draft_body)
+        assert unconfirmed.status_code == 422 and unconfirmed.json()["error"]["code"] == "PREFLIGHT_NOT_CONFIRMED"
+        assert client.get(preflight_url).json()["confirmed_at"] is None
+        assert llm.trial_report()["calls_started"] == 1
+        # 자동 테스트의 확인 조작이다. 실제 시험에서는 사용자의 답변을 기다린다.
+        draft_body["confirmed"] = True
+        draft_headers = {"Idempotency-Key": "offline-server-trial-draft"}
+        generated = client.post(base + "/drafts", json=draft_body, headers=draft_headers).json()
         job = client.get(base + "/jobs/" + generated["job_id"]).json()
         assert job["status"] == "succeeded", job
         document_url = base + "/documents/" + job["result_ref"]["document_id"]
         saved = client.get(document_url).json()
+        document = saved["document"]
+        assert document["document_revision"] == 1 and document["input_revision"] == rev
+        assert len(document["pages"]) == case["target_pages"]
+        assert saved["validation"] is None and saved["approval"] is None
+        summary = client.get(base).json()["document_summary"]
+        assert summary["document_id"] == document["document_id"] and summary["document_revision"] == 1
+        confirmed = client.get(preflight_url).json()
+        assert confirmed["confirmed_at"] is not None and confirmed["facts"] == pf["facts"]
+        facts = {f["fact_id"]: f for f in pf["facts"]}
+        paragraphs = [b for p in document["pages"] for b in p["blocks"] if b["fact_ids"]]
+        lead_time = next(f for f in facts.values() if f["field_key"] == "lead_time")
+        assert lead_time["value"] == D04_EXPECTED["T04"]["lead_time"][1][0][0]
+        assert any(b["content"].get("text") == lead_time["value"] for b in paragraphs)
+        for block in paragraphs:
+            assert block["evidence_refs"]
+            expected_refs = [ref for fid in block["fact_ids"] for ref in facts[fid]["evidence_refs"]]
+            assert block["evidence_refs"] == expected_refs
+            for ref in block["evidence_refs"]:
+                assert ref["source_id"] == source["source_id"] and ref["source_version"] == source["source_version"]
+                assert ref["segment_id"] in source["usable_segment_ids"]
+                assert ref["locator"] and ref["excerpt"] in case["texts"][0]
+        assert client.post(base + "/drafts", json=draft_body, headers=draft_headers).json() == generated
+        conflict = client.post(base + "/drafts", json=draft_body | {"confirmed": False}, headers=draft_headers)
+        assert conflict.status_code == 409 and conflict.json()["error"]["code"] == "IDEMPOTENCY_KEY_CONFLICT"
+        duplicate = client.post(base + "/drafts", json=draft_body)
+        assert duplicate.status_code == 409 and duplicate.json()["error"]["code"] == "DOCUMENT_EXISTS"
         assert llm.trial_report()["calls_started"] == 2
-        llm.stop_trial()
-        pending = client.post(base + "/preflights", json={"expected_input_revision": rev}).json()
+        if stop_mode == "manual":
+            llm.stop_trial()
+        assert llm.trial_report()["stop_reason"] == ("manual_stop" if stop_mode == "manual" else "call_limit")
+        pending = client.post(base + "/preflights", json=preflight_body,
+                              headers={"Idempotency-Key": "offline-server-trial-after-stop"}).json()
         job = client.get(base + "/jobs/" + pending["job_id"]).json()
         assert job["status"] == "failed" and not job["error"]["retryable"], job
         assert client.get(document_url).json() == saved
+        assert client.get(preflight_url).json() == confirmed
+        # 입력이 바뀌면 이전 버전·이전 점검 모두 추가 AI 호출 없이 거부한다.
+        changed = client.patch(base + "/inputs", json={"expected_input_revision": rev,
+            "brief": BRIEF.model_copy(update={"target_pages": 1}).model_dump()}).json()
+        assert changed["input_revision"] == rev + 1
+        for input_revision in (rev, changed["input_revision"]):
+            stale = client.post(base + "/drafts", json=draft_body | {"input_revision": input_revision})
+            assert stale.status_code == 409 and stale.json()["error"]["code"] == "INPUT_REVISION_CONFLICT"
+        cookies = dict(client.cookies)
+        assert len(calls) == 4 and llm.trial_report()["calls_started"] == 2
+    # 같은 임시 DB를 새 앱 인스턴스로 열어 영속 저장을 확인한다. 프로세스·ledger는 유지한다.
+    with TestClient(create_app(settings)) as reopened:
+        reopened.cookies.update(cookies)
+        assert reopened.get(document_url).json() == saved
+        assert reopened.get(preflight_url).json() == confirmed
         assert len(calls) == 4 and llm.trial_report()["calls_started"] == 2
 
 
