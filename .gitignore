@@ -10,3 +10,4 @@ __pycache__/
 
 private_runs/
 *.sqlite3*
+.DS_Store

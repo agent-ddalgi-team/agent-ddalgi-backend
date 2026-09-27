@@ -58,7 +58,7 @@ uv run pytest
 ### 배치 검사·승인·출력 흐름 (BE-08)
 - `POST /documents/{did}/layout-checks`(202 Job) → `GET /jobs/{jid}` → `GET /documents/{did}`의 `layout_checks.pdf` → 미리보기 `GET /assets/{preview_asset_id}`
   → `POST /documents/{did}/approvals`(201) → `POST /exports`(202, ready면 200) → `GET /exports/{eid}/download`.
-- PDF만 승인·출력이 열린다. DOCX는 파일 생성과 PDF 기준 미리보기까지이며 승인·출력은 차단된다(task_backend.md 6.9절 ㉞).
+- PDF만 승인·출력이 열린다. DOCX는 파일 생성과 PDF 기준 미리보기까지이며 승인·출력은 차단된다(task_backend.md 6.15절 ㉞).
 - Export는 배치 검사 때 만든 불변 산출물(`private_runs/<sid>/artifacts/`)을 그대로 내려준다. 파일이 없거나 바뀌면 자동으로 다시 만들지 않고
   재검사·재승인이 필요하다. `EXPORT_TTL_MINUTES`(기본 120)로 만료.
 - 등록 사진은 `approved_for_external_use=true`일 때만 출력할 수 있다. 값을 바꾸려면 `uv run python scripts/import_registered.py --source-dir <묶음> --update-publication`
@@ -80,7 +80,7 @@ uv run pytest
 - 테스트 mock(`origin_kind=mock`, `[MOCK]`)은 여전히 `MOCK_VALUE` blocker다. 시연 자료(`origin_kind=demo`)는 별도이며 실제 자료(`real`: 입수했다는 뜻, 회사 확인 완료 뜻 아님)와 함께 선택할 수 있다.
 - 시연 세션은 `POST /sessions`에 `demo: true`로 생성한다. 이후 변경할 수 없다. `GET /sources?include_demo=true`는 서버 시연 모드가 켜졌을 때만 시연 자료를 보여준다. 일반 목록은 숨기며 일반 세션에서는 선택·근거·이미지 사용이 차단된다.
 - 업로드 multipart `role=instruction`은 작성 조건 첨부다. 읽기·조회는 가능하지만 회사 근거 선택·Agent 사실 입력·근거 검사·본문 이미지 렌더링에서는 제외한다. **조건의 자동 해석·Brief 반영은 아직 없다.** role 생략 또는 evidence는 기존 근거 업로드 동작을 유지한다. 새 화면은 작성 조건 첨부에 role을 명시해야 한다.
-- `DEMO_VALUE` warning은 출처를 알리며 기존 warning 승인 규칙을 따른다(개별 확인 강제 없음). 근거 오류·필수 내용·수치 충돌·사진 공개 허가·MOCK blocker는 그대로 적용한다.
+- 현재 시연 구현의 `DEMO_VALUE` warning은 개별 확인을 강제하지 않는다. 이는 최신 PRD BR-09·plan D-07의 경고 확인 의무를 완료한 상태가 아니며, 확인 기록·버전 유효성·승인 연결은 후속 작업이다. 시연 임시 사실의 별도 허용 범위는 확인이 필요하다. 근거 오류·필수 내용·수치 충돌·사진 공개 허가·MOCK blocker는 유지한다.
 - 시연 출력은 `template_v1`의 하단 문구 `시연용 · 일부 내용은 임시 데이터입니다`를 사용한다. PDF 인쇄 margin box에 footer를 배치하고 검사 공간에 포함하며 DOCX도 footer를 넣는다. PDF 어느 페이지든 시연 문구가 빠지면 LAYOUT_RENDER_FAILED(reason=demo_footer_missing)로 거부하므로 해당 인쇄 기능을 지원하는 브라우저가 필요하다. 문서→배치 검사→artifact→승인→Export의 demo 식별값을 비교하고 승인된 바이트를 그대로 제공한다. DOCX 승인·출력 제한은 유지한다.
 - 서버 설정 변경은 재시작으로 적용한다(동일 DB를 사용하는 프로세스는 같은 설정을 사용). 시연 모드를 끄면 유효한 시연 세션의 조회·캐시·Job 결과·출력은 403 `DEMO_MODE_DISABLED`다. 수명 연장·내용 삭제는 하지 않는다. 소유자 DELETE는 허용하고 종료·만료는 기존 410·정리 규칙이 우선한다. 재활성화 시 실패 Job/Export는 자동 재시도하지 않는다.
 
@@ -94,4 +94,18 @@ uv run python scripts/import_registered.py --source-dir private_runs/registered_
 `verify_bundle.py`는 기존 fixture 전용이다. 실제 구조 호환성은 `tests/test_registered_import.py`의 가짜 묶음으로 검증한다. 실제 시연 묶음 작성·실자료 로컬 적재·실제 AI 생성 품질은 아직 완료하지 않았다. 회귀 테스트는 `uv run pytest tests/test_demo.py tests/test_registered_import.py`로 실행한다.
 
 ## 문서
-AGENTS.md(작업 규칙) · plan.md · prd.md · contracts.md(API 계약 원본) · task_backend.md · task_agent.md · agent.md · task.md
+
+처음에는 다음 순서로 읽는다. 코드 변경 전에는 [AGENTS.md](AGENTS.md)의 작업 규칙을 확인한다.
+
+| 순서 | 문서 | 알 수 있는 것 |
+|---|---|---|
+| 1 | [프로젝트 아이디어](docs/idea.md) | 무엇을 만들고 누가 사용하는지; 범위 축소안은 제안 |
+| 2 | [전체 구조 그림](docs/site_design.png) | 화면·서버·AI·저장소의 관계와 현재 상태 |
+| 3 | [개발 계획](plan.md) · [제품 요구사항](prd.md) | 확정 범위·미정 결정·사용자 흐름·완료 기준 |
+| 4 | [공통 계약](contracts.md) | 데이터·API 기준; 7절은 현행 코드와의 차이 및 합의 대기 목록 |
+| 5 | [백엔드 작업](task_backend.md) 또는 [Agent 작업](task_agent.md) · [Agent 설계](agent.md) | 내 담당 작업·코드 위치·남은 연결·검증할 내용 |
+| 6 | [공통 연결표](task.md) | 담당자 간 연결 지점과 결과 기록 위치 |
+
+2026-09-27에는 개발 전 문서를 정리했다. 기존 BE/AG 작업 상태와 테스트 기록은 유지했으며 실행 코드·의존성·DB는 바꾸지 않았다. 공통 계약의 확정 버전은 1.1, 데이터 schema_version은 1.0이며, 검토 메모의 제안은 합의 후 반영한다.
+
+Stitch 화면 설계와의 연결 기준은 [prd.md 3~5절](prd.md), 화면 상태별 데이터 연결은 [contracts.md 7.5절](contracts.md)을 따른다. 추가 기능의 채택 여부는 [plan.md 4.1절](plan.md)에서 관리한다. 화면 시연·예시 응답과 실제 기능 완료는 구분한다.
