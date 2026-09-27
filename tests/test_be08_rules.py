@@ -171,7 +171,7 @@ def test_identity_values_are_checked_everywhere(app, settings, monkeypatch):
     exp = flow.export_ready(a["approval_id"], key="K-ok")
     assert flow.download(exp["export_id"]).status_code == 200
     # 템플릿 버전 변경 → 생성·발행·다운로드·멱등 성공 응답·복구 모두 거부
-    monkeypatch.setattr(layout_checks, "TEMPLATE_VERSION", "template_v1")
+    monkeypatch.setattr(layout_checks, "TEMPLATE_VERSION", layout_checks.TEMPLATE_VERSION + "_changed")
     r = flow.export(a["approval_id"], key="K-new")
     assert r.status_code == 422 and r.json()["error"]["code"] == "RENDER_IDENTITY_MISMATCH" and r.json()["error"]["details"]["reason"] == "template_version_changed"
     r = flow.export(a["approval_id"], key="K-ok")                 # 같은 키 캐시 성공 응답도 차단
@@ -554,3 +554,64 @@ def test_no_real_company_terms_in_be08_code():
     for mod in (artifacts, exports, layout_check_jobs, publication_service, exports_router, layout_router):
         for banned in BANNED:
             assert banned not in inspect.getsource(mod)
+
+
+@pytest.mark.parametrize("policy_change", ["demo_disabled", "closed"])
+def test_export_late_error_uses_current_policy_and_preserves_cleanup(settings, monkeypatch, policy_change):
+    from dataclasses import replace
+    from app.services import cleanup, sessions
+
+    settings = replace(settings, demo_mode=True)
+    flow = Flow(create_app(settings), settings)
+    approval, _ = flow.approved()
+    with connect(settings.db_path, immediate=True) as conn:
+        for table in ("sessions", "approvals", "layout_checks", "artifacts"):
+            conn.execute(f"UPDATE {table} SET demo=1 WHERE session_id=?", (flow.sid,))
+    with monkeypatch.context() as paused:
+        paused.setattr(exports, "run_export_job", lambda *args: None)
+        response = flow.export(approval["approval_id"], key="late-error")
+    assert response.status_code == 202, response.text
+    eid, jid = response.json()["export"]["export_id"], response.json()["job_id"]
+    policy, closed = {"on": True}, {}
+    monkeypatch.setattr(sessions, "demo_allowed", lambda _: policy["on"])
+
+    def fail_during_publish(conn, current_settings, row):
+        if policy_change == "demo_disabled":
+            policy["on"] = False
+        else:
+            # 확정 실패를 저장하기 전 종료가 선행한 순서를 결정적으로 재현한다(중첩 잠금 없음).
+            conn.rollback()
+            with connect(settings.db_path, immediate=True) as closing:
+                cleanup.finalize(closing, settings, flow.sid, cleanup.REASON_CLOSED)
+                closed["job"] = dict(closing.execute("SELECT * FROM jobs WHERE job_id=?", (jid,)).fetchone())
+                closed["export"] = dict(closing.execute("SELECT * FROM exports WHERE export_id=?", (eid,)).fetchone())
+        raise RuntimeError("simulated publication failure")
+
+    monkeypatch.setattr(exports, "publish", fail_during_publish)
+    exports.run_export_job(settings, flow.sid, jid, eid)
+    with connect(settings.db_path) as conn:
+        job = conn.execute("SELECT * FROM jobs WHERE job_id=?", (jid,)).fetchone()
+        exp = conn.execute("SELECT * FROM exports WHERE export_id=?", (eid,)).fetchone()
+        if policy_change == "demo_disabled":
+            assert job["status"] == exp["status"] == "failed"
+            assert json.loads(job["error_json"])["code"] == json.loads(exp["error_json"])["code"] == "DEMO_MODE_DISABLED"
+            assert exp["finalized_reason"] == "demo_disabled"
+            assert json.loads(job["error_json"])["retryable"] is False
+        else:
+            assert dict(job) == closed["job"] and dict(exp) == closed["export"]
+            assert job["status"] == "cancelled"
+
+
+def test_ready_export_late_callback_does_not_republish(app, settings):
+    flow = Flow(app, settings)
+    approval, _ = flow.approved()
+    result = flow.export_ready(approval["approval_id"], key="ready-stable")
+    with connect(settings.db_path) as conn:
+        # 현재 시각과 구별되는 발행 메타데이터로 불필요한 재발행을 검출한다.
+        conn.execute("UPDATE exports SET published_at='2000-01-01T00:00:00Z', updated_at='2000-01-01T00:00:00Z' WHERE export_id=?",
+                     (result["export_id"],))
+        before = dict(conn.execute("SELECT * FROM exports WHERE export_id=?", (result["export_id"],)).fetchone())
+    exports.run_export_job(settings, flow.sid, before["job_id"], before["export_id"])
+    with connect(settings.db_path) as conn:
+        after = dict(conn.execute("SELECT * FROM exports WHERE export_id=?", (before["export_id"],)).fetchone())
+    assert after == before and after["status"] == "ready"

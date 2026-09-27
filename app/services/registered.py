@@ -4,10 +4,10 @@
   sources.json · company_chunks.jsonl · 00_이미지목록.csv · photo_candidates.json (뒤 둘은 없어도 됨)
 
 규칙
-- status=ready만 적재. mock은 --with-mock일 때만. 나머지 status는 건너뛰고 건수로 남긴다. 모르는 status는 오류.
+- ready는 실제 입수 자료(확인 완료 뜻 아님), mock/demo는 각각 --with-mock/--with-demo에서만 적재한다.
 - sha256: path 파일이 있으면 바이트 해시 비교(불일치 = 오류, 전체 중단). sha256_note가 있으면 검증 생략·hash_verified=false.
   sha256=null은 중복 판정에 쓰지 않는다. 검증된 해시만 같은 ID 재적재의 동일성 판단에 쓴다.
-- 경로: bundle_root 밖으로 나가면 오류. 이미지는 CSV·candidates에 적힌 정식 경로만(images/ 사본은 적재하지 않음).
+- 경로: bundle_root 밖으로 나가면 오류. 이미지 후보는 독립 바이트를 검증하며 CSV 관계는 명시적 연결만 쓴다.
 - use_as_company_evidence=false는 적재하되 표시만 하고 선택·근거에서 제외한다.
 - document_date는 문자열 그대로("2017"도). date_from_filename은 별도 보존.
 - [MOCK] 라벨은 text·excerpt에서 지우지 않는다. 오류는 하나라도 있으면 아무것도 적재하지 않는다(한 트랜잭션).
@@ -20,6 +20,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import io
 import shutil
 import sqlite3
 import uuid
@@ -35,11 +36,15 @@ from app.timeutil import now, to_iso
 
 IMPORT_STATUSES = {"ready"}
 MOCK_STATUS = "mock"
+DEMO_STATUS = "demo"
+DEMO_LABEL = "[시연]"
+DEMO_EVIDENCE_STATUS = "시연용 임시 문장"
 SKIP_STATUSES = {"missing_original", "planning_reference", "content_confirmed_original_missing",
                  "received_by_team_not_in_package"}
 EVIDENCE_STATUSES = {"자료에 기재됨", "이미지에서 판독한 발췌", "자료에 기재됨 (2017년 카다로그)"}
 IMAGE_CSV_ROOT = Path("05_이미지") / "전체_추출이미지"
 IMAGE_PSEUDO_SOURCE = "REGISTERED_IMAGES"   # candidates에 source_id가 없는 실제 팀 자료용 이미지 묶음 자료
+IMAGE_PSEUDO_SOURCES = {"real": IMAGE_PSEUDO_SOURCE, "mock": "REGISTERED_MOCK_IMAGES", "demo": "REGISTERED_DEMO_IMAGES"}
 MOCK_LABEL = "[MOCK]"
 
 
@@ -57,6 +62,7 @@ class ImportError_(Exception):
 class ImportSummary:
     dry_run: bool
     with_mock: bool
+    with_demo: bool = False
     added_sources: int = 0
     added_segments: int = 0
     added_assets: int = 0
@@ -68,6 +74,7 @@ class ImportSummary:
     publication_pending: int = 0        # 묶음과 값이 다르지만 갱신하지 않은 사진 수(플래그 없음 또는 dry-run)
     approvals_invalidated: int = 0
     exports_finalized: int = 0
+    candidates_without_original: int = 0
     errors: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -118,16 +125,42 @@ class _Source:
     package_hash: str | None
     hash_verified: bool
     hash_note: str | None
+    origin_kind: str = "real"
     chunks: list[dict] = field(default_factory=list)
     photos: list[dict] = field(default_factory=list)
 
 
-def _check_source(bundle_root: Path, raw: dict, with_mock: bool, summary: ImportSummary) -> _Source | None:
+def _origin_kind(raw: dict, where: str) -> str:
+    for key in ("mock", "demo"):
+        if key in raw and type(raw[key]) is not bool:
+            raise ImportError_("INVALID_INPUT", f"{key}는 boolean이어야 합니다", where)
+    mock = raw.get("mock", False)
+    demo = raw.get("demo", False)
+    if mock and demo:
+        raise ImportError_("DEMO_MARKER_CONFLICT", "mock과 demo를 함께 표시할 수 없습니다", where)
+    if raw.get("status") == DEMO_STATUS or demo:
+        if raw.get("status") != DEMO_STATUS or not demo:
+            raise ImportError_("DEMO_MARKER_CONFLICT", "status=demo와 demo=true는 함께여야 합니다", where)
+        return "demo"
+    return "mock" if mock or raw.get("status") == MOCK_STATUS else "real"
+
+
+def _safe_id(value: Any, where: str) -> str:
+    if (not isinstance(value, str) or not value or value in {".", ".."}
+            or any(c in value for c in '/\\:*?"<>|\0') or value.endswith((" ", "."))):
+        raise ImportError_("INVALID_INPUT", "ID는 안전한 파일명 구성요소여야 합니다", where)
+    return value
+
+
+def _check_source(bundle_root: Path, raw: dict, with_mock: bool, with_demo: bool,
+                  summary: ImportSummary) -> _Source | None:
     sid = raw.get("source_id")
     where = f"sources.json {sid}"
     if not sid or not isinstance(sid, str):
         raise ImportError_("INVALID_INPUT", "source_id가 없습니다", "sources.json")
+    _safe_id(sid, where)
     status = raw.get("status")
+    origin_kind = _origin_kind(raw, where)
     is_mock = bool(raw.get("mock", False))
     if status == MOCK_STATUS or is_mock:
         if status != MOCK_STATUS or not is_mock:
@@ -137,6 +170,13 @@ def _check_source(bundle_root: Path, raw: dict, with_mock: bool, summary: Import
             raise ImportError_("MOCK_MARKER_CONFLICT", "mock 자료의 표시명에 [MOCK]가 없습니다", where)
         if not with_mock:
             summary.skipped["mock"] = summary.skipped.get("mock", 0) + 1
+            return None
+    elif origin_kind == "demo":
+        display = raw.get("name") or raw.get("filename") or sid
+        if not display.startswith(DEMO_LABEL) or MOCK_LABEL in display:
+            raise ImportError_("DEMO_MARKER_CONFLICT", "시연 자료의 표시명은 [시연]으로 시작해야 합니다", where)
+        if not with_demo:
+            summary.skipped["demo"] = summary.skipped.get("demo", 0) + 1
             return None
     elif status in SKIP_STATUSES:
         summary.skipped[status] = summary.skipped.get(status, 0) + 1
@@ -166,10 +206,11 @@ def _check_source(bundle_root: Path, raw: dict, with_mock: bool, summary: Import
     else:
         hash_verified, hash_note = False, ("sha256 없음" if not supplied else "원본 미포함")
         summary.hash_unverified += 1
-    return _Source(raw=raw, file=file, package_hash=package_hash, hash_verified=hash_verified, hash_note=hash_note)
+    return _Source(raw=raw, file=file, package_hash=package_hash, hash_verified=hash_verified,
+                   hash_note=hash_note, origin_kind=origin_kind)
 
 
-def _check_chunks(chunks: list[dict], sources: dict[str, _Source], all_ids: set[str]) -> None:
+def _check_chunks(chunks: list[dict], sources: dict[str, _Source], all_sources: dict[str, dict]) -> None:
     seen: set[str] = set()
     for row in chunks:
         cid, sid = row.get("chunk_id"), row.get("source_id")
@@ -179,12 +220,16 @@ def _check_chunks(chunks: list[dict], sources: dict[str, _Source], all_ids: set[
         if cid in seen:
             raise ImportError_("DUPLICATE_CHUNK_ID", "chunk_id가 중복됩니다", where)
         seen.add(cid)
-        if sid not in all_ids:
+        if sid not in all_sources:
             raise ImportError_("UNKNOWN_SOURCE_ID", f"sources.json에 없는 source_id: {sid}", where)
-        if row.get("evidence_status") not in EVIDENCE_STATUSES:
+        origin_kind = _origin_kind(all_sources[sid], where)
+        allowed_statuses = {DEMO_EVIDENCE_STATUS} if origin_kind == "demo" else EVIDENCE_STATUSES
+        if row.get("evidence_status") not in allowed_statuses:
             raise ImportError_("UNKNOWN_EVIDENCE_STATUS", f"허용되지 않은 evidence_status: {row.get('evidence_status')!r}", where)
         if not isinstance(row.get("text"), str) or not row["text"].strip():
             raise ImportError_("INVALID_INPUT", "text가 비어 있습니다", where)
+        if origin_kind == "demo" and (not row["text"].startswith(DEMO_LABEL) or MOCK_LABEL in row["text"]):
+            raise ImportError_("DEMO_MARKER_CONFLICT", "시연 구간은 [시연] 접두어를 유지해야 합니다", where)
         try:
             locator = locators.to_object(row.get("locator"))
         except locators.LocatorError as exc:
@@ -202,52 +247,109 @@ def _check_chunks(chunks: list[dict], sources: dict[str, _Source], all_ids: set[
         src.chunks.append(row)
 
 
-def _read_images(bundle_root: Path, ingest_dir: Path, sources: dict[str, _Source], with_mock: bool
-                 ) -> list[dict]:
-    """CSV 행 ↔ candidates를 잇는다. CSV에 적힌 정식 경로만 인정한다. 돌려주는 목록은 적재할 이미지."""
+def _read_images(bundle_root: Path, ingest_dir: Path, sources: dict[str, _Source],
+                 all_sources: dict[str, dict], with_mock: bool, with_demo: bool,
+                 summary: ImportSummary) -> list[dict]:
+    """후보 바이트를 독립 검증한다. CSV 연결은 동일 경로 또는 명시적 original_ref만 허용한다."""
+    from PIL import Image
+
     csv_path = ingest_dir / "00_이미지목록.csv"
-    cand_path = ingest_dir / "photo_candidates.json"
     if not csv_path.is_file():
-        return []
-    with csv_path.open(encoding="utf-8-sig", newline="") as f:
-        rows = list(csv.DictReader(f))
+        csv_path = bundle_root / "05_이미지" / "00_이미지목록.csv"
+    cand_path = ingest_dir / "photo_candidates.json"
+    rows = []
     expected = ["폴더", "파일명", "PPT페이지", "원본이미지", "처리", "가로px", "세로px"]
-    if rows and list(rows[0].keys()) != expected:
-        raise ImportError_("INVALID_INPUT", f"00_이미지목록.csv 열이 {expected}가 아닙니다", "00_이미지목록.csv")
-    by_path: dict[str, dict] = {}
+    if csv_path.is_file():
+        with csv_path.open(encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f)
+            if reader.fieldnames != expected:
+                raise ImportError_("INVALID_INPUT", "00_이미지목록.csv는 정해진 7열이어야 합니다", "00_이미지목록.csv")
+            rows = list(reader)
+    by_path: dict[Path, dict] = {}
+    by_ref: dict[tuple[str, str], dict] = {}
     for r in rows:
         rel = (IMAGE_CSV_ROOT / r["폴더"] / r["파일명"]).as_posix()
         where = f"00_이미지목록.csv {r['폴더']}/{r['파일명']}"
         file = _safe_path(bundle_root, rel, where)
         if not file.is_file():
             raise ImportError_("IMAGE_NOT_FOUND", "CSV의 이미지 파일이 묶음에 없습니다", where)
-        by_path[rel] = {"rel": rel, "file": file, "csv": r}
+        if file in by_path:
+            raise ImportError_("INVALID_INPUT", "CSV 이미지 경로가 중복됩니다", where)
+        entry = {"rel": rel, "file": file, "csv": r}
+        by_path[file] = entry
+        by_ref[(r["폴더"], r["파일명"])] = entry
     candidates = _read_json(cand_path) if cand_path.is_file() else []
-    for c in candidates:
-        where = f"photo_candidates.json {c.get('photo_id')}"
-        rel = c.get("path")
-        if rel not in by_path:
-            raise ImportError_("IMAGE_NOT_FOUND", "candidates의 path가 CSV 목록에 없습니다", where)
-        entry = by_path[rel]
-        if c.get("sha256") and c["sha256"].lower() != _sha256(entry["file"]):
-            raise ImportError_("HASH_MISMATCH", "candidates의 sha256이 파일과 다릅니다", where)
-        if c.get("mock") and not with_mock:
-            continue
-        _publication_value(c, where)   # 값 형식은 검사 단계에서 거른다(쓰기 전 전체 중단)
-        try:
-            entry["locator"] = locators.to_object(c["locator"]) if c.get("locator") else None
-        except locators.LocatorError as exc:
-            raise ImportError_(exc.code, f"사진 locator를 읽을 수 없습니다: {exc.value}", where) from exc
-        entry["candidate"] = c
+    if not isinstance(candidates, list):
+        raise ImportError_("INVALID_INPUT", "photo_candidates.json은 배열이어야 합니다")
     images = []
-    for entry in by_path.values():
-        c = entry.get("candidate")
-        if c is None:
-            continue  # candidates에 없는 CSV 행은 적재하지 않는다(후보로 검토된 이미지만)
+    seen: set[str] = set()
+    for c in candidates:
+        where = "photo_candidates.json"
+        photo_id = _safe_id(c.get("photo_id"), where)
+        where = f"photo_candidates.json {photo_id}"
+        if photo_id in seen:
+            raise ImportError_("PHOTO_ID_CONFLICT", "photo_id가 중복됩니다", where)
+        seen.add(photo_id)
         sid = c.get("source_id")
-        if sid is not None and sid not in sources:
-            continue  # 건너뛴 자료(예: mock 미포함)의 사진
-        images.append(entry)
+        if sid is not None and sid not in all_sources:
+            raise ImportError_("UNKNOWN_SOURCE_ID", "사진의 source_id가 sources.json에 없습니다", where)
+        for key in ("mock", "demo"):
+            if key in c and type(c[key]) is not bool:
+                raise ImportError_("INVALID_INPUT", f"사진 {key}는 boolean이어야 합니다", where)
+        if c.get("mock") and c.get("demo"):
+            raise ImportError_("DEMO_MARKER_CONFLICT", "사진의 mock/demo 마커가 충돌합니다", where)
+        origin = _origin_kind(all_sources[sid], where) if sid is not None else (
+            "mock" if c.get("mock") else "demo" if c.get("demo") else "real")
+        if (c.get("mock") and origin != "mock") or (c.get("demo") and origin != "demo"):
+            raise ImportError_("DEMO_MARKER_CONFLICT", "사진 마커와 소유 자료의 출처 구분이 다릅니다", where)
+        if ((origin == "mock" and not with_mock) or (origin == "demo" and not with_demo)
+                or (sid is not None and sid not in sources)):
+            continue
+        file = _safe_path(bundle_root, c.get("path"), where)
+        if not file.is_file():
+            raise ImportError_("IMAGE_NOT_FOUND", "후보 파일이 묶음에 없습니다", where)
+        data = file.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        if c.get("sha256") and str(c["sha256"]).lower() != digest:
+            raise ImportError_("HASH_MISMATCH", "후보 sha256이 실제 바이트와 다릅니다", where)
+        try:
+            with Image.open(io.BytesIO(data)) as img:
+                img.load()  # 헤더만 정상인 잘린 이미지도 거부
+                width, height = img.size
+        except (OSError, ValueError, Image.DecompressionBombError) as exc:
+            raise ImportError_("IMAGE_DECODE_FAILED", "후보 이미지 전체를 읽을 수 없습니다", where) from exc
+        for key, actual in (("width", width), ("height", height)):
+            if key in c and (type(c[key]) is not int or c[key] != actual):
+                raise ImportError_("IMAGE_SIZE_MISMATCH", "후보 크기가 실제 이미지와 다릅니다", where)
+        original = by_path.get(file)
+        explicit = c.get("original_ref")
+        if explicit is not None:
+            if (not isinstance(explicit, dict) or set(explicit) != {"폴더", "파일명"}
+                    or not all(isinstance(v, str) for v in explicit.values())):
+                raise ImportError_("INVALID_INPUT", "original_ref는 폴더·파일명이어야 합니다", where)
+            linked = by_ref.get((explicit["폴더"], explicit["파일명"]))
+            if linked is None:
+                raise ImportError_("IMAGE_NOT_FOUND", "original_ref의 CSV 행이 없습니다", where)
+            if original is not None and original is not linked:
+                raise ImportError_("INVALID_INPUT", "동일 경로와 original_ref가 다른 원본을 가리킵니다", where)
+            original = linked
+        if original is not None and original["file"] == file:
+            if (str(width), str(height)) != (original["csv"]["가로px"], original["csv"]["세로px"]):
+                raise ImportError_("IMAGE_SIZE_MISMATCH", "CSV 크기가 실제 이미지와 다릅니다", where)
+        _publication_value(c, where)
+        try:
+            locator = locators.to_object(c["locator"]) if c.get("locator") else {}
+        except locators.LocatorError as exc:
+            raise ImportError_(exc.code, "사진 locator를 읽을 수 없습니다", where) from exc
+        if original is not None:
+            original_hash = _sha256(original["file"])
+            locator.update(original_path=original["rel"], original_sha256=original_hash,
+                           original_hash_matches=(digest == original_hash))
+        else:
+            summary.candidates_without_original += 1
+        images.append({"file": file, "data": data, "content_hash": digest,
+                       "width": width, "height": height, "candidate": c, "locator": locator,
+                       "owner": sid or IMAGE_PSEUDO_SOURCES[origin], "origin_kind": origin})
     return images
 
 
@@ -273,36 +375,39 @@ def _mime(path: Path | None, filename: str) -> str:
 
 
 def import_bundle(settings: Settings, bundle_root: Path, ingest_dir: Path | None = None, *,
-                  with_mock: bool = False, dry_run: bool = False, update_publication: bool = False) -> ImportSummary:
+                  with_mock: bool = False, with_demo: bool = False, dry_run: bool = False,
+                  update_publication: bool = False) -> ImportSummary:
     bundle_root = Path(bundle_root)
     ingest_dir = Path(ingest_dir) if ingest_dir else bundle_root
-    summary = ImportSummary(dry_run=dry_run, with_mock=with_mock)
+    summary = ImportSummary(dry_run=dry_run, with_mock=with_mock, with_demo=with_demo)
     sources_path = ingest_dir / "sources.json"
     if not sources_path.is_file():
         raise ImportError_("INVALID_INPUT", "sources.json이 없습니다", str(ingest_dir.name))
     raw_sources = _read_json(sources_path)
     if not isinstance(raw_sources, list):
         raise ImportError_("INVALID_INPUT", "sources.json은 배열이어야 합니다", "sources.json")
-    all_ids = {r.get("source_id") for r in raw_sources}
-    if len(all_ids) != len(raw_sources):
+    all_sources = {r.get("source_id"): r for r in raw_sources}
+    if len(all_sources) != len(raw_sources):
         raise ImportError_("INVALID_INPUT", "source_id가 중복됩니다", "sources.json")
 
     sources: dict[str, _Source] = {}
     for raw in raw_sources:
-        checked = _check_source(bundle_root, raw, with_mock, summary)
+        checked = _check_source(bundle_root, raw, with_mock, with_demo, summary)
         if checked is not None:
             sources[raw["source_id"]] = checked
     chunks_path = ingest_dir / "company_chunks.jsonl"
-    _check_chunks(_read_jsonl(chunks_path) if chunks_path.is_file() else [], sources, all_ids)
-    images = _read_images(bundle_root, ingest_dir, sources, with_mock)
+    _check_chunks(_read_jsonl(chunks_path) if chunks_path.is_file() else [], sources, all_sources)
+    images = _read_images(bundle_root, ingest_dir, sources, all_sources, with_mock, with_demo, summary)
 
     with connect(settings.db_path, immediate=True) as conn:
         stamp = to_iso(now())
         to_add: list[_Source] = []
         for sid, src in sources.items():
-            existing = conn.execute("SELECT content_hash, hash_verified FROM sources WHERE source_id=? AND scope='registered'",
+            existing = conn.execute("SELECT content_hash, hash_verified, origin_kind FROM sources WHERE source_id=? AND scope='registered'",
                                     (sid,)).fetchone()
             if existing is not None:
+                if existing["origin_kind"] != src.origin_kind:
+                    raise ImportError_("SOURCE_ORIGIN_CONFLICT", "같은 source_id의 출처 구분을 바꿀 수 없습니다", sid)
                 if (src.hash_verified and existing["hash_verified"] and src.package_hash != existing["content_hash"]):
                     raise ImportError_("SOURCE_ID_CONFLICT", "같은 source_id인데 검증된 원본 해시가 다릅니다", sid)
                 summary.already_present += 1
@@ -311,7 +416,20 @@ def import_bundle(settings: Settings, bundle_root: Path, ingest_dir: Path | None
             if not src.raw.get("use_as_company_evidence", True):
                 summary.excluded_from_evidence += 1
 
-        pseudo_needed = any(e.get("candidate", {}).get("source_id") is None for e in images)
+        pseudo_origins = {e["origin_kind"] for e in images if e["candidate"].get("source_id") is None}
+        for origin in pseudo_origins:
+            pseudo_id = IMAGE_PSEUDO_SOURCES[origin]
+            existing = conn.execute("SELECT scope, origin_kind FROM sources WHERE source_id=?", (pseudo_id,)).fetchone()
+            if pseudo_id in sources or (existing and (existing["scope"] != "registered" or existing["origin_kind"] != origin)):
+                raise ImportError_("SOURCE_ORIGIN_CONFLICT", "이미지 묶음 자료의 출처 구분이 충돌합니다", pseudo_id)
+        # 충돌은 파일을 복사하거나 공개 허가를 갱신하기 전에 전체 검사한다.
+        for entry in images:
+            c = entry["candidate"]
+            existing = conn.execute(
+                "SELECT source_id, content_hash FROM assets WHERE photo_id=? AND scope='registered' AND deleted_at IS NULL",
+                (c["photo_id"],)).fetchone()
+            if existing and (existing["source_id"] != entry["owner"] or existing["content_hash"] != entry["content_hash"]):
+                raise ImportError_("PHOTO_ID_CONFLICT", "같은 photo_id의 자료 또는 바이트 해시가 다릅니다", c["photo_id"])
         registered_dir = settings.private_runs_dir / "registered"
         if not dry_run:
             registered_dir.mkdir(parents=True, exist_ok=True)
@@ -341,8 +459,8 @@ def import_bundle(settings: Settings, bundle_root: Path, ingest_dir: Path | None
                 "INSERT INTO sources (source_id, session_id, source_version, scope, name, mime_type, size_bytes, kind, "
                 "parse_status, text_available, image_available, stored_path, content_hash, warnings_json, created_at, "
                 "expires_at, origin_group, document_date, document_date_verified, date_from_filename, extraction_method, "
-                "use_as_company_evidence, hash_verified, hash_note, is_mock, imported_at, note) "
-                "VALUES (?, NULL, 1, 'registered', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "use_as_company_evidence, hash_verified, hash_note, is_mock, imported_at, note, origin_kind, role) "
+                "VALUES (?, NULL, 1, 'registered', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'evidence')",
                 (sid, _display_name(raw), _mime(src.file, raw.get("filename") or ""),
                  src.file.stat().st_size if src.file else 0, "company", parse_status, int(has_text), int(has_images),
                  rel, src.package_hash or "", json.dumps(warnings, ensure_ascii=False), stamp,
@@ -350,7 +468,7 @@ def import_bundle(settings: Settings, bundle_root: Path, ingest_dir: Path | None
                  raw.get("document_date"), int(bool(raw.get("document_date_verified", False))),
                  raw.get("date_from_filename"), raw.get("extraction_method"),
                  int(bool(raw.get("use_as_company_evidence", True))), int(src.hash_verified), src.hash_note,
-                 int(bool(raw.get("mock", False))), stamp, raw.get("note")))
+                 int(src.origin_kind == "mock"), stamp, raw.get("note"), src.origin_kind))
             for ordinal, row in enumerate(src.chunks, start=1):
                 conn.execute(
                     "INSERT INTO segments (segment_id, source_id, source_version, session_id, ordinal, locator_json, text, "
@@ -361,25 +479,28 @@ def import_bundle(settings: Settings, bundle_root: Path, ingest_dir: Path | None
                      row.get("document_date") or raw.get("document_date") or raw.get("date_from_filename"),
                      row.get("extraction_method")))
 
-        if pseudo_needed and not dry_run:
-            if conn.execute("SELECT 1 FROM sources WHERE source_id=?", (IMAGE_PSEUDO_SOURCE,)).fetchone() is None:
+        for origin in pseudo_origins:
+            pseudo_id = IMAGE_PSEUDO_SOURCES[origin]
+            if not dry_run and conn.execute("SELECT 1 FROM sources WHERE source_id=?", (pseudo_id,)).fetchone() is None:
+                label = {"real": "", "mock": "[MOCK] ", "demo": "[시연] "}[origin]
                 conn.execute(
                     "INSERT INTO sources (source_id, session_id, source_version, scope, name, mime_type, size_bytes, kind, "
-                    "parse_status, text_available, image_available, stored_path, content_hash, created_at, imported_at) "
-                    "VALUES (?, NULL, 1, 'registered', '이미지 목록(00_이미지목록.csv)', 'text/csv', 0, 'photo', "
-                    "'complete', 0, 1, 'registered/images', '', ?, ?)", (IMAGE_PSEUDO_SOURCE, stamp, stamp))
+                    "parse_status, text_available, image_available, stored_path, content_hash, created_at, imported_at, origin_kind, is_mock, role) "
+                    "VALUES (?, NULL, 1, 'registered', ?, 'text/csv', 0, 'photo', "
+                    "'complete', 0, 1, 'registered/images', '', ?, ?, ?, ?, 'evidence')",
+                    (pseudo_id, label + "이미지 후보 목록", stamp, stamp, origin, int(origin == "mock")))
         added_ids = {s.raw["source_id"] for s in to_add}
         for entry in images:
             c = entry["candidate"]
-            owner = c.get("source_id") or IMAGE_PSEUDO_SOURCE
-            photo_id = c.get("photo_id") or entry["csv"]["파일명"]
+            owner = entry["owner"]
+            photo_id = c["photo_id"]
             existing_asset = conn.execute(
                 "SELECT asset_id, source_id, content_hash, approved_for_external_use FROM assets "
                 "WHERE photo_id=? AND scope='registered' AND deleted_at IS NULL", (photo_id,)).fetchone()
             if existing_asset is not None:
                 # 같은 사진인지 확인(source_id + 바이트 해시). 파일 중복 생성은 없고 공개 허가만 명시적 경로로 갱신한다.
                 where = f"photo_candidates.json {photo_id}"
-                if existing_asset["source_id"] != owner or existing_asset["content_hash"] != _sha256(entry["file"]):
+                if existing_asset["source_id"] != owner or existing_asset["content_hash"] != entry["content_hash"]:
                     raise ImportError_("PHOTO_ID_CONFLICT", "같은 photo_id인데 자료(source_id) 또는 바이트 해시가 다릅니다", where)
                 new_value = _publication_value(c, where)
                 if new_value != existing_asset["approved_for_external_use"]:
@@ -397,24 +518,19 @@ def import_bundle(settings: Settings, bundle_root: Path, ingest_dir: Path | None
                 continue
             if c.get("source_id") is not None and owner not in added_ids:
                 continue  # 이미 있는 자료의 사진은 다시 넣지 않는다
-            from PIL import Image
-            with Image.open(entry["file"]) as img:
-                width, height = img.width, img.height
-            if (str(width), str(height)) != (entry["csv"]["가로px"], entry["csv"]["세로px"]):
-                raise ImportError_("IMAGE_SIZE_MISMATCH", "CSV의 가로/세로가 실제 이미지와 다릅니다",
-                                   f"00_이미지목록.csv {entry['csv']['파일명']}")
+            width, height = entry["width"], entry["height"]
             summary.added_assets += 1
             if dry_run:
                 continue
             rel = f"registered/images/{photo_id}{entry['file'].suffix.lower()}"
-            shutil.copyfile(entry["file"], settings.private_runs_dir / rel)
+            (settings.private_runs_dir / rel).write_bytes(entry["data"])
             conn.execute(
                 "INSERT INTO assets (asset_id, source_id, source_version, scope, session_id, origin, mime_type, width, height, "
                 "content_hash, status, stored_path, created_at, expires_at, photo_id, caption_candidate, selected_as_candidate, "
                 "approved_for_external_use, photo_locator_json) "
                 "VALUES (?, ?, 1, 'registered', NULL, 'source_image', ?, ?, ?, ?, 'ready', ?, ?, NULL, ?, ?, ?, ?, ?)",
                 (f"asset_{uuid.uuid4().hex[:16]}", owner, _mime(entry["file"], ""), width, height,
-                 _sha256(entry["file"]), rel, stamp, photo_id, c.get("caption_candidate"),
+                 entry["content_hash"], rel, stamp, photo_id, c.get("caption_candidate"),
                  int(bool(c.get("selected_as_candidate"))),
                  _publication_value(c, f"photo_candidates.json {photo_id}"),
                  json.dumps(entry.get("locator"), ensure_ascii=False) if entry.get("locator") else None))
@@ -436,10 +552,10 @@ class _DryRun(Exception):
 
 
 def run(settings: Settings, bundle_root: Path, ingest_dir: Path | None = None, *, with_mock: bool = False,
-        dry_run: bool = False, update_publication: bool = False) -> ImportSummary:
+        with_demo: bool = False, dry_run: bool = False, update_publication: bool = False) -> ImportSummary:
     """import_bundle의 편의 함수. dry-run은 검사·집계만 하고 아무것도 쓰지 않는다."""
     try:
-        return import_bundle(settings, bundle_root, ingest_dir, with_mock=with_mock, dry_run=dry_run,
+        return import_bundle(settings, bundle_root, ingest_dir, with_mock=with_mock, with_demo=with_demo, dry_run=dry_run,
                              update_publication=update_publication)
     except _DryRun as exc:
         return exc.summary
@@ -447,11 +563,13 @@ def run(settings: Settings, bundle_root: Path, ingest_dir: Path | None = None, *
 
 # ---------------- 조회 ----------------
 
-def list_registered(conn: sqlite3.Connection, kind: str | None = None) -> list[SourceOut]:
+def list_registered(conn: sqlite3.Connection, kind: str | None = None, *, include_demo: bool = False) -> list[SourceOut]:
     from app.services.sources import _row_to_out  # 같은 출력 모양
 
     query = "SELECT * FROM sources WHERE scope='registered' AND deleted_at IS NULL"
     params: list[Any] = []
+    if not include_demo:
+        query += " AND origin_kind!='demo'"
     if kind:
         query += " AND kind=?"
         params.append(kind)

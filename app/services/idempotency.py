@@ -42,9 +42,11 @@ def replay_or_none(conn: sqlite3.Connection, key: str | None, owner_id: str, pat
                        "같은 Idempotency-Key로 다른 요청이 이미 처리되었습니다.",
                        details={"path": path})
     if row["session_id"]:
-        session = conn.execute("SELECT status, expires_at, purged_at FROM sessions WHERE session_id=?", (row["session_id"],)).fetchone()
-        gone = (session is None or session["status"] != "active" or now() >= from_iso(session["expires_at"])
-                or row["purged_at"] is not None)
+        from app.services import sessions as session_service
+
+        session = conn.execute("SELECT * FROM sessions WHERE session_id=?", (row["session_id"],)).fetchone()
+        policy = session_service.usable(settings, session)
+        gone = policy in {"closed", "expired"} or row["purged_at"] is not None
         if gone:
             if session is None:
                 raise ApiError(410, "SESSION_EXPIRED", "세션이 종료되어 이전 응답을 다시 제공하지 않습니다.",
@@ -57,6 +59,8 @@ def replay_or_none(conn: sqlite3.Connection, key: str | None, owner_id: str, pat
                 return JSONResponse(status_code=row["status_code"], content=json.loads(row["response_json"]))
             raise ApiError(410, "SESSION_EXPIRED", "세션이 종료되어 이전 응답을 다시 제공하지 않습니다.",
                            details={"status": session["status"], "cleanup": cleanup.verify_state(conn, settings, row["session_id"])})
+        if policy == "demo_disabled":
+            raise session_service.demo_disabled_error()
     elif row["purged_at"] is not None:
         # 연결 세션을 알 수 없는(backfill 불가) 옛 행: 정리할 폴더가 없으므로 done
         raise ApiError(410, "SESSION_EXPIRED", "세션이 종료되어 이전 응답을 다시 제공하지 않습니다.", details={"status": "closed", "cleanup": "done"})

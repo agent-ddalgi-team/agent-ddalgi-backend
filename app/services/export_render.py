@@ -51,7 +51,7 @@ CHECK_KEYS = ("overflow", "broken_image", "placeholder_remaining")
 # 형식별 required 검사. 사용자 결정(2026-09-26): DOCX overflow도 required — 엔진이 없으면 not_checked·layout_ok=False.
 REQUIRED_CHECKS: dict[str, frozenset[str]] = {"pdf": frozenset(CHECK_KEYS), "docx": frozenset(CHECK_KEYS)}
 
-# 템플릿 v0 배치 상수(형식 공통). 바꾸면 TEMPLATE_VERSION을 올린다(가드 테스트가 아래 값도 해시에 넣는다).
+# 템플릿 v1 배치 상수(형식 공통). 바꾸면 TEMPLATE_VERSION을 올린다(가드 테스트가 아래 값도 해시에 넣는다).
 PAGE_W_MM, PAGE_H_MM = 210, 297
 IMAGE_MAX_H_MM = 120          # contain: 폭 180mm·높이 120mm 안에 비율 유지
 IMAGE_CROP_H_MM = 100         # crop(PDF): 180mm × 100mm 상자에 object-fit: cover. DOCX는 contain으로 대체(제한 기록)
@@ -59,11 +59,14 @@ HEADING_PT = {1: 20, 2: 14, 3: 12}
 LABEL_PT, CAPTION_PT = 8, 9
 IMAGE_MAX_PX = 1600           # 삽입용 이미지의 긴 변 상한(px). 넘으면 같은 형식으로 축소 사본을 넣는다(스냅샷 바이트는 그대로 검증·보관)
 DOCX_BOX_SPACE_PT = 18
+DEMO_FOOTER_TEXT = "시연용 · 일부 내용은 임시 데이터입니다"
+DEMO_FOOTER_MM = 9
 DOCX_COLORS = {"text": "111111", "label": "8A8A8A", "caption": "555555", "box": "666666", "broken": "A93226"}
 DOCX_LAYOUT_CONSTANTS = {"page_mm": [PAGE_W_MM, PAGE_H_MM], "image_max_h_mm": IMAGE_MAX_H_MM, "image_max_px": IMAGE_MAX_PX,
                          "heading_pt": HEADING_PT, "label_pt": LABEL_PT, "caption_pt": CAPTION_PT, "page_break": "per_logical_page",
                          "box": "table_grid_1x1", "box_space_pt": DOCX_BOX_SPACE_PT, "colors": DOCX_COLORS, "crop": "contain_fallback",
-                         "exif_orientation": "apply_before_embed", "image_decode": "full_pixels"}
+                         "exif_orientation": "apply_before_embed", "image_decode": "full_pixels",
+                         "demo_footer": DEMO_FOOTER_TEXT, "demo_footer_mm": DEMO_FOOTER_MM}
 # 배치에 영향을 주는 브라우저 인자(창 크기·가상 시간). 바꾸면 TEMPLATE_VERSION을 올린다(지문 포함). 샌드박스·프로필 등 환경 인자는 제외.
 PDF_RENDER_CONSTANTS = {"window_size": "1000,1400", "virtual_time_budget_ms": 10000, "measure": "after_load_and_fonts_ready"}
 
@@ -116,6 +119,7 @@ class RenderSnapshot:
     pages: list[Page]
     assets: dict[str, SnapshotAsset]
     content_hash: str            # {"title","pages"} 정규화 JSON sha256 — 정보용(계약 필드 아님)
+    demo: bool = False
 
     @property
     def manifest_items(self) -> list[tuple[str, str]]:
@@ -134,8 +138,8 @@ class RenderSnapshot:
         return layout_checks.manifest_hash(self.manifest_items)
 
 
-def _document_content_hash(title: str, pages: list[Page]) -> str:
-    payload = {"title": title, "pages": [p.model_dump() for p in pages]}
+def _document_content_hash(title: str, pages: list[Page], demo: bool = False) -> str:
+    payload = {"title": title, "pages": [p.model_dump() for p in pages], "demo": demo}
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -164,14 +168,14 @@ def asset_from_bytes(asset_id: str, data: bytes | None, *, mime_type: str = "ima
     return SnapshotAsset(asset_id, content_hash or digest, mime, width, height, data, True, None)
 
 
-def snapshot_from_document(document: Document, assets: dict[str, SnapshotAsset]) -> RenderSnapshot:
+def snapshot_from_document(document: Document, assets: dict[str, SnapshotAsset], *, demo: bool = False) -> RenderSnapshot:
     """DB 없이 스냅샷을 만든다(테스트·실험용). 문서가 참조하는데 assets에 없는 asset_id는 not_found로 채운다."""
     assets = dict(assets)
     for aid in layout_checks.image_asset_ids(document):
         if aid not in assets:
             assets[aid] = SnapshotAsset(aid, "", "image/png", 0, 0, None, False, "not_found")
     return RenderSnapshot(document.document_id, document.document_revision, document.input_revision, document.title,
-                          document.target_pages, _copy_pages(document.pages), assets, _document_content_hash(document.title, document.pages))
+                          document.target_pages, _copy_pages(document.pages), assets, _document_content_hash(document.title, document.pages, demo), demo)
 
 
 def _copy_pages(pages: list[Page]) -> list[Page]:
@@ -187,7 +191,11 @@ def build_snapshot(conn: sqlite3.Connection, settings: Settings, session_id: str
     - 파일은 settings.private_runs_dir/stored_path에서 읽고 sha256이 content_hash와 같아야 한다(다른 파일로 바꿔치기 → hash_mismatch).
     """
     from app.services.sources import resolve_path
+    from app.services import assets as asset_service, sessions
+    from app.errors import ApiError
 
+    session_row = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+    demo = bool(session_row["demo"]) if session_row is not None else False
     assets: dict[str, SnapshotAsset] = {}
     for aid in layout_checks.image_asset_ids(document):
         if aid in assets:
@@ -198,6 +206,17 @@ def build_snapshot(conn: sqlite3.Connection, settings: Settings, session_id: str
             continue
         chash, mime = row["content_hash"], row["mime_type"]
         accessible = row["deleted_at"] is None and (row["scope"] == "registered" or (row["scope"] == "session" and row["session_id"] == session_id))
+        source = conn.execute("SELECT role FROM sources WHERE source_id=?", (row["source_id"],)).fetchone()
+        if source is not None and source["role"] == "instruction":
+            accessible = False  # 작성 조건의 원본 미리보기는 허용해도 생성 문서의 회사 근거/사진으로 쓸 수 없다.
+        if accessible:
+            try:
+                asset_service.get_ready(conn, session_id, aid, settings=settings)
+            except ApiError as exc:
+                if exc.status_code != 409:
+                    accessible = False
+        if demo and (session_row is None or sessions.usable(settings, session_row) is not None):
+            accessible = False
         if not accessible:
             assets[aid] = SnapshotAsset(aid, chash, mime, 0, 0, None, False, "not_accessible")
             continue
@@ -212,7 +231,7 @@ def build_snapshot(conn: sqlite3.Connection, settings: Settings, session_id: str
             continue
         assets[aid] = asset_from_bytes(aid, data, mime_type=mime, content_hash=chash)
     return RenderSnapshot(document.document_id, document.document_revision, document.input_revision, document.title,
-                          document.target_pages, _copy_pages(document.pages), assets, _document_content_hash(document.title, document.pages))
+                          document.target_pages, _copy_pages(document.pages), assets, _document_content_hash(document.title, document.pages, demo), demo)
 
 
 # ---------------- 결과 ----------------
@@ -251,6 +270,7 @@ class RenderResult:
     renderer: str
     elapsed_ms: int
     details: dict[str, Any] = field(default_factory=dict)
+    demo: bool = False
 
     @property
     def not_checked(self) -> list[str]:
@@ -262,7 +282,7 @@ class RenderResult:
                 "render_options_hash": self.render_options_hash, "asset_manifest_hash": self.asset_manifest_hash,
                 "renderer": self.renderer, "elapsed_ms": self.elapsed_ms,
                 "checks": [c.__dict__ for c in self.checks], "findings": [f.__dict__ for f in self.findings],
-                "details": self.details}
+                "details": self.details, "demo": self.demo}
 
 
 def _record(check_key: str, fmt: str, findings: list[Finding], *, not_checked_reason: str | None = None) -> LayoutCheckRecord:
@@ -389,7 +409,8 @@ def build_html(snapshot: RenderSnapshot) -> str:
         title=_clean_text(snapshot.title), nonce=secrets.token_urlsafe(16),
         font_family=opts["font_family"], font_regular_b64=_font_b64(FONT_FILES["regular"]), font_bold_b64=_font_b64(FONT_FILES["bold"]),
         page_size=opts["page_size"], margin_mm=margin, base_font_pt=opts["base_font_pt"],
-        content_w_mm=PAGE_W_MM - 2 * margin, content_h_mm=PAGE_H_MM - 2 * margin,
+        content_w_mm=PAGE_W_MM - 2 * margin, content_h_mm=PAGE_H_MM - 2 * margin - (DEMO_FOOTER_MM if snapshot.demo else 0),
+        demo=snapshot.demo, demo_footer_text=DEMO_FOOTER_TEXT, demo_footer_mm=DEMO_FOOTER_MM,
         image_max_h_mm=IMAGE_MAX_H_MM, image_crop_h_mm=IMAGE_CROP_H_MM,
         pages=[{"page_id": p.page_id, "title": _clean_text(p.title), "blocks": _view_blocks(snapshot, p)} for p in snapshot.pages],
     )
@@ -604,13 +625,21 @@ def _valid_measure(measure: Any, snapshot: RenderSnapshot) -> bool:
     return got == expected
 
 
-def pdf_info(pdf_path: Path) -> dict[str, Any]:
+def pdf_info(pdf_path: Path, *, expected_footer: str | None = None) -> dict[str, Any]:
     """pypdf로 쪽수·1쪽 텍스트·폰트 이름을 읽는다(구조 검사)."""
     from pypdf import PdfReader
 
     reader = PdfReader(str(pdf_path))
     fonts: set[str] = set()
-    for page in reader.pages:
+    missing_footer: list[int] = []
+    footer_token = "".join(expected_footer.split()) if expected_footer is not None else None
+    first_text = ""
+    for page_number, page in enumerate(reader.pages, start=1):
+        text = (page.extract_text() or "") if page_number == 1 or footer_token is not None else ""
+        if page_number == 1:
+            first_text = text
+        if footer_token is not None and footer_token not in "".join(text.split()):
+            missing_footer.append(page_number)
         res = page.get("/Resources") or {}
         for _, f in (res.get("/Font") or {}).items():
             try:
@@ -618,7 +647,7 @@ def pdf_info(pdf_path: Path) -> dict[str, Any]:
             except Exception:
                 pass
     return {"pages": len(reader.pages), "fonts": sorted(fonts),
-            "first_page_text": (reader.pages[0].extract_text() or "") if reader.pages else ""}
+            "first_page_text": first_text, "missing_footer_pages": missing_footer}
 
 
 def _overflow_findings(measure: dict[str, Any]) -> list[Finding]:
@@ -656,9 +685,12 @@ def _render_pdf(snapshot: RenderSnapshot, out_dir: Path, settings: Settings | No
             findings += _overflow_findings(measure)
             details["measure"] = measure
         try:
-            info = pdf_info(pdf_tmp)   # 발행 전에 구조 검사. 읽지 못하는 파일은 내보내지 않는다
+            info = pdf_info(pdf_tmp, expected_footer=DEMO_FOOTER_TEXT if snapshot.demo else None)
         except Exception as exc:  # noqa: BLE001
             raise RenderError("render_failed", "만들어진 PDF를 읽을 수 없습니다.", {"error": type(exc).__name__}) from exc
+        if snapshot.demo and (not info["pages"] or info["missing_footer_pages"]):
+            raise RenderError("demo_footer_missing", "시연 표시가 없는 PDF는 제공할 수 없습니다. 지원되는 브라우저에서 다시 검사해 주세요.",
+                              {"page_numbers": info["missing_footer_pages"]})
         try:
             os.replace(pdf_tmp, final)
         except OSError as exc:
@@ -777,6 +809,13 @@ def _build_docx(snapshot: RenderSnapshot, family: str, base_pt: float, content_w
     section = doc.sections[0]
     section.page_width, section.page_height = Mm(PAGE_W_MM), Mm(PAGE_H_MM)
     section.left_margin = section.right_margin = section.top_margin = section.bottom_margin = Mm(layout_checks.DEFAULT_RENDER_OPTIONS["margin_mm"])
+    if snapshot.demo:
+        section.bottom_margin = Mm(layout_checks.DEFAULT_RENDER_OPTIONS["margin_mm"] + DEMO_FOOTER_MM)
+        section.footer_distance = Mm(10)
+        footer = section.footer.paragraphs[0]
+        footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        _docx_set_font(doc.styles["Footer"], family, LABEL_PT, color=DOCX_COLORS["caption"])
+        footer.add_run(DEMO_FOOTER_TEXT)
     _docx_set_font(doc.styles["Normal"], family, base_pt, color=DOCX_COLORS["text"])
     for level, size in HEADING_PT.items():
         _docx_set_font(doc.styles[f"Heading {level}"], family, size, bold=True, color=DOCX_COLORS["text"])
@@ -860,7 +899,7 @@ def render(snapshot: RenderSnapshot, fmt: str, out_dir: Path, settings: Settings
         format=fmt, file_path=path, actual_pages=pages, checks=checks, findings=findings, layout_ok=_layout_ok(checks),
         template_version=layout_checks.TEMPLATE_VERSION, render_options_hash=layout_checks.RENDER_OPTIONS_HASH,
         asset_manifest_hash=snapshot.asset_manifest_hash, renderer=renderer,
-        elapsed_ms=int((time.perf_counter() - started) * 1000), details=details,
+        elapsed_ms=int((time.perf_counter() - started) * 1000), details=details, demo=snapshot.demo,
     )
 
 

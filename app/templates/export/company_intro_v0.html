@@ -9,7 +9,13 @@
 <style>
 @font-face { font-family: "{{ font_family }}"; font-weight: 400; font-style: normal; src: url("data:font/ttf;base64,{{ font_regular_b64 }}") format("truetype"); }
 @font-face { font-family: "{{ font_family }}"; font-weight: 700; font-style: normal; src: url("data:font/ttf;base64,{{ font_bold_b64 }}") format("truetype"); }
-@page { size: {{ page_size }}; margin: {{ margin_mm }}mm; }
+@page { size: {{ page_size }}; margin: {{ margin_mm }}mm;
+{% if demo %}
+  margin-bottom: {{ margin_mm + demo_footer_mm }}mm;
+  @bottom-center { content: "{{ demo_footer_text }}"; font-family: "{{ font_family }}", sans-serif;
+    font-size: 8pt; font-weight: 400; color: #555; vertical-align: top; line-height: {{ demo_footer_mm }}mm; }
+{% endif %}
+}
 html, body { margin: 0; padding: 0; background: #fff; }
 body { font-family: "{{ font_family }}", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif; font-size: {{ base_font_pt }}pt;
        line-height: 1.55; color: #111; width: {{ content_w_mm }}mm; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
@@ -86,7 +92,13 @@ figcaption { font-size: 9pt; color: #555; margin-top: 1.5mm; word-break: keep-al
     document.body.appendChild(el);
     document.documentElement.setAttribute("data-be07-measured", "1");
   }
-  function whenFonts() { document.fonts.ready.then(measure, measure); }
+  function whenFonts() {
+    // fonts.ready는 사용한 face만 기다린다. 제목 없는 문서도 동일한 서체 검사를 받도록 두 굵기를 명시적으로 로드한다.
+    Promise.all([document.fonts.load('{{ base_font_pt }}pt "{{ font_family }}"'),
+                 document.fonts.load('bold {{ base_font_pt }}pt "{{ font_family }}"')])
+      .then(function () { return document.fonts.ready; })
+      .then(measure, measure);
+  }
   if (document.readyState === "complete") { whenFonts(); } else { window.addEventListener("load", whenFonts); }
 })();
 </script>

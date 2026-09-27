@@ -23,15 +23,18 @@ class Brief(BaseModel):
 class SessionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     brief: Brief
+    demo: bool = Field(default=False, strict=True)
 
 
 class DocumentSummary(BaseModel):
+    demo: bool = False
     document_id: str
     document_revision: int
     status: str
 
 
 class SessionOut(BaseModel):
+    demo: bool = False
     session_id: str
     status: Literal["active", "closed", "expired"]
     input_revision: int
@@ -71,6 +74,8 @@ class SourceWarning(BaseModel):
 
 
 class SourceOut(BaseModel):
+    role: Literal["evidence", "instruction"] = "evidence"
+    origin_kind: Literal["real", "mock", "demo"] = "real"
     source_id: str
     source_version: int
     scope: Literal["registered", "session"]
@@ -307,6 +312,7 @@ class ApprovalCreate(BaseModel):
 
 
 class ApprovalOut(BaseModel):
+    demo: bool = False
     approval_id: str
     document_id: str
     document_revision: int
@@ -358,6 +364,7 @@ class PublicationBlockOut(BaseModel):
 
 
 class LayoutCheckOut(BaseModel):
+    demo: bool = False
     layout_check_id: str
     document_id: str
     document_revision: int
@@ -384,6 +391,7 @@ class LayoutCheckOut(BaseModel):
 
 
 class DocumentOut(BaseModel):
+    demo: bool = False
     document: Document
     validation: ValidationOut | None = None   # 현재 문서·입력 버전의 최신 검증. 없으면 null
     approval: ApprovalOut | None = None       # 현재 문서·입력 버전의 active 승인(어느 형식이든). 없으면 null
@@ -397,6 +405,7 @@ class ExportCreate(BaseModel):
 
 
 class ExportOut(BaseModel):
+    demo: bool = False
     export_id: str
     approval_id: str
     format: Literal["pdf", "docx"]

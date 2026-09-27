@@ -22,7 +22,7 @@ from typing import Any
 from app.config import Settings
 from app.db import connect
 from app.models import Document, LayoutCheckOut
-from app.services import artifacts, export_render, jobs, layout_checks, publication
+from app.services import artifacts, export_render, jobs, layout_checks, publication, sessions
 from app.services.documents import get_current
 from app.services.validation import IssueDraft
 from app.timeutil import from_iso, now, to_iso
@@ -49,11 +49,24 @@ class _Failure(Exception):
     details: dict[str, Any] | None = None
 
 
-def _session_valid(conn: sqlite3.Connection, session_id: str) -> sqlite3.Row:
+def _session_valid(conn: sqlite3.Connection, settings: Settings, session_id: str) -> sqlite3.Row:
     row = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
-    if row is None or row["status"] != "active" or now() >= from_iso(row["expires_at"]):
+    reason = sessions.usable(settings, row) if row is not None else "expired"
+    if reason == "demo_disabled":
+        raise _Failure("DEMO_MODE_DISABLED", "시연 모드가 꺼져 배치 검사 결과를 저장하지 않았습니다.")
+    if reason is not None:
         raise _Failure("SESSION_EXPIRED", "세션이 종료되었거나 만료되어 배치 검사 결과를 저장하지 않았습니다.")
     return row
+
+
+def _fail_job(settings: Settings, session_id: str, job_id: str, failure: _Failure) -> None:
+    """늦은 오류도 현재 세션 정책을 먼저 따른다. 종료로 취소된 Job은 jobs.fail의 상태 가드가 보존한다."""
+    with connect(settings.db_path, immediate=True) as conn:
+        try:
+            _session_valid(conn, settings, session_id)
+        except _Failure as current:
+            failure = current
+        jobs.fail(conn, job_id, failure.code, failure.message, failure.retryable, failure.details)
 
 
 def _document_current(conn: sqlite3.Connection, session_row: sqlite3.Row, document_id: str, document_revision: int,
@@ -176,7 +189,7 @@ def run_layout_check_job(settings: Settings, session_id: str, job_id: str, docum
     try:
         with connect(settings.db_path) as conn:
             jobs.set_progress(conn, job_id, "rendering", "배치 검사용 파일을 만드는 중")
-            session_row = _session_valid(conn, session_id)
+            session_row = _session_valid(conn, settings, session_id)
             document = _document_current(conn, session_row, document_id, document_revision, input_revision)
             snapshot = export_render.build_snapshot(conn, settings, session_id, document)
             pub_start = publication.check_document(conn, document)
@@ -195,11 +208,13 @@ def run_layout_check_job(settings: Settings, session_id: str, job_id: str, docum
 
         with connect(settings.db_path, immediate=True) as conn:
             jobs.set_progress(conn, job_id, "finalizing", "결과를 확인하는 중")
-            session_row = _session_valid(conn, session_id)                      # 늦은 결과 방지: 세션 만료·종료
+            session_row = _session_valid(conn, settings, session_id)            # 늦은 결과 방지: 세션 만료·종료·시연 차단
             document = _document_current(conn, session_row, document_id, document_revision, input_revision)
             manifest_now = layout_checks.asset_manifest_hash(conn, document)
             if manifest_now != snapshot.asset_manifest_hash:
                 raise _Failure("ASSET_MANIFEST_CHANGED", "검사 중 문서 이미지가 바뀌어 결과를 버렸습니다. 다시 요청해 주세요.")
+            if bool(session_row["demo"]) != snapshot.demo or result.demo != snapshot.demo:
+                raise _Failure("RENDER_IDENTITY_MISMATCH", "시연 여부가 다른 렌더 결과는 저장할 수 없습니다.")
             pub = publication.check_document(conn, document)                    # 시작 당시 값이 아니라 지금 값
             layout_check_id = f"lc_{uuid.uuid4().hex[:16]}"
             artifact = artifacts.store(conn, settings, session_id, result, document_id=document_id, document_revision=document_revision,
@@ -216,38 +231,39 @@ def run_layout_check_job(settings: Settings, session_id: str, job_id: str, docum
                 "INSERT INTO layout_checks (layout_check_id, session_id, document_id, document_revision, input_revision, format, "
                 "template_version, render_options_hash, asset_manifest_hash, status, actual_pages, issue_ids_json, created_at, "
                 "layout_ok, publication_policy_ok, checks_json, findings_json, fail_reasons_json, renderer, artifact_id, "
-                "preview_basis, preview_ids_json, job_id, publication_checked_at, warnings_json, publication_blocks_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "preview_basis, preview_ids_json, job_id, publication_checked_at, warnings_json, publication_blocks_json, demo) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (layout_check_id, session_id, document_id, document_revision, input_revision, fmt,
                  result.template_version, result.render_options_hash, result.asset_manifest_hash, status, result.actual_pages,
                  json.dumps(issue_ids), stamp, int(result.layout_ok), int(pub.ok),
                  json.dumps([c.__dict__ for c in result.checks], ensure_ascii=False),
                  json.dumps([f.__dict__ for f in result.findings], ensure_ascii=False),
                  json.dumps(fail_reasons), result.renderer, artifact["artifact_id"], "pdf", json.dumps(preview_ids), job_id,
-                 pub.checked_at, json.dumps(warnings, ensure_ascii=False), json.dumps(pub.as_out(), ensure_ascii=False)))
+                 pub.checked_at, json.dumps(warnings, ensure_ascii=False), json.dumps(pub.as_out(), ensure_ascii=False), int(snapshot.demo)))
             jobs.succeed(conn, job_id, {"layout_check_id": layout_check_id, "format": fmt, "status": status,
                                          "layout_ok": result.layout_ok, "publication_policy_ok": pub.ok,
                                          "actual_pages": result.actual_pages, "artifact_id": artifact["artifact_id"],
-                                         "preview_asset_ids": preview_ids, "preview_basis": "pdf", "warnings": warnings})
+                                         "preview_asset_ids": preview_ids, "preview_basis": "pdf", "warnings": warnings, "demo": snapshot.demo})
             _ = pub_start  # 시작 시 값은 참고용. 저장은 완료 직전 값으로만 한다.
     except _Failure as exc:
         if tmp is not None:
             artifacts.discard_temp(tmp)      # 임시 산출물을 먼저 지운 뒤 실패를 기록한다(공개·연결되지 않음)
-        with connect(settings.db_path) as conn:
-            jobs.fail(conn, job_id, exc.code, exc.message, exc.retryable, exc.details)
+        _fail_job(settings, session_id, job_id, exc)
     except export_render.RenderError as exc:
         if tmp is not None:
             artifacts.discard_temp(tmp)
-        with connect(settings.db_path) as conn:
-            jobs.fail(conn, job_id, "LAYOUT_RENDER_FAILED", f"배치 검사용 파일을 만들지 못했습니다({exc.code}).",
-                      exc.code in ("render_timeout", "render_failed"), {"reason": exc.code})
+        _fail_job(settings, session_id, job_id, _Failure("LAYOUT_RENDER_FAILED", f"배치 검사용 파일을 만들지 못했습니다({exc.code}).",
+                  exc.code in ("render_timeout", "render_failed"), {"reason": exc.code}))
     except Exception as exc:  # noqa: BLE001
         if tmp is not None:
             artifacts.discard_temp(tmp)
-        with connect(settings.db_path) as conn:
+        with connect(settings.db_path, immediate=True) as conn:
             # 세션이 도중에 종료·만료되면 세션 폴더(임시 산출물 포함)가 지워져 파일 오류로 나타난다 → 실제 사유로 기록
-            row = conn.execute("SELECT status, expires_at FROM sessions WHERE session_id=?", (session_id,)).fetchone()
-            if row is None or row["status"] != "active" or now() >= from_iso(row["expires_at"]):
+            row = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+            reason = sessions.usable(settings, row) if row is not None else "expired"
+            if reason == "demo_disabled":
+                jobs.fail(conn, job_id, "DEMO_MODE_DISABLED", "시연 모드가 꺼져 배치 검사 결과를 저장하지 않았습니다.", False)
+            elif reason is not None:
                 jobs.fail(conn, job_id, "SESSION_EXPIRED", "세션이 종료되었거나 만료되어 배치 검사 결과를 저장하지 않았습니다.", False)
             else:
                 logger.exception("layout_check job failed")
@@ -294,7 +310,7 @@ def to_out(row: sqlite3.Row) -> LayoutCheckOut:
         publication_blocks=_json("publication_blocks_json", []), checks=_json("checks_json", []), findings=_json("findings_json", []),
         fail_reasons=_json("fail_reasons_json", []), renderer=row["renderer"], artifact_id=row["artifact_id"],
         preview_asset_ids=_json("preview_ids_json", []), preview_basis=row["preview_basis"], warnings=_json("warnings_json", []),
-        created_at=row["created_at"])
+        created_at=row["created_at"], demo=bool(row["demo"]))
 
 
 def latest_for(conn: sqlite3.Connection, document_id: str, document_revision: int, input_revision: int, fmt: str) -> sqlite3.Row | None:

@@ -21,6 +21,7 @@ from app.config import Settings
 from app.errors import ApiError
 from app.models import SourceOut
 from app.services.sessions import session_dir
+from app.services import sessions
 from app.timeutil import from_iso, now, to_iso
 
 _READ_CHUNK = 1024 * 1024
@@ -67,13 +68,15 @@ def _row_to_out(conn: sqlite3.Connection, row: sqlite3.Row) -> SourceOut:
         parse_status=row["parse_status"],
         text_available=bool(row["text_available"]),
         image_available=bool(row["image_available"]),
-        usable_segment_ids=_segment_ids(conn, row["source_id"]) if row["text_available"] else [],
+        usable_segment_ids=_segment_ids(conn, row["source_id"]) if row["text_available"] and row["role"] == "evidence" else [],
         asset_ids=_asset_ids(conn, row["source_id"]),
         warnings=json.loads(row["warnings_json"]),
         expires_at=row["expires_at"],
         document_date=row["document_date"],
         use_as_company_evidence=bool(row["use_as_company_evidence"]),
         is_mock=bool(row["is_mock"]),
+        origin_kind=row["origin_kind"],
+        role=row["role"],
     )
 
 
@@ -136,17 +139,22 @@ async def validate_uploads(settings: Settings, existing_count: int, files: list[
 
 
 def store(conn: sqlite3.Connection, settings: Settings, session_id: str, expires_at: str, kind: str | None,
-          uploads: list[tuple[str, str, str, bytes]]) -> list[SourceOut]:
+          uploads: list[tuple[str, str, str, bytes]], *, role: str = "evidence") -> list[SourceOut]:
     """검사를 통과한 파일을 세션 폴더에 쓰고 레코드를 만든다(parse_status=queued). 쓰기 실패 시 이번 파일만 지운다.
 
     BE-09: 파일을 쓰기 전에 BEGIN IMMEDIATE로 세션 확정(종료·만료)과 직렬화하고 세션이 살아 있는지 다시 본다.
     닫힌 세션 폴더에 늦게 파일을 쓰지 않는다(폴더 삭제 뒤 재생성 방지)."""
     if not conn.in_transaction:
         conn.execute("BEGIN IMMEDIATE")
-    alive = conn.execute("SELECT status, expires_at FROM sessions WHERE session_id=?", (session_id,)).fetchone()
-    if alive is None or alive["status"] != "active" or now() >= from_iso(alive["expires_at"]):
+    if role not in {"evidence", "instruction"}:
+        raise ApiError(400, "INVALID_REQUEST", "첨부 역할이 올바르지 않습니다.")
+    alive = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+    policy = sessions.usable(settings, alive)
+    if policy in {"closed", "expired"}:
         status = "expired" if alive is None or alive["status"] == "active" else alive["status"]
         raise ApiError(410, "SESSION_EXPIRED", "세션이 종료되었거나 만료되어 파일을 저장하지 않았습니다.", details={"status": status})
+    if policy == "demo_disabled":
+        raise sessions.demo_disabled_error()
     directory = session_dir(settings, session_id)
     written: list[Path] = []
     created: list[str] = []
@@ -161,10 +169,10 @@ def store(conn: sqlite3.Connection, settings: Settings, session_id: str, expires
             effective_kind = kind or ("photo" if suffix in IMAGE_SUFFIXES else "other")
             conn.execute(
                 "INSERT INTO sources (source_id, session_id, source_version, scope, name, mime_type, size_bytes, kind, "
-                "parse_status, text_available, image_available, stored_path, content_hash, created_at, expires_at) "
-                "VALUES (?, ?, 1, 'session', ?, ?, ?, ?, 'queued', 0, 0, ?, ?, ?, ?)",
+                "parse_status, text_available, image_available, stored_path, content_hash, created_at, expires_at, role) "
+                "VALUES (?, ?, 1, 'session', ?, ?, ?, ?, 'queued', 0, 0, ?, ?, ?, ?, ?)",
                 (source_id, session_id, display_name, mime, len(content), effective_kind, relative,
-                 hashlib.sha256(content).hexdigest(), to_iso(now()), expires_at),
+                  hashlib.sha256(content).hexdigest(), to_iso(now()), expires_at, role),
             )
             created.append(source_id)
     except OSError:
@@ -192,15 +200,36 @@ def delete_one(conn: sqlite3.Connection, settings: Settings, session_id: str, so
     resolve_path(settings, row["stored_path"]).unlink(missing_ok=True)
 
 
+def evidence_scope(conn: sqlite3.Connection, session_id: str) -> tuple[str, tuple]:
+    """Shared SQL predicate for source selection, Agent inputs and reference validation (alias src)."""
+    session = conn.execute("SELECT demo FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+    demo = int(bool(session and session["demo"]))
+    return ("((src.scope='session' AND src.session_id=?) OR (src.scope='registered' AND src.use_as_company_evidence=1)) "
+            "AND src.deleted_at IS NULL AND src.role='evidence' AND (src.origin_kind<>'demo' OR ?=1)", (session_id, demo))
+
+
+def check_selection_policy(conn: sqlite3.Connection, session_id: str, source_ids: list[str]) -> None:
+    session = conn.execute("SELECT demo FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+    for sid in source_ids:
+        row = conn.execute("SELECT role, origin_kind FROM sources WHERE source_id=? AND deleted_at IS NULL "
+                           "AND ((scope='session' AND session_id=?) OR scope='registered')", (sid, session_id)).fetchone()
+        if row is None:
+            continue  # Existing existence check hides other owners' sources.
+        if row["role"] == "instruction":
+            raise ApiError(422, "SOURCE_ROLE_NOT_EVIDENCE", "작성 조건 첨부는 회사 근거로 선택할 수 없습니다.")
+        if row["origin_kind"] == "demo" and not (session and session["demo"]):
+            raise ApiError(422, "DEMO_SOURCE_NOT_ALLOWED", "시연 자료는 시연 세션에서만 사용할 수 있습니다.")
+
+
 def exist_in_session(conn: sqlite3.Connection, session_id: str, source_ids: list[str]) -> list[str]:
     """선택할 수 없는 ID 목록을 돌려준다. 선택 가능 = 이 세션의 첨부 또는 등록 자료(근거 사용 허용된 것)."""
     if not source_ids:
         return []
     marks = ",".join("?" * len(source_ids))
+    scope, params = evidence_scope(conn, session_id)
     rows = conn.execute(
-        f"SELECT source_id FROM sources WHERE deleted_at IS NULL AND source_id IN ({marks}) "
-        f"AND ((scope='session' AND session_id=?) OR (scope='registered' AND use_as_company_evidence=1))",
-        [*source_ids, session_id],
+        f"SELECT src.source_id FROM sources src WHERE src.source_id IN ({marks}) AND {scope}",
+        [*source_ids, *params],
     ).fetchall()
     found = {r["source_id"] for r in rows}
     return [sid for sid in source_ids if sid not in found]

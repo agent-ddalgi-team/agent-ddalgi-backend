@@ -141,7 +141,9 @@ def summary_for_session(conn: sqlite3.Connection, session_id: str) -> DocumentSu
     # 문서 조회와 같은 함수로 계산한다.
     status = validation.compute_document_status(conn, row["document_id"], row["current_revision"],
                                                 _session_input_revision(conn, session_id))
-    return DocumentSummary(document_id=row["document_id"], document_revision=row["current_revision"], status=status)
+    session = conn.execute("SELECT demo FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+    return DocumentSummary(document_id=row["document_id"], document_revision=row["current_revision"], status=status,
+                           demo=bool(session and session["demo"]))
 
 
 def exists_for_session(conn: sqlite3.Connection, session_id: str) -> str | None:

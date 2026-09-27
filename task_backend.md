@@ -77,6 +77,8 @@
 | 2026-09-27 | BE-08 | 브랜치 feat/be-08-layout-export · services/{artifacts,publication,layout_check_jobs,exports}.py, routers/{layout_checks,exports}.py, tests/test_be08.py(신규) · db.py(v7: artifacts·exports·layout_previews, layout_checks·approvals·issues 컬럼), models.py, validation.py(origin=layout 분리), issues.py, approvals.py(형식별·⑥ 실체화·공개 허가), routers/{approvals,documents,assets}.py, services/{assets,sessions,registered,export_render}.py, scripts/import_registered.py(--update-publication), __init__.py(재시작 복구), config.py(EXPORT_TTL_MINUTES), pyproject.toml(pypdfium2 런타임)·uv.lock, README, .env.example, handoff/api_examples_v1.1.json, plan.md, task.md | `uv run pytest` 236/236(신규 40 = 통합 15 + 규칙 25). 실서버(가짜 자료, 개발 DB v6→v7): validate→layout-checks(pdf) passed 4쪽→미리보기 PNG→approvals **201**→exports 202→ready 재사용 200→download 200(pypdf 4쪽·한글)→승인 후 편집 409. DOCX: layout-checks failed(overflow:not_checked)·PDF 기준 미리보기·승인 422. 상세 6.9절 | 프론트: layout-checks/exports/download API·DocumentOut.layout_checks·미리보기(GET /assets)·오류 코드(6.9-1). Agent: 초안의 image_placeholder·등록 사진 미허가는 배치 blocker. 팀: 계약 확인 ㉞ 제안값(정책 변경안), ㉟~㊳ |
 | 2026-09-27 | BE-09 | 브랜치 feat/be-09-session-cleanup(변경 40개 = 수정 36 + 신규 4) · services/{cleanup,sweeper}.py, scripts/cleanup_sessions.py, tests/test_be09.py(신규) · db.py(v8: cleanup_queue, sessions.purged_at, idempotency_keys.session_id/purged_at + backfill), services/{sessions,idempotency,jobs,ai_jobs,reading,sources,artifacts,layout_check_jobs,exports,publication}.py, routers 13개(load_active(settings)·remember(session_id)·DELETE 흐름·drafts 검사 순서), __init__.py(lifespan sweeper·시작 정리), config.py(CLEANUP_SWEEP_INTERVAL_S·CLEANUP_MAX_ATTEMPTS·CLEANUP_CLAIM_TTL_S), .env.example, README, plan.md, task.md, handoff, tests/test_be06.py·test_be08_rules.py(v8 컬럼 대응) | `uv run pytest` 271/271(신규 35(함수 28, 리뷰 회귀 13 포함), Codex 리뷰 6건 회귀 포함). 실서버(개발 DB v7→v8, SESSION_IDLE_MINUTES=1·CLEANUP_SWEEP_INTERVAL_S=5, 가상 자료): 첫 실행 정리 closed 11·옛 active 5 만료, 세션 A 업로드→초안→배치 검사(Chrome) 뒤 **요청 없이** 57초 → 배경 sweep이 만료·내용 제거·폴더 삭제, GET·같은 키 재전송 410(details.cleanup=done), 세션 B DELETE done, 등록 자료 무변경, 로그에 원문·파일명 없음. 상세 6.10절 | 프론트: 410 `details.cleanup`, 종료 세션 멱등 재전송 410, Job `cancelled`(6.10-7). **Agent(AG-03)에게 요청**: LangGraph 체크포인트를 `private_runs/<sid>/` 아래 또는 세션 ID로 연결된 DB 행에 두어야 함께 정리됨(6.10-6). 팀: 계약 확인 ㊵~㊸ |
 
+| 2026-09-27 | BE-09 후속: 시연 데이터 수용 기반 | feat/demo-data-foundation · DB v9·시연 정책·등록 적재·첨부 역할·검증·출력 식별값, 신규 tests/test_demo.py(42개) | 구현·검증 완료, 전체 337/337. 실제 HTTP 가짜 자료→PDF 배치/preview/승인/다운로드·모드 차단·삭제 확인. 상세 6.11절 | 계약 제안 ㊹~㊿·SourceIn.origin_kind·프론트 role 명시. 실제 자료 작성/적재·자연어 조건 해석·시연 준비 완료 아님 |
+
 자료·시스템의 진위를 추정하여 정상 처리하지 않는다. 설명용 이미지 생성·OCR·장기 보관은 별도 범위가 정해지기 전 기본 작업에 추가하지 않는다.
 
 ### 6.1 BE-01 확인 결과 (2026-09-25)
@@ -495,6 +497,60 @@ PDF 폰트: 모든 문서 `Pretendard-Regular`/`Pretendard-Bold` 서브셋 임�
 | 4 P2 | `_purge_content`가 resolution_json=NULL·history=[]로 전체 삭제 → 감사 정보(누가·언제·어떤 조치·버전·참조) 소실 | 허용 목록 보존(action·by·at·document_revision·input_revision·validation_id·reopened_*·previous_status, evidence_refs의 ID·버전·locator), reason·excerpt 제거, `purged: true` | `test_purge_preserves_resolution_audit_metadata_without_content`, 기존 `test_delete_purges_…` 기대값을 "감사 필드 보존 + 원문 부재"로 변경 |
 | 5 P2 | purged 캐시 거부 410에 `details.cleanup` 없음(㊵ 위반) | `replay_or_none`이 settings를 받아 `sessions.raise_gone`(종료·만료 확정 + `cleanup.verify_state`)으로 410 {status, cleanup}; 연결 세션을 알 수 없는 옛 행은 done. 순서(같은 키·다른 본문 409 → 세션 상태 → 최초 응답)와 접근 검사 유지 | `test_purged_create_replay_reports_current_cleanup_state`(삭제 실패 pending → 성공 done, 만료, 다른 소유자 별개, 옛 행) |
 | 6 P2 | `_record_done`이 session_dir 완료 때만 verify_state를 호출 → 같은 배치에서 session_dir → orphan_tmp 순서로 완료되면 자식 완료 시점에 재계산이 없어 폴더 없음·미완료 큐 0건인데 `sessions.cleanup_status`가 pending으로 남고, 폴더가 없는 세션은 다음 sweep(폴더 점검)도 손대지 않아 그대로였다 | 유효한 점유 토큰으로 완료·실패를 반영한 뒤 `_refresh_after_task`가 종료·만료(purged) 세션이면 작업 종류와 무관하게 `verify_state`로 전체 상태를 같은 트랜잭션에서 재계산. 활성 세션의 tmp 정리는 cleanup_status를 건드리지 않음 | `test_parent_and_orphan_completion_updates_session_cleanup_status`(같은 배치 선점 → 부모→자식 처리 → GET 없이 폴더 없음·큐 전부 done·cleanup=done, 다음 sweep에서도 done, 활성 세션은 무변경) |
+
+### 6.11 시연 데이터 수용 기반 (2026-09-27, BE-09 후속)
+
+**상태: 시연 데이터 수용 기반 구현·검증 완료.** 실제 시연 묶음 작성·실자료 로컬 적재·자연어 조건 해석·프론트 연결은 이번 범위가 아니다. BE-10이나 시연 준비 완료로 표시하지 않는다. 작업은 develop `d164f929`(BE-09 merge) 기반 `feat/demo-data-foundation`의 별도 checkout에서 수행했다. 원래 작업 폴더와 실제 자료·개발 DB는 수정하지 않았다.
+
+**6.11-1 데이터와 수명 정책**
+
+- 테스트 fixture/mock은 `origin_kind=mock`·기존 `[MOCK]` blocker를 유지한다. demo는 별도 등록 출처이며 일반 자료로 재분류하지 않는다. real은 실제 입수 자료일 뿐 회사 확인 완료 뜻이 아니다. real+demo 혼합 허용, source_id 재적재로 종류 변경 불가.
+- `session.demo`는 생성 후 불변. `DEMO_MODE`는 AI 실행 방식 `AGENT_MODE`와 독립이다. false일 때 유효한 시연 세션의 사용·저장된 성공 응답·Job 시작/최종 저장·미리보기·자산·출력을 차단한다(403 DEMO_MODE_DISABLED). 삭제·TTL 변경은 하지 않으며 차단된 요청으로 활동 시각을 연장하지 않는다.
+- 소유자의 명시적 DELETE는 모드 해제 중에도 기존 종료·정리 경로로 허용한다. 이미 종료/만료된 세션은 BE-09의 410·내용 제거·cleanup 응답을 우선한다. 재활성화하면 유효한 세션과 기존 승인/바이트를 다시 사용할 수 있지만 실패 Job/Export는 자동 재실행하지 않는다. 새 키 요청만 명시적 재시도한다.
+- 공용 `sessions.usable` 판정은 load_active, idempotency(POST /sessions 캐시 포함), 읽기·Agent Job, 배치 Job, Export 발행/복구에 연결했다. Agent·읽기 최종 성공/오류 저장은 BEGIN IMMEDIATE 안에서 상태를 다시 검사한다. 읽기 중 차단되면 해당 Job의 미완료 자료도 failed로 마감하고 완료된 자료는 보존한다. Export 예외도 현재 정책을 우선하며 종료 후 감사 행을 다시 쓰지 않는다.
+
+**6.11-2 업로드 역할·출처·Agent 전달**
+
+- multipart `role=evidence|instruction`, 생략은 evidence. instruction은 파서로 읽고 원본 조회는 허용하되 선택·preflight.build_sources·refs·검증 근거·문서 이미지 snapshot에서 제외한다. 새 화면은 작성 조건 업로드에 instruction을 명시해야 한다. 자연어 조건 추출·Brief 반영은 미구현/미검증이며 업로드만으로 자동 반영되지 않는다.
+- 업로드 evidence는 기존 파일명+바이트 해시를 유지한다. instruction만 `sha256("role=instruction|" + 기존 해시)`를 써 같은 키의 역할 변경은 409가 된다. 기존 저장 키·role 생략/evidence 호환을 유지했다. kind는 기존처럼 해시에 없으며 후속 계약 확인으로 남긴다.
+- 기존 동작 변경: `refs.load()`는 근거 ref의 `source_version`이 현재와 다르거나 범위 밖이면 그 fact는 없는 것으로 취급한다(유효 fact 집합에서 제외, DB 원본 삭제 아님). 필수 내용 인정·문서 근거 검사에서 각각 `REQUIRED_MISSING` / `EVIDENCE_INVALID`로 이어진다.
+- SourceOut/SourceIn.origin_kind로 출처를 전달한다. 서버 DB의 source·segment·asset·fact 참조를 따라 DEMO_VALUE를 추가한다(시연 세션에서 warning). 개별 warning 확인은 새 승인 조건이 아니다. MOCK_VALUE·참조 오류·필수 내용·수치 충돌·공개 허가 blocker를 유지한다. mock의 `[시연]` 접두 해석만 추가했고 실제 LLM·프롬프트·LangGraph·task_agent.md는 수정하지 않았다.
+- Agent 담당에게 전달: SourceIn.origin_kind는 real/mock/demo(default real)이며 text 라벨과 evidence ID를 그대로 보존해야 한다. instruction은 회사 사실 입력으로 전달하지 않는다. 조건 해석·구성 반영은 후속 입출력 합의가 필요하다. AGENT_MODE=llm의 미구현 실패 원칙을 유지한다.
+
+**6.11-3 실제 묶음 구조 호환·적재**
+
+- CLI `--with-demo`를 명시해야 demo를 적재한다. status=demo+demo=true·표시명/본문 `[시연]`·evidence_status=`시연용 임시 문장`을 검증한다. mock과 혼합 마커·같은 source_id의 종류 변경은 거부한다. 기존 fixture 내용은 바꾸지 않았다.
+- 루트와 `--ingest-dir …/06_개발전달`을 구분한다. CSV는 JSON 폴더 또는 `05_이미지/00_이미지목록.csv`, 원본 이미지 경로는 기존 7열 그대로다. 후보는 photo_candidates.path의 독립 파일을 읽어 실제 hash·전체 픽셀 decode·가로세로를 확인한다. 후보에 제시된 hash/크기 불일치는 오류다.
+- CSV 원본 연결은 동일 경로 또는 original_ref의 정확한 폴더/파일명만 사용한다. 파일명·쪽수·locator로 추정하지 않는다. 후보가 재인코딩됐으면 후보 바이트를 저장하고 원본 hash 비교 결과만 기록한다. 연결 정보가 없으면 독립 자산으로 허용하며 candidates_without_original을 센다. 없는 original_ref는 무적재 오류. 허가 boolean/null 엄격 검사·보류 차단은 유지한다.
+- 가짜 자료로 실제 폴더 구조·이름/포맷 불일치·연결 유무·hash/크기 오류·dry-run 무기록을 같은 적재 코드로 확인한다. verify_bundle.py는 기존 fixture 전용이며 범용 검증기라고 주장하지 않는다. 실제 팀 자료 적재는 하지 않았다.
+
+**6.11-4 DB·출력 식별값**
+
+- DB v9 컬럼: sources.origin_kind/role, sessions.demo, layout_checks.demo, artifacts.demo, approvals.demo, exports.demo. 기존 is_mock 행은 mock, 나머지 real; 기존 role=evidence/demo=false. 데이터 보존·재초기화 안전성을 시험한다. 새 Python 의존성 없음.
+- RenderSnapshot/RenderResult부터 배치 검사·artifact·승인·Export까지 demo를 저장·대조한다. 일반 파일과 시연 승인의 교차 연결을 거부한다. snapshot hash에 demo를 포함하며 TEMPLATE_VERSION은 template_v1로 올렸다. 기존 승인본의 버전 불일치는 재검사·재승인이 필요하고 자동 대체하지 않는다.
+- 하단 문구는 `시연용 · 일부 내용은 임시 데이터입니다`. PDF footer 9mm를 본문 가용 높이에서 빼 측정하고 DOCX footer도 같은 문구를 쓴다. Chrome 실제 출력에서 모든 물리 쪽 표시를 확인했다. 제공된 미리보기 PNG 4개와 다운로드 PDF를 다시 렌더한 PNG의 해시도 전부 일치했다. 승인 artifact는 그대로 재사용한다. DOCX overflow/승인/Export 제한은 기존대로다.
+
+**6.11-5 검증 기록**
+
+- 최종 전체 pytest: **337 passed / 0 failed / 0 skipped**, 557.70초, 기존 deprecation warning 2개. 명령: `.venv/Scripts/python.exe -m pytest -vv -p no:cacheprovider --tb=short --basetemp=../pytest-demo-unrestricted-final --junitxml=../demo-unrestricted-final.xml`. 이전 환경에서 실패했던 PDF 20개와 시연 표시 누락 거부 회귀까지 포함한 최종 코드 전체 실행이다. 잠금 의존성을 설치한 Python 3.13.15, 실제 Chrome 153.0.8010.54를 사용했다.
+- 영향 확인: tests/test_demo.py 42개 및 BE-04 응답·BE-09 마이그레이션 2개 합계 44 passed; tests/test_registered_import.py 44 passed; tests/test_be08_rules.py 28 passed; DOCX footer·HTML 공간·snapshot 접근·지문 관련 5 passed. 테스트의 가짜 LayoutCheck/artifact는 실제 PDF 배치 검사 성공과 구분한다.
+- 최초 제한된 실행 환경에서는 316 passed / 20 failed(모두 PDF 렌더 단계), 별도 about:blank도 GPU 오류로 실패했다. 사용자 권한 변경 뒤 정상 실행됐고, 실제 렌더에서 추가 결함 2건(음수 fixed footer 클립·제목 없는 문서의 미사용 Bold 폰트 미로드)을 발견해 수정했다. footer를 인쇄 @page margin box로 옮기고 regular/bold를 명시 로드한 뒤 측정한다. 어느 물리 쪽이든 시연 문구가 빠지면 demo_footer_missing으로 발행을 거부한다. 회귀 테스트: test_demo_pdf_footer_on_every_physical_page_and_measured_space, test_demo_pdf_missing_footer_is_rejected_before_publication, test_demo_snapshot_identity_and_docx_footer(타겟 3 passed).
+- 실제 uvicorn + localhost TCP, 가짜 자료만 사용: dry-run 등록 0행→적재 자료 1·구간 3→instruction 읽기/근거 선택 422→시연 자료 선택·사전 점검·확인·초안·PATCH rev2→validate needs_review(DEMO_VALUE warning 4, blocker 0)→PDF 배치 passed 4쪽→preview PNG 4개 200→승인 201→Export 202·동일 키 재전송 202(최초 응답 동일)·ready 재사용 200→다운로드 200. 배치·승인 행을 직접 심지 않았다. PDF 4쪽 모두 시연 문구가 있으며 artifact·다운로드 바이트/sha256 동일, 미리보기 PNG도 다운로드 PDF 재렌더와 4개 모두 해시 동일. Poppler로 페이지 4개를 이미지로 확인해 footer 잘림·본문 겹침 없음.
+- 동일 DB에서 DEMO_MODE=false로 재시작: GET·생성 키·승인 키·Export 키 재전송·preview·download 모두 403이고 active·내용 유지. owner DELETE 200 cleanup=done, 이후 GET·preview·download·생성 키 재전송 410, 등록 행·파일 보존. 서버는 확인 후 종료했다. AGENT_MODE=mock의 최소 내용으로 흐름을 검증했으므로 문구 품질·목차 구성·실제 시연 준비 완료로 해석하지 않는다.
+
+**6.11-6 계약 확인 (사용자 승인 임시 구현, contracts.md 원본 미수정)**
+
+| 번호 | 제안/구현 및 전달 항목 |
+|---|---|
+| ㊹ | POST Session.demo(boolean, default false, 생성 후 불변)·DEMO_MODE·403 DEMO_MODE_DISABLED. owner DELETE 예외, 종료/만료 410 우선. 실패 Job·Export demo_disabled 수명과 재시도 정책 |
+| ㊺ | Source.origin_kind(real/mock/demo), 업로드 role(evidence/instruction)·SourceOut.role. 역할 생략의 기존 호환·instruction 근거 배제. 선택 거부 422 SOURCE_ROLE_NOT_EVIDENCE/DEMO_SOURCE_NOT_ALLOWED |
+| ㊻ | GET /sources?include_demo=true는 서버 설정으로 허용(세션 문맥 없음); 일반 목록은 demo 숨김. 자산 바이트는 별도로 session.demo까지 검사 |
+| ㊼ | DEMO_VALUE warning(기존 승인 warning 정책), normal 세션에 demo 근거가 들어오면 blocker. 테스트 mock 차단·사진 공개 허가 원칙 불변 |
+| ㊽ | Session/DocumentSummary/DocumentOut/LayoutCheck/Approval/Export 응답 demo, snapshot/artifact 저장값 대조, RENDER_IDENTITY_MISMATCH reason=demo_mismatch. template_v1 footer·예약 높이·모든 물리 쪽 표시 확인. 시연 표시 누락은 LAYOUT_RENDER_FAILED reason=demo_footer_missing으로 거부 |
+| ㊾ | 적재 demo 마커·status·evidence_status 및 original_ref, photo_locator_json 원본 경로/hash/일치 여부, 요약 with_demo/candidates_without_original. CLI 임시 오류 DEMO_MARKER_CONFLICT/SOURCE_ORIGIN_CONFLICT/IMAGE_DECODE_FAILED |
+| ㊿ | 업로드 role을 멱등 해시에 포함(기존 evidence 해시 보존). kind 해시 미포함은 기존 제한이며 후속 결정 필요 |
+
+**6.11-7 남은 일** — feat/demo-data-foundation을 origin에 공유한 뒤 develop 대비 diff 리뷰. PR·머지는 별도 지시 전 수행하지 않는다. 이후 실제/시연 자료 작성·로컬 적재·조건 자연어 해석·실제 AI·프론트 연결을 별도 작업으로 진행한다. 계약/Agent/프론트 전달은 이 기록과 handoff 예시로 준비했으며 상대의 합의·갱신 완료로 주장하지 않는다. 실제 시연 자료를 사용한 품질 검증은 아직 아니다.
 
 ## 7. 첫 요청
 

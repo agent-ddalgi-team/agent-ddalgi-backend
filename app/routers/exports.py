@@ -42,6 +42,7 @@ def create_export(request: Request, sid: str, body: ExportCreate, background_tas
         if replay is not None:
             cached = json.loads(replay.body)
             erow = exports.get(conn, sid, cached["export"]["export_id"])
+            exports.check_export_demo(row, erow)
             if erow["status"] in exports.ACTIVE and exports.export_expired(erow):
                 exports.finalize_expired(conn, erow)
                 erow = exports.get(conn, sid, erow["export_id"])

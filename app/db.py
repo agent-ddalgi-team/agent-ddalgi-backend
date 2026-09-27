@@ -20,7 +20,15 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
+
+# v9: source provenance and attachment role, immutable session/output demo identity.
+V9_COLUMNS = {
+    "sources": [("origin_kind", "TEXT NOT NULL DEFAULT 'real' CHECK(origin_kind IN ('real','mock','demo'))"),
+                ("role", "TEXT NOT NULL DEFAULT 'evidence' CHECK(role IN ('evidence','instruction'))")],
+    **{table: [("demo", "INTEGER NOT NULL DEFAULT 0 CHECK(demo IN (0,1))")]
+       for table in ("sessions", "layout_checks", "artifacts", "approvals", "exports")},
+}
 
 # v8: 세션 정리 컬럼(없는 것만 추가).
 V8_COLUMNS: dict[str, list[tuple[str, str]]] = {
@@ -505,6 +513,13 @@ def init_db(db_path: Path, private_runs_dir: Path) -> None:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
         conn.execute("CREATE INDEX IF NOT EXISTS ix_idempotency_session ON idempotency_keys(session_id)")   # 새 컬럼 위 인덱스는 컬럼 추가 뒤
         _backfill_idempotency_sessions(conn)
+        for table, columns in V9_COLUMNS.items():
+            existing = set(_columns(conn, table))
+            for name, ddl in columns:
+                if name not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+                    if table == "sources" and name == "origin_kind":
+                        conn.execute("UPDATE sources SET origin_kind=CASE WHEN is_mock=1 THEN 'mock' ELSE 'real' END")
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         conn.commit()
     finally:

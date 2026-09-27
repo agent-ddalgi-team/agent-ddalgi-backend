@@ -659,7 +659,7 @@ def test_v7_to_v8_migration_is_rerun_safe_and_backfills(tmp_path):
     init_db(db, runs)
     with sqlite3.connect(db) as conn:
         conn.row_factory = sqlite3.Row
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 8
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION and SCHEMA_VERSION >= 8
         assert "purged_at" in [r[1] for r in conn.execute("PRAGMA table_info(sessions)")]
         assert {"session_id", "purged_at"} <= {r[1] for r in conn.execute("PRAGMA table_info(idempotency_keys)")}
         assert conn.execute("SELECT 1 FROM sqlite_master WHERE name='cleanup_queue'").fetchone()

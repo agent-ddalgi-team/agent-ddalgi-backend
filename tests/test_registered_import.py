@@ -81,7 +81,10 @@ def test_mock_bundle_with_flag_matches_expected_counts(settings, app):
         assert [a["photo_id"] for a in assets] == [f"MOCK_IMG0{i}" for i in range(1, 7)]
         assert all(a["source_id"] == "MOCK07" and a["session_id"] is None and a["status"] == "ready" for a in assets)
         assert assets[0]["width"] == 960 and assets[2]["height"] == 960
-        assert json.loads(assets[0]["photo_locator_json"]) == {"slide": 1}
+        photo_locator = json.loads(assets[0]["photo_locator_json"])
+        assert photo_locator["slide"] == 1
+        assert photo_locator["original_hash_matches"] is True
+        assert photo_locator["original_sha256"] == assets[0]["content_hash"]
         assert (settings.private_runs_dir / "registered" / "images" / "MOCK_IMG01.png").is_file()
         # images/ 사본은 적재하지 않음
         assert conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0] == 6
@@ -355,3 +358,192 @@ def test_mock_upload_pdfs(settings, app):
     m8 = next(v for k, v in items.items() if "MOCK08" in k)
     assert m1["parse_status"] == "complete" and m1["text_available"] and len(m1["usable_segment_ids"]) >= 1
     assert m8["parse_status"] == "partial" and not m8["text_available"] and m8["warnings"][0]["code"] == "IMAGE_ONLY"
+
+
+# ---------------- 시연 출처와 실제 팀 디렉터리 모양(내용은 가짜) ----------------
+
+def _team_bundle(tmp_path: Path, *, demo=False, original_ref=True):
+    """원본 PNG와 이름·인코딩이 다른 후보 JPG. 실제 회사 파일은 읽지 않는다."""
+    import csv
+    import hashlib
+    from PIL import Image
+
+    root = tmp_path / "team_bundle"
+    ingest = root / "06_개발전달"
+    ingest.mkdir(parents=True)
+    original = root / "01_원본자료" / "example.txt"
+    original.parent.mkdir()
+    text = ("[시연] " if demo else "") + "회사명: 예시 회사"
+    original.write_text(text + "\n", encoding="utf-8")
+    source_id = "DEMO01" if demo else "SRC01"
+    source = {"source_id": source_id, "filename": original.name, "available_in_package": True,
+              "status": "demo" if demo else "ready", "path": "01_원본자료/example.txt",
+              "sha256": hashlib.sha256(original.read_bytes()).hexdigest(),
+              "origin_group": source_id, "use_as_company_evidence": True,
+              "name": ("[시연] " if demo else "") + "예시 회사 자료"}
+    if demo:
+        source["demo"] = True
+    (ingest / "sources.json").write_text(json.dumps([source], ensure_ascii=False), encoding="utf-8")
+    chunk = {"chunk_id": source_id + "-C01", "source_id": source_id, "locator": "TXT 1행",
+             "text": text, "evidence_status": registered.DEMO_EVIDENCE_STATUS if demo else "자료에 기재됨",
+             "company_confirmation": "미확인", "publication_allowed": None}
+    (ingest / "company_chunks.jsonl").write_text(json.dumps(chunk, ensure_ascii=False) + "\n", encoding="utf-8")
+    png = root / "05_이미지" / "전체_추출이미지" / "01_가상" / "P11_example.png"
+    jpg = root / "05_이미지" / "사용후보_2장" / "후보01_example.jpg"
+    png.parent.mkdir(parents=True)
+    jpg.parent.mkdir(parents=True)
+    im = Image.new("RGB", (16, 12), (30, 80, 150))
+    im.save(png)
+    im.save(jpg, quality=85)
+    with (root / "05_이미지" / "00_이미지목록.csv").open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["폴더", "파일명", "PPT페이지", "원본이미지", "처리", "가로px", "세로px"])
+        writer.writerow(["01_가상", png.name, "11", "image1.png", "원본 그대로 추출", "16", "12"])
+    candidate = {"photo_id": "DEMO_PHOTO01" if demo else "PHOTO01", "source_id": source_id,
+                 "path": jpg.relative_to(root).as_posix(), "width": 16, "height": 12,
+                 "sha256": hashlib.sha256(jpg.read_bytes()).hexdigest(), "locator": "PPT 11쪽",
+                 "approved_for_external_use": None, "caption_candidate": "예시 사진"}
+    if original_ref:
+        candidate["original_ref"] = {"폴더": "01_가상", "파일명": png.name}
+    (ingest / "photo_candidates.json").write_text(json.dumps([candidate], ensure_ascii=False), encoding="utf-8")
+    return root, ingest, png, jpg
+
+
+def test_demo_import_requires_separate_opt_in_and_retains_origin(settings, app, tmp_path):
+    root, ingest, _, _ = _team_bundle(tmp_path, demo=True)
+    for options in ({}, {"with_mock": True}):
+        result = registered.run(settings, root, ingest, **options)
+        assert (result.added_sources, result.added_segments, result.added_assets) == (0, 0, 0)
+        assert result.skipped == {"demo": 1}
+    result = registered.run(settings, root, ingest, with_demo=True)
+    assert (result.added_sources, result.added_segments, result.added_assets) == (1, 1, 1)
+    assert result.with_demo is True
+    with connect(settings.db_path) as conn:
+        source = conn.execute("SELECT * FROM sources WHERE source_id='DEMO01'").fetchone()
+        segment = conn.execute("SELECT * FROM segments WHERE source_id='DEMO01'").fetchone()
+        assert source["origin_kind"] == "demo" and source["is_mock"] == 0 and source["role"] == "evidence"
+        assert source["name"].startswith("[시연]") and segment["text"].startswith("[시연]")
+        assert segment["evidence_status"] == "시연용 임시 문장"
+
+
+@pytest.mark.parametrize("change", ["status", "marker", "name", "text", "evidence_status"])
+def test_demo_marker_contract_is_checked_before_import(settings, app, tmp_path, change):
+    root, ingest, _, _ = _team_bundle(tmp_path, demo=True)
+    if change in {"status", "marker", "name"}:
+        key, value = {"status": ("status", "ready"), "marker": ("demo", False), "name": ("name", "예시 자료")}[change]
+        _edit_json(ingest / "sources.json", lambda rows: rows[0].__setitem__(key, value))
+    else:
+        path = ingest / "company_chunks.jsonl"
+        row = json.loads(path.read_text(encoding="utf-8"))
+        row[change] = "회사명: 예시 회사" if change == "text" else "자료에 기재됨"
+        path.write_text(json.dumps(row, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(registered.ImportError_) as exc:
+        registered.run(settings, root, ingest, with_demo=True)
+    assert exc.value.code in {"DEMO_MARKER_CONFLICT", "UNKNOWN_EVIDENCE_STATUS"}
+    with connect(settings.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 0
+    assert not (settings.private_runs_dir / "registered").exists()
+
+
+def test_same_source_id_cannot_be_reclassified_as_demo(settings, app, tmp_path):
+    real_root, real_ingest, _, _ = _team_bundle(tmp_path / "real")
+    registered.run(settings, real_root, real_ingest)
+    demo_root, demo_ingest, _, _ = _team_bundle(tmp_path / "demo", demo=True)
+    for filename in ("sources.json", "company_chunks.jsonl", "photo_candidates.json"):
+        path = demo_ingest / filename
+        path.write_text(path.read_text(encoding="utf-8").replace("DEMO01", "SRC01"), encoding="utf-8")
+    with pytest.raises(registered.ImportError_) as exc:
+        registered.run(settings, demo_root, demo_ingest, with_demo=True)
+    assert exc.value.code == "SOURCE_ORIGIN_CONFLICT"
+    with connect(settings.db_path) as conn:
+        assert conn.execute("SELECT origin_kind FROM sources WHERE source_id='SRC01'").fetchone()[0] == "real"
+        assert conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 1
+
+
+def test_demo_registered_list_requires_explicit_include_and_enabled_server(settings, app, tmp_path):
+    from dataclasses import replace
+
+    root, ingest, _, _ = _team_bundle(tmp_path, demo=True)
+    registered.run(settings, root, ingest, with_demo=True)
+    client, _ = _session_client(app)
+    assert client.get("/api/v1/sources").json()["items"] == []
+    response = client.get("/api/v1/sources?include_demo=true")
+    assert response.status_code == 403 and response.json()["error"]["code"] == "DEMO_MODE_DISABLED"
+    enabled_app = create_app(replace(settings, demo_mode=True))
+    enabled, _ = _session_client(enabled_app)
+    assert enabled.get("/api/v1/sources").json()["items"] == []
+    items = enabled.get("/api/v1/sources?include_demo=true").json()["items"]
+    assert len(items) == 1 and items[0]["origin_kind"] == "demo"
+
+
+@pytest.mark.parametrize("linked", [True, False])
+def test_team_candidate_uses_own_bytes_with_optional_explicit_original(settings, app, tmp_path, linked):
+    import hashlib
+
+    root, ingest, png, jpg = _team_bundle(tmp_path, original_ref=linked)
+    result = registered.run(settings, root, ingest)
+    assert result.added_assets == 1 and result.candidates_without_original == int(not linked)
+    with connect(settings.db_path) as conn:
+        asset = conn.execute("SELECT * FROM assets").fetchone()
+        assert asset["content_hash"] == hashlib.sha256(jpg.read_bytes()).hexdigest()
+        assert (settings.private_runs_dir / asset["stored_path"]).read_bytes() == jpg.read_bytes()
+        locator = json.loads(asset["photo_locator_json"])
+        assert locator["slide"] == 11
+        if linked:
+            assert locator["original_path"] == png.relative_to(root).as_posix()
+            assert locator["original_sha256"] == hashlib.sha256(png.read_bytes()).hexdigest()
+            assert locator["original_hash_matches"] is False
+        else:
+            assert "original_path" not in locator
+
+
+@pytest.mark.parametrize("change, code", [
+    ("original_ref", "IMAGE_NOT_FOUND"), ("sha256", "HASH_MISMATCH"),
+    ("width", "IMAGE_SIZE_MISMATCH"), ("height", "IMAGE_SIZE_MISMATCH"),
+    ("decode", "IMAGE_DECODE_FAILED"),
+])
+def test_team_candidate_errors_leave_no_database_or_copied_bytes(settings, app, tmp_path, change, code):
+    import hashlib
+
+    root, ingest, _, jpg = _team_bundle(tmp_path)
+    def alter(rows):
+        if change == "original_ref":
+            rows[0]["original_ref"]["파일명"] = "missing.png"
+        elif change == "decode":
+            jpg.write_bytes(jpg.read_bytes()[:-20])
+            rows[0]["sha256"] = hashlib.sha256(jpg.read_bytes()).hexdigest()
+        else:
+            rows[0][change] = "0" * 64 if change == "sha256" else 999
+    _edit_json(ingest / "photo_candidates.json", alter)
+    with pytest.raises(registered.ImportError_) as exc:
+        registered.run(settings, root, ingest)
+    assert exc.value.code == code
+    with connect(settings.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM registered_imports").fetchone()[0] == 0
+    assert not (settings.private_runs_dir / "registered").exists()
+
+
+def test_team_candidate_dry_run_checks_independent_image_without_writes(settings, app, tmp_path):
+    root, ingest, _, _ = _team_bundle(tmp_path, original_ref=False)
+    result = registered.run(settings, root, ingest, dry_run=True)
+    assert (result.added_sources, result.added_segments, result.added_assets) == (1, 1, 1)
+    assert result.candidates_without_original == 1
+    with connect(settings.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM registered_imports").fetchone()[0] == 0
+    assert not (settings.private_runs_dir / "registered").exists()
+
+
+def test_unowned_demo_photos_do_not_share_real_source(settings, app, tmp_path):
+    root, ingest, _, _ = _team_bundle(tmp_path)
+    def alter(rows):
+        rows[0].pop("source_id")
+        rows.append({**rows[0], "photo_id": "DEMO_PHOTO01", "demo": True})
+    _edit_json(ingest / "photo_candidates.json", alter)
+    result = registered.run(settings, root, ingest, with_demo=True)
+    assert result.added_assets == 2
+    with connect(settings.db_path) as conn:
+        rows = conn.execute("SELECT a.photo_id, s.origin_kind, s.source_id FROM assets a JOIN sources s ON s.source_id=a.source_id ORDER BY a.photo_id").fetchall()
+        assert [(r["photo_id"], r["origin_kind"]) for r in rows] == [("DEMO_PHOTO01", "demo"), ("PHOTO01", "real")]
+        assert rows[0]["source_id"] != rows[1]["source_id"]

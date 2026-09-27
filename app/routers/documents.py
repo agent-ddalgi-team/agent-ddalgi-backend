@@ -50,7 +50,7 @@ def get_document(request: Request, sid: str, did: str):
 
         v = validation.latest_validation(conn, did, document.document_revision, row["input_revision"])
         a = approvals.active_for(conn, did, document.document_revision, row["input_revision"])
-        return DocumentOut(document=document, validation=validation.to_validation_out(v) if v else None,
+        return DocumentOut(demo=bool(row["demo"]), document=document, validation=validation.to_validation_out(v) if v else None,
                            approval=approvals.to_out(a) if a else None,
                            layout_checks=layout_check_jobs.latest_by_format(conn, did, document.document_revision, row["input_revision"]))
 

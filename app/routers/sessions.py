@@ -19,14 +19,15 @@ def create_session(request: Request, response: Response, body: SessionCreate,
                    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")):
     settings = settings_of(request)
     owner = ensure_owner(request, response)
-    digest = idempotency.body_hash(body.model_dump())
+    # Preserve legacy non-demo session-create keys while distinguishing explicit demo requests.
+    digest = idempotency.body_hash(body.model_dump() if body.demo else body.model_dump(exclude={"demo"}))
     with connect(settings.db_path) as conn:
         # 연결된 세션이 종료·만료됐으면 최초 응답(brief)을 돌려주지 않고 410(만료 확정·정리 등록 포함, BE-09).
         replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest, settings)
         if replay is not None:
             # 재전송은 이미 쿠키를 가진 소유자만 가능하므로 Set-Cookie를 다시 보낼 필요가 없다.
             return replay
-        session = sessions.create(conn, settings, owner, body.brief)
+        session = sessions.create(conn, settings, owner, body.brief, demo=body.demo)
         payload = session.model_dump()
         idempotency.remember(conn, idempotency_key, owner, request.url.path, digest, 201, payload, session_id=session.session_id)
     return session
@@ -74,6 +75,7 @@ def patch_inputs(request: Request, sid: str, body: InputsPatch,
                          "current_input_revision": row["input_revision"]},
             )
         if body.selected_source_ids is not None:
+            sources.check_selection_policy(conn, sid, body.selected_source_ids)
             missing = sources.exist_in_session(conn, sid, body.selected_source_ids)
             if missing:
                 raise ApiError(404, "RESOURCE_NOT_FOUND", "선택한 자료 중 이 세션에 없는 것이 있습니다.",

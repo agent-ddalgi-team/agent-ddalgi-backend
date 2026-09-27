@@ -93,11 +93,11 @@ def store(conn: sqlite3.Connection, settings: Settings, session_id: str, result:
     rel = final.relative_to(settings.private_runs_dir).as_posix()
     conn.execute(
         "INSERT INTO artifacts (artifact_id, session_id, document_id, document_revision, input_revision, format, stored_path, "
-        "sha256, size_bytes, template_version, render_options_hash, asset_manifest_hash, renderer, actual_pages, layout_check_id, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "sha256, size_bytes, template_version, render_options_hash, asset_manifest_hash, renderer, actual_pages, layout_check_id, created_at, demo) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (artifact_id, session_id, document_id, document_revision, input_revision, result.format, rel, digest, size,
          result.template_version, result.render_options_hash, result.asset_manifest_hash, result.renderer,
-         result.actual_pages, layout_check_id, to_iso(now())))
+         result.actual_pages, layout_check_id, to_iso(now()), int(result.demo)))
     return get(conn, artifact_id)
 
 
@@ -132,6 +132,7 @@ def verify(conn: sqlite3.Connection, settings: Settings, artifact_id: str | None
     return Integrity(True, None)
 
 
-def identity_matches(row: sqlite3.Row, template_version: str, render_options_hash: str, asset_manifest_hash: str, fmt: str) -> bool:
+def identity_matches(row: sqlite3.Row, template_version: str, render_options_hash: str, asset_manifest_hash: str, fmt: str,
+                     *, demo: bool = False) -> bool:
     return (row["template_version"] == template_version and row["render_options_hash"] == render_options_hash
-            and row["asset_manifest_hash"] == asset_manifest_hash and row["format"] == fmt)
+            and row["asset_manifest_hash"] == asset_manifest_hash and row["format"] == fmt and bool(row["demo"]) == demo)
