@@ -19,11 +19,11 @@ def create_draft(request: Request, sid: str, body: DraftCreate, background_tasks
     settings = settings_of(request)
     owner = require_owner(request)
     digest = idempotency.body_hash(body.model_dump())
-    with connect(settings.db_path) as conn:
-        replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest)
+    with connect(settings.db_path, immediate=True) as conn:   # 세션 검사부터 Job 생성·멱등 저장까지 한 잠금(BE-09 리뷰 1)
+        row = sessions.load_active(conn, owner, sid, settings)  # 멱등 재전송도 소유자·세션 검사를 먼저 통과해야 한다
+        replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest, settings)
         if replay is not None:
             return replay
-        row = sessions.load_active(conn, owner, sid)
         if body.input_revision != row["input_revision"]:
             raise ApiError(409, "INPUT_REVISION_CONFLICT", "입력이 변경되었습니다. 사전 점검을 다시 실행해 주세요.",
                            details={"expected_input_revision": body.input_revision,
@@ -51,6 +51,6 @@ def create_draft(request: Request, sid: str, body: DraftCreate, background_tasks
         job = jobs.create(conn, sid, "draft", "초안 생성 대기 중", input_revision=row["input_revision"])
         sessions.touch(conn, settings, row)
         out = JobAccepted(job_id=job.job_id, status="queued", kind="draft", session_id=sid, created_at=job.created_at)
-        idempotency.remember(conn, idempotency_key, owner, request.url.path, digest, 202, out.model_dump())
+        idempotency.remember(conn, idempotency_key, owner, request.url.path, digest, 202, out.model_dump(), session_id=sid)
     background_tasks.add_task(ai_jobs.run_draft_job, settings, sid, job.job_id, row["input_revision"], body.preflight_id)
     return JSONResponse(status_code=202, content=out.model_dump())

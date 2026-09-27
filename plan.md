@@ -1,10 +1,10 @@
 # 회사소개서 도우미 개발 계획
 
-기준일: 2026-09-27 · v1.7 · 교육용 2개월 프로젝트 · 담당: 백엔드 + Agent
+기준일: 2026-09-27 · v1.8 · 교육용 2개월 프로젝트 · 담당: 백엔드 + Agent
 
 이 문서는 무엇을 만들고 어떤 순서로 개발할지 설명한다. 상세 기능은 [prd.md](prd.md), API 원본은 [contracts.md](contracts.md), 실제 진행 상태는 역할별 task 파일에서 관리한다.
 
-**확인 기준:** `chore/shared-ai-setup` 브랜치의 `5faed9c` 코드와 현재 작업 문서를 읽었다. BE-01~BE-05 기반 코드와 AI mock(가짜 응답)이 있으며, 다른 브랜치의 후속 구현은 이 현황에 포함하지 않는다. 문서 정리 중 서버·테스트·실제 AI·프론트 연결은 실행하지 않았다.
+**확인 기준:** `chore/shared-ai-setup`의 기획 정리와 `origin/develop`의 `4535b2b` 구현을 병합했다. 기존 BE-01~05에 등록 자료 적재·BE-06~09·시연 기반(DB v9)이 합류했다. AI는 mock이며 실제 AI·LangGraph·프론트 연결은 미완료다. PDF 경로는 기존 검증 기록이 있고 DOCX 승인·출력은 미완료다. 과거 검증과 이번 병합 확인 결과는 [task_backend.md 6.18절](task_backend.md#618-develop-병합과-정합성-확인-2026-09-27)에서 구분한다.
 
 **기존 문서 참조 안내:** 이전의 ‘plan.md 5절 진행 순서’는 현재 [8절 구현 순서](#8-구현-순서)를 확인한다. 기술 결정은 4절, 미정 사항은 4.1절에서 계속 관리한다.
 
@@ -67,51 +67,53 @@ MVP는 사용자가 핵심 흐름을 끝까지 이용할 수 있는 첫 버전�
 | 서버·실행 | Python 3.13, FastAPI, Uvicorn, uv | 코드·실행 안내 있음. 의존성은 `pyproject.toml`, 고정 버전은 `uv.lock` |
 | 데이터 형식 검사 | Pydantic | `app/models.py` 사용. 원문 의미의 사실 검증과 구분 |
 | 저장 | SQLite + 파일 저장소 | BE-02 결정(2026-09-25) 유지. 표준 sqlite3 사용, ORM 없음 |
-| 파일 읽기 | pypdf, python-docx, python-pptx, Pillow | 기존 파서 재사용. python-docx는 현재 DOCX 읽기에 사용 |
+| 파일 읽기 | pypdf, python-docx, python-pptx, Pillow | 기존 파서 재사용. python-docx는 D-03에 따라 DOCX 쓰기에도 사용 |
 | AI·흐름 | 서버의 OpenAI API 호출, LangGraph, 필요한 기존 LangChain 코드 재사용 | 설계 기준. 현재 실제 AI·LangGraph 연결 없음, mock 사용 |
-| 출력 | 문서 원본에서 PDF/DOCX를 만드는 모듈 | 이 브랜치에는 미연결. D-03/D-06과 다른 브랜치의 선행 결과 확인 |
+| 출력 | DOCX는 python-docx, PDF는 HTML/CSS + 시스템 Chrome/Edge | D-03/D-06의 기존 도구 사용. PDF 배치·승인·다운로드 구현, DOCX 승인·출력 미완료. 미리보기 PNG는 pypdfium2 |
 | 검증 도구 | pytest와 실제 화면·파일 확인 | 기존 테스트 재사용. 새 기능마다 필요한 확인을 추가 |
 
-DB는 `private_runs/app.sqlite3`(확인 코드의 스키마 v4), 세션 파일은 `private_runs/<session_id>/`에 보관한다. DB·원본 파일·비밀 설정은 Git에 커밋하지 않는다. 세션 첨부와 파생 결과를 영구 등록 자료나 공통 검색 색인에 자동 편입하지 않는다.
+DB는 `private_runs/app.sqlite3`(병합 코드의 스키마 v9), 세션 파일은 `private_runs/<session_id>/`에 보관한다. DB·원본 파일·비밀 설정은 Git에 커밋하지 않는다. 세션 첨부와 파생 결과를 영구 등록 자료나 공통 검색 색인에 자동 편입하지 않는다.
 
-AI 연결은 `app/agent_bridge.py`의 기존 analyze/draft/propose 규격을 사용한다. 실제 구현 파일 `app/agent_llm.py`와 옛 `backend/agent.py`·`prompts/extract.txt`·상세 회사정보 스키마는 이 브랜치에서 찾지 못했다. AG-01에서 원본 위치를 확인하고 읽은 뒤 재사용 범위를 정한다.
+AI 연결은 `app/agent_bridge.py`의 기존 analyze/draft/propose/validate 규격을 사용한다. 실제 구현 파일 `app/agent_llm.py`와 옛 `backend/agent.py`·`prompts/extract.txt`·상세 회사정보 스키마는 이 브랜치에서 찾지 못했다. AG-01에서 원본 위치를 확인하고 읽은 뒤 재사용 범위를 정한다.
 
 **결정 기록** — 기존 번호·담당·적용값을 유지한다. 제품 정책과 DB·기술 변경을 결정하면 날짜·이유·영향을 이 절에 기록한다.
 
 | ID | 현재 기준·상태 | 담당 |
 |---|---|---|
 | D-01 파일 읽기·제한 | BE-02 적용(2026-09-25): 실제 읽은 바이트 기준 파일당 10MB·세션당 10개. BE-03 확정(2026-09-25): TXT·MD·텍스트 PDF·DOCX·PPTX·JPG·PNG. 자료당 100,000자 초과는 `partial + TEXT_LIMIT`, 스캔 PDF는 `partial + IMAGE_ONLY`. OCR 없음 | 백엔드 BE-02/BE-03 |
-| D-02 세션 수명 | BE-02 적용(2026-09-25): 무활동 120분 또는 생성 후 24시간 중 빠른 때. 상태 변경 요청만 활동으로 계산, GET·폴링은 연장하지 않음. 실제 운영 전 확정 | 백엔드 BE-02 |
-| D-03 PDF/DOCX 도구 | 확인 브랜치의 결정 기록은 미정. 한글·사진·DOCX 편집성 비교와 선행 결과 확인 후 선택 | 백엔드 BE-07 |
+| D-02 세션 수명 | 백엔드 BE-02; 개발 제안은 무활동 120분/생성 후 24시간 중 빠른 때, 실제 운영 전 확정. **BE-02 적용값(2026-09-25)**: 제안값 그대로 `app/config.py` 설정(SESSION_IDLE_MINUTES, SESSION_MAX_HOURS). 상태 변경 요청만 활동으로 세고 GET 조회·작업 폴링은 연장하지 않음. **BE-09(2026-09-27)**: 만료 확정은 요청 시점(요청 트랜잭션을 끝낸 뒤 정리 전용 트랜잭션에서 확정·커밋 후 410)과 배경 sweep(`CLEANUP_SWEEP_INTERVAL_S` 기본 60초, 요청 없는 세션도 확정) 두 경로. 만료·종료 뒤 같은 Idempotency-Key 재전송(POST /sessions 포함)은 최초 응답 대신 410 | 백엔드 BE-02/BE-09 |
+| D-03 PDF/DOCX 도구 | 백엔드 BE-07; 한글·사진·편집성 비교. **BE-07 확정(2026-09-26)**: DOCX=python-docx(쓰기), PDF=HTML 템플릿+인쇄 CSS를 시스템 Chromium 계열 브라우저(Chrome/Edge)로 headless 인쇄(`--print-to-pdf`·`--dump-dom` 1회 실행, 새 Python 의존성 없음). 근거는 아래 D-03 비교표. reportlab은 검증된 대체 후보(브라우저를 둘 수 없는 서버용), Playwright는 같은 결과를 더 빨리 내지만 37MB 패키지·상주 브라우저 관리가 필요해 BE-08에서 성능이 문제될 때 검토. LibreOffice·Playwright 번들 Chromium은 미설치·미실행. 상세 task_backend.md 6.14절 | 백엔드 BE-07 |
 | D-04 AI 모델·호출 한도 | 미정. 실제 호출·평가로 정함 | Agent AG-01 |
 | D-05 기존 사실 스키마 | 원본 위치와 상세 14필드 연결 방법 확인 필요. 기존 필드를 보존 | BE-01 + AG-01 |
-| D-06 출력 서식 | 템플릿·서체·글 넘침 기준 협의 | 백엔드 BE-07 + 프론트 FE-07 |
+| D-06 출력 서식 | 백엔드 BE-07 + 프론트 FE-07 협의. **BE-07 백엔드 확인(2026-09-26)**: 서체 Pretendard v1.3.9(OFL) 동봉·PDF 임베드 확인(pypdf 폰트명 Pretendard-Regular/Bold 서브셋). DOCX는 글꼴 이름만 지정(이번 구현에서 임베딩 미지원; 로컬 Word 실측에서 Pretendard 미설치 시 한글 바탕·라틴 Cambria로 대체 표시). 넘침 규칙: 논리 Page 1개 = A4 본문 267mm(여백 15mm), 넘치면 잘라내지 않고 다음 물리 쪽으로 흐르며 `overflow` finding(페이지·첫 초과 블록·초과 mm)과 실측 `actual_pages`를 함께 보고. DOCX는 배치 엔진이 없어 overflow=not_checked(required)·actual_pages=null. 템플릿 v0: 페이지 라벨, 제목 3단계(20/14/12pt), 본문 10.5pt, 목록, 이미지(contain 180×120mm 안 비율 유지 / crop 180×100mm cover, 삽입 시 긴 변 1600px 상한)+캡션, 사진 자리·깨진 이미지 점선 상자. **프론트 협의 남은 항목(FE-07)**: ① 최종 서체(Pretendard 유지·굵기 추가 여부) ② 넘침과 target_pages≠actual_pages를 화면에 보이는 방식과 '수용' 흐름(수용이 overflow 검사 면제는 아님) ③ 미리보기 형태(쪽 이미지 여부·해상도) ④ 페이지 라벨 표시 여부 ⑤ DOCX crop 미지원(contain 대체)과 글꼴 대체 안내 문구 ⑥ 표지·헤더·푸터 디자인. **BE-08(2026-09-27)**: 미리보기는 쪽 PNG(GET /assets/{asset_id}, preview_basis), DOCX 미리보기는 PDF 기준이며 검사 증거 아님(warnings). DOCX 승인은 ㉞ 정책 결정 전까지 차단 | 백엔드 BE-07 + 프론트 FE-07 |
 | D-07 승인 경고 정책 | 사용자 확정(2026-09-27): 사실·수치·필수 내용의 정확성 또는 출력 이용에 영향을 주는 문제는 해결 전 차단. 영향 없는 사진 부족·표현 반복 등은 사용자 확인 후 승인 가능. 확인 클릭으로 필수 문제를 경고로 낮추지 않음. 확인은 문서·입력 버전에 연결하고 관련 변경 시 재확인 | 백엔드 BE-06 + Agent AG-07 + 프론트 승인 화면 |
 | D-08 로그인 범위 | 사용자 확정(2026-09-27): 로그인은 현재 MVP에서 제외하고 회사소개서 생성·편집·출력 완성 후 도입 검토. 자료 작성 흐름에 집중하기 위한 결정이며 로그인 설계·화면·API를 현재 작업의 선행 조건으로 두지 않음. 세션 소유·접근·만료 검사는 유지 | PM·백엔드·프론트 / 로그인 도입은 MVP 이후 별도 검토 |
 
-D-01/D-02 값은 `app/config.py`에서 관리한다. python-docx의 출력 사용 여부와 Playwright 채택은 D-03 결정 대상이며 읽기 의존성은 유지한다. 문서 편집 화면은 프론트가 Document 데이터를 사용해 구현한다.
+D-01/D-02 값은 `app/config.py`에서 관리한다. python-docx는 읽기·쓰기에 사용하고 PDF는 시스템 브라우저를 사용한다. Playwright는 채택하지 않았으며 새 도구를 다시 고르는 작업은 필요하지 않다. 문서 편집 화면은 프론트가 Document 데이터를 사용해 구현한다.
+
+**병합 후 정책 적용 주의:** D-07은 확정 요구사항이다. 현재 승인 코드는 미확인 warning의 확인 여부·관련 버전 유효성을 승인 조건으로 강제하지 않으므로 후속 구현이 필요하다. 아래 시연 기반은 기존 구현 사실로 보존하며, 시연 임시 사실의 별도 허용 범위가 D-07의 예외인지 확인하기 전 일반 문서의 정확성 기준을 완화하지 않는다.
 
 ### 4.1 개발 전 확인할 미정 사항
 
 미정사항은 개발하면서 결정할 수 있지만, **그 결정에 영향을 받는 기능의 설계·구현에 들어가기 전**에는 기준을 정한다. 이미 작업을 시작했다면 다음 연결·수정 전에 확인한다. 아래 시점은 8절의 목표 일정에 맞춘 권장 기한이며 새 작업 상태나 선행 조건을 확정한 것이 아니다.
 
 - 자료 소유·보관 범위처럼 여러 기능을 바꾸는 결정은 1주차에 우선 검토한다. 로그인은 D-08로 MVP 제외가 확정되었으며, 세션 접근 보호와 만료 시 정리는 기존 필수 기준을 유지한다.
-- 출력 도구·서식은 1주차부터 대표 파일로 비교하고 본 구현 전에 정한다. 출력 주차까지 검토를 미루지 않는다.
+- 출력 도구는 기존 D-03 결과를 재사용한다. DOCX 배치·승인 기준과 화면 협의 등 남은 결정은 해당 연결·수정 전에 정한다.
 - AI 요약·별도 결재자 같은 추가 제안은 채택 전 기본 MVP에 넣지 않는다. 이 결정 때문에 관련 없는 개발을 멈출 필요는 없다.
 - 담당자가 대안·이유·영향을 정리하고 제품 범위·정책은 사용자 확인을 받는다. 확정한 날짜·이유·영향은 이 절 또는 4절 결정표에 기록하고 PRD·계약·화면 기준을 맞춘다.
 
 | 항목 | 확인할 내용 | 담당·시점 |
 |---|---|---|
-| 등록 자료·접근 범위 | 이 브랜치에 적재·조회·선택 전달 없음. 선행 구현 확인 후 경로·소유·공유 범위 결정. 로그인 없이 접근을 보호할 범위도 확인하며 등록 스크립트는 제안 | 백엔드·PM·프론트 / 1주차 검토, 자료 적재·선택 연결 전 |
+| 등록 자료·접근 범위 | 적재 CLI·GET /sources·선택 자료 전달 구현을 재사용한다. 실제 자료 적재와 로그인 없는 소유·공유 범위, 계약 반영은 추가 확인 | 백엔드·PM·프론트 / 실제 자료 적재·화면 연결 전 |
 | 근거 검색 | 선택한 등록 자료·현재 세션 자료만 검색. 자료량·품질에 따라 직접 구간 검색과 기존 Chroma 재사용 필요성 검토 | Agent·백엔드 / AG-02 전 |
 | 문서 안 사진 | 별도 JPG/PNG 처리 유지. PDF/DOCX/PPTX 내부 사진 추출의 포함 여부 결정 | PM·백엔드 / 포함 여부는 사진 읽기·배치 구현 전(2~4주차 관련 작업) |
 | 보완 메모 | 전용 입력 또는 텍스트 파일 첨부 중 선택(C-10) | PM·백엔드·Agent / 보완 입력·근거 연결 구현 전(2~3주차) |
 | 세션 이후 편집 | PRD BR-03의 세션 파생 자료 정리는 필수. 다음 날 편집을 추가할지는 근거·사진·초안·이력의 보관 정책과 함께 별도 결정 | PM·백엔드·Agent / 1주차에 필요성 검토, 채택하면 저장 설계 변경 전 |
-| 대기·재개·정리 | 체크포인트 저장소·재개 규격·정리 주기·실패 재시도. 접근 차단과 삭제 완료 구분 | Agent·백엔드 / AG-03·BE-09 전 |
+| 대기·재개·정리 | BE-09의 서버 정리·실패 재시도 기반을 재사용한다. 실제 LangGraph 체크포인트 저장·재개·정리 연결과 메타 기록 보관 기간·외부 추적 정책은 추가 확인 | Agent·백엔드 / AG-03 연결 전·운영 전 |
 | 만료 안내·연장 | 서버 만료 시각으로 안내. 10분 전 알림·명시적 연장·최대 수명·전용 요청은 미정. 입력 수정 API를 연장 목적으로 사용하지 않음 | PM·백엔드·프론트 / 안내 구현 전 |
 | 승인 화면 보기 | 카드형·3단 분할·단일 페이지 보기의 첫 버전 우선순위. 제목·본문 일부·사진 표시 재사용 | PM·프론트 / S03 화면 구현 전(5주차 전 권장) |
-| 검증·승인 연결 | 경고 정책은 D-07로 확정. 확인 기록의 버전·관련 변경 검사와 검증 상태·승인 요청 연결 규격(C-08)은 구체화 필요 | 백엔드·Agent·프론트 / BE-06·AG-07 구현 전(5주차 전) |
-| 출력 도구·서식·완료 기준 | D-03/D-06, 형식별 미리보기·배치 통과·실제 쪽수를 알 수 없을 때의 판단(C-09). 한글·사진·DOCX 편집성으로 비교 | 백엔드·프론트·PM / 1주차 비교 시작, BE-07·BE-08 본 구현 전 |
+| 검증·승인 연결 | D-07 확정 정책과 기존 BE-06/08 구현의 차이를 보완한다. 미확인 경고 차단·확인 버전/관련 변경 검사(C-08), 시연 임시 사실 예외 범위는 추가 확인 | 백엔드·Agent·프론트·PM / 승인 후속 구현·시연 정책 적용 전 |
+| 출력 서식·완료 기준 | D-03 도구와 D-06 검증 결과는 확정 기반이다. DOCX의 actual_pages=null·overflow=not_checked 처리(C-09), 화면·서체 협의와 DOCX 승인·출력 완료 조건이 남았다. PDF/DOCX 모두 MVP 목표 유지 | 백엔드·프론트·PM / DOCX 승인·출력 후속 구현 전 |
 | AI 요약·문장별 출처 | 별도 생성·세밀한 출처 연결의 필요성, 비용·버전·수정 후 갱신 결정. 보기 전환에 AI 호출을 추가하지 않음 | PM·Agent·백엔드 / 채택 여부 확인 후 |
 | 별도 결재자 | 작업 사용자 외 다른 사람에게 결재를 요청하는 계정·역할·승인 절차 | PM·백엔드·프론트 / 별도 채택 시 |
 
@@ -124,6 +126,40 @@ API·필드·상태의 차이와 미합의 규격은 [contracts.md 7절](contrac
 사용자 승인에 따라 고정 예시를 실제 데이터 기준으로 정리하고, 세션 만료·사용자 확인·승인 조건을 기존 정책에 맞췄다. 상세는 [prd.md 3~5절](prd.md), [contracts.md 7.5절](contracts.md), [화면 설계 기준](docs/screens/README.md)을 따른다.
 
 v1.5에서 기존 범위를 유지한 8개 목차로 재구성했고, v1.6에서 D-07 경고 정책과 미정사항의 결정 시점을 반영했다. D-07은 필수 문제를 보호하면서 정확성·출력 이용에 영향 없는 경고는 사용자 판단으로 진행하기 위한 결정이다. PRD BR-08/09, 계약의 문제·승인 규칙, S03의 확인 동작과 테스트에 영향을 준다. 새로운 도구·API·DB 스키마 채택이나 기능 완료를 뜻하지 않으며 프론트 계약 사본·실제 화면의 동기화는 별도 확인한다.
+
+### 4.3 develop에서 합류한 기술·검증 기록 (2026-09-27)
+
+다음은 기존 담당자의 결정·구현·검증 기록이다. 현재 Mac에서 다시 확인한 결과와 구분하며, 상세 진행은 task_backend.md 6.12~6.17절을 따른다. PDF 우선 구현 현황은 DOCX를 MVP에서 제외한다는 뜻이 아니다.
+
+**등록 자료와 DB 변경**
+
+**결정(2026-09-25, BE-02)**: 메타데이터는 SQLite 파일(`private_runs/app.sqlite3`, 표준 sqlite3, ORM 없음), 파일 바이트는 `private_runs/<session_id>/`. 테이블은 필요한 작업에서 그때 추가(BE-02: sessions, sources, jobs, idempotency_keys). **등록 자료 적재 결정(2026-09-26, 계약 확인 ⑪ 제안값)**: 백엔드 CLI `scripts/import_registered.py`가 팀 자료 묶음(sources.json·company_chunks.jsonl·00_이미지목록.csv·photo_candidates.json, INGEST_SCHEMA v1.1)을 읽어 sources/segments/assets에 scope=registered로 넣는다. status=ready만, mock은 `--with-mock`일 때만. 원본은 `private_runs/registered/`에 복사. 실제 묶음은 gitignore된 `private_runs/registered_src/`에서만.
+
+**DB v6(2026-09-26, BE-06)**: `validations`(문서·문서버전·입력버전당 검증 1행, 블록 지문으로 부분 재검증), `issues`(identity_key로 한 행 갱신 → 해결 기록 보존), `approvals`(active/invalidated, 문서·입력 변경 훅에서 무효화), `layout_checks`(저장 구조와 승인 시 조회만 — 실행·API는 BE-08), `jobs.target_key`(문서@버전@입력 단위 Job 중복 방지). Document.status는 저장하지 않고 읽을 때 검증·승인으로 계산(`document_revisions.status`는 캐시).
+
+**DB v7(2026-09-27, BE-08)**: `artifacts`(불변 산출물 sha256·크기), `exports`(재사용 키 부분 UNIQUE, 만료·실패 확정 사유), `layout_previews`(미리보기 PNG; assets와 분리해 자료·근거에 미혼입, GET /assets 경로로 제공), `layout_checks`·`approvals`·`issues` 컬럼 보강. 출력 흐름: LayoutCheck Job → 승인 ⑥ 실제 행 → Export는 검사한 artifact 재사용(렌더·AI 없음) → 다운로드 매번 재검사. PDF 우선, DOCX 승인·출력은 미완료(task_backend.md 6.15절).
+
+**DB v8(2026-09-27, BE-09)**: `cleanup_queue`(세션 폴더·임시 폴더 삭제 재시도 큐, 활성 작업 부분 UNIQUE), `sessions.purged_at`(내용 제거 시각), `idempotency_keys.session_id/purged_at`(저장 응답의 세션 연결·본문 비움, 기존 행 backfill). 종료·만료 확정과 내용 제거·Job 취소·Export 확정·큐 등록은 한 BEGIN IMMEDIATE 트랜잭션이고 바이트 삭제는 큐(배경 sweep 스레드·DELETE 직후·CLI)가 백오프로 재시도한다. 등록 자료와 검증/배치/승인/Export/artifact 메타 행은 보존(task_backend.md 6.16절)
+
+**시연 출처·첨부 역할 — 기존 구현 기록**
+
+**DB v9**: sources.origin_kind(real/mock/demo)·role(evidence/instruction), sessions/layout_checks/artifacts/approvals/exports.demo. real은 실제 입수 자료이며 확인 완료 뜻이 아니다. 기존 mock은 승인 차단을 유지하고 demo는 별도 출처로 real과 혼합 가능. session.demo는 생성 후 불변, DEMO_MODE 기본 false. DEMO_VALUE는 기존 warning 규칙, 다른 blocker·사진 공개 허가 규칙은 유지. 업로드 role 생략=evidence(기존 호환), instruction은 읽되 사실 추출·근거·문서 이미지에서 제외하며 자연어 조건 해석은 후속. 시연 자료·실자료는 로컬 보관, 커밋 금지. 상세 task_backend.md 6.17절
+
+이 시연 기록의 기존 warning 처리는 D-07의 확인 의무를 구현한 것으로 해석하지 않는다. 실제 자료의 진위를 보장하지 않으며 시연 예외 적용 범위는 4.1절에서 확인한다.
+
+**D-06 후속 결정(2026-09-27, 사용자 승인 시연 정책)**: TEMPLATE_VERSION=template_v1. 시연 문서 하단에 "시연용 · 일부 내용은 임시 데이터입니다"를 표시하고 PDF 본문 높이에서 footer 9mm를 예약한다. 공통 옵션 해시는 기존 값을 유지하고 snapshot·배치 검사·artifact·승인·Export에 demo 식별값을 추가한다. 기존 v0 승인본은 현재 버전 검사에서 재검사·재승인이 필요하다. DOCX의 기존 승인 제한은 유지한다. 실행 권한 변경 후 Chrome에서 모든 물리 페이지 footer와 실제 배치→승인→다운로드를 확인했다(task_backend.md 6.17절). footer는 인쇄 margin box에 배치하며, 빠진 페이지가 있으면 파일 발행을 거부한다. 글꼴을 명시적으로 로드한 뒤 기존 측정 검사를 수행한다.
+
+**D-03 비교표(2026-09-26, BE-07)** — 같은 가상 문서 4종(fixture 1쪽·10쪽, 스트레스 4쪽(넘침·가로/세로/배너 사진·깨진 이미지·사진 자리), mock 업로드 PDF로 만든 실제 흐름 4쪽). 이 PC(Windows 11, Chrome 153) 기준. 생성 시간은 문서당 1회, 브라우저 cold start 포함.
+
+| 후보 | 한글 서체 | 사진(가로·세로·깨진) | 1쪽/다쪽·넘침 | 실제 쪽수 측정 | Windows 설치 부담 | 생성 시간 | 판정 |
+|---|---|---|---|---|---|---|---|
+| (a) HTML+CSS → 시스템 Chrome/Edge CLI | Pretendard 임베드, 어절 단위 줄바꿈(keep-all) | 정상·정상·상자 표시 | 1·10쪽 정확, 넘침은 DOM 측정(페이지·블록·mm) | pypdf, 논리 4쪽→물리 8쪽 검출 | Python 0, 브라우저 실행 파일 필요(Chrome 또는 Edge) | 8.4~12.3초 | **채택** |
+| (a′) HTML → Playwright(channel=chrome) | (a)와 동일 | 동일 | 동일 | 동일 | playwright 36.8MB+greenlet·pyee, 브라우저 별도 | cold 5.8~13.6초 · warm 2.2~3.0초 | 보류(BE-08 성능 필요 시) |
+| (b) reportlab 5.0.1 | Pretendard 임베드, 문자 단위 줄바꿈(라틴 단어 중간 분리) | 정상·정상·상자 표시 | wrap() 사전 측정으로 넘침 검출 | pypdf, 4쪽→8쪽 | 1.9MB 순수 Python | 0.4~0.7초 | 대체 후보(브라우저 불가 서버) |
+| (c) DOCX → LibreOffice | — | — | — | — | 미설치(약 350MB) | — | 미실행/설치 제약 |
+| Playwright 번들 Chromium | — | — | — | — | +150MB 이상(공식 안내), 미다운로드 | — | 미실행 |
+
+임의의 기본 제안을 사용자 확정 값으로 기록하지 않는다. 설정으로 분리하여 후속 변경이 가능하게 한다.
 
 ## 5. 데이터 모델
 
@@ -141,7 +177,7 @@ v1.5에서 기존 범위를 유지한 8개 목차로 재구성했고, v1.6에서
 
 자료·설정 변경은 `input_revision`, 문서 편집은 `document_revision`으로 구분한다. 수정안·검사·승인을 해당 버전에 연결해 오래된 결과의 적용을 막는다. 새 자료를 선택하면 기존 편집을 보존한 채 재점검·사용자 확인·영향 확인 후 필요한 수정과 재검증을 진행한다(C-05).
 
-검증·승인·출력 객체에는 계약상 설계 단계인 내용도 포함되어 있다. 필드와 구현 상태는 [contracts.md](contracts.md), [app/models.py](app/models.py), 역할별 task에서 확인한다.
+검증·승인·PDF 출력 객체는 구현되어 있으며, D-07 경고 확인 연결과 DOCX 승인 등은 아직 미완료다. 필드와 구현 상태는 [contracts.md](contracts.md), [app/models.py](app/models.py), 역할별 task에서 확인한다.
 
 ## 6. 주요 API
 
@@ -150,13 +186,13 @@ API는 화면과 서버가 주고받는 요청이다. 기본 경로는 `/api/v1`
 | 기능 | 대표 요청 | 확인 브랜치 상태 |
 |---|---|---|
 | 세션 시작·종료 | `POST /sessions`, `DELETE /sessions/{sid}` | 코드 있음 |
-| 자료 조회·첨부 | `GET /sources`, `POST/GET /sessions/{sid}/sources` | 첨부·읽기 상태 코드 있음. 등록 자료 조회는 계약 단계 |
+| 자료 조회·첨부 | `GET /sources`, `POST/GET /sessions/{sid}/sources` | 첨부·읽기와 등록 자료 조회 코드 있음. 실제 자료 적재·접근 범위 합의는 별도 |
 | 자료 선택·작성 조건 | `PATCH /sessions/{sid}/inputs` | 코드 있음 |
 | 사전 점검·초안 | `POST /sessions/{sid}/preflights`, `POST /sessions/{sid}/drafts` | 코드 있음, AI는 mock |
-| 문서 조회·직접 편집 | `GET/PATCH /sessions/{sid}/documents/{did}` | 코드 있음, 검사·승인 연결은 후속 |
+| 문서 조회·직접 편집 | `GET/PATCH /sessions/{sid}/documents/{did}` | 코드 있음, 검증·승인 연결 기반 포함 |
 | AI 수정안·적용 | `POST /sessions/{sid}/documents/{did}/proposals`, `POST /sessions/{sid}/proposals/{pid}/apply` | 코드 있음, 제안 생성은 mock |
-| 검증·배치·승인 | `POST /sessions/{sid}/documents/{did}/validate`, `/layout-checks`, `/approvals` | 같은 문서 경로 아래의 계약 API, 이 브랜치에 라우트 없음 |
-| 출력·다운로드 | `POST /sessions/{sid}/exports`, `GET /sessions/{sid}/exports/{eid}/download` | 계약 단계, 이 브랜치에 라우트 없음 |
+| 검증·배치·승인 | `POST /sessions/{sid}/documents/{did}/validate`, `/layout-checks`, `/approvals` | 라우트 있음. AI 검증은 mock, PDF 배치 연결. D-07 경고 확인은 후속 |
+| 출력·다운로드 | `POST /sessions/{sid}/exports`, `GET /sessions/{sid}/exports/{eid}/download` | 라우트 있음. PDF 구현, DOCX 승인·출력 미완료 |
 | 진행·사진 조회 | `GET /sessions/{sid}/jobs/{jid}`, `GET /sessions/{sid}/assets/{asset_id}` | 코드 있음. asset은 현재 이미지 조회 |
 
 사전 점검·수정안 GET, 수정안 거절·문서 복원 등 전체 규격은 [공통 계약](contracts.md)과 `app/routers/`를 따른다. 코드에 이미 있는 추가 필드·GET과 계약 본문의 차이는 C-01~C-04·C-07에서 맞춘다. 원본 문서·출력 미리보기 조회는 이미지 조회와 구분한다.
@@ -165,7 +201,7 @@ API는 화면과 서버가 주고받는 요청이다. 기본 경로는 `/api/v1`
 
 ## 7. 테스트 방향
 
-기존 `tests/test_be02.py`~`test_be05.py`를 재사용하고, 기능을 연결한 주에 필요한 검증을 수행한다. pytest는 서버 동작을, 원문 대조와 실제 화면·출력 파일 확인은 사용자 결과를 검증한다. mock 확인과 실제 AI·프론트 연결 확인을 구분한다.
+기존 `tests/test_be02.py`~`test_be09.py`, 등록 자료·시연 회귀 테스트를 재사용하고, 기능을 연결한 주에 필요한 검증을 수행한다. pytest는 서버 동작을, 원문 대조와 실제 화면·출력 파일 확인은 사용자 결과를 검증한다. mock 확인과 실제 AI·프론트 연결 확인을 구분한다.
 
 | 확인할 상황 | 통과 기준 |
 |---|---|
@@ -198,4 +234,4 @@ API는 화면과 서버가 주고받는 요청이다. 기본 경로는 `/api/v1`
 
 연결 전에 C-01~C-04·C-07의 현행 코드·계약 차이를 맞추고, 자료 변경 복귀·늦은 작업 결과(C-05·C-06)를 합의한다. 검증·승인·출력과 관련된 C-08~C-11은 해당 기능 착수 전에 정한다. 모든 작업을 일괄 중단하는 선행 조건으로 추가하지 않는다.
 
-같은 코드 영역을 두 담당자가 동시에 크게 바꾸지 않는다. 개발 담당이 자기 기능의 필수 확인을 맡으며 확인·보조 담당자의 일정에 의존시키지 않는다. 상세 준비 기록은 [task_backend.md 6.6절](task_backend.md), [task_agent.md 6.1절](task_agent.md)에 있다. 이번 문서 재구성은 BE/AG 작업 상태·QA 결과를 바꾸지 않는다.
+같은 코드 영역을 두 담당자가 동시에 크게 바꾸지 않는다. 개발 담당이 자기 기능의 필수 확인을 맡으며 확인·보조 담당자의 일정에 의존시키지 않는다. 상세 준비 기록은 [task_backend.md 6.6절](task_backend.md), [task_agent.md 6.1절](task_agent.md)에 있다. 병합된 백엔드 상태·QA와 최신 정책의 후속 항목은 task_backend.md 6.18절과 공통 task.md에서 함께 확인한다.

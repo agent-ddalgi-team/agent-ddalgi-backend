@@ -14,9 +14,9 @@ import uuid
 from app.config import Settings
 from app.db import connect
 from app.parsers import TEXT_LIMIT, ParseResult, parse, warning
-from app.services import jobs
+from app.services import jobs, sessions
 from app.services.sources import resolve_path
-from app.timeutil import now, to_iso
+from app.timeutil import from_iso, now, to_iso
 
 logger = logging.getLogger(__name__)
 
@@ -65,13 +65,43 @@ def _apply_result(conn: sqlite3.Connection, row: sqlite3.Row, result: ParseResul
     )
 
 
+def _policy_failure(conn: sqlite3.Connection, settings: Settings, session_id: str, job_id: str,
+                    source_ids: list[str]) -> bool:
+    row = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+    policy = sessions.usable(settings, row)
+    if policy is not None:
+        code = "DEMO_MODE_DISABLED" if policy == "demo_disabled" else "SESSION_EXPIRED"
+        jobs.fail(conn, job_id, code, "현재 세션에서 읽기 결과를 저장할 수 없습니다.", False)
+        if policy == "demo_disabled":
+            # 재활성화해도 자동 재시도하지 않는다. 미완료 자료가 영구히 reading으로 보이지 않게 마감한다.
+            # 완료된 자료와 종료 후 지워진 자료는 건드리지 않고 파서의 늦은 결과도 저장하지 않는다.
+            fixed_warning = json.dumps([warning(code, "시연 모드가 꺼져 읽기를 중단했습니다.", None,
+                                                "시연 모드를 켠 뒤 새 키로 다시 업로드해 주세요.")], ensure_ascii=False)
+            conn.executemany("UPDATE sources SET parse_status='failed', warnings_json=? "
+                             "WHERE source_id=? AND session_id=? AND deleted_at IS NULL "
+                             "AND parse_status IN ('queued','reading')",
+                             [(fixed_warning, source_id, session_id) for source_id in source_ids])
+        return True
+    job = conn.execute("SELECT status FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+    return job is None or job["status"] not in jobs.ACTIVE
+
+
+def _session_alive(conn: sqlite3.Connection, session_id: str, settings: Settings) -> bool:
+    row = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+    return sessions.usable(settings, row) is None
+
+
 def run_read_job(settings: Settings, session_id: str, job_id: str, source_ids: list[str]) -> None:
     try:
         total = len(source_ids)
-        with connect(settings.db_path) as conn:
+        with connect(settings.db_path, immediate=True) as conn:
+            if _policy_failure(conn, settings, session_id, job_id, source_ids):
+                return
             jobs.set_progress(conn, job_id, "reading", f"0/{total}")
         for i, source_id in enumerate(source_ids, start=1):
-            with connect(settings.db_path) as conn:
+            with connect(settings.db_path, immediate=True) as conn:
+                if _policy_failure(conn, settings, session_id, job_id, source_ids):
+                    return
                 row = conn.execute("SELECT * FROM sources WHERE source_id=? AND deleted_at IS NULL",
                                    (source_id,)).fetchone()
                 if row is None:
@@ -85,15 +115,25 @@ def run_read_job(settings: Settings, session_id: str, job_id: str, source_ids: l
                 logger.exception("read failed: %s", source_id)
                 result = ParseResult(status="failed", warnings=[warning(
                     "PARSE_ERROR", "파일을 읽는 중 오류가 났습니다.", None, "파일을 다시 올리거나 이 자료를 제외해 주세요.")])
-            with connect(settings.db_path) as conn:
+            with connect(settings.db_path, immediate=True) as conn:   # 세션 확인과 저장을 한 잠금 안에서(BE-09)
+                if _policy_failure(conn, settings, session_id, job_id, source_ids):
+                    return
+                if not _session_alive(conn, session_id, settings):
+                    # 종료·만료 뒤 늦은 결과는 저장하지 않는다. Job은 finalize가 이미 cancelled로 바꿨으므로 아래 fail은 무시된다.
+                    jobs.fail(conn, job_id, "SESSION_EXPIRED", "세션이 종료되어 읽기 결과를 저장하지 않았습니다.", False)
+                    return
                 current = conn.execute("SELECT * FROM sources WHERE source_id=? AND deleted_at IS NULL",
                                        (source_id,)).fetchone()
                 if current is not None:
                     _apply_result(conn, current, result)
                 jobs.set_progress(conn, job_id, "reading", f"{i}/{total}")
-        with connect(settings.db_path) as conn:
+        with connect(settings.db_path, immediate=True) as conn:
+            if _policy_failure(conn, settings, session_id, job_id, source_ids):
+                return
             jobs.succeed(conn, job_id, {"type": "sources", "source_ids": source_ids})
     except Exception:
         logger.exception("read job failed: %s", job_id)
-        with connect(settings.db_path) as conn:
+        with connect(settings.db_path, immediate=True) as conn:
+            if _policy_failure(conn, settings, session_id, job_id, source_ids):
+                return
             jobs.fail(conn, job_id, "INTERNAL_ERROR", "파일 읽기 작업이 실패했습니다. 다시 올려 주세요.", True)

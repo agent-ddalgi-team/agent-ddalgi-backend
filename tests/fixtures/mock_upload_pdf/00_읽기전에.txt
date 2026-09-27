@@ -1,0 +1,15 @@
+[MOCK] 업로드 시연용 PDF 8개 — 예시 회사 가상 자료
+
+용도
+- 세션 업로드(POST /sessions/{sid}/sources) 시연·테스트용. PDF 파서(BE-03) 경로를 mock으로 보여주기 위한 파일.
+- 내용은 tests/fixtures/ddalgi_mock_bundle_v1/ingest/originals/MOCK01~08.txt 와 같은 문장.
+- MOCK07: 사진 목록 + 가상 이미지 6장 포함.
+- MOCK08: 글자가 그림으로만 들어 있음(텍스트 레이어 없음) → partial + IMAGE_ONLY 처리 확인용.
+
+하지 말 것
+- ingest/originals/ 에 넣지 말 것. sources.json 의 sha256 은 TXT 기준이라 verify_bundle.py 가 실패함.
+- 등록 자료(import_registered.py) 입력이 아님. 이 파일은 "업로드" 경로 전용.
+- 모든 문장에 [MOCK] 표시가 있으므로 승인(approval) 단계에서는 MOCK_VALUE 로 막혀야 정상.
+
+둘 곳(권장)
+- tests/fixtures/mock_upload_pdf/  (가상 자료라 커밋 가능)

@@ -1,0 +1,7 @@
+[MOCK] 예시 사진 목록 — 가상 슬라이드 위치와 파일 경로
+[MOCK] PPT 1쪽 · 05_이미지/전체_추출이미지/01_제품/MOCK_IMG01.png
+[MOCK] PPT 2쪽 · 05_이미지/전체_추출이미지/02_생산라인/MOCK_IMG02.png
+[MOCK] PPT 3쪽 · 05_이미지/전체_추출이미지/03_검사/MOCK_IMG03.png
+[MOCK] PPT 4쪽 · 05_이미지/전체_추출이미지/04_시설/MOCK_IMG04.png
+[MOCK] PPT 5쪽 · 05_이미지/전체_추출이미지/04_시설/MOCK_IMG05.png
+[MOCK] PPT 6쪽 · 05_이미지/전체_추출이미지/01_제품/MOCK_IMG06.png

@@ -18,8 +18,8 @@ def get_asset(request: Request, sid: str, asset_id: str):
     settings = settings_of(request)
     owner = require_owner(request)
     with connect(settings.db_path) as conn:
-        sessions.load_active(conn, owner, sid)
-        row = assets.get_ready(conn, sid, asset_id)
+        sessions.load_active(conn, owner, sid, settings)
+        row = assets.get_ready(conn, sid, asset_id, settings=settings)
     path = resolve_path(settings, row["stored_path"])
     if not path.is_file():
         raise ApiError(410, "ARTIFACT_EXPIRED", "이미지 파일이 더 이상 없습니다.")

@@ -1,0 +1,102 @@
+{
+  "schema_version": "1.0",
+  "document_id": "doc_mock_1pages",
+  "session_id": "sess_mock_demo",
+  "document_revision": 3,
+  "input_revision": 3,
+  "title": "[MOCK] 예시 회사 소개",
+  "target_pages": 1,
+  "pages": [
+    {
+      "page_id": "page_mock_single",
+      "title": "한 장 소개",
+      "layout_key": "text_photo",
+      "blocks": [
+        {
+          "block_id": "block_mock_title",
+          "type": "heading",
+          "content": {
+            "text": "[MOCK] 예시 회사 소개",
+            "level": 1
+          },
+          "fact_ids": [
+            "fact_mock_company_name"
+          ],
+          "evidence_refs": [
+            {
+              "source_id": "MOCK01",
+              "source_version": 1,
+              "segment_id": "seg_MOCK01_C001",
+              "locator": {
+                "line_start": 1,
+                "line_end": 1
+              },
+              "excerpt": "[MOCK] 회사명: 예시 회사"
+            }
+          ]
+        },
+        {
+          "block_id": "block_mock_intro",
+          "type": "paragraph",
+          "content": {
+            "text": "예시 회사는 가상 부품의 표면처리와 검사 과정을 소개하는 테스트 기업입니다."
+          },
+          "fact_ids": [
+            "fact_mock_company_summary"
+          ],
+          "evidence_refs": [
+            {
+              "source_id": "MOCK01",
+              "source_version": 1,
+              "segment_id": "seg_MOCK01_C002",
+              "locator": {
+                "line_start": 2,
+                "line_end": 2
+              },
+              "excerpt": "[MOCK] 회사 개요: 예시 회사는 가상 부품의 표면처리와 검사 과정을 소개하는 테스트 기업입니다."
+            }
+          ]
+        },
+        {
+          "block_id": "block_mock_processes",
+          "type": "list",
+          "content": {
+            "items": [
+              "가상 공정 A",
+              "가상 공정 B",
+              "가상 공정 C"
+            ]
+          },
+          "fact_ids": [
+            "fact_mock_processes"
+          ],
+          "evidence_refs": [
+            {
+              "source_id": "MOCK01",
+              "source_version": 1,
+              "segment_id": "seg_MOCK01_C008",
+              "locator": {
+                "line_start": 8,
+                "line_end": 8
+              },
+              "excerpt": "[MOCK] 공정 목록: 가상 공정 A, 가상 공정 B, 가상 공정 C"
+            }
+          ]
+        },
+        {
+          "block_id": "block_mock_photo",
+          "type": "image",
+          "content": {
+            "asset_id": "MOCK_IMG01",
+            "alt": "[MOCK] 예시 제품 A",
+            "caption": "[MOCK] 예시 제품 A",
+            "fit": "contain"
+          },
+          "fact_ids": [],
+          "evidence_refs": []
+        }
+      ]
+    }
+  ],
+  "status": "draft"
+}

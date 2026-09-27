@@ -1,0 +1,200 @@
+[
+  {
+    "item_id": "material_mock_01",
+    "label": "기존 회사소개서 원본",
+    "status": "received",
+    "collection_required": true,
+    "required_for_every_document": false,
+    "source_ids": [
+      "MOCK01",
+      "MOCK02"
+    ],
+    "mock": true,
+    "note": "자료 수령 상태와 사실 검증·문서 승인 상태는 별개입니다."
+  },
+  {
+    "item_id": "material_mock_02",
+    "label": "전체 공정의 공식 명칭",
+    "status": "partial",
+    "collection_required": true,
+    "required_for_every_document": false,
+    "source_ids": [
+      "MOCK01",
+      "MOCK02"
+    ],
+    "mock": true,
+    "note": "자료 수령 상태와 사실 검증·문서 승인 상태는 별개입니다."
+  },
+  {
+    "item_id": "material_mock_03",
+    "label": "현재 공정 수",
+    "status": "unconfirmed",
+    "collection_required": true,
+    "required_for_every_document": false,
+    "source_ids": [
+      "MOCK01",
+      "MOCK02"
+    ],
+    "mock": true,
+    "note": "자료 수령 상태와 사실 검증·문서 승인 상태는 별개입니다."
+  },
+  {
+    "item_id": "material_mock_04",
+    "label": "인증·승인 자료",
+    "status": "received",
+    "collection_required": true,
+    "required_for_every_document": false,
+    "source_ids": [
+      "MOCK03",
+      "MOCK04"
+    ],
+    "mock": true,
+    "note": "자료 수령 상태와 사실 검증·문서 승인 상태는 별개입니다."
+  },
+  {
+    "item_id": "material_mock_05",
+    "label": "외부 공개 가능한 사진",
+    "status": "partial",
+    "collection_required": true,
+    "required_for_every_document": false,
+    "source_ids": [
+      "MOCK07"
+    ],
+    "mock": true,
+    "note": "자료 수령 상태와 사실 검증·문서 승인 상태는 별개입니다."
+  },
+  {
+    "item_id": "material_mock_06",
+    "label": "소개서 변경·추가 희망사항",
+    "status": "not_received",
+    "collection_required": true,
+    "required_for_every_document": false,
+    "source_ids": [],
+    "mock": true,
+    "note": "자료 수령 상태와 사실 검증·문서 승인 상태는 별개입니다."
+  },
+  {
+    "item_id": "material_mock_07",
+    "label": "공정별 소재",
+    "status": "partial",
+    "collection_required": false,
+    "required_for_every_document": false,
+    "source_ids": [
+      "MOCK02"
+    ],
+    "mock": true,
+    "note": "자료 수령 상태와 사실 검증·문서 승인 상태는 별개입니다."
+  },
+  {
+    "item_id": "material_mock_08",
+    "label": "공정별 두께",
+    "status": "partial",
+    "collection_required": false,
+    "required_for_every_document": false,
+    "source_ids": [],
+    "mock": true,
+    "note": "자료 수령 상태와 사실 검증·문서 승인 상태는 별개입니다."
+  },
+  {
+    "item_id": "material_mock_09",
+    "label": "공정별 크기",
+    "status": "not_received",
+    "collection_required": false,
+    "required_for_every_document": false,
+    "source_ids": [],
+    "mock": true,
+    "note": "자료 수령 상태와 사실 검증·문서 승인 상태는 별개입니다."
+  },
+  {
+    "item_id": "material_mock_10",
+    "label": "공정별 중량",
+    "status": "not_received",
+    "collection_required": false,
+    "required_for_every_document": false,
+    "source_ids": [],
+    "mock": true,
+    "note": "자료 수령 상태와 사실 검증·문서 승인 상태는 별개입니다."
+  },
+  {
+    "item_id": "material_mock_11",
+    "label": "공정별 수량·CAPA",
+    "status": "not_received",
+    "collection_required": false,
+    "required_for_every_document": false,
+    "source_ids": [],
+    "mock": true,
+    "note": "자료 수령 상태와 사실 검증·문서 승인 상태는 별개입니다."
+  },
+  {
+    "item_id": "material_mock_12",
+    "label": "검사 항목",
+    "status": "received",
+    "collection_required": false,
+    "required_for_every_document": false,
+    "source_ids": [
+      "MOCK01"
+    ],
+    "mock": true,
+    "note": "자료 수령 상태와 사실 검증·문서 승인 상태는 별개입니다."
+  },
+  {
+    "item_id": "material_mock_13",
+    "label": "일반 납기",
+    "status": "not_received",
+    "collection_required": false,
+    "required_for_every_document": false,
+    "source_ids": [],
+    "mock": true,
+    "note": "자료 수령 상태와 사실 검증·문서 승인 상태는 별개입니다."
+  },
+  {
+    "item_id": "material_mock_14",
+    "label": "납기 예외 조건",
+    "status": "not_received",
+    "collection_required": false,
+    "required_for_every_document": false,
+    "source_ids": [],
+    "mock": true,
+    "note": "자료 수령 상태와 사실 검증·문서 승인 상태는 별개입니다."
+  },
+  {
+    "item_id": "material_mock_15",
+    "label": "익명 대응 사례",
+    "status": "not_received",
+    "collection_required": false,
+    "required_for_every_document": false,
+    "source_ids": [],
+    "mock": true,
+    "note": "자료 수령 상태와 사실 검증·문서 승인 상태는 별개입니다."
+  },
+  {
+    "item_id": "material_mock_16",
+    "label": "FAQ",
+    "status": "not_received",
+    "collection_required": false,
+    "required_for_every_document": false,
+    "source_ids": [],
+    "mock": true,
+    "note": "자료 수령 상태와 사실 검증·문서 승인 상태는 별개입니다."
+  },
+  {
+    "item_id": "material_mock_17",
+    "label": "견적 전 확인 항목",
+    "status": "not_received",
+    "collection_required": false,
+    "required_for_every_document": false,
+    "source_ids": [],
+    "mock": true,
+    "note": "자료 수령 상태와 사실 검증·문서 승인 상태는 별개입니다."
+  },
+  {
+    "item_id": "material_mock_18",
+    "label": "입고·출고·포장 절차",
+    "status": "not_received",
+    "collection_required": false,
+    "required_for_every_document": false,
+    "source_ids": [],
+    "mock": true,
+    "note": "자료 수령 상태와 사실 검증·문서 승인 상태는 별개입니다."
+  }
+]

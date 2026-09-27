@@ -38,10 +38,21 @@ def _require_current_input(row, document) -> None:
 
 @router.get("/{did}", response_model=DocumentOut)
 def get_document(request: Request, sid: str, did: str):
+    from app.services import approvals, validation
+
+    settings = settings_of(request)
     owner = require_owner(request)
-    with connect(settings_of(request).db_path) as conn:
-        sessions.load_active(conn, owner, sid)
-        return DocumentOut(document=documents.get_current(conn, sid, did), validation=None, approval=None)
+    with connect(settings.db_path) as conn:
+        row = sessions.load_active(conn, owner, sid, settings)
+        document = documents.get_current(conn, sid, did)
+        # 현재 문서·입력 버전의 결과만. 과거 검증·승인은 현재 값처럼 돌려주지 않는다.
+        from app.services import layout_check_jobs
+
+        v = validation.latest_validation(conn, did, document.document_revision, row["input_revision"])
+        a = approvals.active_for(conn, did, document.document_revision, row["input_revision"])
+        return DocumentOut(demo=bool(row["demo"]), document=document, validation=validation.to_validation_out(v) if v else None,
+                           approval=approvals.to_out(a) if a else None,
+                           layout_checks=layout_check_jobs.latest_by_format(conn, did, document.document_revision, row["input_revision"]))
 
 
 @router.patch("/{did}", response_model=DocumentChangeOut)
@@ -51,9 +62,9 @@ def patch_document(request: Request, sid: str, did: str, body: DocumentPatch,
     owner = require_owner(request)
     digest = idempotency.body_hash(body.model_dump())
     with connect(settings.db_path, immediate=True) as conn:
-        row = sessions.load_active(conn, owner, sid)
+        row = sessions.load_active(conn, owner, sid, settings)
         current = documents.get_current(conn, sid, did)
-        replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest)
+        replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest, settings)
         if replay is not None:
             return replay
         _require_current_input(row, current)
@@ -74,7 +85,7 @@ def patch_document(request: Request, sid: str, did: str, body: DocumentPatch,
         sessions.touch(conn, settings, row)
         out = DocumentChangeOut(document_id=did, document_revision=new_revision, input_revision=current.input_revision,
                                 status=status, validation_job_id=None)
-        idempotency.remember(conn, idempotency_key, owner, request.url.path, digest, 200, out.model_dump())
+        idempotency.remember(conn, idempotency_key, owner, request.url.path, digest, 200, out.model_dump(), session_id=sid)
     return out
 
 
@@ -85,9 +96,9 @@ def restore_document(request: Request, sid: str, did: str, body: RestoreBody,
     owner = require_owner(request)
     digest = idempotency.body_hash(body.model_dump())
     with connect(settings.db_path, immediate=True) as conn:
-        row = sessions.load_active(conn, owner, sid)
+        row = sessions.load_active(conn, owner, sid, settings)
         current = documents.get_current(conn, sid, did)
-        replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest)
+        replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest, settings)
         if replay is not None:
             return replay
         if body.expected_revision != current.document_revision:
@@ -110,7 +121,7 @@ def restore_document(request: Request, sid: str, did: str, body: RestoreBody,
         sessions.touch(conn, settings, row)
         out = DocumentChangeOut(document_id=did, document_revision=new_revision, input_revision=row["input_revision"],
                                 status=status, validation_job_id=None)
-        idempotency.remember(conn, idempotency_key, owner, request.url.path, digest, 200, out.model_dump())
+        idempotency.remember(conn, idempotency_key, owner, request.url.path, digest, 200, out.model_dump(), session_id=sid)
     return out
 
 
@@ -120,10 +131,10 @@ def create_proposal(request: Request, sid: str, did: str, body: ProposalCreate, 
     settings = settings_of(request)
     owner = require_owner(request)
     digest = idempotency.body_hash(body.model_dump())
-    with connect(settings.db_path) as conn:
-        row = sessions.load_active(conn, owner, sid)
+    with connect(settings.db_path, immediate=True) as conn:   # 세션 검사부터 Job 생성·멱등 저장까지 한 잠금(BE-09 리뷰 1)
+        row = sessions.load_active(conn, owner, sid, settings)
         current = documents.get_current(conn, sid, did)
-        replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest)
+        replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest, settings)
         if replay is not None:
             return replay
         if body.expected_revision != current.document_revision:
@@ -142,7 +153,7 @@ def create_proposal(request: Request, sid: str, did: str, body: ProposalCreate, 
         job = jobs.create(conn, sid, "propose", "편집안 생성 대기 중", input_revision=row["input_revision"])
         sessions.touch(conn, settings, row)
         out = JobAccepted(job_id=job.job_id, status="queued", kind="propose", session_id=sid, created_at=job.created_at)
-        idempotency.remember(conn, idempotency_key, owner, request.url.path, digest, 202, out.model_dump())
+        idempotency.remember(conn, idempotency_key, owner, request.url.path, digest, 202, out.model_dump(), session_id=sid)
     background_tasks.add_task(ai_jobs.run_propose_job, settings, sid, job.job_id, row["input_revision"], did,
                               current.document_revision, list(body.target_block_ids), body.instruction, body.kind)
     return JSONResponse(status_code=202, content=out.model_dump())

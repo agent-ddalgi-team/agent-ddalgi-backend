@@ -9,6 +9,7 @@ import sqlite3
 from dataclasses import dataclass
 
 from app.models import Page
+from app.services.sources import evidence_scope
 
 
 @dataclass
@@ -20,16 +21,20 @@ class SessionRefs:
 
 
 def load(conn: sqlite3.Connection, session_id: str) -> SessionRefs:
+    """이 세션의 첨부 + 등록 자료(근거 사용 허용). use_as_company_evidence=false 등록 자료의 구간·사진은 근거로 인정하지 않는다."""
+    scope, params = evidence_scope(conn, session_id)
     segs = {r["segment_id"] for r in conn.execute(
-        "SELECT s.segment_id FROM segments s JOIN sources src ON src.source_id=s.source_id "
-        "WHERE s.session_id=? AND src.deleted_at IS NULL", (session_id,))}
+        f"SELECT s.segment_id FROM segments s JOIN sources src ON src.source_id=s.source_id WHERE {scope}", params)}
     versions = {r["source_id"]: r["source_version"] for r in conn.execute(
-        "SELECT source_id, source_version FROM sources WHERE session_id=? AND deleted_at IS NULL", (session_id,))}
+        f"SELECT src.source_id, src.source_version FROM sources src WHERE {scope}", params)}
     assets = {r["asset_id"] for r in conn.execute(
-        "SELECT asset_id FROM assets WHERE session_id=? AND status='ready' AND deleted_at IS NULL", (session_id,))}
+        f"SELECT a.asset_id FROM assets a JOIN sources src ON src.source_id=a.source_id "
+        f"WHERE a.status='ready' AND a.deleted_at IS NULL AND {scope}", params)}
     facts: set[str] = set()
     for r in conn.execute("SELECT facts_json FROM preflights WHERE session_id=?", (session_id,)):
-        facts.update(f["fact_id"] for f in json.loads(r["facts_json"]))
+        facts.update(f["fact_id"] for f in json.loads(r["facts_json"])
+                     if all(ref.get("segment_id") in segs and versions.get(ref.get("source_id")) == ref.get("source_version")
+                            for ref in f.get("evidence_refs", [])))
     return SessionRefs(segs, versions, assets, facts)
 
 

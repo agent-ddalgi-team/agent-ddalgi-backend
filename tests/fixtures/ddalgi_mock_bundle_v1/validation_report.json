@@ -1,0 +1,115 @@
+{
+  "status": "PASS",
+  "checks": 4591,
+  "sources": 8,
+  "chunks": 24,
+  "images": 6,
+  "scenarios": 27,
+  "source_hash_checks": {
+    "MOCK01": {
+      "hash_verified": true,
+      "supplied_sha256": "946dabef6d96ccbd4f32e906005b71bfa1bc48f3df5d8767e9c2d52d0ff6f628",
+      "package_sha256": "946dabef6d96ccbd4f32e906005b71bfa1bc48f3df5d8767e9c2d52d0ff6f628",
+      "dedup_sha256": "946dabef6d96ccbd4f32e906005b71bfa1bc48f3df5d8767e9c2d52d0ff6f628",
+      "reason": "matched_packaged_file"
+    },
+    "MOCK02": {
+      "hash_verified": true,
+      "supplied_sha256": "09f7ea49097ff977090b11155ee5cda25a19750740852db22f5558b0fe787b32",
+      "package_sha256": "09f7ea49097ff977090b11155ee5cda25a19750740852db22f5558b0fe787b32",
+      "dedup_sha256": "09f7ea49097ff977090b11155ee5cda25a19750740852db22f5558b0fe787b32",
+      "reason": "matched_packaged_file"
+    },
+    "MOCK03": {
+      "hash_verified": true,
+      "supplied_sha256": "0e19c1d69a9f7c839ea6a2427d9915e9bd07f18fbb692daf3e38217c37de8280",
+      "package_sha256": "0e19c1d69a9f7c839ea6a2427d9915e9bd07f18fbb692daf3e38217c37de8280",
+      "dedup_sha256": "0e19c1d69a9f7c839ea6a2427d9915e9bd07f18fbb692daf3e38217c37de8280",
+      "reason": "matched_packaged_file"
+    },
+    "MOCK04": {
+      "hash_verified": true,
+      "supplied_sha256": "fade6e6bd711250dd0d4df013f72f2ba7d853ecc8674c202283f67f707e0c05e",
+      "package_sha256": "fade6e6bd711250dd0d4df013f72f2ba7d853ecc8674c202283f67f707e0c05e",
+      "dedup_sha256": "fade6e6bd711250dd0d4df013f72f2ba7d853ecc8674c202283f67f707e0c05e",
+      "reason": "matched_packaged_file"
+    },
+    "MOCK05": {
+      "hash_verified": true,
+      "supplied_sha256": "ff0f9124554523bfdef86dd9edf29f5380c1809a8a7ebc9db4f4393e7ccf0e07",
+      "package_sha256": "ff0f9124554523bfdef86dd9edf29f5380c1809a8a7ebc9db4f4393e7ccf0e07",
+      "dedup_sha256": "ff0f9124554523bfdef86dd9edf29f5380c1809a8a7ebc9db4f4393e7ccf0e07",
+      "reason": "matched_packaged_file"
+    },
+    "MOCK06": {
+      "hash_verified": true,
+      "supplied_sha256": "96f572cc08965453c73f1f68ed23de403f95bf9035634807f55622c93e93334e",
+      "package_sha256": "96f572cc08965453c73f1f68ed23de403f95bf9035634807f55622c93e93334e",
+      "dedup_sha256": "96f572cc08965453c73f1f68ed23de403f95bf9035634807f55622c93e93334e",
+      "reason": "matched_packaged_file"
+    },
+    "MOCK07": {
+      "hash_verified": true,
+      "supplied_sha256": "2ce88cef33624874e5bcae7a214d91a1640c2599f1fab2c2ad542fd8a147966d",
+      "package_sha256": "2ce88cef33624874e5bcae7a214d91a1640c2599f1fab2c2ad542fd8a147966d",
+      "dedup_sha256": "2ce88cef33624874e5bcae7a214d91a1640c2599f1fab2c2ad542fd8a147966d",
+      "reason": "matched_packaged_file"
+    },
+    "MOCK08": {
+      "hash_verified": true,
+      "supplied_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "package_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "dedup_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reason": "matched_packaged_file"
+    }
+  },
+  "raw_publication_approved_images": 0,
+  "preserved_files": 39,
+  "schema_rules_self_checks": "PASS",
+  "scope": "Fixture structure, byte hashes, ID/provenance links and state consistency only. No backend/API/LLM execution.",
+  "bundle_version": "1.1",
+  "schema_alignment_reference": "user supplied schema_samples, sections 1-5, 2026-09-26",
+  "privacy_reference_scan": "PASS",
+  "backend_tests_run": false,
+  "live_server_run": false,
+  "real_llm_run": false,
+  "real_data_imported": false,
+  "preserved_directory_check": "PASS",
+  "prior_be05_pydantic_validation": {
+    "objects_validated": 165,
+    "rerun_this_revision": false,
+    "note": "All ui/api_flows inputs preserved byte-for-byte against prior verified bundle."
+  },
+  "known_limits": [
+    "사용자 제공 스키마와 대조 완료. 실제 ZIP 전체·동일 적재기 통합 실행은 미실시.",
+    "Validation/Approval/Export는 독립된 화면 fixture",
+    "TXT 원본과 합성 PNG만 제공; PPT/PDF 파서 검증용 원본 아님",
+    "normalized의 상태 메타데이터는 이전 UI 스냅샷이며 새 raw 입력의 실제 적재 결과가 아님",
+    "quality의 CSV 관련 mutation은 이전 필드명을 유지한 설계 명세; 실행 시 필드 치환 필요",
+    "photo_candidates의 sha256/source_id/mock, sources의 name은 선택 확장; 실제 샘플에 필수 아님"
+  ],
+  "modified_existing_files": [
+    "INGEST_SCHEMA.md",
+    "README_KO.md",
+    "bundle_manifest.json",
+    "checksums.json",
+    "ingest/00_이미지목록.csv",
+    "ingest/company_chunks.jsonl",
+    "ingest/mock_chunks.jsonl",
+    "ingest/mock_source_entry.json",
+    "ingest/originals/MOCK07.txt",
+    "ingest/sources.json",
+    "validation_report.json",
+    "verify_bundle.py"
+  ],
+  "added_files": [
+    "ingest/05_이미지/전체_추출이미지/01_제품/MOCK_IMG01.png",
+    "ingest/05_이미지/전체_추출이미지/01_제품/MOCK_IMG06.png",
+    "ingest/05_이미지/전체_추출이미지/02_생산라인/MOCK_IMG02.png",
+    "ingest/05_이미지/전체_추출이미지/03_검사/MOCK_IMG03.png",
+    "ingest/05_이미지/전체_추출이미지/04_시설/MOCK_IMG04.png",
+    "ingest/05_이미지/전체_추출이미지/04_시설/MOCK_IMG05.png",
+    "ingest/photo_candidates.json",
+    "preservation_checksums.json"
+  ]
+}

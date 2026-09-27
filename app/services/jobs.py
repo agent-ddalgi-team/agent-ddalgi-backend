@@ -1,7 +1,10 @@
 """작업(Job) 레코드와 상태 전이. 실제 처리는 services/reading.py(BE-03), AI 작업은 BE-04에서 붙는다.
 
-상태: queued → running → succeeded / failed. (waiting_user·cancelled는 BE-04에서.)
+상태: queued → running → succeeded / failed / cancelled(세션 종료·만료, BE-09).
 서버가 재시작되면 진행 중이던 작업은 이어갈 수 없으므로 시작 시 failed로 정리한다(fail_stale).
+BE-09: 상태 갱신(set_progress/succeed/fail)은 아직 끝나지 않은 Job(ACTIVE)에만 적용된다. 세션 종료로 cancelled된 Job을
+늦게 끝난 백그라운드 작업이 succeeded/failed로 되돌리지 못한다. 재시작 복구(exports.recover_after_restart)는 Export의 실제 결과에
+연결 Job을 맞춰야 하므로(fail_stale이 failed로 바꾼 Job, 옛 succeeded 기록 모두 실제 사유로) allow=RECOVERABLE을 쓴다 — cancelled만 제외.
 """
 from __future__ import annotations
 
@@ -14,25 +17,43 @@ from app.errors import ApiError
 from app.models import JobOut
 from app.timeutil import now, to_iso
 
+ACTIVE = ("queued", "running", "waiting_user")
+RECOVERABLE = ACTIVE + ("failed", "succeeded")   # 재시작 복구 전용: cancelled만 제외하고 Export의 실제 결과로 맞춘다
+CANCELLED_ERROR = {"code": "SESSION_EXPIRED", "message": "세션이 종료되어 작업이 취소되었습니다.", "retryable": False,
+                   "details": {}, "request_id": None}
+
+
+def _marks(statuses: tuple[str, ...]) -> str:
+    return ",".join("?" * len(statuses))
+
 
 def create(conn: sqlite3.Connection, session_id: str, kind: str, stage_message: str,
-           input_revision: int | None = None) -> JobOut:
+           input_revision: int | None = None, target_key: str | None = None) -> JobOut:
     job_id = f"job_{uuid.uuid4().hex[:16]}"
     stamp = to_iso(now())
     progress = {"stage": "queued", "message": stage_message}
     conn.execute(
-        "INSERT INTO jobs (job_id, session_id, kind, status, progress_json, input_revision, created_at, updated_at) "
-        "VALUES (?, ?, ?, 'queued', ?, ?, ?, ?)",
-        (job_id, session_id, kind, json.dumps(progress, ensure_ascii=False), input_revision, stamp, stamp),
+        "INSERT INTO jobs (job_id, session_id, kind, status, progress_json, input_revision, target_key, created_at, updated_at) "
+        "VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?)",
+        (job_id, session_id, kind, json.dumps(progress, ensure_ascii=False), input_revision, target_key, stamp, stamp),
     )
     return get(conn, session_id, job_id)
+
+
+def find_active_by_key(conn: sqlite3.Connection, session_id: str, kind: str, target_key: str) -> JobOut | None:
+    """같은 대상 키(예: 문서@문서버전@입력버전)로 아직 끝나지 않은 작업. 다른 버전의 Job과 섞이지 않는다."""
+    row = conn.execute(
+        "SELECT job_id FROM jobs WHERE session_id=? AND kind=? AND target_key=? "
+        "AND status IN ('queued', 'running', 'waiting_user') ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        (session_id, kind, target_key)).fetchone()
+    return get(conn, session_id, row["job_id"]) if row else None
 
 
 def find_active(conn: sqlite3.Connection, session_id: str, kind: str, input_revision: int) -> JobOut | None:
     """같은 세션·종류·입력 버전으로 아직 끝나지 않은 작업. 중복 실행 대신 이 작업을 돌려준다."""
     row = conn.execute(
         "SELECT job_id FROM jobs WHERE session_id=? AND kind=? AND input_revision=? "
-        "AND status IN ('queued', 'running', 'waiting_user') ORDER BY created_at DESC LIMIT 1",
+        "AND status IN ('queued', 'running', 'waiting_user') ORDER BY created_at DESC, rowid DESC LIMIT 1",
         (session_id, kind, input_revision)).fetchone()
     return get(conn, session_id, row["job_id"]) if row else None
 
@@ -54,28 +75,56 @@ def get(conn: sqlite3.Connection, session_id: str, job_id: str) -> JobOut:
 
 
 def set_progress(conn: sqlite3.Connection, job_id: str, stage: str, message: str | None,
-                 status: str = "running") -> None:
-    conn.execute(
-        "UPDATE jobs SET status=?, progress_json=?, updated_at=? WHERE job_id=?",
-        (status, json.dumps({"stage": stage, "message": message}, ensure_ascii=False), to_iso(now()), job_id),
+                 status: str = "running") -> int:
+    cur = conn.execute(
+        f"UPDATE jobs SET status=?, progress_json=?, updated_at=? WHERE job_id=? AND status IN ({_marks(ACTIVE)})",
+        (status, json.dumps({"stage": stage, "message": message}, ensure_ascii=False), to_iso(now()), job_id, *ACTIVE),
     )
+    return cur.rowcount
 
 
-def succeed(conn: sqlite3.Connection, job_id: str, result_ref: dict[str, Any]) -> None:
-    conn.execute(
-        "UPDATE jobs SET status='succeeded', progress_json=?, result_ref_json=?, updated_at=? WHERE job_id=?",
+def succeed(conn: sqlite3.Connection, job_id: str, result_ref: dict[str, Any], *,
+            allow: tuple[str, ...] = ACTIVE) -> int:
+    cur = conn.execute(
+        f"UPDATE jobs SET status='succeeded', progress_json=?, result_ref_json=?, error_json=NULL, updated_at=? "
+        f"WHERE job_id=? AND status IN ({_marks(allow)})",
         (json.dumps({"stage": "done", "message": None}), json.dumps(result_ref, ensure_ascii=False),
-         to_iso(now()), job_id),
+         to_iso(now()), job_id, *allow),
     )
+    return cur.rowcount
 
 
 def fail(conn: sqlite3.Connection, job_id: str, code: str, message: str, retryable: bool,
-         details: dict[str, Any] | None = None) -> None:
+         details: dict[str, Any] | None = None, *, allow: tuple[str, ...] = ACTIVE) -> int:
     error = {"code": code, "message": message, "retryable": retryable, "details": details or {}, "request_id": None}
-    conn.execute(
-        "UPDATE jobs SET status='failed', error_json=?, updated_at=? WHERE job_id=?",
-        (json.dumps(error, ensure_ascii=False), to_iso(now()), job_id),
+    cur = conn.execute(
+        f"UPDATE jobs SET status='failed', error_json=?, updated_at=? WHERE job_id=? AND status IN ({_marks(allow)})",
+        (json.dumps(error, ensure_ascii=False), to_iso(now()), job_id, *allow),
     )
+    return cur.rowcount
+
+
+def cancel_for_session(conn: sqlite3.Connection, session_id: str) -> int:
+    """세션 종료·만료: 끝나지 않은 Job을 cancelled로 확정한다(고정 문구). 이후 늦은 결과는 ACTIVE 가드에 막힌다."""
+    cur = conn.execute(
+        f"UPDATE jobs SET status='cancelled', error_json=?, updated_at=? WHERE session_id=? AND status IN ({_marks(ACTIVE)})",
+        (json.dumps(CANCELLED_ERROR, ensure_ascii=False), to_iso(now()), session_id, *ACTIVE),
+    )
+    return cur.rowcount
+
+
+def purge_errors_for_session(conn: sqlite3.Connection, session_id: str) -> int:
+    """세션 내용 제거: error_json의 message·details를 비운다(code·retryable은 유지). 예외 문자열에 원문·파일명이 섞일 수 있다."""
+    rows = conn.execute("SELECT job_id, error_json FROM jobs WHERE session_id=? AND error_json IS NOT NULL", (session_id,)).fetchall()
+    for r in rows:
+        try:
+            error = json.loads(r["error_json"])
+        except ValueError:
+            error = {}
+        stripped = {"code": error.get("code", "INTERNAL_ERROR"), "message": "", "retryable": bool(error.get("retryable", False)),
+                    "details": {}, "request_id": None}
+        conn.execute("UPDATE jobs SET error_json=? WHERE job_id=?", (json.dumps(stripped, ensure_ascii=False), r["job_id"]))
+    return len(rows)
 
 
 def fail_stale(conn: sqlite3.Connection) -> int:

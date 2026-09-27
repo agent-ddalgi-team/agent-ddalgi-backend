@@ -1,0 +1,327 @@
+{
+  "schema_version": "1.0",
+  "document_id": "doc_mock_6pages",
+  "session_id": "sess_mock_demo",
+  "document_revision": 3,
+  "input_revision": 3,
+  "title": "[MOCK] 예시 회사 소개",
+  "target_pages": 6,
+  "pages": [
+    {
+      "page_id": "page_mock_01",
+      "title": "표지",
+      "layout_key": "text_photo",
+      "blocks": [
+        {
+          "block_id": "block_mock_title",
+          "type": "heading",
+          "content": {
+            "text": "[MOCK] 예시 회사 소개",
+            "level": 1
+          },
+          "fact_ids": [
+            "fact_mock_company_name"
+          ],
+          "evidence_refs": [
+            {
+              "source_id": "MOCK01",
+              "source_version": 1,
+              "segment_id": "seg_MOCK01_C001",
+              "locator": {
+                "line_start": 1,
+                "line_end": 1
+              },
+              "excerpt": "[MOCK] 회사명: 예시 회사"
+            }
+          ]
+        },
+        {
+          "block_id": "block_mock_cover",
+          "type": "paragraph",
+          "content": {
+            "text": "예시 회사는 가상 부품의 표면처리와 검사 과정을 소개하는 테스트 기업입니다."
+          },
+          "fact_ids": [
+            "fact_mock_company_summary"
+          ],
+          "evidence_refs": [
+            {
+              "source_id": "MOCK01",
+              "source_version": 1,
+              "segment_id": "seg_MOCK01_C002",
+              "locator": {
+                "line_start": 2,
+                "line_end": 2
+              },
+              "excerpt": "[MOCK] 회사 개요: 예시 회사는 가상 부품의 표면처리와 검사 과정을 소개하는 테스트 기업입니다."
+            }
+          ]
+        },
+        {
+          "block_id": "block_mock_photo",
+          "type": "image",
+          "content": {
+            "asset_id": "MOCK_IMG01",
+            "alt": "[MOCK] 예시 제품 A",
+            "caption": "[MOCK] 예시 제품 A",
+            "fit": "contain"
+          },
+          "fact_ids": [],
+          "evidence_refs": []
+        }
+      ]
+    },
+    {
+      "page_id": "page_mock_02",
+      "title": "회사 소개",
+      "layout_key": "text",
+      "blocks": [
+        {
+          "block_id": "block_mock_intro_head",
+          "type": "heading",
+          "content": {
+            "text": "회사 소개",
+            "level": 2
+          },
+          "fact_ids": [],
+          "evidence_refs": []
+        },
+        {
+          "block_id": "block_mock_intro",
+          "type": "paragraph",
+          "content": {
+            "text": "예시 회사는 가상 부품의 표면처리와 검사 과정을 소개하는 테스트 기업입니다."
+          },
+          "fact_ids": [
+            "fact_mock_company_summary"
+          ],
+          "evidence_refs": [
+            {
+              "source_id": "MOCK01",
+              "source_version": 1,
+              "segment_id": "seg_MOCK01_C002",
+              "locator": {
+                "line_start": 2,
+                "line_end": 2
+              },
+              "excerpt": "[MOCK] 회사 개요: 예시 회사는 가상 부품의 표면처리와 검사 과정을 소개하는 테스트 기업입니다."
+            }
+          ]
+        },
+        {
+          "block_id": "block_mock_business",
+          "type": "paragraph",
+          "content": {
+            "text": "가상 부품 표면처리와 검사"
+          },
+          "fact_ids": [
+            "fact_mock_business_areas"
+          ],
+          "evidence_refs": [
+            {
+              "source_id": "MOCK01",
+              "source_version": 1,
+              "segment_id": "seg_MOCK01_C003",
+              "locator": {
+                "line_start": 3,
+                "line_end": 3
+              },
+              "excerpt": "[MOCK] 사업 분야: 가상 부품 표면처리와 검사"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "page_id": "page_mock_03",
+      "title": "주요 공정",
+      "layout_key": "text_photo",
+      "blocks": [
+        {
+          "block_id": "block_mock_process_head",
+          "type": "heading",
+          "content": {
+            "text": "주요 공정",
+            "level": 2
+          },
+          "fact_ids": [],
+          "evidence_refs": []
+        },
+        {
+          "block_id": "block_mock_processes",
+          "type": "list",
+          "content": {
+            "items": [
+              "가상 공정 A",
+              "가상 공정 B",
+              "가상 공정 C"
+            ]
+          },
+          "fact_ids": [
+            "fact_mock_processes"
+          ],
+          "evidence_refs": [
+            {
+              "source_id": "MOCK01",
+              "source_version": 1,
+              "segment_id": "seg_MOCK01_C008",
+              "locator": {
+                "line_start": 8,
+                "line_end": 8
+              },
+              "excerpt": "[MOCK] 공정 목록: 가상 공정 A, 가상 공정 B, 가상 공정 C"
+            }
+          ]
+        },
+        {
+          "block_id": "block_mock_process_photo",
+          "type": "image",
+          "content": {
+            "asset_id": "MOCK_IMG02",
+            "alt": "[MOCK] 예시 공정 A",
+            "caption": "[MOCK] 예시 공정 A",
+            "fit": "contain"
+          },
+          "fact_ids": [],
+          "evidence_refs": []
+        }
+      ]
+    },
+    {
+      "page_id": "page_mock_04",
+      "title": "품질과 확인할 자료",
+      "layout_key": "text",
+      "blocks": [
+        {
+          "block_id": "block_mock_quality_head",
+          "type": "heading",
+          "content": {
+            "text": "품질과 확인할 자료",
+            "level": 2
+          },
+          "fact_ids": [],
+          "evidence_refs": []
+        },
+        {
+          "block_id": "block_mock_quality",
+          "type": "paragraph",
+          "content": {
+            "text": "가상 공정별 작업 기록과 검사 이력 관리"
+          },
+          "fact_ids": [
+            "fact_mock_technology"
+          ],
+          "evidence_refs": [
+            {
+              "source_id": "MOCK01",
+              "source_version": 1,
+              "segment_id": "seg_MOCK01_C005",
+              "locator": {
+                "line_start": 5,
+                "line_end": 5
+              },
+              "excerpt": "[MOCK] 기술: 가상 공정별 작업 기록과 검사 이력 관리"
+            }
+          ]
+        },
+        {
+          "block_id": "block_mock_cert_missing",
+          "type": "paragraph",
+          "content": {
+            "text": "추가 확인 필요"
+          },
+          "fact_ids": [],
+          "evidence_refs": []
+        }
+      ]
+    },
+    {
+      "page_id": "page_mock_05",
+      "title": "강점과 대응 범위",
+      "layout_key": "text",
+      "blocks": [
+        {
+          "block_id": "block_mock_strength_head",
+          "type": "heading",
+          "content": {
+            "text": "강점과 대응 범위",
+            "level": 2
+          },
+          "fact_ids": [],
+          "evidence_refs": []
+        },
+        {
+          "block_id": "block_mock_strength",
+          "type": "paragraph",
+          "content": {
+            "text": "작업 조건을 확인하고 공정별 검사 결과를 기록합니다."
+          },
+          "fact_ids": [
+            "fact_mock_strengths"
+          ],
+          "evidence_refs": [
+            {
+              "source_id": "MOCK01",
+              "source_version": 1,
+              "segment_id": "seg_MOCK01_C006",
+              "locator": {
+                "line_start": 6,
+                "line_end": 6
+              },
+              "excerpt": "[MOCK] 강점: 작업 조건을 확인하고 공정별 검사 결과를 기록합니다."
+            }
+          ]
+        },
+        {
+          "block_id": "block_mock_capability",
+          "type": "paragraph",
+          "content": {
+            "text": "예시 소재 A에 대한 시제품 처리를 상담합니다."
+          },
+          "fact_ids": [
+            "fact_mock_capabilities"
+          ],
+          "evidence_refs": [
+            {
+              "source_id": "MOCK01",
+              "source_version": 1,
+              "segment_id": "seg_MOCK01_C010",
+              "locator": {
+                "line_start": 10,
+                "line_end": 10
+              },
+              "excerpt": "[MOCK] 대응 범위: 예시 소재 A에 대한 시제품 처리를 상담합니다."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "page_id": "page_mock_06",
+      "title": "문의 전 확인",
+      "layout_key": "text",
+      "blocks": [
+        {
+          "block_id": "block_mock_contact_head",
+          "type": "heading",
+          "content": {
+            "text": "문의 전 확인",
+            "level": 2
+          },
+          "fact_ids": [],
+          "evidence_refs": []
+        },
+        {
+          "block_id": "block_mock_contact_missing",
+          "type": "paragraph",
+          "content": {
+            "text": "자료에서 확인되지 않음"
+          },
+          "fact_ids": [],
+          "evidence_refs": []
+        }
+      ]
+    }
+  ],
+  "status": "draft"
+}

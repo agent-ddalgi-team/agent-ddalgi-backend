@@ -1,0 +1,834 @@
+{
+  "mock": true,
+  "sources": {
+    "items": [
+      {
+        "source_id": "MOCK01",
+        "source_version": 1,
+        "scope": "registered",
+        "session_id": null,
+        "name": "[MOCK] 예시 회사 소개",
+        "mime_type": "text/plain",
+        "size_bytes": 753,
+        "kind": "company",
+        "parse_status": "complete",
+        "text_available": true,
+        "image_available": false,
+        "usable_segment_ids": [
+          "seg_MOCK01_C001",
+          "seg_MOCK01_C002",
+          "seg_MOCK01_C003",
+          "seg_MOCK01_C004",
+          "seg_MOCK01_C005",
+          "seg_MOCK01_C006",
+          "seg_MOCK01_C007",
+          "seg_MOCK01_C008",
+          "seg_MOCK01_C009",
+          "seg_MOCK01_C010",
+          "seg_MOCK01_C011"
+        ],
+        "asset_ids": [],
+        "warnings": [],
+        "expires_at": null
+      },
+      {
+        "source_id": "MOCK02",
+        "source_version": 1,
+        "scope": "registered",
+        "session_id": null,
+        "name": "[MOCK] 예시 회사 이전 카탈로그",
+        "mime_type": "text/plain",
+        "size_bytes": 272,
+        "kind": "company",
+        "parse_status": "complete",
+        "text_available": true,
+        "image_available": false,
+        "usable_segment_ids": [
+          "seg_MOCK02_C001",
+          "seg_MOCK02_C002",
+          "seg_MOCK02_C003",
+          "seg_MOCK02_C004"
+        ],
+        "asset_ids": [],
+        "warnings": [
+          {
+            "locator": null,
+            "code": "MOCK_OLD_DOCUMENT",
+            "message": "2017년 자료입니다. 현재 적용 여부를 확인하세요.",
+            "action": "현재 자료와 대조"
+          }
+        ],
+        "expires_at": null
+      },
+      {
+        "source_id": "MOCK03",
+        "source_version": 1,
+        "scope": "registered",
+        "session_id": null,
+        "name": "[MOCK] 예시 인증 자료 국문",
+        "mime_type": "text/plain",
+        "size_bytes": 136,
+        "kind": "certificate",
+        "parse_status": "complete",
+        "text_available": true,
+        "image_available": false,
+        "usable_segment_ids": [
+          "seg_MOCK03_C001",
+          "seg_MOCK03_C002"
+        ],
+        "asset_ids": [],
+        "warnings": [],
+        "expires_at": null
+      },
+      {
+        "source_id": "MOCK04",
+        "source_version": 1,
+        "scope": "registered",
+        "session_id": null,
+        "name": "[MOCK] 예시 인증 자료 영문 대조",
+        "mime_type": "text/plain",
+        "size_bytes": 113,
+        "kind": "certificate",
+        "parse_status": "complete",
+        "text_available": true,
+        "image_available": false,
+        "usable_segment_ids": [
+          "seg_MOCK04_C001",
+          "seg_MOCK04_C002"
+        ],
+        "asset_ids": [],
+        "warnings": [],
+        "expires_at": null
+      },
+      {
+        "source_id": "MOCK05",
+        "source_version": 1,
+        "scope": "registered",
+        "session_id": null,
+        "name": "[MOCK] 예시 담당자 보완 메모",
+        "mime_type": "text/plain",
+        "size_bytes": 456,
+        "kind": "interview",
+        "parse_status": "complete",
+        "text_available": true,
+        "image_available": false,
+        "usable_segment_ids": [
+          "seg_MOCK05_C001",
+          "seg_MOCK05_C002",
+          "seg_MOCK05_C003",
+          "seg_MOCK05_C004"
+        ],
+        "asset_ids": [],
+        "warnings": [],
+        "expires_at": null
+      },
+      {
+        "source_id": "MOCK06",
+        "source_version": 1,
+        "scope": "registered",
+        "session_id": null,
+        "name": "[MOCK] 회사 근거에서 제외할 참고 문구",
+        "mime_type": "text/plain",
+        "size_bytes": 103,
+        "kind": "other",
+        "parse_status": "complete",
+        "text_available": true,
+        "image_available": false,
+        "usable_segment_ids": [],
+        "asset_ids": [],
+        "warnings": [
+          {
+            "locator": null,
+            "code": "MOCK_EVIDENCE_EXCLUDED",
+            "message": "회사 근거에서 제외한 참고 자료입니다.",
+            "action": "회사 사실의 근거로 사용하지 않음"
+          }
+        ],
+        "expires_at": null
+      },
+      {
+        "source_id": "MOCK07",
+        "source_version": 1,
+        "scope": "registered",
+        "session_id": null,
+        "name": "[MOCK] 예시 사진 목록",
+        "mime_type": "text/plain",
+        "size_bytes": 0,
+        "kind": "photo",
+        "parse_status": "complete",
+        "text_available": false,
+        "image_available": true,
+        "usable_segment_ids": [],
+        "asset_ids": [
+          "MOCK_IMG01",
+          "MOCK_IMG02",
+          "MOCK_IMG03",
+          "MOCK_IMG04"
+        ],
+        "warnings": [],
+        "expires_at": null
+      },
+      {
+        "source_id": "MOCK08",
+        "source_version": 1,
+        "scope": "registered",
+        "session_id": null,
+        "name": "[MOCK] 예시 읽을 텍스트가 없는 자료",
+        "mime_type": "text/plain",
+        "size_bytes": 0,
+        "kind": "other",
+        "parse_status": "partial",
+        "text_available": false,
+        "image_available": false,
+        "usable_segment_ids": [],
+        "asset_ids": [],
+        "warnings": [
+          {
+            "locator": null,
+            "code": "MOCK_OLD_DOCUMENT",
+            "message": "2017년 자료입니다. 현재 적용 여부를 확인하세요.",
+            "action": "현재 자료와 대조"
+          },
+          {
+            "locator": null,
+            "code": "IMAGE_ONLY",
+            "message": "사용할 수 있는 텍스트가 없습니다.",
+            "action": "텍스트 자료 추가"
+          }
+        ],
+        "expires_at": null
+      }
+    ]
+  },
+  "facts": [
+    {
+      "fact_id": "fact_mock_company_name",
+      "field_key": "company_name",
+      "value": "예시 회사",
+      "status": "supported",
+      "evidence_refs": [
+        {
+          "source_id": "MOCK01",
+          "source_version": 1,
+          "segment_id": "seg_MOCK01_C001",
+          "locator": {
+            "line_start": 1,
+            "line_end": 1
+          },
+          "excerpt": "[MOCK] 회사명: 예시 회사"
+        }
+      ],
+      "conditions": null,
+      "alternatives": null
+    },
+    {
+      "fact_id": "fact_mock_company_summary",
+      "field_key": "company_summary",
+      "value": "예시 회사는 가상 부품의 표면처리와 검사 과정을 소개하는 테스트 기업입니다.",
+      "status": "supported",
+      "evidence_refs": [
+        {
+          "source_id": "MOCK01",
+          "source_version": 1,
+          "segment_id": "seg_MOCK01_C002",
+          "locator": {
+            "line_start": 2,
+            "line_end": 2
+          },
+          "excerpt": "[MOCK] 회사 개요: 예시 회사는 가상 부품의 표면처리와 검사 과정을 소개하는 테스트 기업입니다."
+        }
+      ],
+      "conditions": null,
+      "alternatives": null
+    },
+    {
+      "fact_id": "fact_mock_business_areas",
+      "field_key": "business_areas",
+      "value": "가상 부품 표면처리와 검사",
+      "status": "supported",
+      "evidence_refs": [
+        {
+          "source_id": "MOCK01",
+          "source_version": 1,
+          "segment_id": "seg_MOCK01_C003",
+          "locator": {
+            "line_start": 3,
+            "line_end": 3
+          },
+          "excerpt": "[MOCK] 사업 분야: 가상 부품 표면처리와 검사"
+        }
+      ],
+      "conditions": null,
+      "alternatives": null
+    },
+    {
+      "fact_id": "fact_mock_products_services",
+      "field_key": "products_services",
+      "value": "예시 제품 A와 예시 제품 B",
+      "status": "supported",
+      "evidence_refs": [
+        {
+          "source_id": "MOCK01",
+          "source_version": 1,
+          "segment_id": "seg_MOCK01_C004",
+          "locator": {
+            "line_start": 4,
+            "line_end": 4
+          },
+          "excerpt": "[MOCK] 제품: 예시 제품 A와 예시 제품 B"
+        }
+      ],
+      "conditions": null,
+      "alternatives": null
+    },
+    {
+      "fact_id": "fact_mock_technology",
+      "field_key": "technology",
+      "value": "가상 공정별 작업 기록과 검사 이력 관리",
+      "status": "supported",
+      "evidence_refs": [
+        {
+          "source_id": "MOCK01",
+          "source_version": 1,
+          "segment_id": "seg_MOCK01_C005",
+          "locator": {
+            "line_start": 5,
+            "line_end": 5
+          },
+          "excerpt": "[MOCK] 기술: 가상 공정별 작업 기록과 검사 이력 관리"
+        }
+      ],
+      "conditions": null,
+      "alternatives": null
+    },
+    {
+      "fact_id": "fact_mock_strengths",
+      "field_key": "strengths",
+      "value": "작업 조건을 확인하고 공정별 검사 결과를 기록합니다.",
+      "status": "supported",
+      "evidence_refs": [
+        {
+          "source_id": "MOCK01",
+          "source_version": 1,
+          "segment_id": "seg_MOCK01_C006",
+          "locator": {
+            "line_start": 6,
+            "line_end": 6
+          },
+          "excerpt": "[MOCK] 강점: 작업 조건을 확인하고 공정별 검사 결과를 기록합니다."
+        }
+      ],
+      "conditions": null,
+      "alternatives": null
+    },
+    {
+      "fact_id": "fact_mock_customers_markets",
+      "field_key": "customers_markets",
+      "value": "산업용 장비 분야의 익명 고객 예시",
+      "status": "supported",
+      "evidence_refs": [
+        {
+          "source_id": "MOCK01",
+          "source_version": 1,
+          "segment_id": "seg_MOCK01_C007",
+          "locator": {
+            "line_start": 7,
+            "line_end": 7
+          },
+          "excerpt": "[MOCK] 고객: 산업용 장비 분야의 익명 고객 예시"
+        }
+      ],
+      "conditions": null,
+      "alternatives": null
+    },
+    {
+      "fact_id": "fact_mock_certifications",
+      "field_key": "certifications",
+      "value": null,
+      "status": "missing",
+      "evidence_refs": [],
+      "conditions": null,
+      "alternatives": null
+    },
+    {
+      "fact_id": "fact_mock_history",
+      "field_key": "history",
+      "value": null,
+      "status": "missing",
+      "evidence_refs": [],
+      "conditions": null,
+      "alternatives": null
+    },
+    {
+      "fact_id": "fact_mock_processes",
+      "field_key": "processes",
+      "value": "가상 공정 A, 가상 공정 B, 가상 공정 C",
+      "status": "supported",
+      "evidence_refs": [
+        {
+          "source_id": "MOCK01",
+          "source_version": 1,
+          "segment_id": "seg_MOCK01_C008",
+          "locator": {
+            "line_start": 8,
+            "line_end": 8
+          },
+          "excerpt": "[MOCK] 공정 목록: 가상 공정 A, 가상 공정 B, 가상 공정 C"
+        }
+      ],
+      "conditions": null,
+      "alternatives": null
+    },
+    {
+      "fact_id": "fact_mock_process_count",
+      "field_key": "process_count",
+      "value": "3개",
+      "status": "supported",
+      "evidence_refs": [
+        {
+          "source_id": "MOCK01",
+          "source_version": 1,
+          "segment_id": "seg_MOCK01_C009",
+          "locator": {
+            "line_start": 9,
+            "line_end": 9
+          },
+          "excerpt": "[MOCK] 공정 수: 3개"
+        }
+      ],
+      "conditions": null,
+      "alternatives": null
+    },
+    {
+      "fact_id": "fact_mock_capabilities",
+      "field_key": "capabilities",
+      "value": "예시 소재 A에 대한 시제품 처리를 상담합니다.",
+      "status": "supported",
+      "evidence_refs": [
+        {
+          "source_id": "MOCK01",
+          "source_version": 1,
+          "segment_id": "seg_MOCK01_C010",
+          "locator": {
+            "line_start": 10,
+            "line_end": 10
+          },
+          "excerpt": "[MOCK] 대응 범위: 예시 소재 A에 대한 시제품 처리를 상담합니다."
+        }
+      ],
+      "conditions": null,
+      "alternatives": null
+    },
+    {
+      "fact_id": "fact_mock_lead_time",
+      "field_key": "lead_time",
+      "value": null,
+      "status": "missing",
+      "evidence_refs": [],
+      "conditions": null,
+      "alternatives": null
+    },
+    {
+      "fact_id": "fact_mock_other_info",
+      "field_key": "other_info",
+      "value": "이 파일의 회사와 업무는 모두 가상입니다.",
+      "status": "supported",
+      "evidence_refs": [
+        {
+          "source_id": "MOCK01",
+          "source_version": 1,
+          "segment_id": "seg_MOCK01_C011",
+          "locator": {
+            "line_start": 11,
+            "line_end": 11
+          },
+          "excerpt": "[MOCK] 기타 정보: 이 파일의 회사와 업무는 모두 가상입니다."
+        }
+      ],
+      "conditions": null,
+      "alternatives": null
+    }
+  ],
+  "assets": [
+    {
+      "asset_id": "MOCK_IMG01",
+      "source_id": "MOCK07",
+      "source_version": 1,
+      "scope": "registered",
+      "session_id": null,
+      "origin": "source_image",
+      "mime_type": "image/png",
+      "width": 960,
+      "height": 640,
+      "content_hash": "235f8cf11f9fadbd7e68dd77f6f816e9a67433aae85436aff74328ef456c17c9",
+      "status": "ready",
+      "expires_at": null
+    },
+    {
+      "asset_id": "MOCK_IMG02",
+      "source_id": "MOCK07",
+      "source_version": 1,
+      "scope": "registered",
+      "session_id": null,
+      "origin": "source_image",
+      "mime_type": "image/png",
+      "width": 960,
+      "height": 640,
+      "content_hash": "1baf39f73fd6696ceee79f206b84b2fff6570793cf83af582cc61daf1f7e5e67",
+      "status": "ready",
+      "expires_at": null
+    },
+    {
+      "asset_id": "MOCK_IMG03",
+      "source_id": "MOCK07",
+      "source_version": 1,
+      "scope": "registered",
+      "session_id": null,
+      "origin": "source_image",
+      "mime_type": "image/png",
+      "width": 640,
+      "height": 960,
+      "content_hash": "3b1e6d48ad4855e82bcef55c9e83659465c3774cc954411fc2c2cedb145121b7",
+      "status": "ready",
+      "expires_at": null
+    },
+    {
+      "asset_id": "MOCK_IMG04",
+      "source_id": "MOCK07",
+      "source_version": 1,
+      "scope": "registered",
+      "session_id": null,
+      "origin": "source_image",
+      "mime_type": "image/png",
+      "width": 1280,
+      "height": 420,
+      "content_hash": "838b3e1b399c56d48c2b5a565cd9585c90b6843fee0f07a864fca15fc9d08bf7",
+      "status": "ready",
+      "expires_at": null
+    },
+    {
+      "asset_id": "MOCK_IMG05",
+      "source_id": "MOCK07",
+      "source_version": 1,
+      "scope": "registered",
+      "session_id": null,
+      "origin": "source_image",
+      "mime_type": "image/png",
+      "width": 960,
+      "height": 640,
+      "content_hash": "4e26832ff722a35e3c8a43a507fce6c5c8d84298931424fc9b1622ed3803c6ec",
+      "status": "ready",
+      "expires_at": null
+    },
+    {
+      "asset_id": "MOCK_IMG06",
+      "source_id": "MOCK07",
+      "source_version": 1,
+      "scope": "registered",
+      "session_id": null,
+      "origin": "source_image",
+      "mime_type": "image/png",
+      "width": 960,
+      "height": 640,
+      "content_hash": "c65f6858b3182545e26269a09c176d4bfbe1b3edd18be777f440cec1c2f384d4",
+      "status": "ready",
+      "expires_at": null
+    }
+  ],
+  "source_metadata": [
+    {
+      "source_id": "MOCK01",
+      "filename": "originals/MOCK01.txt",
+      "name": "[MOCK] 예시 회사 소개",
+      "kind": "company",
+      "status": "ready",
+      "sha256": "946dabef6d96ccbd4f32e906005b71bfa1bc48f3df5d8767e9c2d52d0ff6f628",
+      "use_as_company_evidence": true,
+      "document_date": "2026-08-20",
+      "document_date_precision": "day",
+      "mock": true,
+      "mime_type": "text/plain",
+      "size_bytes": 753,
+      "origin_format": "synthetic_txt",
+      "source_version": 1
+    },
+    {
+      "source_id": "MOCK02",
+      "filename": "originals/MOCK02.txt",
+      "name": "[MOCK] 예시 회사 이전 카탈로그",
+      "kind": "company",
+      "status": "ready",
+      "sha256": "09f7ea49097ff977090b11155ee5cda25a19750740852db22f5558b0fe787b32",
+      "use_as_company_evidence": true,
+      "document_date": "2017",
+      "document_date_precision": "year",
+      "mock": true,
+      "mime_type": "text/plain",
+      "size_bytes": 272,
+      "origin_format": "synthetic_txt",
+      "source_version": 1
+    },
+    {
+      "source_id": "MOCK03",
+      "filename": "originals/MOCK03.txt",
+      "name": "[MOCK] 예시 인증 자료 국문",
+      "kind": "certificate",
+      "status": "ready",
+      "sha256": "0e19c1d69a9f7c839ea6a2427d9915e9bd07f18fbb692daf3e38217c37de8280",
+      "use_as_company_evidence": true,
+      "document_date": "2024-05-10",
+      "document_date_precision": "day",
+      "mock": true,
+      "mime_type": "text/plain",
+      "size_bytes": 136,
+      "origin_format": "synthetic_txt",
+      "source_version": 1
+    },
+    {
+      "source_id": "MOCK04",
+      "filename": "originals/MOCK04.txt",
+      "name": "[MOCK] 예시 인증 자료 영문 대조",
+      "kind": "certificate",
+      "status": "ready",
+      "sha256": "fade6e6bd711250dd0d4df013f72f2ba7d853ecc8674c202283f67f707e0c05e",
+      "use_as_company_evidence": true,
+      "document_date": "2024-05-10",
+      "document_date_precision": "day",
+      "mock": true,
+      "mime_type": "text/plain",
+      "size_bytes": 113,
+      "origin_format": "synthetic_txt",
+      "source_version": 1
+    },
+    {
+      "source_id": "MOCK05",
+      "filename": "originals/MOCK05.txt",
+      "name": "[MOCK] 예시 담당자 보완 메모",
+      "kind": "interview",
+      "status": "ready",
+      "sha256": "ff0f9124554523bfdef86dd9edf29f5380c1809a8a7ebc9db4f4393e7ccf0e07",
+      "use_as_company_evidence": true,
+      "document_date": "2026-09-10",
+      "document_date_precision": "day",
+      "mock": true,
+      "mime_type": "text/plain",
+      "size_bytes": 456,
+      "origin_format": "synthetic_txt",
+      "source_version": 1
+    },
+    {
+      "source_id": "MOCK06",
+      "filename": "originals/MOCK06.txt",
+      "name": "[MOCK] 회사 근거에서 제외할 참고 문구",
+      "kind": "other",
+      "status": "reference_only",
+      "sha256": "96f572cc08965453c73f1f68ed23de403f95bf9035634807f55622c93e93334e",
+      "use_as_company_evidence": false,
+      "document_date": null,
+      "document_date_precision": null,
+      "mock": true,
+      "mime_type": "text/plain",
+      "size_bytes": 103,
+      "origin_format": "synthetic_txt",
+      "source_version": 1
+    },
+    {
+      "source_id": "MOCK07",
+      "filename": "originals/MOCK07.txt",
+      "name": "[MOCK] 예시 사진 목록",
+      "kind": "photo",
+      "status": "ready",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "use_as_company_evidence": true,
+      "document_date": "2026-08-20",
+      "document_date_precision": "day",
+      "mock": true,
+      "mime_type": "text/plain",
+      "size_bytes": 0,
+      "origin_format": "synthetic_txt",
+      "source_version": 1
+    },
+    {
+      "source_id": "MOCK08",
+      "filename": "originals/MOCK08.txt",
+      "name": "[MOCK] 예시 읽을 텍스트가 없는 자료",
+      "kind": "other",
+      "status": "image_only",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "use_as_company_evidence": true,
+      "document_date": "2017",
+      "document_date_precision": "year",
+      "mock": true,
+      "mime_type": "text/plain",
+      "size_bytes": 0,
+      "origin_format": "synthetic_txt",
+      "source_version": 1
+    }
+  ],
+  "image_metadata": [
+    {
+      "image_id": "MOCK_IMG01",
+      "source_id": "MOCK07",
+      "filename": "images/MOCK_IMG01.png",
+      "title": "[MOCK] 예시 제품 A",
+      "locator": "이미지 목록 1번",
+      "category": "product",
+      "alt": "[MOCK] 예시 제품 A를 나타내는 테스트 도형",
+      "caption": "[MOCK] 예시 제품 A",
+      "external_use": "allowed",
+      "document_date": "2026-08-20",
+      "sha256": "235f8cf11f9fadbd7e68dd77f6f816e9a67433aae85436aff74328ef456c17c9",
+      "width": 960,
+      "height": 640,
+      "mock": "true"
+    },
+    {
+      "image_id": "MOCK_IMG02",
+      "source_id": "MOCK07",
+      "filename": "images/MOCK_IMG02.png",
+      "title": "[MOCK] 예시 공정 A",
+      "locator": "이미지 목록 2번",
+      "category": "process",
+      "alt": "[MOCK] 예시 공정 A를 나타내는 테스트 도형",
+      "caption": "[MOCK] 예시 공정 A",
+      "external_use": "allowed",
+      "document_date": "2026-08-20",
+      "sha256": "1baf39f73fd6696ceee79f206b84b2fff6570793cf83af582cc61daf1f7e5e67",
+      "width": 960,
+      "height": 640,
+      "mock": "true"
+    },
+    {
+      "image_id": "MOCK_IMG03",
+      "source_id": "MOCK07",
+      "filename": "images/MOCK_IMG03.png",
+      "title": "[MOCK] 예시 검사 장면",
+      "locator": "이미지 목록 3번",
+      "category": "inspection",
+      "alt": "[MOCK] 예시 검사 장면를 나타내는 테스트 도형",
+      "caption": "[MOCK] 예시 검사 장면",
+      "external_use": "allowed",
+      "document_date": "2026-08-20",
+      "sha256": "3b1e6d48ad4855e82bcef55c9e83659465c3774cc954411fc2c2cedb145121b7",
+      "width": 640,
+      "height": 960,
+      "mock": "true"
+    },
+    {
+      "image_id": "MOCK_IMG04",
+      "source_id": "MOCK07",
+      "filename": "images/MOCK_IMG04.png",
+      "title": "[MOCK] 예시 작업 공간",
+      "locator": "이미지 목록 4번",
+      "category": "facility",
+      "alt": "[MOCK] 예시 작업 공간를 나타내는 테스트 도형",
+      "caption": "[MOCK] 예시 작업 공간",
+      "external_use": "allowed",
+      "document_date": "2026-08-20",
+      "sha256": "838b3e1b399c56d48c2b5a565cd9585c90b6843fee0f07a864fca15fc9d08bf7",
+      "width": 1280,
+      "height": 420,
+      "mock": "true"
+    },
+    {
+      "image_id": "MOCK_IMG05",
+      "source_id": "MOCK07",
+      "filename": "images/MOCK_IMG05.png",
+      "title": "[MOCK] 공개 범위 미확인 사진",
+      "locator": "이미지 목록 5번",
+      "category": "facility",
+      "alt": "[MOCK] 공개 범위 미확인 사진를 나타내는 테스트 도형",
+      "caption": "[MOCK] 공개 범위 미확인 사진",
+      "external_use": "pending",
+      "document_date": "2026-08-20",
+      "sha256": "4e26832ff722a35e3c8a43a507fce6c5c8d84298931424fc9b1622ed3803c6ec",
+      "width": 960,
+      "height": 640,
+      "mock": "true"
+    },
+    {
+      "image_id": "MOCK_IMG06",
+      "source_id": "MOCK07",
+      "filename": "images/MOCK_IMG06.png",
+      "title": "[MOCK] 외부 사용 제외 사진",
+      "locator": "이미지 목록 6번",
+      "category": "product",
+      "alt": "[MOCK] 외부 사용 제외 사진를 나타내는 테스트 도형",
+      "caption": "[MOCK] 외부 사용 제외 사진",
+      "external_use": "denied",
+      "document_date": "2026-08-20",
+      "sha256": "c65f6858b3182545e26269a09c176d4bfbe1b3edd18be777f440cec1c2f384d4",
+      "width": 960,
+      "height": 640,
+      "mock": "true"
+    }
+  ],
+  "presets": [
+    {
+      "id": "A",
+      "label": "기본 소개",
+      "brief": {
+        "purpose": "거래처에 회사와 주요 공정을 소개",
+        "emphasis": [
+          "공정 설명",
+          "근거가 있는 강점"
+        ],
+        "direction": "balanced",
+        "target_pages": 6,
+        "photo_preference": "balanced"
+      }
+    },
+    {
+      "id": "B",
+      "label": "품질·공정",
+      "brief": {
+        "purpose": "품질·공정 검토",
+        "emphasis": [
+          "공정 설명",
+          "근거가 있는 강점"
+        ],
+        "direction": "quality_process",
+        "target_pages": 8,
+        "photo_preference": "balanced"
+      }
+    },
+    {
+      "id": "C",
+      "label": "고객 대응",
+      "brief": {
+        "purpose": "신규 고객 상담",
+        "emphasis": [
+          "공정 설명",
+          "근거가 있는 강점"
+        ],
+        "direction": "customer_response",
+        "target_pages": 4,
+        "photo_preference": "balanced"
+      }
+    }
+  ],
+  "page_options": [
+    1,
+    4,
+    6,
+    8,
+    10
+  ],
+  "photo_options": [
+    "none",
+    "balanced",
+    "many"
+  ],
+  "session_segments": [
+    {
+      "segment_id": "seg_MOCK_SESSION01_C001",
+      "source_id": "MOCK_SESSION01",
+      "source_version": 1,
+      "locator": {
+        "line_start": 1,
+        "line_end": 1
+      },
+      "text": "[MOCK] 보완 메모: 예시 공정 A만 이번 소개서에 사용합니다."
+    }
+  ]
+}
