@@ -106,9 +106,12 @@ flowchart TD
 | `analyze(AnalyzeRequest)` | 세션·입력 버전, Brief, 선택 자료의 읽은 구간·사진 ID | `AnalyzeResult`: `Fact[]`, `Issue[]`, `Recommendations` |
 | `draft(DraftRequest)` | 위 입력과 사용자가 확인한 `PreflightOut` | `DraftResult`: 제목과 `Page[]`; 문서 저장은 서버 책임 |
 | `propose(ProposeRequest)` | 선택 자료, 기준 `Document`, 대상 블록 ID, 사용자 요청, 수정 종류 | `ProposeResult`: 허용 `Operation[]`, 이유, 필요 시 `Candidate[]`; 현재 문서는 변경하지 않음 |
+| `validate(ValidateRequest)` | 선택 자료, 기준 `Document`, 확인한 `PreflightOut`, 변경 블록 ID, 서버 일반 검사 결과 | `ValidateResult`: 내용 검증 `Issue[]`와 메모; 서버의 필수 문제를 지우거나 승인 여부를 결정하지 않음 |
+
+네 함수의 **서버 연결 규격·mock 경로는 구현 완료, 실제 LLM 의미 검증은 미연결**이다. 검증 Job, 결과 저장, 전체 미해결 문제 합산과 승인 조건 검사도 서버에 연결되어 있다. Agent는 기존 `ValidateRequest`·`ValidateResult`에 실제 AI 검증을 연결한다([task_backend.md 6.13절](task_backend.md)).
 
 - 반환형은 `app/models.py`의 기존 모델을 재사용한다. 추천과 후보의 실제 필드는 [contracts.md](contracts.md) 7절 C-02/C-04에서 확인하며 별도 형식을 만들지 않는다.
-- `SourceIn`에는 자료 ID·버전·종류·이름·읽기 상태, `SegmentIn`의 ID·위치·원문, 사용 가능한 `asset_ids`가 들어온다. 현재 `build_sources()`는 읽기가 끝난 현재 세션의 선택 자료만 조립한다. 등록 자료 연결은 백엔드 후속 작업이다.
+- `SourceIn`에는 자료 ID·버전·종류·이름·읽기 상태·출처 종류(`origin_kind`), `SegmentIn`의 ID·위치·원문, 사용 가능한 `asset_ids`가 들어온다. `build_sources()`는 사용자가 선택한 등록 자료와 현재 세션 첨부 중 읽기 상태가 `complete` 또는 `partial`인 근거 자료를 조립한다. 등록 자료는 근거 사용이 허용된 것만 포함하며, 작성 조건 첨부(`role=instruction`)와 다른 세션 자료는 제외한다. 시연 자료는 시연 세션에서만 포함한다.
 - 분석 결과의 사실 ID는 같은 결과 안에서 중복되지 않아야 한다. 초안은 확인된 사실 ID를 참조하고, 원문 구간·사진 ID는 입력에 존재하는 것만 사용한다. 새 페이지·블록 ID와 구조 편집 범위의 공통 정책은 C-11에서 정한다.
 - 동기/비동기 반환을 모두 지원한다. 실패는 `AgentError(code, message, retryable)`로 알리며, 지원하지 않는 편집을 빈 수정안으로 성공 처리하지 않는다. `AGENT_MODE=llm`에서 구현을 불러오지 못하면 작업이 실패하며 mock으로 바뀌지 않는다.
 - 서버의 ID·형식 검사를 통과해도 사실 의미가 검증된 것은 아니다. `company_name_hint`는 현재 필드가 없으며, 채택 여부와 근거 처리 방식은 C-07에서 협의한다. 채택하더라도 입력만으로 근거 있는 회사명으로 확정하지 않는다.
@@ -122,17 +125,17 @@ Stitch 화면과 연결할 때도 기존 모델을 사용한다([contracts.md 7.
 
 기존 `backend/agent.py`, `prompts/extract.txt`, `contracts/profile.schema.json`은 현재 저장소에 없다. mock의 14개 필드 이름은 참고할 수 있지만 원본 스키마를 대신하지 않는다. AG-01에서 원본 저장소·브랜치·파일 위치를 받아 읽고 상세 필드와 상태를 보존하는 변환 방법(D-05)을 정한다.
 
-### 4.2 구현 전에 함께 정할 연결
+### 4.2 실제 AI 연결과 후속 합의
 
-다음은 필요한 역할을 정리한 것으로 새 함수 서명이나 API를 확정한 것이 아니다. 공통 검토 목록의 원본은 [contracts.md](contracts.md) 7절이다.
+다음은 기존 서버 기반에서 남은 Agent 구현과 합의 범위다. 새 함수 서명이나 API를 확정한 것이 아니며, 공통 검토 목록의 원본은 [contracts.md](contracts.md) 7절이다.
 
 | 연결 | Agent가 준비할 내용 | 백엔드와 맞출 부분 |
 |---|---|---|
-| 내용 검증(AG-07, C-08) | 기준 문서·원문·변경 범위·기존 문제를 받아 의미와 근거를 대조한 결과 | 입력·반환 모델, 검사 결과 저장과 전체 미해결 문제 합산, 승인 조건 |
+| 내용 검증(AG-07, C-08) | 기존 `validate(ValidateRequest) → ValidateResult`에 원문·주장·수치의 실제 의미 검증 연결 | 기존 검증 Job·저장·승인 경로를 재사용하고 실제 AI 결과와 연결 검증. 새 경고 확인 정책의 구체적인 적용은 별도 합의 후 백엔드 후속 작업 |
 | 자료 변경 영향 확인(AG-02/AG-05/AG-07, C-05) | 새 점검과 기존 문서를 비교해 영향을 받는 주장·수정안 또는 현 내용 유지 이유 반환 | 재확인 행동, 문서와 최신 입력 버전 연결, 중간 상태와 재시도 |
 | 사용자 대기·재개(AG-03, C-03/C-06) | 허용된 사용자 응답에 따른 그래프 재개와 중복 실행 방지 | 내부 호출 방식, 작업·체크포인트 참조, 버전·만료 검사와 종료 시 정리 |
 
-이 세 연결은 현재 `AgentBridge`에 없으며 검증·승인도 실제 연결되지 않았다. Agent가 서버 상태나 승인 기록을 직접 바꾸는 방식으로 빈 연결을 대신하지 않는다.
+내용 검증의 서버 연결은 이미 있다. 자료 변경 영향 확인과 LangGraph 대기·재개 연결은 후속 작업이다. 서버의 버전 검사와 최종 사용자 승인은 구현되어 있으며, 새 경고 확인 정책은 기존 확인 기록을 바탕으로 대상·기록 규격·관련 변경 후 재확인 조건과 `DEMO_VALUE` 적용 범위를 맞춘 뒤 승인 조건에 연결한다. Agent가 서버 상태나 승인 기록을 직접 바꾸지 않는다.
 
 ## 5. 역할별 생성 규칙
 

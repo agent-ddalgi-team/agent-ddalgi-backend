@@ -1,5 +1,5 @@
 {
-  "_note": "프론트 전달용 계약 예시. contracts.md v1.1(contract_version 1.1, schema_version 1.0) 기준으로 백엔드 BE-01에서 손으로 작성했다. 실제 서버 응답이 아니며 모든 값은 가짜 데이터다. 실제 구현(BE-02 이후)에서 응답이 달라지면 이 파일을 먼저 갱신하고 프론트에 알린다. BE-08(2026-09-27) 예시는 실서버 응답(가상 자료) 기반. contracts.md 원본은 미수정, 계약 확인 ㉜~㊳ 참조. BE-09(2026-09-27): 세션 종료(DELETE)·종료/만료 세션 410·멱등 재전송 410 예시는 실서버 응답(가상 자료) 기반, 계약 확인 ㊵~㊸ 참조. DB v9(2026-09-27): 기존 예시는 demo/role/origin_kind/template_version 필드를 현재 모델에 맞춘 형식 참고이며 전체 재실행한 실응답이 아니다. DB v9 접두 예시는 별도 uvicorn·localhost TCP에서 가짜 자료로 받은 최신 실응답이다. 시연 자료 적재·조건 첨부 근거 제외·검증 warning 이후 PDF 배치 통과, 4쪽 미리보기, 승인 201, Export 202, 같은 키 재전송 202, ready 재사용 200, 다운로드 200을 확인했다. 모든 물리 쪽에 시연 footer가 있고 승인 artifact와 다운로드 바이트 SHA-256, 미리보기와 다운로드 PDF 페이지 렌더 SHA-256이 일치한다. 모드 OFF 접근 403·소유자 DELETE 200·종료 후 410도 실응답으로 기록했다. 이전 제한 실행 환경에서의 render_failed 관측은 task 기록에 구분하며 최신 성공 예시를 대체하지 않는다. 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조. contracts.md 원본은 미수정.",
+  "_note": "프론트 전달용 계약 예시. contracts.md v1.1(contract_version 1.1, schema_version 1.0) 기준으로 백엔드 BE-01에서 손으로 작성했다. 실제 서버 응답이 아니며 모든 값은 가짜 데이터다. 실제 구현(BE-02 이후)에서 응답이 달라지면 이 파일을 먼저 갱신하고 프론트에 알린다. BE-08(2026-09-27) 예시는 실서버 응답(가상 자료) 기반. contracts.md 원본은 미수정, 계약 확인 ㉜~㊳ 참조. BE-09(2026-09-27): 세션 종료(DELETE)·종료/만료 세션 410·멱등 재전송 410 예시는 실서버 응답(가상 자료) 기반, 계약 확인 ㊵~㊸ 참조. DB v9(2026-09-27): 기존 예시는 demo/role/origin_kind/template_version 필드를 현재 모델에 맞춘 형식 참고이며 전체 재실행한 실응답이 아니다. DB v9 접두 예시는 별도 uvicorn·localhost TCP에서 가짜 자료로 받은 최신 실응답이다. 시연 자료 적재·조건 첨부 근거 제외·검증 warning 이후 PDF 배치 통과, 4쪽 미리보기, 승인 201, Export 202, 같은 키 재전송 202, ready 재사용 200, 다운로드 200을 확인했다. 모든 물리 쪽에 시연 footer가 있고 승인 artifact와 다운로드 바이트 SHA-256, 미리보기와 다운로드 PDF 페이지 렌더 SHA-256이 일치한다. 모드 OFF 접근 403·소유자 DELETE 200·종료 후 410도 실응답으로 기록했다. 이전 제한 실행 환경에서의 render_failed 관측은 task 기록에 구분하며 최신 성공 예시를 대체하지 않는다. 계약 제안 ㊹~㊿는 task_backend.md 6.17-6 참조. contracts.md 원본은 미수정.",
   "contract_version": "1.1",
   "schema_version": "1.0",
   "base_path": "/api/v1",
@@ -11,7 +11,7 @@
     "③": "추출 텍스트 글자수 초과 시 오류 코드 미정(FILE_TOO_LARGE 또는 별도 코드).",
     "④": "AI 결과 형식 오류(옛 INVALID_OUTPUT)에 대응하는 코드 미정.",
     "⑭~⑳": "BE-05 임시 코드·필드·경로 — task_backend.md 6.5-6 참조 (INVALID_OPERATION, GET proposals/{pid}, rationale·candidates, PROPOSAL_STALE details.status, RESTORE_REFERENCE_INVALID, CANDIDATE_REQUIRED, UNSUPPORTED_PROPOSAL/NO_IMAGE_CANDIDATES).",
-    "㊹~㊿": "시연 출처/세션/출력 정책·첨부 role·include_demo·적재 스키마·오류 코드·멱등 호환: task_backend.md 6.11-6. contracts.md 원본은 미수정."
+    "㊹~㊿": "시연 출처/세션/출력 정책·첨부 role·include_demo·적재 스키마·오류 코드·멱등 호환: task_backend.md 6.17-6. contracts.md 원본은 미수정."
   },
   "common_rules": {
     "ids": "불투명 문자열. 형식에 의미를 두지 않는다.",
@@ -1877,7 +1877,7 @@
     },
     {
       "name": "DB v9 demo_session_create",
-      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.17-6 참조.",
       "request": {
         "method": "POST",
         "path": "/api/v1/sessions",
@@ -1919,7 +1919,7 @@
     },
     {
       "name": "DB v9 include_demo_sources",
-      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.17-6 참조.",
       "request": {
         "method": "GET",
         "path": "/api/v1/sources?include_demo=true"
@@ -1960,7 +1960,7 @@
     },
     {
       "name": "DB v9 instruction_upload",
-      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.17-6 참조.",
       "request": {
         "method": "POST",
         "path": "/api/v1/sessions/sess_3f6999536fea4e71/sources",
@@ -2008,7 +2008,7 @@
     },
     {
       "name": "DB v9 instruction_cannot_be_evidence",
-      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.17-6 참조.",
       "request": {
         "method": "PATCH",
         "path": "/api/v1/sessions/sess_3f6999536fea4e71/inputs",
@@ -2034,7 +2034,7 @@
     },
     {
       "name": "DB v9 demo_issues",
-      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.17-6 참조.",
       "request": {
         "method": "GET",
         "path": "/api/v1/sessions/sess_3f6999536fea4e71/documents/doc_e4fec921a1dc4ca3/issues"
@@ -2124,7 +2124,7 @@
     },
     {
       "name": "DB v9 pdf_layout_finished",
-      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.17-6 참조.",
       "request": {
         "method": "GET",
         "path": "/api/v1/sessions/sess_3f6999536fea4e71/jobs/job_aad88eab677d41f3"
@@ -2165,7 +2165,7 @@
     },
     {
       "name": "DB v9 demo_off_get_blocked",
-      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.17-6 참조.",
       "request": {
         "method": "GET",
         "path": "/api/v1/sessions/sess_3f6999536fea4e71"
@@ -2185,7 +2185,7 @@
     },
     {
       "name": "DB v9 demo_off_create_replay_blocked",
-      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.17-6 참조.",
       "request": {
         "method": "POST",
         "path": "/api/v1/sessions",
@@ -2218,7 +2218,7 @@
     },
     {
       "name": "DB v9 demo_off_owner_delete_allowed",
-      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.17-6 참조.",
       "request": {
         "method": "DELETE",
         "path": "/api/v1/sessions/sess_3f6999536fea4e71"
@@ -2234,7 +2234,7 @@
     },
     {
       "name": "DB v9 closed_session_410_priority",
-      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.17-6 참조.",
       "request": {
         "method": "GET",
         "path": "/api/v1/sessions/sess_3f6999536fea4e71"
@@ -2257,7 +2257,7 @@
     },
     {
       "name": "DB v9 document_after_layout",
-      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조. 실제 PDF 4쪽 모두 시연 footer 확인. preview_asset_ids의 PNG 4개는 각각 200이며, 최종 다운로드 PDF를 같은 배율로 렌더한 각 페이지 PNG의 SHA-256과 모두 일치했다.",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.17-6 참조. 실제 PDF 4쪽 모두 시연 footer 확인. preview_asset_ids의 PNG 4개는 각각 200이며, 최종 다운로드 PDF를 같은 배율로 렌더한 각 페이지 PNG의 SHA-256과 모두 일치했다.",
       "request": {
         "method": "GET",
         "path": "/api/v1/sessions/sess_3f6999536fea4e71/documents/doc_e4fec921a1dc4ca3"
@@ -2651,7 +2651,7 @@
     },
     {
       "name": "DB v9 approve_demo_pdf",
-      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.17-6 참조.",
       "request": {
         "method": "POST",
         "path": "/api/v1/sessions/sess_3f6999536fea4e71/documents/doc_e4fec921a1dc4ca3/approvals",
@@ -2693,7 +2693,7 @@
     },
     {
       "name": "DB v9 export_pdf_requested",
-      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.17-6 참조.",
       "request": {
         "method": "POST",
         "path": "/api/v1/sessions/sess_3f6999536fea4e71/exports",
@@ -2728,7 +2728,7 @@
     },
     {
       "name": "DB v9 export_same_key_replay",
-      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조. Export가 ready가 된 뒤에도 같은 키·같은 본문 재전송은 최초 202 상태와 본문을 그대로 반환한다.",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.17-6 참조. Export가 ready가 된 뒤에도 같은 키·같은 본문 재전송은 최초 202 상태와 본문을 그대로 반환한다.",
       "request": {
         "method": "POST",
         "path": "/api/v1/sessions/sess_3f6999536fea4e71/exports",
@@ -2763,7 +2763,7 @@
     },
     {
       "name": "DB v9 export_pdf_ready_reuse",
-      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.17-6 참조.",
       "request": {
         "method": "POST",
         "path": "/api/v1/sessions/sess_3f6999536fea4e71/exports",
@@ -2795,7 +2795,7 @@
     },
     {
       "name": "DB v9 download_pdf",
-      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조. _observed는 내려받은 바이트의 검증 메타데이터이며 API JSON 응답 필드가 아니다.",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.17-6 참조. _observed는 내려받은 바이트의 검증 메타데이터이며 API JSON 응답 필드가 아니다.",
       "request": {
         "method": "GET",
         "path": "/api/v1/sessions/sess_3f6999536fea4e71/exports/exp_eab195b10ea44649/download"
@@ -2823,7 +2823,7 @@
     },
     {
       "name": "DB v9 demo_off_preview_blocked",
-      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.17-6 참조.",
       "request": {
         "method": "GET",
         "path": "/api/v1/sessions/sess_3f6999536fea4e71/assets/prv_7c1877ce7e2b413f"
@@ -2843,7 +2843,7 @@
     },
     {
       "name": "DB v9 demo_off_download_blocked",
-      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.17-6 참조.",
       "request": {
         "method": "GET",
         "path": "/api/v1/sessions/sess_3f6999536fea4e71/exports/exp_eab195b10ea44649/download"
@@ -2863,7 +2863,7 @@
     },
     {
       "name": "DB v9 closed_preview_410_priority",
-      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.17-6 참조.",
       "request": {
         "method": "GET",
         "path": "/api/v1/sessions/sess_3f6999536fea4e71/assets/prv_7c1877ce7e2b413f"
@@ -2886,7 +2886,7 @@
     },
     {
       "name": "DB v9 closed_download_410_priority",
-      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.17-6 참조.",
       "request": {
         "method": "GET",
         "path": "/api/v1/sessions/sess_3f6999536fea4e71/exports/exp_eab195b10ea44649/download"
