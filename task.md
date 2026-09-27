@@ -31,6 +31,8 @@
 
 개발 전 문서 정리: 2026-09-27 · 기존 BE/AG 상태·선행 조건 유지 · [task_backend.md 6.6절](task_backend.md), [task_agent.md 6.1절](task_agent.md) 참조.
 
+Stitch 문서 반영: 2026-09-27 · 문서 정리, 기존 작업 상태 유지 · [task_backend.md 6.7절](task_backend.md), [task_agent.md 6.2절](task_agent.md) 참조.
+
 ## 3. 전체 검수의 결과 위치
 
 QA ID는 이전 문서와 동일하다. 아래 표는 결과 위치만 안내한다. 실제 PASS/FAIL/미실행 및 증거는 지정 파일에서 한 번만 기록한다. 공동 확인 항목도 기록 책임은 한 명이 맡는다.
