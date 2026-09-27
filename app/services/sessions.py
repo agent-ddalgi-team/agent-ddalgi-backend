@@ -28,20 +28,44 @@ def session_dir(settings: Settings, session_id: str) -> Path:
     return settings.private_runs_dir / session_id
 
 
-def create(conn: sqlite3.Connection, settings: Settings, owner_id: str, brief: Brief) -> SessionOut:
+def demo_allowed(settings: Settings) -> bool:
+    return bool(settings.demo_mode)
+
+
+def usable(settings: Settings, row: sqlite3.Row | None) -> str | None:
+    """Pure policy check shared by requests and final Job writes; expiry wins over demo mode."""
+    if row is None:
+        return "expired"
+    if row["status"] != "active":
+        return "closed" if row["status"] == "closed" else "expired"
+    if now() >= from_iso(row["expires_at"]):
+        return "expired"
+    if row["demo"] and not demo_allowed(settings):
+        return "demo_disabled"
+    return None
+
+
+def demo_disabled_error() -> ApiError:
+    return ApiError(403, "DEMO_MODE_DISABLED", "현재 서버에서 시연 모드가 꺼져 있습니다.")
+
+
+def create(conn: sqlite3.Connection, settings: Settings, owner_id: str, brief: Brief, *, demo: bool = False) -> SessionOut:
+    if demo and not demo_allowed(settings):
+        raise demo_disabled_error()
     session_id = f"sess_{uuid.uuid4().hex[:16]}"
     created = now()
     conn.execute(
         "INSERT INTO sessions (session_id, owner_id, status, input_revision, brief_json, selected_source_ids, "
-        "created_at, last_activity_at, expires_at) VALUES (?, ?, 'active', 1, ?, '[]', ?, ?, ?)",
+        "created_at, last_activity_at, expires_at, demo) VALUES (?, ?, 'active', 1, ?, '[]', ?, ?, ?, ?)",
         (session_id, owner_id, brief.model_dump_json(), to_iso(created), to_iso(created),
-         to_iso(_expires_at(settings, created, created))),
+         to_iso(_expires_at(settings, created, created)), int(demo)),
     )
     return get(conn, owner_id, session_id, settings)
 
 
 def _row_to_out(row: sqlite3.Row) -> SessionOut:
     return SessionOut(
+        demo=bool(row["demo"]),
         session_id=row["session_id"],
         status=row["status"],
         input_revision=row["input_revision"],
@@ -75,6 +99,8 @@ def raise_gone(conn: sqlite3.Connection, settings: Settings, owner_id: str, sess
             conn.commit()
             raise ApiError(404, "RESOURCE_NOT_FOUND", "요청한 자원을 찾을 수 없습니다.")
         if row["status"] == "active" and now() < from_iso(row["expires_at"]):
+            if usable(settings, row) == "demo_disabled":
+                raise demo_disabled_error()
             return row
         reason = cleanup.REASON_CLOSED if row["status"] == "closed" else cleanup.REASON_EXPIRED
         result = cleanup.finalize(conn, settings, session_id, reason)
@@ -93,8 +119,11 @@ def load_active(conn: sqlite3.Connection, owner_id: str, session_id: str, settin
     row = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
     if row is None or row["owner_id"] != owner_id:
         raise ApiError(404, "RESOURCE_NOT_FOUND", "요청한 자원을 찾을 수 없습니다.")
-    if row["status"] != "active" or now() >= from_iso(row["expires_at"]):
+    reason = usable(settings, row)
+    if reason in {"closed", "expired"}:
         return raise_gone(conn, settings, owner_id, session_id)
+    if reason == "demo_disabled":
+        raise demo_disabled_error()
     return row
 
 

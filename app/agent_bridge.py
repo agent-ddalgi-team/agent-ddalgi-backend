@@ -40,6 +40,7 @@ class SourceIn:
     parse_status: str
     segments: list[SegmentIn] = field(default_factory=list)   # 글자를 읽은 구간(없으면 빈 목록)
     asset_ids: list[str] = field(default_factory=list)        # 화면·출력에 쓸 수 있는 이미지
+    origin_kind: str = "real"                              # real = 입수 자료, 회사 확인 완료를 뜻하지 않음
 
 
 @dataclass

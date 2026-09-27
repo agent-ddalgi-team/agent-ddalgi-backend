@@ -34,6 +34,7 @@ BANNED = ("거산", "케미칼", "Geosan")
 # 템플릿·폰트·DOCX 배치 상수·PDF 렌더 상수의 sha256(줄바꿈 정규화). 이 중 하나라도 바꾸면 TEMPLATE_VERSION을 올리고 여기 값을 갱신한다.
 TEMPLATE_FINGERPRINTS = {
     "template_v0": "7b1b3eaabcad9c23078f68a09fd2ccba89a372cbaec9b13643ebfc3abbbe8096",
+    "template_v1": "2bb7dcf9660011db9d907f7ead738cf0859fe5b64a3beef7736ff07711f60781",
 }
 
 # 브라우저 탐색은 어댑터와 같은 규칙(EXPORT_BROWSER_PATH 우선). 테스트 settings에도 같은 값을 넣는다.
@@ -160,7 +161,7 @@ class Flow:
 
 def test_identity_values_come_from_layout_checks(out_dir):
     r = er.render(_fixture_snapshot("1pages"), "docx", out_dir)
-    assert r.template_version == layout_checks.TEMPLATE_VERSION == "template_v0"
+    assert r.template_version == layout_checks.TEMPLATE_VERSION == "template_v1"
     assert r.render_options_hash == layout_checks.RENDER_OPTIONS_HASH == layout_checks.render_options_hash(layout_checks.DEFAULT_RENDER_OPTIONS)
     assert len(r.render_options_hash) == 16 and int(r.render_options_hash, 16) >= 0
     changed = dict(layout_checks.DEFAULT_RENDER_OPTIONS, margin_mm=20)
@@ -675,3 +676,81 @@ def test_browser_args_never_disable_sandbox(tmp_path, monkeypatch):
         args_root = er._browser_args(Path("/usr/bin/chromium"), tmp_path / "prof")
         assert "--no-sandbox" not in args_root
     assert '"--no-sandbox"' not in inspect.getsource(er._browser_args)   # 문자열 인자로 존재하지 않는다(주석 언급만 허용)
+
+
+def test_demo_snapshot_identity_and_docx_footer(out_dir):
+    import docx
+
+    document = _doc([Page(page_id="demo_p", title="가상 안내", layout_key="text", blocks=[
+        _blk("demo_b", "paragraph", text="예시 회사 시연용 임시 설명")])])
+    normal = er.snapshot_from_document(document, {})
+    demo = er.snapshot_from_document(document, {}, demo=True)
+    assert not normal.demo and demo.demo and normal.content_hash != demo.content_hash
+    assert er.DEMO_FOOTER_TEXT not in er.build_html(normal)
+    html = er.build_html(demo)
+    assert er.DEMO_FOOTER_TEXT in html and "@bottom-center" in html
+    assert "margin-bottom: 24mm" in html and "var limit = 258 * PX_PER_MM" in html
+    result = er.render(demo, "docx", out_dir / "demo")
+    assert result.demo and result.to_dict()["demo"]
+    doc = docx.Document(result.file_path)
+    assert er.DEMO_FOOTER_TEXT in "\n".join(p.text for p in doc.sections[0].footer.paragraphs)
+    assert round(doc.sections[0].bottom_margin.mm) == 24
+    normal_doc = docx.Document(er.render(normal, "docx", out_dir / "normal").file_path)
+    assert er.DEMO_FOOTER_TEXT not in "\n".join(p.text for p in normal_doc.sections[0].footer.paragraphs)
+
+
+def test_instruction_image_is_not_accessible_in_render_snapshot(app, settings, out_dir):
+    from app.services import assets
+
+    flow = Flow(app)
+    with connect(settings.db_path) as conn:
+        document = get_current(conn, flow.sid, flow.did)
+        aid = layout_checks.image_asset_ids(document)[0]
+        source_id = conn.execute("SELECT source_id FROM assets WHERE asset_id=?", (aid,)).fetchone()[0]
+        conn.execute("UPDATE sources SET role='instruction' WHERE source_id=?", (source_id,))
+        assert assets.get_ready(conn, flow.sid, aid, settings=settings)["asset_id"] == aid  # 원본 첨부 조회는 유지
+        snapshot = er.build_snapshot(conn, settings, flow.sid, document)
+    assert not snapshot.assets[aid].ok and snapshot.assets[aid].reason == "not_accessible"
+    result = er.render(snapshot, "docx", out_dir)
+    assert any(f.kind == "broken_image" and f.details.get("reason") == "not_accessible" for f in result.findings)
+
+
+@needs_browser
+def test_demo_pdf_footer_on_every_physical_page_and_measured_space(out_dir, settings):
+    from pypdf import PdfReader
+
+    document = _doc([
+        Page(page_id="demo_long", title="긴 본문", layout_key="text", blocks=[
+            _blk("long_demo", "paragraph", text=" ".join([LONG_UNIT] * 150))]),
+        Page(page_id="demo_last", title="마지막", layout_key="text", blocks=[
+            _blk("last_demo", "paragraph", text="예시 회사 시연 마무리")]),
+    ])
+    result = er.render(er.snapshot_from_document(document, {}, demo=True), "pdf", out_dir, settings)
+    pdf = PdfReader(result.file_path)
+    assert result.demo and result.actual_pages == len(pdf.pages) and len(pdf.pages) > len(document.pages)
+    footer = "".join(er.DEMO_FOOTER_TEXT.split())
+    for page in pdf.pages:
+        assert footer in "".join((page.extract_text() or "").split())
+    assert result.details["measure"]["limit_px"] == pytest.approx(258 * 96 / 25.4)
+    assert any(f.kind == "overflow" for f in result.findings)
+
+
+def test_demo_pdf_missing_footer_is_rejected_before_publication(out_dir, monkeypatch):
+    from pypdf import PdfWriter
+
+    document = _doc([Page(page_id="demo_p", title="가상 안내", layout_key="text", blocks=[
+        _blk("demo_b", "paragraph", text="예시 회사 시연용 임시 설명")])])
+    monkeypatch.setattr(er, "find_browser", lambda *args: Path("fake-browser"))
+    monkeypatch.setattr(er, "browser_version", lambda *args: "test/unsupported-margin-box")
+
+    def print_without_footer(browser, html_path, pdf_path, profile_dir, timeout):
+        writer = PdfWriter()
+        writer.add_blank_page(width=595, height=842)
+        writer.write(pdf_path)
+        return None
+
+    monkeypatch.setattr(er, "print_pdf_and_measure", print_without_footer)
+    with pytest.raises(er.RenderError) as exc:
+        er.render(er.snapshot_from_document(document, {}, demo=True), "pdf", out_dir)
+    assert exc.value.code == "demo_footer_missing" and exc.value.details["page_numbers"] == [1]
+    assert not list(out_dir.glob("*.pdf"))

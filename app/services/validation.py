@@ -121,6 +121,8 @@ class Context:
     refs: refs_service.SessionRefs
     facts: dict[str, Fact]
     preflight_issues: list[Issue]
+    demo_sources: set[str] = field(default_factory=set)
+    demo: bool = False
 
 
 def load_context(conn: sqlite3.Connection, session_id: str, preflight: PreflightOut | None) -> Context:
@@ -133,10 +135,12 @@ def load_context(conn: sqlite3.Connection, session_id: str, preflight: Preflight
         seg_source[r["segment_id"]] = r["source_id"]
     asset_source = {r["asset_id"]: r["source_id"] for r in conn.execute(
         "SELECT asset_id, source_id FROM assets WHERE deleted_at IS NULL AND (session_id=? OR scope='registered')", (session_id,))}
-    mock_sources = {r["source_id"] for r in conn.execute("SELECT source_id FROM sources WHERE is_mock=1")}
+    mock_sources = {r["source_id"] for r in conn.execute("SELECT source_id FROM sources WHERE is_mock=1 OR origin_kind='mock'")}
+    demo_sources = {r["source_id"] for r in conn.execute("SELECT source_id FROM sources WHERE origin_kind='demo'")}
+    session = conn.execute("SELECT demo FROM sessions WHERE session_id=?", (session_id,)).fetchone()
     facts = {f.fact_id: f for f in preflight.facts} if preflight else {}
     return Context(seg_texts, seg_source, asset_source, mock_sources, refs_service.load(conn, session_id), facts,
-                   list(preflight.issues) if preflight else [])
+                   list(preflight.issues) if preflight else [], demo_sources, bool(session and session["demo"]))
 
 
 # ---------------- 서버 일반 검사 ----------------
@@ -182,21 +186,25 @@ def migrate_legacy_issue_keys(conn: sqlite3.Connection) -> int:
 
 
 def _block_is_mock(block: Block, ctx: Context) -> tuple[bool, list[str]]:
+    return _block_origin(block, ctx, ctx.mock_sources, MOCK_LABEL)
+
+
+def _block_origin(block: Block, ctx: Context, source_ids: set[str], label: str) -> tuple[bool, list[str]]:
     reasons: list[str] = []
-    if any(MOCK_LABEL in t for t in block_texts(block)):
+    if any(label in t for t in block_texts(block)):
         reasons.append("text")
     for ref in block.evidence_refs:
-        if MOCK_LABEL in ctx.seg_texts.get(ref.segment_id, ""):
+        if label in ctx.seg_texts.get(ref.segment_id, ""):
             reasons.append("evidence_text")
-        if ctx.seg_source.get(ref.segment_id) in ctx.mock_sources or ref.source_id in ctx.mock_sources:
+        if ctx.seg_source.get(ref.segment_id) in source_ids or ref.source_id in source_ids:
             reasons.append("evidence_source")
     for fid in block.fact_ids:
         f = ctx.facts.get(fid)
-        if f and any(r.source_id in ctx.mock_sources for r in f.evidence_refs):
+        if f and any(r.source_id in source_ids or label in ctx.seg_texts.get(r.segment_id, "") for r in f.evidence_refs):
             reasons.append("fact_source")
     if block.type == "image":
         aid = block.content.get("asset_id")
-        if ctx.asset_source.get(aid) in ctx.mock_sources:
+        if ctx.asset_source.get(aid) in source_ids:
             reasons.append("image_source")
     return bool(reasons), sorted(set(reasons))
 
@@ -210,7 +218,7 @@ def _required_present(document: Document, ctx: Context, keys: tuple[str, ...]) -
                 continue
             for fid in block.fact_ids:
                 f = ctx.facts.get(fid)
-                if f and f.status == "supported" and f.field_key in keys and value_in_text(f.value, text):
+                if f and fid in ctx.refs.fact_ids and f.status == "supported" and f.field_key in keys and value_in_text(f.value, text):
                     return True
     return False
 
@@ -241,6 +249,9 @@ def server_checks(document: Document, ctx: Context) -> tuple[list[IssueDraft], l
             texts = block_texts(block)
             joined = " ".join(texts).strip()
             before = len(drafts)
+            if any(fid not in ctx.refs.fact_ids for fid in block.fact_ids):
+                drafts.append(IssueDraft("content", "EVIDENCE_INVALID", "blocker",
+                                         "현재 세션에서 근거로 사용할 수 없는 사실 참조입니다.", block_ids=[bid]))
 
             # 근거 없는 사실 주장(㉛). 종류가 아니라 내용으로 판단한다.
             if not block.fact_ids and not is_placeholder(joined):
@@ -269,6 +280,11 @@ def server_checks(document: Document, ctx: Context) -> tuple[list[IssueDraft], l
             if is_mock:
                 drafts.append(IssueDraft("content", "MOCK_VALUE", "blocker",
                                          f"가상(mock) 자료에서 온 내용입니다({', '.join(reasons)}). 실제 자료로 바꾼 뒤 다시 검증해야 합니다.",
+                                         block_ids=[bid]))
+            is_demo, demo_reasons = _block_origin(block, ctx, ctx.demo_sources, "[시연]")
+            if is_demo:
+                drafts.append(IssueDraft("content", "DEMO_VALUE", "warning" if ctx.demo else "blocker",
+                                         f"시연용 임시 내용이 포함되어 있습니다({', '.join(demo_reasons)}).",
                                          block_ids=[bid]))
             records.append(CheckRecord(check_key=f"block:{bid}", kind="server", block_ids=[bid],
                                        result="issue" if len(drafts) > before else "ok"))

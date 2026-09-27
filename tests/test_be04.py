@@ -260,7 +260,7 @@ def test_draft_creates_document_rev1_with_evidence_and_asset(client, settings):
             if b["type"] == "paragraph":
                 assert b["fact_ids"] or b["content"]["text"] == "추가 확인 필요"
     # 세션 요약에 문서가 보인다
-    assert client.get(f"/api/v1/sessions/{sid}").json()["document_summary"] == {"document_id": did, "document_revision": 1, "status": "draft"}
+    assert client.get(f"/api/v1/sessions/{sid}").json()["document_summary"] == {"document_id": did, "document_revision": 1, "status": "draft", "demo": False}
     # 버전 구조: documents 머리 + document_revisions 1행
     with connect(settings.db_path) as conn:
         assert conn.execute("SELECT current_revision FROM documents WHERE document_id=?", (did,)).fetchone()[0] == 1

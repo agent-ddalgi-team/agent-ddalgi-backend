@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, Request, UploadFile
 from fastapi.responses import JSONResponse
@@ -20,6 +21,7 @@ router = APIRouter(prefix="/sessions/{sid}/sources", tags=["sources"])
 async def upload_sources(request: Request, sid: str, background_tasks: BackgroundTasks,
                          files: list[UploadFile] = File(default=[]),
                          kind: str | None = Form(default=None),
+                         role: Literal["evidence", "instruction"] = Form(default="evidence"),
                          idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")):
     """저장 후 202. 읽기는 백그라운드 Job(kind=read)이 하며 GET jobs/{jid}·GET sources로 진행을 본다."""
     settings = settings_of(request)
@@ -31,10 +33,12 @@ async def upload_sources(request: Request, sid: str, background_tasks: Backgroun
         digest = hashlib.sha256(
             json.dumps([(name, hashlib.sha256(content).hexdigest()) for _, name, _, content in uploads]).encode()
         ).hexdigest()
+        if role == "instruction":
+            digest = hashlib.sha256(f"role=instruction|{digest}".encode()).hexdigest()
         replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest, settings)
         if replay is not None:
             return replay
-        items = sources.store(conn, settings, sid, row["expires_at"], kind, uploads)
+        items = sources.store(conn, settings, sid, row["expires_at"], kind, uploads, role=role)
         job = jobs.create(conn, sid, "read", f"파일 읽기 대기 중 (0/{len(items)})")
         sessions.touch(conn, settings, row)
         out = UploadOut(job_id=job.job_id, items=items)

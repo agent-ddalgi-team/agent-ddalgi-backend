@@ -22,7 +22,7 @@ from app.agent_bridge import (AgentError, AgentUnavailable, AnalyzeRequest, Anal
 from app.config import Settings
 from app.db import connect
 from app.models import Brief, CheckRecord, Document, Issue, Operation, Page
-from app.services import documents, jobs, preflights, proposals, refs, validation
+from app.services import documents, jobs, preflights, proposals, refs, validation, sessions
 from app.services.doc_ops import OpError, apply_operations, touched_block_ids
 from app.timeutil import from_iso, now
 
@@ -36,10 +36,24 @@ def _run(fn: Callable[[Any], Any], request: Any) -> Any:
     return result
 
 
-def _load_session_for_job(conn, session_id: str, input_revision: int):
+def _policy_failure(conn, settings: Settings, session_id: str, job_id: str) -> bool:
     row = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
-    if row is None or row["status"] != "active" or now() >= from_iso(row["expires_at"]):
+    reason = sessions.usable(settings, row)
+    if reason is not None:
+        code = "DEMO_MODE_DISABLED" if reason == "demo_disabled" else "SESSION_EXPIRED"
+        jobs.fail(conn, job_id, code, "현재 세션에서 작업 결과를 저장할 수 없습니다.", False)
+        return True
+    job = conn.execute("SELECT status FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+    return job is None or job["status"] not in jobs.ACTIVE
+
+
+def _load_session_for_job(conn, session_id: str, input_revision: int, settings: Settings):
+    row = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+    policy = sessions.usable(settings, row)
+    if policy in {"closed", "expired"}:
         return None, ("SESSION_EXPIRED", "세션이 종료되었거나 만료되었습니다.", False)
+    if policy == "demo_disabled":
+        return None, ("DEMO_MODE_DISABLED", "현재 서버에서 시연 모드가 꺼져 있습니다.", False)
     if row["input_revision"] != input_revision:
         return None, ("INPUT_REVISION_CONFLICT", "작업 중 입력이 바뀌어 결과를 버렸습니다. 다시 요청해 주세요.", False)
     return row, None
@@ -111,8 +125,10 @@ def _fail_agent(conn, job_id: str, exc: Exception) -> None:
 
 def run_preflight_job(settings: Settings, session_id: str, job_id: str, input_revision: int) -> None:
     try:
-        with connect(settings.db_path) as conn:
-            row, err = _load_session_for_job(conn, session_id, input_revision)
+        with connect(settings.db_path, immediate=True) as conn:
+            if _policy_failure(conn, settings, session_id, job_id):
+                return
+            row, err = _load_session_for_job(conn, session_id, input_revision, settings)
             if err:
                 jobs.fail(conn, job_id, *err)
                 return
@@ -123,16 +139,20 @@ def run_preflight_job(settings: Settings, session_id: str, job_id: str, input_re
             bridge = get_bridge(settings)
             result: AnalyzeResult = _run(bridge.analyze, AnalyzeRequest(session_id, input_revision, brief, sources))
         except Exception as exc:
-            with connect(settings.db_path) as conn:
+            with connect(settings.db_path, immediate=True) as conn:
+                if _policy_failure(conn, settings, session_id, job_id):
+                    return
                 _fail_agent(conn, job_id, exc)
             return
         problem = validate_analyze(result, sources)
         with connect(settings.db_path, immediate=True) as conn:   # 세션 확인과 저장을 한 잠금 안에서(BE-09: 종료 확정과 직렬화)
+            if _policy_failure(conn, settings, session_id, job_id):
+                return
             if problem:
                 logger.error("agent analyze output rejected (%s): %s", job_id, problem)
                 jobs.fail(conn, job_id, "AGENT_OUTPUT_INVALID", "AI 분석 결과가 자료와 맞지 않아 저장하지 않았습니다.", True)
                 return
-            _, err = _load_session_for_job(conn, session_id, input_revision)
+            _, err = _load_session_for_job(conn, session_id, input_revision, settings)
             if err:
                 jobs.fail(conn, job_id, *err)
                 return
@@ -143,7 +163,9 @@ def run_preflight_job(settings: Settings, session_id: str, job_id: str, input_re
             jobs.succeed(conn, job_id, {"type": "preflight", "preflight_id": preflight_id})
     except Exception:
         logger.exception("preflight job crashed: %s", job_id)
-        with connect(settings.db_path) as conn:
+        with connect(settings.db_path, immediate=True) as conn:
+            if _policy_failure(conn, settings, session_id, job_id):
+                return
             jobs.fail(conn, job_id, "INTERNAL_ERROR", "사전 점검 작업이 실패했습니다.", True)
 
 
@@ -173,8 +195,10 @@ def validate_propose_ops(ops: list[Operation], document: Document, target_block_
 def run_propose_job(settings: Settings, session_id: str, job_id: str, input_revision: int, document_id: str,
                     base_revision: int, target_block_ids: list[str], instruction: str, kind: str) -> None:
     try:
-        with connect(settings.db_path) as conn:
-            row, err = _load_session_for_job(conn, session_id, input_revision)
+        with connect(settings.db_path, immediate=True) as conn:
+            if _policy_failure(conn, settings, session_id, job_id):
+                return
+            row, err = _load_session_for_job(conn, session_id, input_revision, settings)
             if err:
                 jobs.fail(conn, job_id, *err)
                 return
@@ -183,7 +207,9 @@ def run_propose_job(settings: Settings, session_id: str, job_id: str, input_revi
             sources = preflights.build_sources(conn, session_id, json.loads(row["selected_source_ids"]))
             document = documents.get_current(conn, session_id, document_id)
         if document.document_revision != base_revision:
-            with connect(settings.db_path) as conn:
+            with connect(settings.db_path, immediate=True) as conn:
+                if _policy_failure(conn, settings, session_id, job_id):
+                    return
                 jobs.fail(conn, job_id, "DOCUMENT_REVISION_CONFLICT", "편집안을 만들기 전에 문서가 바뀌었습니다. 다시 요청해 주세요.", False)
             return
         try:
@@ -191,10 +217,14 @@ def run_propose_job(settings: Settings, session_id: str, job_id: str, input_revi
             result: ProposeResult = _run(bridge.propose, ProposeRequest(
                 session_id, input_revision, brief, sources, document, list(target_block_ids), instruction, kind))
         except Exception as exc:
-            with connect(settings.db_path) as conn:
+            with connect(settings.db_path, immediate=True) as conn:
+                if _policy_failure(conn, settings, session_id, job_id):
+                    return
                 _fail_agent(conn, job_id, exc)
             return
         with connect(settings.db_path, immediate=True) as conn:   # 세션 확인과 저장을 한 잠금 안에서(BE-09)
+            if _policy_failure(conn, settings, session_id, job_id):
+                return
             session_refs = refs.load(conn, session_id)
             if result.candidates is not None:
                 if not result.candidates:
@@ -227,7 +257,9 @@ def run_propose_job(settings: Settings, session_id: str, job_id: str, input_revi
                                         "status": "stale" if stale else "proposed"})
     except Exception:
         logger.exception("propose job crashed: %s", job_id)
-        with connect(settings.db_path) as conn:
+        with connect(settings.db_path, immediate=True) as conn:
+            if _policy_failure(conn, settings, session_id, job_id):
+                return
             jobs.fail(conn, job_id, "INTERNAL_ERROR", "편집안 작업이 실패했습니다.", True)
 
 
@@ -238,8 +270,10 @@ def run_validate_job(settings: Settings, session_id: str, job_id: str, input_rev
     끝날 때 문서·입력 버전을 다시 본다. 바뀌었으면 오래된 결과를 저장하지 않고 failed로 끝낸다(계약 확인 ㉔).
     """
     try:
-        with connect(settings.db_path) as conn:
-            row, err = _load_session_for_job(conn, session_id, input_revision)
+        with connect(settings.db_path, immediate=True) as conn:
+            if _policy_failure(conn, settings, session_id, job_id):
+                return
+            row, err = _load_session_for_job(conn, session_id, input_revision, settings)
             if err:
                 jobs.fail(conn, job_id, *err)
                 return
@@ -271,12 +305,16 @@ def run_validate_job(settings: Settings, session_id: str, job_id: str, input_rev
                      for i, d in enumerate(server_drafts)]))
                 agent_called = True
             except Exception as exc:
-                with connect(settings.db_path) as conn:
+                with connect(settings.db_path, immediate=True) as conn:
+                    if _policy_failure(conn, settings, session_id, job_id):
+                        return
                     _fail_agent(conn, job_id, exc)
                 return
             problem = validation.validate_agent_issues(result.issues, document, ctx, changed)
             if problem:
-                with connect(settings.db_path) as conn:
+                with connect(settings.db_path, immediate=True) as conn:
+                    if _policy_failure(conn, settings, session_id, job_id):
+                        return
                     logger.error("agent validate output rejected (%s): %s", job_id, problem)
                     jobs.fail(conn, job_id, "AGENT_OUTPUT_INVALID", "AI 검증 결과가 문서·자료와 맞지 않아 저장하지 않았습니다.", True)
                 return
@@ -284,7 +322,9 @@ def run_validate_job(settings: Settings, session_id: str, job_id: str, input_rev
             agent_issues = result.issues
 
         with connect(settings.db_path, immediate=True) as conn:
-            _, err = _load_session_for_job(conn, session_id, input_revision)
+            if _policy_failure(conn, settings, session_id, job_id):
+                return
+            _, err = _load_session_for_job(conn, session_id, input_revision, settings)
             current = documents.get_current(conn, session_id, document_id)
             if err or current.document_revision != document_revision:
                 jobs.fail(conn, job_id, *(err or ("DOCUMENT_REVISION_CONFLICT", "검증 중 문서가 바뀌어 결과를 버렸습니다. 다시 요청해 주세요.", False)))
@@ -312,14 +352,18 @@ def run_validate_job(settings: Settings, session_id: str, job_id: str, input_rev
             jobs.succeed(conn, job_id, {"type": "validation", "validation_id": validation_id, "status": status})
     except Exception:
         logger.exception("validate job crashed: %s", job_id)
-        with connect(settings.db_path) as conn:
+        with connect(settings.db_path, immediate=True) as conn:
+            if _policy_failure(conn, settings, session_id, job_id):
+                return
             jobs.fail(conn, job_id, "INTERNAL_ERROR", "검증 작업이 실패했습니다.", True)
 
 
 def run_draft_job(settings: Settings, session_id: str, job_id: str, input_revision: int, preflight_id: str) -> None:
     try:
-        with connect(settings.db_path) as conn:
-            row, err = _load_session_for_job(conn, session_id, input_revision)
+        with connect(settings.db_path, immediate=True) as conn:
+            if _policy_failure(conn, settings, session_id, job_id):
+                return
+            row, err = _load_session_for_job(conn, session_id, input_revision, settings)
             if err:
                 jobs.fail(conn, job_id, *err)
                 return
@@ -331,16 +375,20 @@ def run_draft_job(settings: Settings, session_id: str, job_id: str, input_revisi
             bridge = get_bridge(settings)
             result: DraftResult = _run(bridge.draft, DraftRequest(session_id, input_revision, brief, sources, preflight))
         except Exception as exc:
-            with connect(settings.db_path) as conn:
+            with connect(settings.db_path, immediate=True) as conn:
+                if _policy_failure(conn, settings, session_id, job_id):
+                    return
                 _fail_agent(conn, job_id, exc)
             return
         problem = validate_draft(result, sources, {f.fact_id for f in preflight.facts})
         with connect(settings.db_path, immediate=True) as conn:   # 세션 확인과 저장을 한 잠금 안에서(BE-09)
+            if _policy_failure(conn, settings, session_id, job_id):
+                return
             if problem:
                 logger.error("agent draft output rejected (%s): %s", job_id, problem)
                 jobs.fail(conn, job_id, "AGENT_OUTPUT_INVALID", "AI 초안이 자료와 맞지 않아 저장하지 않았습니다.", True)
                 return
-            _, err = _load_session_for_job(conn, session_id, input_revision)
+            _, err = _load_session_for_job(conn, session_id, input_revision, settings)
             if err:
                 jobs.fail(conn, job_id, *err)
                 return
@@ -354,5 +402,7 @@ def run_draft_job(settings: Settings, session_id: str, job_id: str, input_revisi
             jobs.succeed(conn, job_id, {"type": "document", "document_id": document_id, "document_revision": 1})
     except Exception:
         logger.exception("draft job crashed: %s", job_id)
-        with connect(settings.db_path) as conn:
+        with connect(settings.db_path, immediate=True) as conn:
+            if _policy_failure(conn, settings, session_id, job_id):
+                return
             jobs.fail(conn, job_id, "INTERNAL_ERROR", "초안 생성 작업이 실패했습니다.", True)

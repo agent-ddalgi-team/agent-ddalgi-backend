@@ -2,7 +2,7 @@
 
 - 생성 조건: Approval active, 문서가 현재 최신 revision·input_revision(아니면 409), format이 Approval과 같음(DOCX는 이 범위에서 불가),
   공개 허가 현재 통과, artifact 무결성.
-- 재사용 키 = approval_id|format|template_version|render_options_hash|asset_manifest_hash. 같은 키의 queued/generating/ready(미만료)를
+- 재사용 키 = approval_id|format|template_version|render_options_hash|asset_manifest_hash|demo. 같은 키의 queued/generating/ready(미만료)를
   재사용한다(부분 UNIQUE + BEGIN IMMEDIATE). ready라도 만료면 failed(expired)로 확정하고 ID·만료 시각을 보존한 뒤 새 행을 만든다.
 - 실패 재시도: 같은 Idempotency-Key 재전송은 최초 응답(단, 접근·세션·현재 승인·허가 검사가 먼저). 새 키면 같은 키의 retryable failed 행을
   queued로 되돌리고 attempt+1. ARTIFACT_INVALID(누락·변조)는 재시도 대상이 아니다 — 승인을 무효화하고 재검사·재승인을 요구한다.
@@ -22,7 +22,7 @@ from app.db import connect
 from app.errors import ApiError
 from app.models import ExportOut, JobError
 from app.services import approvals as approvals_service
-from app.services import artifacts, jobs, layout_checks, publication
+from app.services import artifacts, jobs, layout_checks, publication, sessions
 from app.timeutil import from_iso, now, plus, to_iso
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ OK = Verdict(True)
 
 def reuse_key(approval: sqlite3.Row) -> str:
     return "|".join([approval["approval_id"], approval["format"], approval["template_version"], approval["render_options_hash"],
-                     approval["asset_manifest_hash"]])
+                     approval["asset_manifest_hash"], f"demo={int(bool(approval['demo']))}"])
 
 
 def to_out(row: sqlite3.Row) -> ExportOut:
@@ -58,7 +58,12 @@ def to_out(row: sqlite3.Row) -> ExportOut:
     return ExportOut(export_id=row["export_id"], approval_id=row["approval_id"], format=row["format"], status=row["status"],
                      artifact_id=row["artifact_id"] if row["status"] == "ready" else None, expires_at=row["expires_at"],
                      error=JobError.model_validate(error) if error else None, attempt=row["attempt"], warnings=warnings,
-                     created_at=row["created_at"], updated_at=row["updated_at"])
+                     created_at=row["created_at"], updated_at=row["updated_at"], demo=bool(row["demo"]))
+
+
+def check_export_demo(session_row: sqlite3.Row, row: sqlite3.Row) -> None:
+    if bool(row["demo"]) != bool(session_row["demo"]):
+        raise ApiError(422, "RENDER_IDENTITY_MISMATCH", "출력과 세션의 시연 여부가 다릅니다.", details={"reason": "demo_mismatch"})
 
 
 def get(conn: sqlite3.Connection, session_id: str, export_id: str) -> sqlite3.Row:
@@ -83,13 +88,15 @@ def identity_mismatch(conn: sqlite3.Connection, approval: sqlite3.Row, manifest_
     if lc is None:
         return "layout_check_not_found"
     if (lc["format"] != approval["format"] or lc["template_version"] != approval["template_version"]
+            or bool(lc["demo"]) != bool(approval["demo"])
             or lc["render_options_hash"] != approval["render_options_hash"] or lc["asset_manifest_hash"] != approval["asset_manifest_hash"]
             or lc["document_id"] != approval["document_id"] or lc["document_revision"] != approval["document_revision"]):
         return "layout_check_mismatch"
     art = artifacts.get(conn, approval["artifact_id"]) if approval["artifact_id"] else None
     if art is None:
         return None   # artifact 행 누락은 식별값 불일치가 아니라 산출물 누락 → 뒤의 무결성 검사가 ARTIFACT_INVALID(not_found)로 처리(승인 무효화)
-    if not artifacts.identity_matches(art, approval["template_version"], approval["render_options_hash"], approval["asset_manifest_hash"], approval["format"]):
+    if not artifacts.identity_matches(art, approval["template_version"], approval["render_options_hash"], approval["asset_manifest_hash"],
+                                      approval["format"], demo=bool(approval["demo"])):
         return "artifact_identity_mismatch"
     if art["layout_check_id"] != approval["layout_check_id"] or (lc["artifact_id"] or "") != art["artifact_id"] \
             or art["document_id"] != approval["document_id"] or art["document_revision"] != approval["document_revision"]:
@@ -103,6 +110,12 @@ def approval_validity(conn: sqlite3.Connection, settings: Settings, session_row:
     검사 순서: 존재·소유 → active → 형식 → 문서 현재 버전·입력 → 출력 식별값 일관성 → 공개 허가 → artifact 무결성."""
     if approval is None or approval["session_id"] != session_row["session_id"]:
         return Verdict(False, 404, "RESOURCE_NOT_FOUND", "요청한 자원을 찾을 수 없습니다.")
+    reason = sessions.usable(settings, session_row)
+    if reason is not None:
+        return session_verdict(session_row, reason)
+    if bool(approval["demo"]) != bool(session_row["demo"]):
+        return Verdict(False, 422, "RENDER_IDENTITY_MISMATCH", "승인과 세션의 시연 여부가 다릅니다.",
+                       details={"reason": "demo_mismatch", "recheck_required": True})
     if approval["status"] != "active":
         return Verdict(False, 409, "APPROVAL_NOT_ACTIVE", "승인이 무효화되었습니다. 배치 검사와 승인을 다시 진행해 주세요.",
                        details={"approval_id": approval["approval_id"], "invalidated_reason": approval["invalidated_reason"]})
@@ -139,12 +152,19 @@ def approval_validity(conn: sqlite3.Connection, settings: Settings, session_row:
     return OK
 
 
-def session_valid(conn: sqlite3.Connection, session_id: str) -> tuple[sqlite3.Row | None, Verdict]:
+def session_verdict(row: sqlite3.Row, reason: str) -> Verdict:
+    if reason == "demo_disabled":
+        return Verdict(False, 403, "DEMO_MODE_DISABLED", "시연 모드가 꺼져 출력 결과를 제공하지 않습니다.")
+    return Verdict(False, 410, "SESSION_EXPIRED", "세션이 종료되었거나 만료되었습니다.", details={"status": reason})
+
+
+def session_valid(conn: sqlite3.Connection, settings: Settings, session_id: str) -> tuple[sqlite3.Row | None, Verdict]:
     row = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
     if row is None:
         return None, Verdict(False, 404, "RESOURCE_NOT_FOUND", "요청한 자원을 찾을 수 없습니다.")
-    if row["status"] != "active" or now() >= from_iso(row["expires_at"]):
-        return row, Verdict(False, 410, "SESSION_EXPIRED", "세션이 종료되었거나 만료되었습니다.", details={"status": row["status"]})
+    reason = sessions.usable(settings, row)
+    if reason is not None:
+        return row, session_verdict(row, reason)
     return row, OK
 
 
@@ -186,10 +206,10 @@ def reject_invalid_artifact(conn: sqlite3.Connection, approval: sqlite3.Row | No
 
 def _finalized_reason(verdict: Verdict) -> str:
     return {"ARTIFACT_INVALID": "artifact_invalid", "RENDER_IDENTITY_MISMATCH": "identity_mismatch",
-            "IMAGE_PUBLICATION_UNCONFIRMED": "publication_blocked"}.get(verdict.code or "", "approval_invalid")
+            "IMAGE_PUBLICATION_UNCONFIRMED": "publication_blocked", "DEMO_MODE_DISABLED": "demo_disabled"}.get(verdict.code or "", "approval_invalid")
 
 
-def fail_with(conn: sqlite3.Connection, row: sqlite3.Row, verdict: Verdict, reason: str) -> None:
+def fail_with(conn: sqlite3.Connection, row: sqlite3.Row, verdict: Verdict, reason: str | None) -> None:
     error = {"code": verdict.code, "message": verdict.message, "retryable": verdict.retryable, "details": verdict.details or {}, "request_id": None}
     conn.execute("UPDATE exports SET status='failed', finalized_reason=?, error_json=?, updated_at=? WHERE export_id=?",
                  (reason, json.dumps(error, ensure_ascii=False), to_iso(now()), row["export_id"]))
@@ -214,6 +234,7 @@ def create_or_reuse(conn: sqlite3.Connection, settings: Settings, session_row: s
         if export_expired(active):
             finalize_expired(conn, active)          # 만료 행은 되살리지 않는다. 아래에서 새 행을 만든다
         else:
+            check_export_demo(session_row, active)
             return active, False
     retryable_failed = conn.execute(
         "SELECT * FROM exports WHERE reuse_key=? AND status='failed' AND finalized_reason IS NULL "
@@ -228,10 +249,10 @@ def create_or_reuse(conn: sqlite3.Connection, settings: Settings, session_row: s
     conn.execute(
         "INSERT INTO exports (export_id, session_id, approval_id, document_id, document_revision, input_revision, format, status, "
         "artifact_id, reuse_key, attempt, job_id, expires_at, error_json, renderer, publication_checked_at, finalized_reason, "
-        "created_at, updated_at, published_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, 1, NULL, ?, NULL, ?, NULL, NULL, ?, ?, NULL)",
+        "created_at, updated_at, published_at, demo) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, 1, NULL, ?, NULL, ?, NULL, NULL, ?, ?, NULL, ?)",
         (export_id, session_row["session_id"], approval["approval_id"], approval["document_id"], approval["document_revision"],
          approval["input_revision"], approval["format"], approval["artifact_id"], key, _expires_at(settings, session_row),
-         approval["renderer"], stamp, stamp))
+         approval["renderer"], stamp, stamp, int(bool(session_row["demo"]))))
     return conn.execute("SELECT * FROM exports WHERE export_id=?", (export_id,)).fetchone(), True
 
 
@@ -243,18 +264,25 @@ def attach_job(conn: sqlite3.Connection, export_id: str, job_id: str) -> None:
 
 def publish(conn: sqlite3.Connection, settings: Settings, row: sqlite3.Row) -> Verdict:
     """발행 직전 가드 전부 재확인 후 ready. 실패면 실제 사유·재시도 가능 여부로 failed."""
-    session_row, verdict = session_valid(conn, row["session_id"])
+    session_row, verdict = session_valid(conn, settings, row["session_id"])
     if not verdict.ok:
-        fail_with(conn, row, verdict, "session_invalid")
+        fail_with(conn, row, verdict, "demo_disabled" if verdict.code == "DEMO_MODE_DISABLED" else "session_invalid")
         return verdict
     if export_expired(row):
         finalize_expired(conn, row)
         return Verdict(False, 410, "ARTIFACT_EXPIRED", "출력 결과가 만료되었습니다.", details={"expires_at": row["expires_at"]})
     approval = conn.execute("SELECT * FROM approvals WHERE approval_id=?", (row["approval_id"],)).fetchone()
+    if bool(row["demo"]) != bool(session_row["demo"]):
+        verdict = Verdict(False, 422, "RENDER_IDENTITY_MISMATCH", "출력과 세션의 시연 여부가 다릅니다.",
+                          details={"reason": "demo_mismatch", "recheck_required": True})
+        fail_with(conn, row, verdict, "identity_mismatch")
+        return verdict
     verdict = approval_validity(conn, settings, session_row, approval, row["format"])
     if not verdict.ok:
         fail_with(conn, row, verdict, _finalized_reason(verdict))
         return verdict
+    if row["status"] == "ready":
+        return OK  # 재전송/늦은 콜백도 현재 정책을 검사하되 이미 발행한 시각·행은 다시 쓰지 않는다.
     pub = publication.check_revision(conn, row["document_id"], row["document_revision"])
     stamp = to_iso(now())
     conn.execute("UPDATE exports SET status='ready', artifact_id=?, published_at=?, publication_checked_at=?, error_json=NULL, updated_at=? "
@@ -269,11 +297,11 @@ def run_export_job(settings: Settings, session_id: str, job_id: str, export_id: 
             if row is None:
                 jobs.fail(conn, job_id, "RESOURCE_NOT_FOUND", "출력 요청을 찾을 수 없습니다.", False)
                 return
-            if row["status"] == "ready":
-                jobs.succeed(conn, job_id, {"export_id": export_id, "artifact_id": row["artifact_id"], "format": row["format"]})
-                return
+            if row["status"] == "failed":
+                return  # 확정된 실패는 늦은 콜백으로 되살리지 않는다. 새 키 요청만 새 행/명시적 재시도를 만든다.
             jobs.set_progress(conn, job_id, "publishing", "승인 산출물을 확인하는 중")
-            conn.execute("UPDATE exports SET status='generating', updated_at=? WHERE export_id=?", (to_iso(now()), export_id))
+            if row["status"] != "ready":
+                conn.execute("UPDATE exports SET status='generating', updated_at=? WHERE export_id=?", (to_iso(now()), export_id))
             verdict = publish(conn, settings, conn.execute("SELECT * FROM exports WHERE export_id=?", (export_id,)).fetchone())
             if verdict.ok:
                 fresh = conn.execute("SELECT artifact_id FROM exports WHERE export_id=?", (export_id,)).fetchone()
@@ -282,19 +310,31 @@ def run_export_job(settings: Settings, session_id: str, job_id: str, export_id: 
                 jobs.fail(conn, job_id, verdict.code or "EXPORT_FAILED", verdict.message or "출력에 실패했습니다.", verdict.retryable, verdict.details)
     except Exception as exc:  # noqa: BLE001
         logger.exception("export job failed")
-        with connect(settings.db_path) as conn:
-            jobs.fail(conn, job_id, "EXPORT_FAILED", "출력 처리 중 실패했습니다. 같은 승인본으로 재시도할 수 있습니다.", True,
-                      {"error": type(exc).__name__})
+        with connect(settings.db_path, immediate=True) as conn:
+            session_row, current = session_valid(conn, settings, session_id)
+            row = conn.execute("SELECT * FROM exports WHERE export_id=? AND session_id=?", (export_id, session_id)).fetchone()
+            # 종료 처리가 이미 확정한 cancelled Job·정리된 오류·Export 이력을 늦은 예외로 덮어쓰지 않는다.
+            if session_row is None or session_row["status"] != "active" or session_row["purged_at"]:
+                return
+            if row is None or row["status"] == "failed":
+                return
+            if not current.ok:
+                fail_with(conn, row, current, "demo_disabled" if current.code == "DEMO_MODE_DISABLED" else "session_invalid")
+                jobs.fail(conn, job_id, current.code or "EXPORT_FAILED", current.message or "", current.retryable, current.details)
+                return
+            failure = Verdict(False, 500, "EXPORT_FAILED", "출력 처리 중 실패했습니다. 같은 승인본으로 재시도할 수 있습니다.", True,
+                              {"error": type(exc).__name__})
+            jobs.fail(conn, job_id, failure.code, failure.message, failure.retryable, failure.details)
             # 실패 시점의 트랜잭션은 롤백됐을 수 있으므로 queued/generating 어느 쪽이든 failed로 확정한다(재시도 가능)
-            conn.execute("UPDATE exports SET status='failed', error_json=?, updated_at=? WHERE export_id=? AND status IN ('queued', 'generating')",
-                         (json.dumps({"code": "EXPORT_FAILED", "message": "출력 처리 중 실패했습니다. 같은 승인본으로 재시도할 수 있습니다.",
-                                      "retryable": True, "details": {}, "request_id": None}, ensure_ascii=False), to_iso(now()), export_id))
+            if row["status"] in ("queued", "generating"):
+                fail_with(conn, row, failure, None)
 
 
 # ---------------- 다운로드 ----------------
 
 def download_check(conn: sqlite3.Connection, settings: Settings, session_row: sqlite3.Row, row: sqlite3.Row) -> sqlite3.Row:
     """소유·세션은 라우터에서 끝났다. Export ready·미만료·승인 active·현재 버전·공개 허가·artifact 무결성을 매번 확인하고 artifact 행을 돌려준다."""
+    check_export_demo(session_row, row)
     if row["status"] != "ready":
         if row["status"] == "failed":
             error = json.loads(row["error_json"] or "{}")

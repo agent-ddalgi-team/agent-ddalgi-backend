@@ -1,5 +1,5 @@
 {
-  "_note": "프론트 전달용 계약 예시. contracts.md v1.1(contract_version 1.1, schema_version 1.0) 기준으로 백엔드 BE-01에서 손으로 작성했다. 실제 서버 응답이 아니며 모든 값은 가짜 데이터다. 실제 구현(BE-02 이후)에서 응답이 달라지면 이 파일을 먼저 갱신하고 프론트에 알린다. BE-08(2026-09-27) 예시는 실서버 응답(가상 자료) 기반. contracts.md 원본은 미수정, 계약 확인 ㉜~㊳ 참조. BE-09(2026-09-27): 세션 종료(DELETE)·종료/만료 세션 410·멱등 재전송 410 예시는 실서버 응답(가상 자료) 기반, 계약 확인 ㊵~㊸ 참조.",
+  "_note": "프론트 전달용 계약 예시. contracts.md v1.1(contract_version 1.1, schema_version 1.0) 기준으로 백엔드 BE-01에서 손으로 작성했다. 실제 서버 응답이 아니며 모든 값은 가짜 데이터다. 실제 구현(BE-02 이후)에서 응답이 달라지면 이 파일을 먼저 갱신하고 프론트에 알린다. BE-08(2026-09-27) 예시는 실서버 응답(가상 자료) 기반. contracts.md 원본은 미수정, 계약 확인 ㉜~㊳ 참조. BE-09(2026-09-27): 세션 종료(DELETE)·종료/만료 세션 410·멱등 재전송 410 예시는 실서버 응답(가상 자료) 기반, 계약 확인 ㊵~㊸ 참조. DB v9(2026-09-27): 기존 예시는 demo/role/origin_kind/template_version 필드를 현재 모델에 맞춘 형식 참고이며 전체 재실행한 실응답이 아니다. DB v9 접두 예시는 별도 uvicorn·localhost TCP에서 가짜 자료로 받은 최신 실응답이다. 시연 자료 적재·조건 첨부 근거 제외·검증 warning 이후 PDF 배치 통과, 4쪽 미리보기, 승인 201, Export 202, 같은 키 재전송 202, ready 재사용 200, 다운로드 200을 확인했다. 모든 물리 쪽에 시연 footer가 있고 승인 artifact와 다운로드 바이트 SHA-256, 미리보기와 다운로드 PDF 페이지 렌더 SHA-256이 일치한다. 모드 OFF 접근 403·소유자 DELETE 200·종료 후 410도 실응답으로 기록했다. 이전 제한 실행 환경에서의 render_failed 관측은 task 기록에 구분하며 최신 성공 예시를 대체하지 않는다. 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조. contracts.md 원본은 미수정.",
   "contract_version": "1.1",
   "schema_version": "1.0",
   "base_path": "/api/v1",
@@ -10,7 +10,8 @@
     "②": "Job의 진행 정보(progress) 필드 형식 미정. 아래는 백엔드 제안값이며 계약 확정 전이다.",
     "③": "추출 텍스트 글자수 초과 시 오류 코드 미정(FILE_TOO_LARGE 또는 별도 코드).",
     "④": "AI 결과 형식 오류(옛 INVALID_OUTPUT)에 대응하는 코드 미정.",
-    "⑭~⑳": "BE-05 임시 코드·필드·경로 — task_backend.md 6.5-6 참조 (INVALID_OPERATION, GET proposals/{pid}, rationale·candidates, PROPOSAL_STALE details.status, RESTORE_REFERENCE_INVALID, CANDIDATE_REQUIRED, UNSUPPORTED_PROPOSAL/NO_IMAGE_CANDIDATES)."
+    "⑭~⑳": "BE-05 임시 코드·필드·경로 — task_backend.md 6.5-6 참조 (INVALID_OPERATION, GET proposals/{pid}, rationale·candidates, PROPOSAL_STALE details.status, RESTORE_REFERENCE_INVALID, CANDIDATE_REQUIRED, UNSUPPORTED_PROPOSAL/NO_IMAGE_CANDIDATES).",
+    "㊹~㊿": "시연 출처/세션/출력 정책·첨부 role·include_demo·적재 스키마·오류 코드·멱등 호환: task_backend.md 6.11-6. contracts.md 원본은 미수정."
   },
   "common_rules": {
     "ids": "불투명 문자열. 형식에 의미를 두지 않는다.",
@@ -61,7 +62,8 @@
             "target_pages": 4,
             "photo_preference": "balanced"
           },
-          "selected_source_ids": []
+          "selected_source_ids": [],
+          "demo": false
         }
       },
       "_note": "expires_at은 D-02(세션 만료) 확정 전 제안값(무활동 120분). 실제 값은 서버 설정을 따른다."
@@ -95,7 +97,8 @@
             "src_reg_01",
             "src_sess_01"
           ],
-          "document_summary": null
+          "document_summary": null,
+          "demo": false
         }
       },
       "_note": "document_summary는 초안 생성 전 null. 생성 후 {document_id, document_revision, status}."
@@ -131,7 +134,9 @@
               "expires_at": null,
               "document_date": "2026-08-20",
               "use_as_company_evidence": true,
-              "is_mock": false
+              "is_mock": false,
+              "role": "evidence",
+              "origin_kind": "real"
             }
           ]
         }
@@ -173,7 +178,9 @@
               "image_available": false,
               "usable_segment_ids": [],
               "warnings": [],
-              "expires_at": "2026-09-25T11:05:00Z"
+              "expires_at": "2026-09-25T11:05:00Z",
+              "role": "evidence",
+              "origin_kind": "real"
             },
             {
               "source_id": "src_sess_02",
@@ -189,7 +196,9 @@
               "image_available": false,
               "usable_segment_ids": [],
               "warnings": [],
-              "expires_at": "2026-09-25T11:05:00Z"
+              "expires_at": "2026-09-25T11:05:00Z",
+              "role": "evidence",
+              "origin_kind": "real"
             }
           ]
         }
@@ -224,7 +233,9 @@
                 "seg_sess_01_0003"
               ],
               "warnings": [],
-              "expires_at": "2026-09-25T11:05:00Z"
+              "expires_at": "2026-09-25T11:05:00Z",
+              "role": "evidence",
+              "origin_kind": "real"
             },
             {
               "source_id": "src_sess_02",
@@ -247,7 +258,9 @@
                   "action": "텍스트 근거는 다른 자료에서 제공해 주세요."
                 }
               ],
-              "expires_at": "2026-09-25T11:05:00Z"
+              "expires_at": "2026-09-25T11:05:00Z",
+              "role": "evidence",
+              "origin_kind": "real"
             }
           ]
         }
@@ -659,7 +672,8 @@
                   }
                 ]
               }
-            ]
+            ],
+            "demo": false
           },
           "validation": {
             "validation_id": "val_demo_01",
@@ -704,7 +718,8 @@
           "document_revision": 2,
           "input_revision": 2,
           "status": "review_required",
-          "validation_job_id": null
+          "validation_job_id": null,
+          "demo": false
         }
       },
       "_note": "BE-05 실제 응답(요약형). operations는 하나의 트랜잭션 — 하나라도 실패하면 422 INVALID_OPERATION(details.index/op/reason)이고 문서는 그대로. validation_job_id는 BE-06까지 null. replace_block_content는 content만 바꾸고 block_id·fact_ids·evidence_refs는 보존된다."
@@ -838,7 +853,8 @@
           "document_revision": 3,
           "input_revision": 2,
           "status": "review_required",
-          "validation_job_id": null
+          "validation_job_id": null,
+          "demo": false
         }
       },
       "_note": "같은 Idempotency-Key·같은 본문 재전송은 이 응답을 그대로 돌려주고 revision을 다시 올리지 않는다(단, 소유자·세션·문서 접근 검사는 먼저 통과해야 함). 키 없이 재전송하면 409 PROPOSAL_STALE(details.status='applied')."
@@ -884,7 +900,8 @@
           "proposal_id": "prop_demo_03",
           "status": "rejected",
           "document_id": "doc_demo_01",
-          "document_revision": 3
+          "document_revision": 3,
+          "demo": false
         }
       }
     },
@@ -909,7 +926,8 @@
           "document_revision": 4,
           "input_revision": 2,
           "status": "draft",
-          "validation_job_id": null
+          "validation_job_id": null,
+          "demo": false
         }
       },
       "_note": "과거 내용이 새 버전(4)으로 저장된다. 과거의 승인·검증 완료 상태는 부활하지 않는다. 복원할 버전이 지금은 없는 자료·사진을 참조하면 422 RESTORE_REFERENCE_INVALID(계약 확인 ⑲)."
@@ -1018,7 +1036,8 @@
               "block_02"
             ],
             "base_validation_id": "val_demo_00",
-            "created_at": "2026-09-26T09:00:05Z"
+            "created_at": "2026-09-26T09:00:05Z",
+            "demo": false
           },
           "approval": null
         }
@@ -1169,14 +1188,15 @@
           "format": "pdf",
           "validation_id": "val_demo_01",
           "layout_check_id": "lc_demo_01",
-          "template_version": "template_v0",
+          "template_version": "template_v1",
           "render_options_hash": "…",
           "asset_manifest_hash": "…",
           "approved_at": "2026-09-26T09:05:00Z",
           "approved_by": "own_demo",
           "status": "active",
           "invalidated_at": null,
-          "invalidated_reason": null
+          "invalidated_reason": null,
+          "demo": false
         }
       },
       "_note": "같은 키·같은 본문 재전송은 이 응답 그대로(Approval 1건). 문서 편집·순서 변경·편집안 적용·restore·입력 변경 시 status=invalidated(계약 확인 ㉘ invalidated_reason: document_changed / input_changed)이며 되살아나지 않는다."
@@ -1205,7 +1225,8 @@
             "status": "queued",
             "artifact_id": null,
             "expires_at": "2026-09-25T11:05:00Z",
-            "error": null
+            "error": null,
+            "demo": false
           },
           "job_id": "job_demo_export_01"
         }
@@ -1439,7 +1460,8 @@
               "prv_b28e4cdacc07432f"
             ],
             "preview_basis": "pdf",
-            "warnings": []
+            "warnings": [],
+            "demo": false
           },
           "error": null,
           "created_at": "2026-09-26T17:34:04Z",
@@ -1461,7 +1483,8 @@
             "document_id": "doc_a53f1a5bed454e5e",
             "document_revision": 2,
             "status": "ready_for_approval",
-            "...": "(BE-04/05 예시와 같음)"
+            "...": "(BE-04/05 예시와 같음)",
+            "demo": false
           },
           "validation": {
             "validation_id": "val_e58a3d30034f4b90",
@@ -1477,7 +1500,7 @@
               "input_revision": 2,
               "format": "pdf",
               "status": "passed",
-              "template_version": "template_v0",
+              "template_version": "template_v1",
               "render_options_hash": "34673880fdef80f9",
               "asset_manifest_hash": "72a8be88d00875fd",
               "actual_pages": 4,
@@ -1523,7 +1546,8 @@
               ],
               "preview_basis": "pdf",
               "warnings": [],
-              "created_at": "2026-09-26T17:34:14Z"
+              "created_at": "2026-09-26T17:34:14Z",
+              "demo": false
             },
             "docx": null
           }
@@ -1561,7 +1585,8 @@
           "warnings": [
             "DOCX 미리보기는 같은 스냅샷의 PDF 렌더 기준이며 DOCX 배치 검사 증거가 아닙니다. DOCX 쪽 나눔은 열람 프로그램에 따라 달라질 수 있습니다.",
             "DOCX는 넘침 검사를 실제로 수행하지 못해(overflow not_checked) 이 범위에서는 승인·출력할 수 없습니다."
-          ]
+          ],
+          "demo": false
         },
         "layout_check": {
           "layout_check_id": "lc_13f8345ad7334c3c",
@@ -1570,7 +1595,7 @@
           "input_revision": 2,
           "format": "docx",
           "status": "failed",
-          "template_version": "template_v0",
+          "template_version": "template_v1",
           "render_options_hash": "34673880fdef80f9",
           "asset_manifest_hash": "72a8be88d00875fd",
           "actual_pages": null,
@@ -1621,7 +1646,8 @@
             "DOCX 미리보기는 같은 스냅샷의 PDF 렌더 기준이며 DOCX 배치 검사 증거가 아닙니다. DOCX 쪽 나눔은 열람 프로그램에 따라 달라질 수 있습니다.",
             "DOCX는 넘침 검사를 실제로 수행하지 못해(overflow not_checked) 이 범위에서는 승인·출력할 수 없습니다."
           ],
-          "created_at": "2026-09-26T17:34:26Z"
+          "created_at": "2026-09-26T17:34:26Z",
+          "demo": false
         }
       },
       "_note": "DOCX는 overflow가 required·not_checked라 status=failed(fail_reasons overflow:not_checked), actual_pages=null. preview_basis=pdf는 같은 스냅샷의 PDF 렌더이며 DOCX 검사 증거가 아니다(warnings). 승인·Export·다운로드는 이 범위에서 차단(계약 확인 ㉞)."
@@ -1685,7 +1711,7 @@
           "format": "pdf",
           "validation_id": "val_e58a3d30034f4b90",
           "layout_check_id": "lc_b80bf068f1214bc6",
-          "template_version": "template_v0",
+          "template_version": "template_v1",
           "render_options_hash": "34673880fdef80f9",
           "asset_manifest_hash": "72a8be88d00875fd",
           "approved_at": "2026-09-26T17:34:26Z",
@@ -1694,7 +1720,8 @@
           "invalidated_at": null,
           "invalidated_reason": null,
           "renderer": "chrome/153.0.8010.54",
-          "artifact_id": "art_b193e766a8d841bb"
+          "artifact_id": "art_b193e766a8d841bb",
+          "demo": false
         }
       },
       "_note": "처음으로 실서버 경로에서 승인 성공(201). renderer·artifact_id는 검사한 렌더러·불변 산출물(식별값 아님). 같은 형식·검증·배치 검사의 active 승인은 재사용, 다른 배치 검사를 명시적으로 승인하면 이전 승인은 superseded."
@@ -1726,7 +1753,8 @@
             "attempt": 1,
             "warnings": [],
             "created_at": "2026-09-26T18:10:12Z",
-            "updated_at": "2026-09-26T18:10:12Z"
+            "updated_at": "2026-09-26T18:10:12Z",
+            "demo": false
           },
           "job_id": "job_24fe83e71c3847a6"
         }
@@ -1760,7 +1788,8 @@
             "attempt": 1,
             "warnings": [],
             "created_at": "2026-09-26T18:10:12Z",
-            "updated_at": "2026-09-26T18:10:12Z"
+            "updated_at": "2026-09-26T18:10:12Z",
+            "demo": false
           },
           "job_id": "job_24fe83e71c3847a6"
         }
@@ -1794,7 +1823,8 @@
             "attempt": 1,
             "warnings": [],
             "created_at": "2026-09-26T18:10:12Z",
-            "updated_at": "2026-09-26T18:10:12Z"
+            "updated_at": "2026-09-26T18:10:12Z",
+            "demo": false
           },
           "job_id": "job_24fe83e71c3847a6"
         }
@@ -1844,6 +1874,1038 @@
         }
       },
       "_note": "승인이 무효화되면(document_changed/input_changed/superseded/artifact_invalid/publication_changed) APPROVAL_NOT_ACTIVE. 기존 Export는 failed(approval_invalid)로 확정되고 다운로드도 409."
+    },
+    {
+      "name": "DB v9 demo_session_create",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/sessions",
+        "headers": {
+          "Idempotency-Key": "demo-http-create"
+        },
+        "body": {
+          "brief": {
+            "purpose": "가상 자료 생성 흐름 확인",
+            "emphasis": [],
+            "direction": "balanced",
+            "target_pages": 4,
+            "photo_preference": "none"
+          },
+          "demo": true
+        }
+      },
+      "response": {
+        "http_status": 201,
+        "body": {
+          "demo": true,
+          "session_id": "sess_3f6999536fea4e71",
+          "status": "active",
+          "input_revision": 1,
+          "created_at": "2026-09-27T06:59:51Z",
+          "last_activity_at": "2026-09-27T06:59:51Z",
+          "expires_at": "2026-09-27T08:59:51Z",
+          "brief": {
+            "purpose": "가상 자료 생성 흐름 확인",
+            "emphasis": [],
+            "direction": "balanced",
+            "target_pages": 4,
+            "photo_preference": "none"
+          },
+          "selected_source_ids": [],
+          "document_summary": null
+        }
+      }
+    },
+    {
+      "name": "DB v9 include_demo_sources",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/sources?include_demo=true"
+      },
+      "response": {
+        "http_status": 200,
+        "body": {
+          "items": [
+            {
+              "role": "evidence",
+              "origin_kind": "demo",
+              "source_id": "DEMO_HTTP01",
+              "source_version": 1,
+              "scope": "registered",
+              "session_id": null,
+              "name": "[시연] 예시 회사 자료",
+              "mime_type": "text/plain",
+              "size_bytes": 203,
+              "kind": "company",
+              "parse_status": "complete",
+              "text_available": true,
+              "image_available": false,
+              "usable_segment_ids": [
+                "seg_c6b28729bf834fb4",
+                "seg_fe08a04cb1f34a8c",
+                "seg_b8a9b24d58334885"
+              ],
+              "asset_ids": [],
+              "warnings": [],
+              "expires_at": null,
+              "document_date": "2026-09-27",
+              "use_as_company_evidence": true,
+              "is_mock": false
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "DB v9 instruction_upload",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/sessions/sess_3f6999536fea4e71/sources",
+        "headers": {
+          "Idempotency-Key": "instruction-upload",
+          "Content-Type": "multipart/form-data"
+        },
+        "form": {
+          "role": "instruction",
+          "files": [
+            "condition.txt (가짜 작성 조건 텍스트)"
+          ]
+        }
+      },
+      "response": {
+        "http_status": 202,
+        "body": {
+          "job_id": "job_c8eb7d0c8941418e",
+          "items": [
+            {
+              "role": "instruction",
+              "origin_kind": "real",
+              "source_id": "src_bf199189e1c24fad",
+              "source_version": 1,
+              "scope": "session",
+              "session_id": "sess_3f6999536fea4e71",
+              "name": "condition.txt",
+              "mime_type": "text/plain",
+              "size_bytes": 75,
+              "kind": "other",
+              "parse_status": "queued",
+              "text_available": false,
+              "image_available": false,
+              "usable_segment_ids": [],
+              "asset_ids": [],
+              "warnings": [],
+              "expires_at": "2026-09-27T08:59:51Z",
+              "document_date": null,
+              "use_as_company_evidence": true,
+              "is_mock": false
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "DB v9 instruction_cannot_be_evidence",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/v1/sessions/sess_3f6999536fea4e71/inputs",
+        "body": {
+          "expected_input_revision": 1,
+          "selected_source_ids": [
+            "src_bf199189e1c24fad"
+          ]
+        }
+      },
+      "response": {
+        "http_status": 422,
+        "body": {
+          "error": {
+            "code": "SOURCE_ROLE_NOT_EVIDENCE",
+            "message": "작성 조건 첨부는 회사 근거로 선택할 수 없습니다.",
+            "retryable": false,
+            "details": {},
+            "request_id": "req_11d144ce7a5f"
+          }
+        }
+      }
+    },
+    {
+      "name": "DB v9 demo_issues",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess_3f6999536fea4e71/documents/doc_e4fec921a1dc4ca3/issues"
+      },
+      "response": {
+        "http_status": 200,
+        "body": {
+          "document_id": "doc_e4fec921a1dc4ca3",
+          "document_revision": 2,
+          "validation_id": "val_eda439e811c54b81",
+          "issues": [
+            {
+              "issue_id": "iss_3e73db3955ad49b5",
+              "scope": "content",
+              "code": "DEMO_VALUE",
+              "severity": "warning",
+              "status": "open",
+              "message": "시연용 임시 내용이 포함되어 있습니다(evidence_source, evidence_text, fact_source).",
+              "source_ids": [],
+              "fact_ids": [],
+              "block_ids": [
+                "block_001"
+              ],
+              "resolution": null,
+              "origin": "server",
+              "layout_format": null,
+              "created_at": "2026-09-27T06:59:52Z",
+              "updated_at": "2026-09-27T06:59:52Z"
+            },
+            {
+              "issue_id": "iss_a3c975a3230e488e",
+              "scope": "content",
+              "code": "DEMO_VALUE",
+              "severity": "warning",
+              "status": "open",
+              "message": "시연용 임시 내용이 포함되어 있습니다(evidence_source, evidence_text, fact_source).",
+              "source_ids": [],
+              "fact_ids": [],
+              "block_ids": [
+                "block_002"
+              ],
+              "resolution": null,
+              "origin": "server",
+              "layout_format": null,
+              "created_at": "2026-09-27T06:59:52Z",
+              "updated_at": "2026-09-27T06:59:52Z"
+            },
+            {
+              "issue_id": "iss_99df9796ea4641c9",
+              "scope": "content",
+              "code": "DEMO_VALUE",
+              "severity": "warning",
+              "status": "open",
+              "message": "시연용 임시 내용이 포함되어 있습니다(evidence_source, evidence_text, fact_source).",
+              "source_ids": [],
+              "fact_ids": [],
+              "block_ids": [
+                "block_004"
+              ],
+              "resolution": null,
+              "origin": "server",
+              "layout_format": null,
+              "created_at": "2026-09-27T06:59:52Z",
+              "updated_at": "2026-09-27T06:59:52Z"
+            },
+            {
+              "issue_id": "iss_9942ba46caec494d",
+              "scope": "content",
+              "code": "DEMO_VALUE",
+              "severity": "warning",
+              "status": "open",
+              "message": "시연용 임시 내용이 포함되어 있습니다(evidence_source, evidence_text, fact_source).",
+              "source_ids": [],
+              "fact_ids": [],
+              "block_ids": [
+                "block_006"
+              ],
+              "resolution": null,
+              "origin": "server",
+              "layout_format": null,
+              "created_at": "2026-09-27T06:59:52Z",
+              "updated_at": "2026-09-27T06:59:52Z"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "DB v9 pdf_layout_finished",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess_3f6999536fea4e71/jobs/job_aad88eab677d41f3"
+      },
+      "response": {
+        "http_status": 200,
+        "body": {
+          "job_id": "job_aad88eab677d41f3",
+          "kind": "layout_check",
+          "status": "succeeded",
+          "progress": {
+            "stage": "done",
+            "message": null
+          },
+          "result_ref": {
+            "layout_check_id": "lc_767ade00daa041d4",
+            "format": "pdf",
+            "status": "passed",
+            "layout_ok": true,
+            "publication_policy_ok": true,
+            "actual_pages": 4,
+            "artifact_id": "art_b5e33b6c58b946ec",
+            "preview_asset_ids": [
+              "prv_7c1877ce7e2b413f",
+              "prv_a74744fca5144bb2",
+              "prv_c90a701c4e1046f6",
+              "prv_6838f3686f104717"
+            ],
+            "preview_basis": "pdf",
+            "warnings": [],
+            "demo": true
+          },
+          "error": null,
+          "created_at": "2026-09-27T06:59:52Z",
+          "updated_at": "2026-09-27T06:59:59Z"
+        }
+      }
+    },
+    {
+      "name": "DB v9 demo_off_get_blocked",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess_3f6999536fea4e71"
+      },
+      "response": {
+        "http_status": 403,
+        "body": {
+          "error": {
+            "code": "DEMO_MODE_DISABLED",
+            "message": "현재 서버에서 시연 모드가 꺼져 있습니다.",
+            "retryable": false,
+            "details": {},
+            "request_id": "req_b3bdc4c5b65f"
+          }
+        }
+      }
+    },
+    {
+      "name": "DB v9 demo_off_create_replay_blocked",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/sessions",
+        "headers": {
+          "Idempotency-Key": "demo-http-create"
+        },
+        "body": {
+          "brief": {
+            "purpose": "가상 자료 생성 흐름 확인",
+            "emphasis": [],
+            "direction": "balanced",
+            "target_pages": 4,
+            "photo_preference": "none"
+          },
+          "demo": true
+        }
+      },
+      "response": {
+        "http_status": 403,
+        "body": {
+          "error": {
+            "code": "DEMO_MODE_DISABLED",
+            "message": "현재 서버에서 시연 모드가 꺼져 있습니다.",
+            "retryable": false,
+            "details": {},
+            "request_id": "req_f2cb8b0d4de9"
+          }
+        }
+      }
+    },
+    {
+      "name": "DB v9 demo_off_owner_delete_allowed",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "request": {
+        "method": "DELETE",
+        "path": "/api/v1/sessions/sess_3f6999536fea4e71"
+      },
+      "response": {
+        "http_status": 200,
+        "body": {
+          "session_id": "sess_3f6999536fea4e71",
+          "status": "closed",
+          "cleanup": "done"
+        }
+      }
+    },
+    {
+      "name": "DB v9 closed_session_410_priority",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess_3f6999536fea4e71"
+      },
+      "response": {
+        "http_status": 410,
+        "body": {
+          "error": {
+            "code": "SESSION_EXPIRED",
+            "message": "종료된 세션입니다. 새 세션을 시작해 주세요.",
+            "retryable": false,
+            "details": {
+              "status": "closed",
+              "cleanup": "done"
+            },
+            "request_id": "req_f662a62349f9"
+          }
+        }
+      }
+    },
+    {
+      "name": "DB v9 document_after_layout",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조. 실제 PDF 4쪽 모두 시연 footer 확인. preview_asset_ids의 PNG 4개는 각각 200이며, 최종 다운로드 PDF를 같은 배율로 렌더한 각 페이지 PNG의 SHA-256과 모두 일치했다.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess_3f6999536fea4e71/documents/doc_e4fec921a1dc4ca3"
+      },
+      "response": {
+        "http_status": 200,
+        "body": {
+          "demo": true,
+          "document": {
+            "schema_version": "1.0",
+            "document_id": "doc_e4fec921a1dc4ca3",
+            "session_id": "sess_3f6999536fea4e71",
+            "document_revision": 2,
+            "input_revision": 2,
+            "title": "예시 회사",
+            "target_pages": 4,
+            "status": "review_required",
+            "pages": [
+              {
+                "page_id": "page_01",
+                "title": "예시 회사",
+                "layout_key": "text_photo",
+                "blocks": [
+                  {
+                    "block_id": "block_001",
+                    "type": "heading",
+                    "content": {
+                      "text": "예시 회사",
+                      "level": 1
+                    },
+                    "fact_ids": [
+                      "fact_001"
+                    ],
+                    "evidence_refs": [
+                      {
+                        "source_id": "DEMO_HTTP01",
+                        "source_version": 1,
+                        "segment_id": "seg_c6b28729bf834fb4",
+                        "locator": {
+                          "line_start": 1,
+                          "line_end": 1
+                        },
+                        "excerpt": "[시연] 회사명: 예시 회사"
+                      }
+                    ]
+                  },
+                  {
+                    "block_id": "block_002",
+                    "type": "paragraph",
+                    "content": {
+                      "text": "(mock) company_name: 예시 회사"
+                    },
+                    "fact_ids": [
+                      "fact_001"
+                    ],
+                    "evidence_refs": [
+                      {
+                        "source_id": "DEMO_HTTP01",
+                        "source_version": 1,
+                        "segment_id": "seg_c6b28729bf834fb4",
+                        "locator": {
+                          "line_start": 1,
+                          "line_end": 1
+                        },
+                        "excerpt": "[시연] 회사명: 예시 회사"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "page_id": "page_02",
+                "title": "예시 구성 2",
+                "layout_key": "text",
+                "blocks": [
+                  {
+                    "block_id": "block_003",
+                    "type": "heading",
+                    "content": {
+                      "text": "예시 구성 2",
+                      "level": 2
+                    },
+                    "fact_ids": [],
+                    "evidence_refs": []
+                  },
+                  {
+                    "block_id": "block_004",
+                    "type": "paragraph",
+                    "content": {
+                      "text": "(mock) company_summary: 예시 회사는 가상 부품 표면처리와 검사를 하는 테스트 기업입니다."
+                    },
+                    "fact_ids": [
+                      "fact_002"
+                    ],
+                    "evidence_refs": [
+                      {
+                        "source_id": "DEMO_HTTP01",
+                        "source_version": 1,
+                        "segment_id": "seg_fe08a04cb1f34a8c",
+                        "locator": {
+                          "line_start": 2,
+                          "line_end": 2
+                        },
+                        "excerpt": "[시연] 회사 개요: 예시 회사는 가상 부품 표면처리와 검사를 하는 테스트 기업입니다."
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "page_id": "page_03",
+                "title": "예시 구성 3",
+                "layout_key": "text",
+                "blocks": [
+                  {
+                    "block_id": "block_005",
+                    "type": "heading",
+                    "content": {
+                      "text": "예시 구성 3",
+                      "level": 2
+                    },
+                    "fact_ids": [],
+                    "evidence_refs": []
+                  },
+                  {
+                    "block_id": "block_006",
+                    "type": "paragraph",
+                    "content": {
+                      "text": "(mock) business_areas: 가상 부품 표면처리"
+                    },
+                    "fact_ids": [
+                      "fact_003"
+                    ],
+                    "evidence_refs": [
+                      {
+                        "source_id": "DEMO_HTTP01",
+                        "source_version": 1,
+                        "segment_id": "seg_b8a9b24d58334885",
+                        "locator": {
+                          "line_start": 3,
+                          "line_end": 3
+                        },
+                        "excerpt": "[시연] 사업 분야: 가상 부품 표면처리"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "page_id": "page_04",
+                "title": "예시 구성 4",
+                "layout_key": "text",
+                "blocks": [
+                  {
+                    "block_id": "block_007",
+                    "type": "heading",
+                    "content": {
+                      "text": "예시 구성 4",
+                      "level": 2
+                    },
+                    "fact_ids": [],
+                    "evidence_refs": []
+                  }
+                ]
+              }
+            ]
+          },
+          "validation": {
+            "validation_id": "val_eda439e811c54b81",
+            "document_id": "doc_e4fec921a1dc4ca3",
+            "document_revision": 2,
+            "input_revision": 2,
+            "status": "needs_review",
+            "issue_ids": [
+              "iss_3e73db3955ad49b5",
+              "iss_a3c975a3230e488e",
+              "iss_99df9796ea4641c9",
+              "iss_9942ba46caec494d"
+            ],
+            "checks": [
+              {
+                "check_key": "required_content",
+                "kind": "server",
+                "block_ids": [],
+                "result": "ok",
+                "reused_from_validation_id": null
+              },
+              {
+                "check_key": "block:block_001",
+                "kind": "server",
+                "block_ids": [
+                  "block_001"
+                ],
+                "result": "issue",
+                "reused_from_validation_id": null
+              },
+              {
+                "check_key": "block:block_002",
+                "kind": "server",
+                "block_ids": [
+                  "block_002"
+                ],
+                "result": "issue",
+                "reused_from_validation_id": null
+              },
+              {
+                "check_key": "block:block_003",
+                "kind": "server",
+                "block_ids": [
+                  "block_003"
+                ],
+                "result": "ok",
+                "reused_from_validation_id": null
+              },
+              {
+                "check_key": "block:block_004",
+                "kind": "server",
+                "block_ids": [
+                  "block_004"
+                ],
+                "result": "issue",
+                "reused_from_validation_id": null
+              },
+              {
+                "check_key": "block:block_005",
+                "kind": "server",
+                "block_ids": [
+                  "block_005"
+                ],
+                "result": "ok",
+                "reused_from_validation_id": null
+              },
+              {
+                "check_key": "block:block_006",
+                "kind": "server",
+                "block_ids": [
+                  "block_006"
+                ],
+                "result": "issue",
+                "reused_from_validation_id": null
+              },
+              {
+                "check_key": "block:block_007",
+                "kind": "server",
+                "block_ids": [
+                  "block_007"
+                ],
+                "result": "ok",
+                "reused_from_validation_id": null
+              },
+              {
+                "check_key": "agent:block_001",
+                "kind": "agent",
+                "block_ids": [
+                  "block_001"
+                ],
+                "result": "ok",
+                "reused_from_validation_id": null
+              },
+              {
+                "check_key": "agent:block_002",
+                "kind": "agent",
+                "block_ids": [
+                  "block_002"
+                ],
+                "result": "ok",
+                "reused_from_validation_id": null
+              },
+              {
+                "check_key": "agent:block_003",
+                "kind": "agent",
+                "block_ids": [
+                  "block_003"
+                ],
+                "result": "ok",
+                "reused_from_validation_id": null
+              },
+              {
+                "check_key": "agent:block_004",
+                "kind": "agent",
+                "block_ids": [
+                  "block_004"
+                ],
+                "result": "ok",
+                "reused_from_validation_id": null
+              },
+              {
+                "check_key": "agent:block_005",
+                "kind": "agent",
+                "block_ids": [
+                  "block_005"
+                ],
+                "result": "ok",
+                "reused_from_validation_id": null
+              },
+              {
+                "check_key": "agent:block_006",
+                "kind": "agent",
+                "block_ids": [
+                  "block_006"
+                ],
+                "result": "ok",
+                "reused_from_validation_id": null
+              },
+              {
+                "check_key": "agent:block_007",
+                "kind": "agent",
+                "block_ids": [
+                  "block_007"
+                ],
+                "result": "ok",
+                "reused_from_validation_id": null
+              }
+            ],
+            "agent_called": true,
+            "checked_block_ids": [
+              "block_001",
+              "block_002",
+              "block_003",
+              "block_004",
+              "block_005",
+              "block_006",
+              "block_007"
+            ],
+            "reused_block_ids": [],
+            "base_validation_id": null,
+            "created_at": "2026-09-27T06:59:52Z"
+          },
+          "approval": null,
+          "layout_checks": {
+            "pdf": {
+              "demo": true,
+              "layout_check_id": "lc_767ade00daa041d4",
+              "document_id": "doc_e4fec921a1dc4ca3",
+              "document_revision": 2,
+              "input_revision": 2,
+              "format": "pdf",
+              "status": "passed",
+              "template_version": "template_v1",
+              "render_options_hash": "34673880fdef80f9",
+              "asset_manifest_hash": "4f53cda18c2baa0c",
+              "actual_pages": 4,
+              "issue_ids": [],
+              "layout_ok": true,
+              "publication_policy_ok": true,
+              "publication_blocks": [],
+              "checks": [
+                {
+                  "check_key": "overflow",
+                  "required": true,
+                  "result": "ok",
+                  "block_ids": [],
+                  "page_ids": [],
+                  "reason": null
+                },
+                {
+                  "check_key": "broken_image",
+                  "required": true,
+                  "result": "ok",
+                  "block_ids": [],
+                  "page_ids": [],
+                  "reason": null
+                },
+                {
+                  "check_key": "placeholder_remaining",
+                  "required": true,
+                  "result": "ok",
+                  "block_ids": [],
+                  "page_ids": [],
+                  "reason": null
+                }
+              ],
+              "findings": [],
+              "fail_reasons": [],
+              "renderer": "chrome/153.0.8010.54",
+              "artifact_id": "art_b5e33b6c58b946ec",
+              "preview_asset_ids": [
+                "prv_7c1877ce7e2b413f",
+                "prv_a74744fca5144bb2",
+                "prv_c90a701c4e1046f6",
+                "prv_6838f3686f104717"
+              ],
+              "preview_basis": "pdf",
+              "warnings": [],
+              "created_at": "2026-09-27T06:59:59Z"
+            },
+            "docx": null
+          }
+        }
+      }
+    },
+    {
+      "name": "DB v9 approve_demo_pdf",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/sessions/sess_3f6999536fea4e71/documents/doc_e4fec921a1dc4ca3/approvals",
+        "headers": {
+          "Idempotency-Key": "demo-http-approve"
+        },
+        "body": {
+          "expected_revision": 2,
+          "input_revision": 2,
+          "format": "pdf",
+          "validation_id": "val_eda439e811c54b81",
+          "layout_check_id": "lc_767ade00daa041d4",
+          "confirmed": true
+        }
+      },
+      "response": {
+        "http_status": 201,
+        "body": {
+          "demo": true,
+          "approval_id": "apr_029661be948b4496",
+          "document_id": "doc_e4fec921a1dc4ca3",
+          "document_revision": 2,
+          "input_revision": 2,
+          "format": "pdf",
+          "validation_id": "val_eda439e811c54b81",
+          "layout_check_id": "lc_767ade00daa041d4",
+          "template_version": "template_v1",
+          "render_options_hash": "34673880fdef80f9",
+          "asset_manifest_hash": "4f53cda18c2baa0c",
+          "approved_at": "2026-09-27T06:59:59Z",
+          "approved_by": "own_686aa86efeb3462c833a2e4d690fb986",
+          "status": "active",
+          "invalidated_at": null,
+          "invalidated_reason": null,
+          "renderer": "chrome/153.0.8010.54",
+          "artifact_id": "art_b5e33b6c58b946ec"
+        }
+      }
+    },
+    {
+      "name": "DB v9 export_pdf_requested",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/sessions/sess_3f6999536fea4e71/exports",
+        "headers": {
+          "Idempotency-Key": "demo-http-export"
+        },
+        "body": {
+          "approval_id": "apr_029661be948b4496",
+          "format": "pdf"
+        }
+      },
+      "response": {
+        "http_status": 202,
+        "body": {
+          "export": {
+            "demo": true,
+            "export_id": "exp_eab195b10ea44649",
+            "approval_id": "apr_029661be948b4496",
+            "format": "pdf",
+            "status": "queued",
+            "artifact_id": null,
+            "expires_at": "2026-09-27T08:59:59Z",
+            "error": null,
+            "attempt": 1,
+            "warnings": [],
+            "created_at": "2026-09-27T06:59:59Z",
+            "updated_at": "2026-09-27T06:59:59Z"
+          },
+          "job_id": "job_0e17ce8bd8844dcd"
+        }
+      }
+    },
+    {
+      "name": "DB v9 export_same_key_replay",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조. Export가 ready가 된 뒤에도 같은 키·같은 본문 재전송은 최초 202 상태와 본문을 그대로 반환한다.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/sessions/sess_3f6999536fea4e71/exports",
+        "headers": {
+          "Idempotency-Key": "demo-http-export"
+        },
+        "body": {
+          "approval_id": "apr_029661be948b4496",
+          "format": "pdf"
+        }
+      },
+      "response": {
+        "http_status": 202,
+        "body": {
+          "export": {
+            "demo": true,
+            "export_id": "exp_eab195b10ea44649",
+            "approval_id": "apr_029661be948b4496",
+            "format": "pdf",
+            "status": "queued",
+            "artifact_id": null,
+            "expires_at": "2026-09-27T08:59:59Z",
+            "error": null,
+            "attempt": 1,
+            "warnings": [],
+            "created_at": "2026-09-27T06:59:59Z",
+            "updated_at": "2026-09-27T06:59:59Z"
+          },
+          "job_id": "job_0e17ce8bd8844dcd"
+        }
+      }
+    },
+    {
+      "name": "DB v9 export_pdf_ready_reuse",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/sessions/sess_3f6999536fea4e71/exports",
+        "body": {
+          "approval_id": "apr_029661be948b4496",
+          "format": "pdf"
+        }
+      },
+      "response": {
+        "http_status": 200,
+        "body": {
+          "export": {
+            "demo": true,
+            "export_id": "exp_eab195b10ea44649",
+            "approval_id": "apr_029661be948b4496",
+            "format": "pdf",
+            "status": "ready",
+            "artifact_id": "art_b5e33b6c58b946ec",
+            "expires_at": "2026-09-27T08:59:59Z",
+            "error": null,
+            "attempt": 1,
+            "warnings": [],
+            "created_at": "2026-09-27T06:59:59Z",
+            "updated_at": "2026-09-27T06:59:59Z"
+          },
+          "job_id": "job_0e17ce8bd8844dcd"
+        }
+      }
+    },
+    {
+      "name": "DB v9 download_pdf",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조. _observed는 내려받은 바이트의 검증 메타데이터이며 API JSON 응답 필드가 아니다.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess_3f6999536fea4e71/exports/exp_eab195b10ea44649/download"
+      },
+      "response": {
+        "http_status": 200,
+        "body": "(PDF 파일 바이트)",
+        "headers": {
+          "Content-Type": "application/pdf"
+        }
+      },
+      "_observed": {
+        "bytes": 18555,
+        "sha256": "f99f9f886ee8c3b0ca8318694b0fd6e5d42035c1f269e00dd6de86ba03c4c8fc",
+        "actual_pages": 4,
+        "footer_on_each_page": [
+          true,
+          true,
+          true,
+          true
+        ],
+        "artifact_download_sha256_equal": true,
+        "preview_hashes_match_downloaded_pdf_pages": true
+      }
+    },
+    {
+      "name": "DB v9 demo_off_preview_blocked",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess_3f6999536fea4e71/assets/prv_7c1877ce7e2b413f"
+      },
+      "response": {
+        "http_status": 403,
+        "body": {
+          "error": {
+            "code": "DEMO_MODE_DISABLED",
+            "message": "현재 서버에서 시연 모드가 꺼져 있습니다.",
+            "retryable": false,
+            "details": {},
+            "request_id": "req_0d3e17759e36"
+          }
+        }
+      }
+    },
+    {
+      "name": "DB v9 demo_off_download_blocked",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess_3f6999536fea4e71/exports/exp_eab195b10ea44649/download"
+      },
+      "response": {
+        "http_status": 403,
+        "body": {
+          "error": {
+            "code": "DEMO_MODE_DISABLED",
+            "message": "현재 서버에서 시연 모드가 꺼져 있습니다.",
+            "retryable": false,
+            "details": {},
+            "request_id": "req_f2c21554e376"
+          }
+        }
+      }
+    },
+    {
+      "name": "DB v9 closed_preview_410_priority",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess_3f6999536fea4e71/assets/prv_7c1877ce7e2b413f"
+      },
+      "response": {
+        "http_status": 410,
+        "body": {
+          "error": {
+            "code": "SESSION_EXPIRED",
+            "message": "종료된 세션입니다. 새 세션을 시작해 주세요.",
+            "retryable": false,
+            "details": {
+              "status": "closed",
+              "cleanup": "done"
+            },
+            "request_id": "req_36f7c02ac5f1"
+          }
+        }
+      }
+    },
+    {
+      "name": "DB v9 closed_download_410_priority",
+      "_note": "가짜 자료로 실행한 uvicorn·localhost TCP 실응답. 실제 PDF 배치 검사·미리보기·승인·출력·다운로드 완주. DB 배치/승인 행을 직접 삽입하지 않았으며 계약 제안 ㊹~㊿는 task_backend.md 6.11-6 참조.",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/sessions/sess_3f6999536fea4e71/exports/exp_eab195b10ea44649/download"
+      },
+      "response": {
+        "http_status": 410,
+        "body": {
+          "error": {
+            "code": "SESSION_EXPIRED",
+            "message": "종료된 세션입니다. 새 세션을 시작해 주세요.",
+            "retryable": false,
+            "details": {
+              "status": "closed",
+              "cleanup": "done"
+            },
+            "request_id": "req_644409f629c8"
+          }
+        }
+      }
     }
   ]
 }

@@ -22,7 +22,26 @@ def to_out(row: sqlite3.Row) -> ApprovalOut:
                        template_version=row["template_version"], render_options_hash=row["render_options_hash"],
                        asset_manifest_hash=row["asset_manifest_hash"], approved_at=row["approved_at"],
                        approved_by=row["approved_by"], status=row["status"], invalidated_at=row["invalidated_at"],
-                       invalidated_reason=row["invalidated_reason"], renderer=_col(row, "renderer"), artifact_id=_col(row, "artifact_id"))
+                       invalidated_reason=row["invalidated_reason"], renderer=_col(row, "renderer"), artifact_id=_col(row, "artifact_id"),
+                       demo=bool(row["demo"]))
+
+
+def check_demo_identity(conn: sqlite3.Connection, session_row: sqlite3.Row, *, approval: sqlite3.Row | None = None,
+                        layout_row: sqlite3.Row | None = None) -> None:
+    """승인 생성·멱등 응답에서도 세션/승인/검사/산출물의 시연 식별값을 대조한다. 기존 승인 이력은 되살리지 않는다."""
+    expected = bool(session_row["demo"])
+    if approval is not None:
+        if bool(approval["demo"]) != expected:
+            raise ApiError(422, "RENDER_IDENTITY_MISMATCH", "승인과 세션의 시연 여부가 다릅니다.", details={"reason": "demo_mismatch"})
+        layout_row = conn.execute("SELECT * FROM layout_checks WHERE layout_check_id=?", (approval["layout_check_id"],)).fetchone()
+    if layout_row is not None:
+        if bool(layout_row["demo"]) != expected:
+            raise ApiError(422, "RENDER_IDENTITY_MISMATCH", "배치 검사와 세션의 시연 여부가 다릅니다.", details={"reason": "demo_mismatch"})
+        artifact_id = approval["artifact_id"] if approval is not None else layout_row["artifact_id"]
+        if artifact_id:
+            art = conn.execute("SELECT * FROM artifacts WHERE artifact_id=?", (artifact_id,)).fetchone()
+            if art is not None and bool(art["demo"]) != expected:
+                raise ApiError(422, "RENDER_IDENTITY_MISMATCH", "산출물과 세션의 시연 여부가 다릅니다.", details={"reason": "demo_mismatch"})
 
 
 def active_for(conn: sqlite3.Connection, document_id: str, document_revision: int, input_revision: int,
@@ -100,6 +119,7 @@ def check_conditions(conn: sqlite3.Connection, session_row: sqlite3.Row, documen
     if reason is not None:
         raise ApiError(422, "LAYOUT_NOT_READY", "요청 형식의 배치 검사가 현재 문서에서 완료되지 않았습니다.",
                        details={"layout_check_id": body.layout_check_id, "format": body.format, "reason": reason})
+    check_demo_identity(conn, session_row, layout_row=lc_row)
     layout_blockers = [r["issue_id"] for r in conn.execute(
         "SELECT issue_id FROM issues WHERE document_id=? AND status='open' AND scope='layout' AND severity='blocker' "
         "AND (layout_format=? OR layout_format IS NULL)", (document.document_id, body.format))]
@@ -128,12 +148,12 @@ def create(conn: sqlite3.Connection, session_row: sqlite3.Row, owner_id: str, do
     conn.execute(
         "INSERT INTO approvals (approval_id, session_id, document_id, document_revision, input_revision, format, validation_id, "
         "layout_check_id, template_version, render_options_hash, asset_manifest_hash, approved_at, approved_by, status, created_at, "
-        "renderer, artifact_id, publication_checked_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)",
+        "renderer, artifact_id, publication_checked_at, demo) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)",
         (approval_id, session_row["session_id"], document.document_id, document.document_revision, body.input_revision,
          body.format, body.validation_id, body.layout_check_id, layout_checks.TEMPLATE_VERSION,
          layout_checks.RENDER_OPTIONS_HASH, manifest, stamp, owner_id, stamp, renderer, artifact_id,
-         pub.checked_at if pub is not None else None))
+         pub.checked_at if pub is not None else None, int(bool(session_row["demo"]))))
     return to_out(conn.execute("SELECT * FROM approvals WHERE approval_id=?", (approval_id,)).fetchone())
 
 

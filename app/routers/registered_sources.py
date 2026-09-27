@@ -8,6 +8,7 @@ from fastapi import APIRouter, Query, Request
 
 from app.access import require_owner, settings_of
 from app.db import connect
+from app.errors import ApiError
 from app.models import SourceListOut
 from app.services import registered
 
@@ -15,7 +16,11 @@ router = APIRouter(prefix="/sources", tags=["sources"])
 
 
 @router.get("", response_model=SourceListOut)
-def list_registered_sources(request: Request, kind: str | None = Query(default=None)):
+def list_registered_sources(request: Request, kind: str | None = Query(default=None),
+                            include_demo: bool = Query(default=False)):
     require_owner(request)
-    with connect(settings_of(request).db_path) as conn:
-        return SourceListOut(items=registered.list_registered(conn, kind))
+    settings = settings_of(request)
+    if include_demo and not settings.demo_mode:
+        raise ApiError(403, "DEMO_MODE_DISABLED", "시연 자료 사용이 비활성화되어 있습니다.")
+    with connect(settings.db_path) as conn:
+        return SourceListOut(items=registered.list_registered(conn, kind, include_demo=include_demo))

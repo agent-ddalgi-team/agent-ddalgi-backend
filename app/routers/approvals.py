@@ -1,6 +1,8 @@
 """POST /sessions/{sid}/documents/{did}/approvals — 승인 7조건을 한 트랜잭션에서 검사·생성·멱등 저장."""
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Header, Request
 from fastapi.responses import JSONResponse
 
@@ -26,10 +28,14 @@ def create_approval(request: Request, sid: str, did: str, body: ApprovalCreate,
         pub_now = publication.check_document(conn, document)
         replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest, settings) if pub_now.ok else None
         if replay is not None:
+            cached_id = json.loads(replay.body)["approval_id"]
+            cached_approval = conn.execute("SELECT * FROM approvals WHERE approval_id=?", (cached_id,)).fetchone()
+            approvals.check_demo_identity(conn, row, approval=cached_approval)
             return replay                                       # 최초 성공 응답. invalidated를 되살리지 않는다
         v, manifest, lc_row, pub = approvals.check_conditions(conn, row, document, body)   # ②~⑦
         existing = approvals.find_matching_active(conn, did, document.document_revision, row["input_revision"], body)
         if existing is not None:
+            approvals.check_demo_identity(conn, row, approval=existing)
             out = approvals.to_out(existing)                    # 같은 버전·형식·검증·배치 검사(=같은 artifact)의 active 승인은 하나만
         else:
             # 다른 배치 검사를 명시적으로 승인: 같은 형식의 이전 승인은 superseded. 재검사만으로는 기존 승인이 바뀌지 않는다.

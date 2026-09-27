@@ -21,7 +21,7 @@ from collections.abc import Iterable
 
 from app.models import Document
 
-TEMPLATE_VERSION = "template_v0"
+TEMPLATE_VERSION = "template_v1"
 DEFAULT_RENDER_OPTIONS = {
     "template_key": "company_intro",
     "page_size": "A4",
@@ -64,8 +64,10 @@ def matching_passed(conn: sqlite3.Connection, layout_check_id: str, document: Do
     row = conn.execute("SELECT * FROM layout_checks WHERE layout_check_id=?", (layout_check_id,)).fetchone()
     if row is None:
         return None, "layout_check_not_found"
+    session = conn.execute("SELECT demo FROM sessions WHERE session_id=?", (document.session_id,)).fetchone()
     checks = [
         (row["document_id"] == document.document_id, "document_mismatch"),
+        (session is not None and bool(row["demo"]) == bool(session["demo"]), "demo_mismatch"),
         (row["document_revision"] == document.document_revision, "document_revision_mismatch"),
         (row["input_revision"] == input_revision, "input_revision_mismatch"),
         (row["format"] == fmt, "format_mismatch"),

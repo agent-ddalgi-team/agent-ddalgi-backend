@@ -52,7 +52,7 @@ def _collect(sources: list[SourceIn]) -> dict[str, list[tuple[str, EvidenceRef]]
     for src in sources:
         for seg in src.segments:
             # 등록 mock 자료의 "[MOCK] 회사명: …" — 라벨을 찾을 때만 접두어를 벗긴다. 저장된 text·excerpt는 그대로다.
-            m = _LABEL_RE.match(seg.text.removeprefix(MOCK_PREFIX))
+            m = _LABEL_RE.match(seg.text.removeprefix(MOCK_PREFIX).removeprefix("[시연] "))
             if not m:
                 continue
             label, value = m.group(1), m.group(2)
