@@ -430,7 +430,13 @@ def test_validation_job_dedup_per_revision_and_discard_when_changed(app, setting
     assert ctx.get()["validation"] is None
 
 
-def test_llm_mode_without_impl_fails(tmp_path):
+def test_llm_mode_without_impl_fails(tmp_path, monkeypatch):
+    """실제 파일·모델 설정과 무관하게 Agent 불러오기 실패가 작업 실패로 이어진다."""
+    from unittest.mock import Mock
+
+    import_stub = Mock()
+    import_stub.import_module.side_effect = ModuleNotFoundError("테스트용 Agent 불러오기 실패")
+    monkeypatch.setattr("app.agent_bridge.importlib", import_stub)
     settings = Settings(private_runs_dir=tmp_path / "runs", db_path=tmp_path / "runs" / "t.sqlite3", agent_mode="llm")
     app = create_app(settings)
     c = TestClient(app)
@@ -440,6 +446,8 @@ def test_llm_mode_without_impl_fails(tmp_path):
     r = c.post(f"/api/v1/sessions/{sid}/preflights", json={"expected_input_revision": 2})
     job = c.get(f"/api/v1/sessions/{sid}/jobs/{r.json()['job_id']}").json()
     assert job["status"] == "failed" and "agent_llm" in job["error"]["message"]
+    assert job["error"]["code"] == "SERVICE_TEMPORARY_FAILURE"
+    import_stub.import_module.assert_called_once_with("app.agent_llm")
 
 
 # ================= 승인 =================

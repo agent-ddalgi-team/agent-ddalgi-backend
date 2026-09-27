@@ -1,0 +1,344 @@
+{
+  "schema_version": "1.0",
+  "is_mock": true,
+  "company_info": {
+    "company_name": {
+      "status": "supported",
+      "facts": [
+        {
+          "fact_id": "F001",
+          "text": "테스트 회사",
+          "evidence": [
+            {
+              "source_id": "S001",
+              "locator": "1행",
+              "quote": "회사명: 테스트 회사"
+            }
+          ]
+        }
+      ]
+    },
+    "company_summary": {
+      "status": "supported",
+      "facts": [
+        {
+          "fact_id": "F002",
+          "text": "테스트용 기업입니다.",
+          "evidence": [
+            {
+              "source_id": "S001",
+              "locator": "2행",
+              "quote": "회사 개요: 테스트용 기업입니다."
+            }
+          ]
+        }
+      ]
+    },
+    "business_areas": {
+      "status": "supported",
+      "facts": [
+        {
+          "fact_id": "F003",
+          "text": "테스트 사업 A",
+          "evidence": [
+            {
+              "source_id": "S001",
+              "locator": "3행",
+              "quote": "사업 분야: 테스트 사업 A"
+            }
+          ]
+        }
+      ]
+    },
+    "products_services": {
+      "status": "not_found",
+      "facts": []
+    },
+    "technology": {
+      "status": "not_found",
+      "facts": []
+    },
+    "strengths": {
+      "status": "not_found",
+      "facts": []
+    },
+    "customers_markets": {
+      "status": "not_found",
+      "facts": []
+    },
+    "certifications": {
+      "status": "not_found",
+      "facts": []
+    },
+    "history": {
+      "status": "not_found",
+      "facts": []
+    },
+    "processes": {
+      "status": "not_found",
+      "facts": []
+    },
+    "process_count": {
+      "status": "conflict",
+      "facts": [
+        {
+          "fact_id": "F004",
+          "text": "공정 수: 2개",
+          "evidence": [
+            {
+              "source_id": "S001",
+              "locator": "4행",
+              "quote": "공정 수: 2개"
+            }
+          ]
+        },
+        {
+          "fact_id": "F005",
+          "text": "공정 수: 3개",
+          "evidence": [
+            {
+              "source_id": "S002",
+              "locator": "2행",
+              "quote": "공정 수: 3개"
+            }
+          ]
+        }
+      ]
+    },
+    "capabilities": {
+      "status": "not_found",
+      "facts": []
+    },
+    "lead_time": {
+      "status": "needs_confirmation",
+      "facts": [
+        {
+          "fact_id": "F006",
+          "text": "빠른 납기",
+          "evidence": [
+            {
+              "source_id": "S001",
+              "locator": "5행",
+              "quote": "납기 표현: 빠른 납기"
+            }
+          ]
+        }
+      ]
+    },
+    "other_info": {
+      "status": "not_found",
+      "facts": []
+    }
+  },
+  "draft_sections": [
+    {
+      "key": "company_summary",
+      "title": "회사 개요",
+      "paragraphs": [
+        {
+          "text": "테스트 회사는 테스트용 기업입니다.",
+          "fact_ids": [
+            "F001",
+            "F002"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "business_areas",
+      "title": "사업 분야",
+      "paragraphs": [
+        {
+          "text": "사업 분야는 테스트 사업 A입니다.",
+          "fact_ids": [
+            "F003"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "products_services",
+      "title": "제품·서비스",
+      "paragraphs": [
+        {
+          "text": "자료에서 확인되지 않음",
+          "fact_ids": []
+        }
+      ]
+    },
+    {
+      "key": "technology",
+      "title": "기술",
+      "paragraphs": [
+        {
+          "text": "자료에서 확인되지 않음",
+          "fact_ids": []
+        }
+      ]
+    },
+    {
+      "key": "strengths",
+      "title": "강점",
+      "paragraphs": [
+        {
+          "text": "자료에서 확인되지 않음",
+          "fact_ids": []
+        }
+      ]
+    },
+    {
+      "key": "customers_markets",
+      "title": "고객·시장",
+      "paragraphs": [
+        {
+          "text": "자료에서 확인되지 않음",
+          "fact_ids": []
+        }
+      ]
+    },
+    {
+      "key": "certifications",
+      "title": "인증·승인·특허",
+      "paragraphs": [
+        {
+          "text": "자료에서 확인되지 않음",
+          "fact_ids": []
+        }
+      ]
+    },
+    {
+      "key": "history",
+      "title": "연혁",
+      "paragraphs": [
+        {
+          "text": "자료에서 확인되지 않음",
+          "fact_ids": []
+        }
+      ]
+    },
+    {
+      "key": "processes",
+      "title": "공정 목록",
+      "paragraphs": [
+        {
+          "text": "자료에서 확인되지 않음",
+          "fact_ids": []
+        }
+      ]
+    },
+    {
+      "key": "process_count",
+      "title": "공정 수",
+      "paragraphs": [
+        {
+          "text": "추가 확인 필요",
+          "fact_ids": []
+        }
+      ]
+    },
+    {
+      "key": "capabilities",
+      "title": "대응 범위",
+      "paragraphs": [
+        {
+          "text": "자료에서 확인되지 않음",
+          "fact_ids": []
+        }
+      ]
+    },
+    {
+      "key": "lead_time",
+      "title": "납기 조건",
+      "paragraphs": [
+        {
+          "text": "추가 확인 필요",
+          "fact_ids": []
+        }
+      ]
+    },
+    {
+      "key": "other_info",
+      "title": "기타 핵심 정보",
+      "paragraphs": [
+        {
+          "text": "자료에서 확인되지 않음",
+          "fact_ids": []
+        }
+      ]
+    }
+  ],
+  "needs_confirmation": [
+    {
+      "field": "products_services",
+      "status": "not_found",
+      "question": "제품·서비스 정보를 제공하거나 해당 사항 없음을 확인해 주세요."
+    },
+    {
+      "field": "technology",
+      "status": "not_found",
+      "question": "기술 정보를 제공하거나 해당 사항 없음을 확인해 주세요."
+    },
+    {
+      "field": "strengths",
+      "status": "not_found",
+      "question": "강점 정보를 제공하거나 해당 사항 없음을 확인해 주세요."
+    },
+    {
+      "field": "customers_markets",
+      "status": "not_found",
+      "question": "고객·시장 정보를 제공하거나 해당 사항 없음을 확인해 주세요."
+    },
+    {
+      "field": "certifications",
+      "status": "not_found",
+      "question": "인증·승인·특허 정보를 제공하거나 해당 사항 없음을 확인해 주세요."
+    },
+    {
+      "field": "history",
+      "status": "not_found",
+      "question": "연혁 정보를 제공하거나 해당 사항 없음을 확인해 주세요."
+    },
+    {
+      "field": "processes",
+      "status": "not_found",
+      "question": "공정 목록 정보를 제공하거나 해당 사항 없음을 확인해 주세요."
+    },
+    {
+      "field": "process_count",
+      "status": "conflict",
+      "question": "테스트 자료 A는 2개, B는 3개로 표시합니다. 실제 공정 수와 명칭은 무엇인가요?"
+    },
+    {
+      "field": "capabilities",
+      "status": "not_found",
+      "question": "대응 범위 정보를 제공하거나 해당 사항 없음을 확인해 주세요."
+    },
+    {
+      "field": "lead_time",
+      "status": "needs_confirmation",
+      "question": "빠른 납기의 기준 기간과 적용 조건은 무엇인가요?"
+    },
+    {
+      "field": "other_info",
+      "status": "not_found",
+      "question": "기타 핵심 정보 정보를 제공하거나 해당 사항 없음을 확인해 주세요."
+    }
+  ],
+  "sources": [
+    {
+      "source_id": "S001",
+      "file_name": "mock_source_a.txt",
+      "document_date": null
+    },
+    {
+      "source_id": "S002",
+      "file_name": "mock_source_b.txt",
+      "document_date": null
+    }
+  ],
+  "validation": {
+    "schema_valid": true,
+    "evidence_links_valid": true,
+    "human_review_required": true
+  }
+}

@@ -1,0 +1,556 @@
+"""실제 AI 연결부: 서버 형식 ↔ 이전 추출·작성 형식.
+
+1. 서버가 넘긴 선택 자료로만 출처 대응표를 만든다.
+2. 이전 Agent의 형식·근거 검사를 거친 결과를 현재 Fact/Page/Block으로 바꾼다.
+3. DB 저장·승인·세션 정리는 기존 서버에 맡긴다.
+
+테스트는 LlmAgent(request_json=가짜_함수)를 사용한다. 이 모듈은 .env를 읽지 않는다.
+실제 요청은 create_bridge()가 환경 설정을 확인한 뒤 OpenAIRequester에서만 수행한다.
+"""
+from __future__ import annotations
+
+import json
+import math
+import os
+import threading
+import time
+import uuid
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+from decimal import Decimal
+from typing import Any
+
+from openai import (APIConnectionError, APIStatusError, APITimeoutError, AuthenticationError,
+                    BadRequestError, OpenAI, PermissionDeniedError, RateLimitError)
+from pydantic import ValidationError
+
+from app import agent_legacy as legacy
+from app.agent_bridge import (AgentError, AnalyzeRequest, AnalyzeResult, DraftRequest, DraftResult,
+                              ProposeRequest, SourceIn, ValidateRequest)
+from app.config import Settings
+from app.models import Block, EvidenceRef, Fact, Issue, Page, Recommendations
+
+JsonRequester = Callable[[str, dict, dict, str], dict]
+_BUSINESS_KEYS = ("company_summary", "business_areas", "processes", "products_services", "technology")
+_LEGACY_INPUT_LIMIT = 40_000
+_TRIAL_MODEL = "gpt-6-luna"
+# 2026-09-28 D-04: Standard 텍스트 단가. 실제 청구액(세금 포함)과 구분한다.
+# https://developers.openai.com/api/docs/models/gpt-6-luna
+_PRICE_PER_MILLION = (Decimal("0.10"), Decimal("0.01"), Decimal("0.125"), Decimal("0.50"))
+_MODEL_CONTEXT = 1_050_000
+# 다음 1회의 최대 문맥·캐시 쓰기·긴 문맥 출력 비용까지 미리 확보한다.
+# 원문 글자 수로 입력 토큰을 추정하지 않는다. 승인된 출력 상한은 8,000이다.
+_CALL_RESERVE_USD = (Decimal(_MODEL_CONTEXT) * Decimal("0.25") + 8000 * Decimal("0.75")) / 1_000_000
+
+
+def _invalid() -> AgentError:
+    # 원문·모델 응답·SDK 예외의 내용을 사용자 오류나 서버 로그로 전달하지 않는다.
+    return AgentError("AGENT_OUTPUT_INVALID", "AI 결과의 형식이나 원문 근거가 맞지 않습니다.", False)
+
+
+@dataclass(frozen=True)
+class LlmOptions:
+    api_key: str = field(repr=False)
+    model: str
+    timeout_seconds: float
+    max_retries: int
+    max_output_tokens: int
+    max_input_chars: int
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str]) -> LlmOptions:
+        """운영 모델·한도를 임의 확정하지 않고 명시된 설정만 사용한다."""
+        names = ("OPENAI_API_KEY", "OPENAI_MODEL", "OPENAI_TIMEOUT_SECONDS", "OPENAI_MAX_RETRIES",
+                 "OPENAI_MAX_OUTPUT_TOKENS", "OPENAI_MAX_INPUT_CHARS")
+        if any(not env.get(name, "").strip() for name in names):
+            raise AgentError("SERVICE_TEMPORARY_FAILURE",
+                             "AI 모델·호출 설정이 필요합니다. .env.example의 설정 안내를 확인해 주세요.", False)
+        try:
+            timeout = float(env[names[2]])
+            retries, output, input_chars = (int(env[name]) for name in names[3:])
+            if not math.isfinite(timeout) or timeout <= 0 or retries < 0 or output <= 0:
+                raise ValueError
+            if not 0 < input_chars <= _LEGACY_INPUT_LIMIT:
+                raise ValueError
+        except (ValueError, OverflowError):
+            raise AgentError("SERVICE_TEMPORARY_FAILURE",
+                             "AI 호출 한도 설정이 올바르지 않습니다. .env.example의 범위를 확인해 주세요.", False) from None
+        return cls(env[names[0]].strip(), env[names[1]].strip(), timeout, retries, output, input_chars)
+
+
+def _trial_error() -> AgentError:
+    return AgentError("SERVICE_TEMPORARY_FAILURE",
+                      "AI 시험이 중단되었습니다. 사용량 기록과 중단 이유를 확인해 주세요.", False)
+
+
+class TrialLedger:
+    """첫 시험 1회분의 메모리 기록. 원문·키·응답 본문을 기록에 남기지 않는다.
+
+    한 프로세스에서 공유하며 동시 호출은 차단한다. 재시작·다중 worker 간에는
+    공유되지 않으므로 실제 시험은 단일 프로세스·reload 없이 진행해야 한다.
+    """
+
+    def __init__(self, *, max_calls: int = 8, budget_usd: Decimal = Decimal("1")):
+        if type(max_calls) is not int or not 1 <= max_calls <= 8:
+            raise ValueError("시험 호출 한도는 1~8이어야 합니다.")
+        if not isinstance(budget_usd, Decimal) or not budget_usd.is_finite() or not 0 < budget_usd <= 1:
+            raise ValueError("시험 예산은 0 초과 1 이하의 Decimal이어야 합니다.")
+        self._max_calls, self._budget = max_calls, budget_usd
+        self._lock = threading.Lock()
+        self._records: list[dict] = []
+        self._active: dict | None = None
+        self._operation_owner: int | None = None
+        self._spent = Decimal("0")
+        self._stop_reason: str | None = None
+
+    def stop(self) -> None:
+        """다음 호출을 막고, 이미 전송된 요청의 결과도 문서에 전달하지 않는다."""
+        self._stop("manual_stop")
+
+    def _stop(self, reason: str) -> None:
+        with self._lock:
+            if self._stop_reason in (None, "call_limit"):
+                self._stop_reason = reason
+
+    def _enter_operation(self) -> None:
+        # 통신 뒤 근거 검사·페이지 변환이 끝날 때까지 다른 Job도 시작하지 않는다.
+        with self._lock:
+            if self._stop_reason is not None or self._active is not None or self._operation_owner is not None:
+                raise _trial_error()
+            self._operation_owner = threading.get_ident()
+
+    def _end_operation(self) -> bool:
+        with self._lock:
+            self._operation_owner = None
+            # 8번째 정상 응답은 반환하되 수동 중단·검사 실패 결과는 반환하지 않는다.
+            return self._stop_reason not in (None, "call_limit")
+
+    def snapshot(self) -> dict:
+        """내용 없는 측정값의 복사본. 이 함수를 부르는 것만으로 API를 호출하지 않는다."""
+        with self._lock:
+            records = [dict(record) for record in self._records]
+            return {"scope": "single_process_trial", "pricing_date": "2026-09-28",
+                    "calls_started": len(records) + int(self._active is not None),
+                    "max_calls": self._max_calls, "budget_usd": str(self._budget),
+                    "known_estimated_cost_usd": str(self._spent),
+                    "cost_complete": self._active is None and all(r["estimated_cost_usd"] is not None for r in records),
+                    "reserved_cost_usd": str(_CALL_RESERVE_USD if self._active else Decimal("0")),
+                    "in_flight": self._active is not None, "operation_in_progress": self._operation_owner is not None,
+                    "stopped": self._stop_reason is not None,
+                    "stop_reason": self._stop_reason, "records": records}
+
+    def _begin(self, options: LlmOptions, schema_name: str) -> None:
+        # 한도 확인과 예약을 한 잠금 안에서 수행해 다른 Job의 동시 호출도 막는다.
+        with self._lock:
+            if (self._stop_reason is not None or self._active is not None
+                    or self._operation_owner not in (None, threading.get_ident())):
+                raise _trial_error()
+            if (options.model != _TRIAL_MODEL or options.max_retries != 0
+                    or not 0 < options.timeout_seconds <= 60
+                    or not 0 < options.max_output_tokens <= 8000
+                    or not 0 < options.max_input_chars <= 10_000):
+                self._stop_reason = "settings_outside_trial"
+            elif len(self._records) >= self._max_calls:
+                self._stop_reason = "call_limit"
+            elif schema_name not in ("company_info", "draft_sections"):
+                self._stop_reason = "unsupported_operation"
+            elif sum(r["operation"] == schema_name for r in self._records) >= 4:
+                self._stop_reason = "operation_limit"
+            elif self._spent + _CALL_RESERVE_USD > self._budget:
+                self._stop_reason = "budget_reserve"
+            if self._stop_reason is not None:
+                raise _trial_error()
+            self._active = {"call_number": len(self._records) + 1, "operation": schema_name,
+                            "requested_model": _TRIAL_MODEL, "max_output_tokens": options.max_output_tokens}
+
+    @staticmethod
+    def _usage(response: Any, max_output_tokens: int) -> dict:
+        """누락된 사용량은 0이 아니다. 수치와 과금 조건이 확인될 때만 계산한다."""
+        usage = response.usage
+        values = {"input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,
+                  "cached_input_tokens": usage.input_tokens_details.cached_tokens,
+                  "cache_write_tokens": usage.input_tokens_details.cache_write_tokens,
+                  "reasoning_tokens": usage.output_tokens_details.reasoning_tokens,
+                  "total_tokens": usage.total_tokens}
+        if any(type(value) is not int or value < 0 for value in values.values()):
+            raise ValueError
+        inp, out = values["input_tokens"], values["output_tokens"]
+        cached, written = values["cached_input_tokens"], values["cache_write_tokens"]
+        if (inp + out != values["total_tokens"] or cached + written > inp
+                or values["reasoning_tokens"] > out or inp > _MODEL_CONTEXT or out > max_output_tokens):
+            raise ValueError
+        # 알 수 없는 모델·처리 등급은 원문을 복사하지 않고 비용 미확인으로 중단한다.
+        if response.model != _TRIAL_MODEL or response.service_tier != "default":
+            raise ValueError
+        input_rate, cached_rate, write_rate, output_rate = _PRICE_PER_MILLION
+        if inp > 272_000:
+            input_rate, cached_rate, write_rate = (rate * 2 for rate in (input_rate, cached_rate, write_rate))
+            output_rate *= Decimal("1.5")
+        cost = ((inp - cached - written) * input_rate + cached * cached_rate
+                + written * write_rate + out * output_rate) / 1_000_000
+        return values | {"response_model": _TRIAL_MODEL, "service_tier": "default",
+                         "estimated_cost_usd": str(cost)}
+
+    def _finish(self, response: Any, elapsed_seconds: float, error_code: str | None,
+                failure_reason: str = "request_failed") -> bool:
+        """실패한 응답의 사용량도 기록한다. True이면 결과를 문서로 전달하지 않는다."""
+        with self._lock:
+            record = dict(self._active)
+            max_output = record.pop("max_output_tokens")
+            record.update({"elapsed_ms": round(max(0, elapsed_seconds) * 1000, 3),
+                           "input_tokens": None, "output_tokens": None, "cached_input_tokens": None,
+                           "cache_write_tokens": None, "reasoning_tokens": None, "total_tokens": None,
+                           "response_model": None, "service_tier": None, "estimated_cost_usd": None,
+                           "error_code": error_code, "outcome": "failed" if error_code else "json_received"})
+            try:
+                record.update(self._usage(response, max_output))
+                self._spent += Decimal(record["estimated_cost_usd"])
+            except (AttributeError, TypeError, ValueError):
+                failure_reason = failure_reason if error_code else "usage_unconfirmed"
+                error_code = error_code or "SERVICE_TEMPORARY_FAILURE"
+                record.update(error_code=error_code, outcome="failed")
+            discard = self._stop_reason is not None or error_code is not None
+            if self._stop_reason is not None:
+                record["outcome"] = "discarded"
+            if error_code is not None and self._stop_reason is None:
+                self._stop_reason = failure_reason
+            self._records.append(record)
+            self._active = None
+            if self._spent > self._budget:
+                self._stop_reason, discard = "budget_exceeded", True
+                record["outcome"] = "discarded"
+            elif len(self._records) >= self._max_calls and self._stop_reason is None:
+                self._stop_reason = "call_limit"
+            return discard
+
+
+# 서버가 Job마다 새 bridge를 만들더라도 첫 시험의 합계는 초기화하지 않는다.
+_trial = TrialLedger()
+
+
+def trial_report() -> dict:
+    return _trial.snapshot()
+
+
+def stop_trial() -> None:
+    _trial.stop()
+
+
+class OpenAIRequester:
+    """Responses API 통신 한 곳. 내용 자동 수정·추가 생성 재시도는 하지 않는다."""
+
+    def __init__(self, options: LlmOptions, *, ledger: TrialLedger | None = None):
+        self.options = options
+        self.ledger = ledger if ledger is not None else _trial
+
+    def __call__(self, instructions: str, payload: dict, schema: dict, schema_name: str) -> dict:
+        options = self.options
+        self.ledger._begin(options, schema_name)
+        started, response, error, failure_reason = time.monotonic(), None, None, "request_failed"
+        try:
+            with OpenAI(api_key=options.api_key, timeout=options.timeout_seconds,
+                        max_retries=options.max_retries, base_url="https://api.openai.com/v1") as client:
+                response = client.responses.create(
+                    model=options.model, instructions=instructions,
+                    input=json.dumps(payload, ensure_ascii=False),
+                    text={"format": {"type": "json_schema", "name": schema_name,
+                                     "strict": True, "schema": schema}},
+                    max_output_tokens=options.max_output_tokens, store=False, service_tier="default",
+                    reasoning={"effort": "medium"}, truncation="disabled",
+                )
+            result = self._decode(response)
+        except RateLimitError as exc:
+            failure_reason = ("provider_budget" if exc.code in (
+                "organization_spend_limit_exceeded", "project_spend_limit_exceeded", "insufficient_quota",
+                "credit_balance_exhausted", "organization_usage_limit_exceeded") or exc.type == "insufficient_quota"
+                else "rate_limit")
+            error = AgentError("AI_RATE_LIMIT", "AI 요청 한도로 시험을 중단했습니다. 사용량·결제 설정을 확인해 주세요.", False)
+        except (AuthenticationError, PermissionDeniedError, BadRequestError):
+            error = AgentError("SERVICE_TEMPORARY_FAILURE", "AI 모델·접근 권한·요청 설정을 확인해 주세요.", False)
+        except (APITimeoutError, APIConnectionError):
+            error = AgentError("SERVICE_TEMPORARY_FAILURE", "AI 응답을 받지 못해 시험을 중단했습니다. 사용량을 확인해 주세요.", False)
+        except APIStatusError:
+            error = AgentError("SERVICE_TEMPORARY_FAILURE", "AI 서비스 요청을 완료하지 못했습니다.", False)
+        except AgentError as exc:
+            error, failure_reason = exc, "invalid_response"
+        except Exception:
+            error = AgentError("SERVICE_TEMPORARY_FAILURE", "AI 응답을 처리하지 못했습니다.", False)
+        except BaseException:
+            self.ledger._finish(response, time.monotonic() - started, "SERVICE_TEMPORARY_FAILURE", "interrupted")
+            raise
+        discard = self.ledger._finish(response, time.monotonic() - started, error.code if error else None, failure_reason)
+        if error is not None:
+            raise error from None
+        if discard:
+            raise _trial_error()
+        return result
+
+    @staticmethod
+    def _decode(response: Any) -> dict:
+        try:
+            if response.status != "completed":
+                raise _invalid()
+            if any(getattr(part, "type", "") == "refusal"
+                   for item in response.output if getattr(item, "type", "") == "message"
+                   for part in item.content):
+                raise _invalid()
+            result = json.loads(response.output_text)
+            if not isinstance(result, dict):
+                raise _invalid()
+            return result
+        except (ValueError, TypeError, AttributeError):
+            raise _invalid() from None
+
+
+class SourceIndex:
+    """자료와 구간 ID로 원래 위치를 되찾는 대응표. 위치를 추측하지 않는다."""
+
+    def __init__(self, sources: list[SourceIn]):
+        self.units: list[dict] = []
+        self.by_token: dict[tuple[str, str], tuple[SourceIn, Any]] = {}
+        self.by_segment: dict[tuple[str, str], tuple[SourceIn, Any]] = {}
+        source_ids, segment_ids = set(), set()
+        for source in sources:
+            if source.source_id in source_ids:
+                raise _invalid()
+            source_ids.add(source.source_id)
+            for segment in source.segments:
+                if segment.segment_id in segment_ids:
+                    raise _invalid()
+                segment_ids.add(segment.segment_id)
+                token = "segment:" + segment.segment_id
+                self.by_token[(source.source_id, token)] = (source, segment)
+                self.by_segment[(source.source_id, segment.segment_id)] = (source, segment)
+                if segment.text.strip():
+                    self.units.append({"source_id": source.source_id, "locator": token, "text": segment.text})
+
+    def restore(self, evidence: dict) -> EvidenceRef:
+        pair = self.by_token.get((evidence.get("source_id"), evidence.get("locator")))
+        quote = evidence.get("quote")
+        if pair is None or not isinstance(quote, str) or not quote.strip() or quote not in pair[1].text:
+            raise _invalid()
+        source, segment = pair
+        return EvidenceRef(source_id=source.source_id, source_version=source.source_version,
+                           segment_id=segment.segment_id, locator=dict(segment.locator), excerpt=quote)
+
+    def check(self, ref: EvidenceRef) -> None:
+        pair = self.by_segment.get((ref.source_id, ref.segment_id))
+        if (pair is None or ref.source_version != pair[0].source_version or ref.locator != pair[1].locator
+                or not ref.excerpt.strip() or ref.excerpt not in pair[1].text):
+            raise _invalid()
+
+
+def _unique_refs(refs: list[EvidenceRef]) -> list[EvidenceRef]:
+    # 완전히 같은 인용만 합친다. 다른 자료·구간·인용문은 남긴다.
+    found: dict[str, EvidenceRef] = {}
+    for ref in refs:
+        found.setdefault(json.dumps(ref.model_dump(), sort_keys=True, ensure_ascii=False), ref)
+    return list(found.values())
+
+
+class LlmAgent:
+    def __init__(self, request_json: JsonRequester, *, max_input_chars: int = _LEGACY_INPUT_LIMIT):
+        self.request_json = request_json
+        self.max_input_chars = max_input_chars
+
+    def _run_trial_operation(self, operation: Callable, request: Any) -> Any:
+        if not isinstance(self.request_json, OpenAIRequester):
+            return operation(request)
+        ledger = self.request_json.ledger
+        ledger._enter_operation()
+        try:
+            result = operation(request)
+        except BaseException:
+            ledger._stop("invalid_result")
+            ledger._end_operation()
+            raise
+        if ledger._end_operation():
+            raise _trial_error()
+        return result
+
+    def _request(self, instructions: str, payload: dict, schema: dict, schema_name: str) -> dict:
+        try:
+            return self.request_json(instructions, payload, schema, schema_name)
+        except AgentError:
+            raise
+        except Exception:
+            raise AgentError("SERVICE_TEMPORARY_FAILURE", "AI 응답을 처리하지 못했습니다.", False) from None
+
+    def analyze(self, request: AnalyzeRequest) -> AnalyzeResult:
+        return self._run_trial_operation(self._analyze, request)
+
+    def _analyze(self, request: AnalyzeRequest) -> AnalyzeResult:
+        index = SourceIndex(request.sources)
+        if not index.units:
+            # 사진만 있는 경우도 사전 확인 결과를 반환한다. 생성 가능 여부는 서버가 계산한다.
+            facts = self._facts({key: {"status": "not_found", "facts": []}
+                                 for key in legacy.COMPANY_INFO_KEYS}, index)
+            return AnalyzeResult(facts=facts, issues=self._issues(facts), recommendations=Recommendations(
+                suggested_pages=request.brief.target_pages, reason="텍스트 근거가 있는 자료를 추가해 주세요.",
+                needed=["텍스트 근거 자료"],
+            ))
+        if sum(len(unit["text"]) for unit in index.units) > self.max_input_chars:
+            raise AgentError("INVALID_REQUEST", "선택 자료가 현재 AI 입력 한도를 넘었습니다. 자료 범위를 줄여 주세요.", False)
+        try:
+            info = legacy.extract_company_info(
+                {"schema_version": "1.0", "company_name_hint": None, "source_units": index.units},
+                request_json=self._request,
+            )
+            facts = self._facts(info, index)
+        except (legacy.AgentError, legacy.AgentInputError, ValidationError, KeyError, TypeError, ValueError):
+            raise _invalid() from None
+        issues = self._issues(facts)
+        needed = list(dict.fromkeys(f.field_key for f in facts if f.status != "supported"))
+        reason = "요청한 목표 분량을 유지합니다. 이번 연결은 글 중심이며 실제 출력 쪽수는 배치 검사로 확인합니다."
+        if request.brief.photo_preference != "none":
+            reason += " 사진 추천·배치는 아직 연결되지 않았습니다."
+        return AnalyzeResult(facts=facts, issues=issues,
+                             recommendations=Recommendations(suggested_pages=request.brief.target_pages,
+                                                             reason=reason, needed=needed))
+
+    @staticmethod
+    def _facts(info: dict, index: SourceIndex) -> list[Fact]:
+        prefix = "fact_" + uuid.uuid4().hex[:16]
+        result: list[Fact] = []
+        for key in legacy.COMPANY_INFO_KEYS:
+            field_info = info[key]
+            status, items = field_info["status"], field_info["facts"]
+            if status == "not_found":
+                result.append(Fact(fact_id=f"{prefix}_{key}", field_key=key, value=None, status="missing"))
+            elif status == "conflict":
+                alternatives, refs = [], []
+                for item in items:
+                    candidate_refs = [index.restore(ev) for ev in item["evidence"]]
+                    refs.extend(candidate_refs)
+                    alternatives.append({"value": item["text"],
+                                         "evidence_refs": [ref.model_dump() for ref in candidate_refs]})
+                result.append(Fact(fact_id=f"{prefix}_{key}", field_key=key, value=None, status="conflict",
+                                   alternatives=alternatives, evidence_refs=_unique_refs(refs)))
+            else:
+                for item in items:
+                    result.append(Fact(fact_id=f"{prefix}_{item['fact_id']}", field_key=key,
+                                       value=item["text"], status=status,
+                                       evidence_refs=[index.restore(ev) for ev in item["evidence"]]))
+        return result
+
+    @staticmethod
+    def _issues(facts: list[Fact]) -> list[Issue]:
+        issues = []
+
+        def add(code: str, severity: str, message: str, related: list[Fact]):
+            issues.append(Issue(issue_id="iss_" + uuid.uuid4().hex[:16], scope="content", code=code,
+                                severity=severity, message=message, fact_ids=[f.fact_id for f in related],
+                                source_ids=sorted({r.source_id for f in related for r in f.evidence_refs})))
+
+        for fact in facts:
+            if fact.status == "conflict":
+                add("VALUE_CONFLICT", "blocker", f"{fact.field_key}의 값이 자료마다 다릅니다. 후보 근거를 확인해 주세요.", [fact])
+            elif fact.status == "needs_confirmation":
+                # 불확실한 사실을 확인 클릭만으로 승인 가능한 경고로 낮추지 않는다.
+                add("UNSUPPORTED_CLAIM", "blocker", f"{fact.field_key}의 의미·조건을 원문에서 추가 확인해야 합니다.", [fact])
+        for keys, label in ((('company_name',), "회사명"), (_BUSINESS_KEYS, "주요 사업/공정 설명")):
+            group = [fact for fact in facts if fact.field_key in keys]
+            if not any(f.status == "supported" for f in group):
+                add("REQUIRED_MISSING", "blocker", f"확인된 {label}이 부족합니다.", group)
+        return issues
+
+    def draft(self, request: DraftRequest) -> DraftResult:
+        return self._run_trial_operation(self._draft, request)
+
+    def _draft(self, request: DraftRequest) -> DraftResult:
+        preflight = request.preflight
+        if preflight.session_id != request.session_id or preflight.input_revision != request.input_revision:
+            raise AgentError("INPUT_REVISION_CONFLICT", "현재 입력 기준으로 사전 점검을 다시 확인해 주세요.", False)
+        if not preflight.confirmed_at:
+            raise AgentError("PREFLIGHT_NOT_CONFIRMED", "사전 점검 결과를 확인한 뒤 생성해 주세요.", False)
+        if not preflight.can_generate:
+            raise AgentError("NO_USABLE_TEXT", "텍스트 근거가 있는 자료를 선택해 주세요.", False)
+        index = SourceIndex(request.sources)
+        supported: list[dict] = []
+        by_id: dict[str, Fact] = {}
+        try:
+            for fact in preflight.facts:
+                if fact.fact_id in by_id or fact.field_key not in legacy.COMPANY_INFO_KEYS:
+                    raise _invalid()
+                by_id[fact.fact_id] = fact
+                if fact.status == "missing":
+                    if fact.value is not None or fact.evidence_refs:
+                        raise _invalid()
+                else:
+                    if not fact.evidence_refs:
+                        raise _invalid()
+                    for ref in fact.evidence_refs:
+                        index.check(ref)
+                if fact.status == "conflict":
+                    if fact.value is not None or not fact.alternatives or len(fact.alternatives) < 2:
+                        raise _invalid()
+                    for alt in fact.alternatives:
+                        if not isinstance(alt.get("value"), str) or not alt["value"].strip() or not alt.get("evidence_refs"):
+                            raise _invalid()
+                        for raw_ref in alt["evidence_refs"]:
+                            index.check(EvidenceRef.model_validate(raw_ref))
+                if fact.status == "supported":
+                    if not fact.value or not fact.value.strip():
+                        raise _invalid()
+                    supported.append({"field": fact.field_key, "fact_id": fact.fact_id, "text": fact.value})
+            if sum(len(f["text"]) for f in supported) > self.max_input_chars:
+                raise AgentError("INVALID_REQUEST", "초안에 사용할 사실이 AI 입력 한도를 넘었습니다.", False)
+            generated = legacy.draft_profile(supported, request_json=self._request,
+                                              brief=request.brief.model_dump())
+            return self._pages(request, generated, by_id)
+        except (legacy.AgentError, legacy.AgentInputError, ValidationError, KeyError, TypeError, ValueError):
+            raise _invalid() from None
+
+    @staticmethod
+    def _pages(request: DraftRequest, generated: list[dict], facts: dict[str, Fact]) -> DraftResult:
+        # 생성 문장의 출처는 사전 확인한 Fact의 근거를 이어받는다.
+        groups: list[list[Block]] = []
+        names = [f for f in facts.values() if f.field_key == "company_name" and f.status == "supported"]
+        title = " · ".join(f.value for f in names) if names else "회사소개서 초안"
+
+        def block(kind: str, content: dict, ids: list[str] | None = None) -> Block:
+            ids = ids or []
+            if any(fid not in facts or facts[fid].status != "supported" for fid in ids):
+                raise _invalid()
+            refs = _unique_refs([ref for fid in ids for ref in facts[fid].evidence_refs])
+            return Block(block_id="block_" + uuid.uuid4().hex[:16], type=kind, content=content,
+                         fact_ids=ids, evidence_refs=refs)
+
+        title_block = block("heading", {"text": title, "level": 1}, [f.fact_id for f in names])
+        for section in generated:
+            key = section["key"]
+            section_ids = list(dict.fromkeys(fid for paragraph in section["paragraphs"] for fid in paragraph["fact_ids"]))
+            group = [block("heading", {"text": legacy.SECTION_TITLES[key], "level": 2}, section_ids)]
+            for paragraph in section["paragraphs"]:
+                ids = paragraph["fact_ids"]
+                if not ids:
+                    raise _invalid()
+                group.append(block("paragraph", {"text": paragraph["text"]}, ids))
+            groups.append(group)
+        unresolved = {f.field_key for f in facts.values() if f.status != "supported"}
+        for key in legacy.COMPANY_INFO_KEYS:
+            if key in unresolved:
+                missing_only = all(f.status == "missing" for f in facts.values() if f.field_key == key)
+                label = "회사명" if key == "company_name" else legacy.SECTION_TITLES[key]
+                groups.append([block("heading", {"text": label, "level": 2}),
+                               block("paragraph", {"text": "자료에서 확인되지 않음" if missing_only else "추가 확인 필요"})])
+        # 첫 연결에서는 항목을 나누어 배치한다. 빈 쪽이나 가짜 본문으로 분량을 채우지 않는다.
+        count = min(request.brief.target_pages, max(1, len(groups)))
+        pages = []
+        for i in range(count):
+            start, end = i * len(groups) // count, (i + 1) * len(groups) // count
+            blocks = ([title_block] if i == 0 else []) + [b for group in groups[start:end] for b in group]
+            pages.append(Page(page_id="page_" + uuid.uuid4().hex[:16], title=title if i == 0 else blocks[0].content["text"],
+                              layout_key="text", blocks=blocks))
+        return DraftResult(title=title, pages=pages)
+
+    def propose(self, request: ProposeRequest):
+        raise AgentError("UNSUPPORTED_PROPOSAL", "실제 AI 수정안 기능은 아직 연결되지 않았습니다.", False)
+
+    def validate(self, request: ValidateRequest):
+        raise AgentError("SERVICE_TEMPORARY_FAILURE", "실제 AI 의미 검증은 아직 연결되지 않았습니다.", False)
+
+
+def create_bridge(settings: Settings) -> LlmAgent:
+    options = LlmOptions.from_env(os.environ)
+    return LlmAgent(OpenAIRequester(options), max_input_chars=options.max_input_chars)

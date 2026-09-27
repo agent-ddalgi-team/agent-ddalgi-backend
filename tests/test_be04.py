@@ -185,7 +185,14 @@ def test_agent_error_maps_to_job_error(client, monkeypatch):
                                                           "details": {}, "request_id": None}
 
 
-def test_llm_mode_without_agent_impl_fails_not_mocks(tmp_path):
+def test_llm_mode_without_agent_impl_fails_not_mocks(tmp_path, monkeypatch):
+    """실제 Agent 파일이 있어도 불러오기 실패를 재현하고 mock 대체를 막는다."""
+    from unittest.mock import Mock
+
+    import_stub = Mock()
+    import_stub.import_module.side_effect = ModuleNotFoundError("테스트용 Agent 불러오기 실패")
+    # 연결부의 importlib 참조만 교체한다. 다른 라이브러리의 import에는 영향을 주지 않는다.
+    monkeypatch.setattr("app.agent_bridge.importlib", import_stub)
     settings = Settings(private_runs_dir=tmp_path / "runs", db_path=tmp_path / "runs" / "t.sqlite3", agent_mode="llm")
     client = TestClient(create_app(settings))
     sid = _session(client)
@@ -195,6 +202,7 @@ def test_llm_mode_without_agent_impl_fails_not_mocks(tmp_path):
     job = client.get(f"/api/v1/sessions/{sid}/jobs/{r.json()['job_id']}").json()
     assert job["status"] == "failed" and job["error"]["code"] == "SERVICE_TEMPORARY_FAILURE"
     assert "agent_llm" in job["error"]["message"]
+    import_stub.import_module.assert_called_once_with("app.agent_llm")
 
 
 def test_sync_bridge_implementation_also_works(client, monkeypatch):
