@@ -36,7 +36,7 @@ from app import agent_legacy as legacy
 from app.agent_bridge import (AgentError, AnalyzeRequest, AnalyzeResult, DraftRequest, DraftResult,
                               ProposeRequest, SourceIn, ValidateRequest)
 from app.config import Settings
-from app.models import Block, EvidenceRef, Fact, Issue, Page, Recommendations
+from app.models import Block, Brief, EvidenceRef, Fact, Issue, Page, Recommendations
 
 JsonRequester = Callable[[str, dict, dict, str], dict]
 _BUSINESS_KEYS = ("company_summary", "business_areas", "processes", "products_services", "technology")
@@ -58,11 +58,41 @@ _FOCUS_TERMS = {
 }
 
 
-def _mention(text: str, term: str) -> tuple[bool, bool]:
+def _mention(text: str, term: str, *, omission_only: bool = False) -> tuple[bool, bool]:
     """작성 요청의 명시적 항목과 간단한 제외 표현만 인식한다. 사실 판단에 쓰지 않는다."""
     text, term = "".join(text.casefold().split()), "".join(term.casefold().split())
-    excluded = re.search(re.escape(term) + r"(?:은|는|을|를|이|가|도)?(?:제외|생략|빼|없이|불필요|필요없|강조하지|하지|아닌|아니)", text)
-    return term in text, bool(excluded)
+    actions = "제외|생략|빼|없이|불필요|필요없"
+    if not omission_only:
+        actions += "|강조하지|하지|아닌|아니"
+    negative = re.search(re.escape(term) + r"(?:은|는|을|를|이|가|도)?(?P<action>" + actions + ")", text)
+    # '제외하지 말고'·'빼지 마'는 보존하되 '제외하지만'을 부정으로 읽지 않는다.
+    negated = (negative and negative.group("action") in {"제외", "생략", "빼", "없이", "불필요", "필요없"}
+               and re.match(r"(?:(?:은|는|도|을|를|이|가)?(?:하(?:지|진)(?:는|도)?(?:말|마|않|아니|안)|"
+                            r"않|아니|아님|안|없)|(?:놓|먹)?지(?:는|도)?(?:말|마|않)|(?:서는|면)안)",
+                            text[negative.end():]))
+    return term in text, bool(negative and not negated)
+
+
+def _section_preferences(brief: Brief) -> tuple[str, list[str], set[str]]:
+    """추천과 실제 초안에 같은 항목 우선순위·명시적 제외 규칙을 적용한다."""
+    focus, excluded, not_emphasized = [], set(), set()
+    for text in [*brief.emphasis, brief.purpose]:
+        for key, aliases in _FOCUS_TERMS.items():
+            terms = (key, *aliases)
+            mentions = [_mention(text, term) for term in terms]
+            if any(negative for _, negative in mentions):
+                not_emphasized.add(key)
+            if any(_mention(text, term, omission_only=True)[1] for term in terms):
+                excluded.add(key)
+            if any(present for present, _ in mentions):
+                focus.append(key)
+    label, direction_keys = _DIRECTION_FOCUS[brief.direction]
+    focus = [key for key in dict.fromkeys([*focus, *direction_keys]) if key not in not_emphasized]
+    return label, focus, excluded
+
+
+def _section_order(fields: set[str], focus: list[str]) -> tuple[str, ...]:
+    return tuple(key for key in dict.fromkeys(["company_summary", *focus, *legacy.SECTION_ORDER]) if key in fields)
 
 
 _LEGACY_INPUT_LIMIT = 40_000
@@ -560,17 +590,7 @@ class LlmAgent:
         supported = [f for f in facts if f.field_key in titles and f.status == "supported"
                      and f.value and f.value.strip() and f.evidence_refs]
         supported_keys = {f.field_key for f in supported}
-        focus, excluded = [], set()
-        # 구체적인 강조 항목을 목적 문구보다 먼저 반영한다.
-        for text in [*brief.emphasis, brief.purpose]:
-            for key, aliases in _FOCUS_TERMS.items():
-                mentions = [_mention(text, term) for term in (key, *aliases)]
-                if any(negative for _, negative in mentions):
-                    excluded.add(key)
-                if any(present for present, _ in mentions):
-                    focus.append(key)
-        direction_label, direction_keys = _DIRECTION_FOCUS[brief.direction]
-        focus = [key for key in dict.fromkeys([*focus, *direction_keys]) if key not in excluded]
+        direction_label, focus, excluded = _section_preferences(brief)
         body = [f for f in supported if f.field_key != "company_name" and f.field_key not in excluded]
         # 같은 사실/근거의 반복이나 여러 Fact로의 분리가 분량을 늘리지 않도록 양쪽을 제한한다.
         values = {"".join(f.value.split()) for f in body}
@@ -585,8 +605,7 @@ class LlmAgent:
         summary = any(present and not negative for present, negative in
                       (_mention(brief.purpose, term) for term in ("요약", "간단", "한눈", *page_terms)))
         suggested = min(brief.target_pages, capacity, 1 if summary else 10)
-        order = [key for key in dict.fromkeys(["company_summary", *focus, *legacy.SECTION_ORDER])
-                 if key in fields]
+        order = _section_order(fields, focus)
         if suggested == 1:
             order = order[:4]
         reason = [f"근거가 연결된 본문 {len(fields)}개 항목과 중복을 줄인 내용 약 {chars}자를 기준으로 {suggested}쪽을 권합니다."]
@@ -599,7 +618,7 @@ class LlmAgent:
             reason.append("본문에 사용할 항목의 근거를 보완해 주세요.")
         if suggested < brief.target_pages:
             reason.append(f"현재 목표 {brief.target_pages}쪽을 유지하려면 내용을 반복해 채우기보다 관련 근거 자료를 보완해 주세요.")
-        reason.append("추천 적용은 작성 설정 변경과 재점검 후 진행하세요. 실제 출력 쪽수는 배치 확인이 필요합니다.")
+        reason.append("추천 분량을 적용하려면 작성 설정 변경과 재점검을 진행하세요. 실제 출력 쪽수는 배치 확인이 필요합니다.")
 
         needed = []
         if "company_name" not in supported_keys:
@@ -715,16 +734,21 @@ class LlmAgent:
                     if not fact.value or not fact.value.strip():
                         raise _invalid()
                     supported.append({"field": fact.field_key, "fact_id": fact.fact_id, "text": fact.value})
+            _, focus, excluded = _section_preferences(request.brief)
+            # 전체 사실의 근거 검사를 마친 뒤 생성용 목록만 좁힌다. 사전 점검은 보존한다.
+            supported = [fact for fact in supported if fact["field"] not in excluded]
+            order = _section_order({fact["field"] for fact in supported}, focus)
             if sum(len(f["text"]) for f in supported) > self.max_input_chars:
                 raise AgentError("INVALID_REQUEST", "초안에 사용할 사실이 AI 입력 한도를 넘었습니다.", False)
             generated = legacy.draft_profile(supported, request_json=self._request,
-                                              brief=request.brief.model_dump())
-            return self._pages(request, generated, by_id)
+                                              brief=request.brief.model_dump(), section_order=order)
+            return self._pages(request, generated, by_id, excluded=excluded)
         except (legacy.AgentError, legacy.AgentInputError, ValidationError, KeyError, TypeError, ValueError):
             raise _invalid() from None
 
     @staticmethod
-    def _pages(request: DraftRequest, generated: list[dict], facts: dict[str, Fact]) -> DraftResult:
+    def _pages(request: DraftRequest, generated: list[dict], facts: dict[str, Fact], *,
+               excluded: set[str] | None = None) -> DraftResult:
         # 생성 문장의 출처는 사전 확인한 Fact의 근거를 이어받는다.
         groups: list[list[Block]] = []
         names = [f for f in facts.values() if f.field_key == "company_name" and f.status == "supported"]
@@ -749,7 +773,7 @@ class LlmAgent:
                     raise _invalid()
                 group.append(block("paragraph", {"text": paragraph["text"]}, ids))
             groups.append(group)
-        unresolved = {f.field_key for f in facts.values() if f.status != "supported"}
+        unresolved = {f.field_key for f in facts.values() if f.status != "supported"} - (excluded or set())
         for key in legacy.COMPANY_INFO_KEYS:
             if key in unresolved:
                 missing_only = all(f.status == "missing" for f in facts.values() if f.field_key == key)

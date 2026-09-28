@@ -69,12 +69,16 @@ def is_connector(text: str) -> bool:
 
 
 _SECTION_NUMBER = re.compile(r"^\s*\d+[.)]?\s*|\s+\d+\s*$")   # "2. 개요", "개요 2" 같은 절 번호
+# 기존 초안의 비사실 제목 중 주장 키워드(명·개·위 등)와 겹치는 표현만 정확히 허용한다.
+# Agent 모듈·mock fixture에 서버 검사를 의존시키지 않는다. 전체 생성 제목은 연결 테스트로 대조한다.
+_SECTION_LABELS = frozenset({"회사명", "회사소개서 초안", "회사 개요", "인증·승인·특허", "대응 범위", "납기 조건"})
 
 
 def is_label(text: str) -> bool:
-    """heading·캡션이 단순 표지/라벨인지. 절 번호를 뺀 뒤 숫자·주장 키워드가 있거나 길면 사실 주장으로 검사한다."""
+    """절 번호를 뺀 정확한 항목 제목을 허용한다. 나머지는 숫자·주장 키워드·길이를 검사한다."""
     t = _SECTION_NUMBER.sub("", text.strip()).strip()
-    return len(t) <= LABEL_MAX_LEN and not _DIGIT.search(t) and not any(k in t for k in _CLAIM_KEYWORDS)
+    return t in _SECTION_LABELS or (len(t) <= LABEL_MAX_LEN and not _DIGIT.search(t)
+                                    and not any(k in t for k in _CLAIM_KEYWORDS))
 
 
 def _norm(text: str) -> str:

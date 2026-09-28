@@ -238,6 +238,43 @@ def test_caption_claim_is_checked(app, settings):
     assert any(img["block_id"] in i["block_ids"] for i in ctx.open_issues("UNSUPPORTED_CLAIM"))
 
 
+@pytest.mark.parametrize("kind", ["heading", "paragraph", "list"])
+def test_exact_section_labels_do_not_exempt_body_text(app, kind):
+    ctx = Ctx(app, with_photo=False)
+    labels = ["회사명", "회사소개서 초안", "회사 개요", "인증·승인·특허", "대응 범위", "납기 조건"]
+    ids = {f"label_{i}" for i in range(len(labels))}
+    ctx.patch([{"op": "insert_block", "page_id": "page_01", "after_block_id": None,
+                "block": {"block_id": f"label_{i}", "type": kind,
+                          "content": {"items": [text]} if kind == "list" else
+                                     {"text": text, **({"level": 2} if kind == "heading" else {})}}}
+               for i, text in enumerate(labels)])
+    ctx.validated()
+    flagged = {bid for issue in ctx.open_issues("UNSUPPORTED_CLAIM") for bid in issue["block_ids"]}
+    assert flagged & ids == (set() if kind == "heading" else ids)
+
+
+@pytest.mark.parametrize("claim", ["회사명: 믿음", "회사 개요: 세계 최고 기업", "인증·승인·특허 획득",
+                                   "대응 범위 국내 최대", "납기 조건: 2일 보장"])
+def test_section_label_with_added_claim_stays_blocked_after_revalidation(app, claim):
+    ctx = Ctx(app, with_photo=False)
+    ctx.patch([{"op": "insert_block", "page_id": "page_01", "after_block_id": None,
+                "block": {"block_id": "label", "type": "heading", "content": {"text": "납기 조건", "level": 2}}},
+               {"op": "insert_block", "page_id": "page_01", "after_block_id": "label",
+                "block": {"block_id": "note", "type": "paragraph", "content": {"text": "추가 확인 필요"}}}])
+    ctx.validated()
+    assert not any("label" in issue["block_ids"] for issue in ctx.open_issues("UNSUPPORTED_CLAIM"))
+    warning = _first(ctx.open_issues("PLACEHOLDER_TEXT"), block_ids=["note"])
+    ctx.patch([{"op": "replace_block_content", "block_id": "label", "content": {"text": claim, "level": 2}}])
+    ctx.validated()
+    issue = _first(ctx.open_issues("UNSUPPORTED_CLAIM"), block_ids=["label"])
+    assert issue["severity"] == "blocker"
+    assert ctx.resolve(issue["issue_id"], "acknowledged").status_code == 422
+    ctx.patch([{"op": "replace_block_content", "block_id": "label", "content": {"text": "납기 조건", "level": 2}}])
+    ctx.validated()
+    assert _first(ctx.issues(), issue_id=issue["issue_id"])["status"] == "resolved"
+    assert _first(ctx.issues(), issue_id=warning["issue_id"])["status"] == "open"
+
+
 def test_required_content_needs_real_text_not_only_fact_ids(app, settings):
     ctx = Ctx(app)
     ctx.make_clean_and_validate(settings)

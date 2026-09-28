@@ -474,12 +474,14 @@ def check_draft_sections(sections: Any, supported_facts: list[dict[str, Any]],
 
 
 def draft_profile(supported_facts: list[dict[str, Any]], *, request_json: RequestJson,
-                  brief: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+                  brief: dict[str, Any] | None = None,
+                  section_order: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
     """supported 사실만으로 본문 섹션(draft_sections)을 만들어 돌려준다. 파일은 저장하지 않는다.
 
     반환: [{"key", "title", "paragraphs": [{"text", "fact_ids"}]}] — supported 항목만.
     누락·상충 안내와 현재 Page/Block 조립은 호출하는 어댑터가 맡는다.
     supported 사실이 있어도 본문 섹션 대상이 없으면(company_name만 있을 때) 빈 목록을 돌려준다.
+    section_order는 본문 항목의 순서만 바꾼다. 항목 제외는 호출자가 생성용 사실 목록에서 처리한다.
     실패하면 멈춘다. 입력·출력 검사를 통과하지 못한 값은 자동 수정하지 않는다.
     주입한 호출부의 실패도 그대로 전달하며 이 모듈은 재시도하지 않는다.
     근거 ID 검사를 통과해도 문장의 의미가 맞는지는 확인되지 않는다(사람 검토 필요).
@@ -488,6 +490,11 @@ def draft_profile(supported_facts: list[dict[str, Any]], *, request_json: Reques
     if brief is not None and not isinstance(brief, dict):
         raise AgentInputError('brief_type', 'brief는 객체(dict)이거나 없어야 합니다.')
     section_keys = draft_section_keys(supported_facts)
+    if section_order is not None:
+        if (not isinstance(section_order, tuple) or any(not isinstance(key, str) for key in section_order)
+                or len(section_order) != len(section_keys) or set(section_order) != set(section_keys)):
+            raise AgentInputError('section_order', '작성 순서는 근거 있는 본문 항목을 정확히 한 번씩 포함해야 합니다.')
+        section_keys = section_order
     if not section_keys:
         return []
     instructions = load_draft_prompt()

@@ -370,6 +370,10 @@ def run_draft_job(settings: Settings, session_id: str, job_id: str, input_revisi
         with connect(settings.db_path, immediate=True) as conn:
             if _policy_failure(conn, settings, session_id, job_id):
                 return
+            # 실행권은 첫 queued → running 전이에서 확보한다. 재점검이 체크포인트를
+            # 교체해도 중복 실행이 진행 중인 원래 Job을 실패 처리하지 못하게 한다.
+            if jobs.get(conn, session_id, job_id).status == "running":
+                return
             row, err = _load_session_for_job(conn, session_id, input_revision, settings)
             if err:
                 jobs.fail(conn, job_id, *err)

@@ -27,8 +27,8 @@ from app.agent_bridge import AgentError, AnalyzeRequest, DraftRequest, SegmentIn
 from app.config import Settings
 from app.db import connect
 from app.errors import ApiError
-from app.models import Brief, PreflightOut
-from app.services import ai_jobs, cleanup, jobs, preflights, sweeper
+from app.models import Brief, Document, PreflightOut
+from app.services import ai_jobs, cleanup, jobs, preflights, refs, sweeper, validation
 from app.services.ai_jobs import validate_analyze, validate_draft
 from app.services.registered import import_bundle
 
@@ -171,7 +171,7 @@ def analyzed(model=None):
     return agent, DraftRequest(request.session_id, 2, BRIEF, request.sources, pf), model
 
 
-def analyze_recommendations(brief, texts, *, change=None, assets=(), parse_status="complete"):
+def analyze_sections(brief, texts, *, change=None, assets=(), parse_status="complete"):
     """추천 검사도 기존 추출·근거 변환을 거친다. 응답은 가짜 자료에서만 만든다."""
     selected = [SourceIn("src_recommend", 1, "company", "추천 검사 자료", parse_status, [
         SegmentIn(f"seg_recommend_{key}", {"line_start": n, "line_end": n}, value)
@@ -187,10 +187,15 @@ def analyze_recommendations(brief, texts, *, change=None, assets=(), parse_statu
     model = FakeModel(extract_change=fill)
     request = AnalyzeRequest("ses_recommend", 1, brief, selected)
     before = copy.deepcopy(request)
-    result = llm.LlmAgent(model).analyze(request)
+    agent = llm.LlmAgent(model)
+    result = agent.analyze(request)
     assert request == before and len(model.calls) == 1
     assert validate_analyze(result, selected) is None
-    return result
+    return agent, request, result, model
+
+
+def analyze_recommendations(brief, texts, **kwargs):
+    return analyze_sections(brief, texts, **kwargs)[2]
 
 
 @pytest.mark.parametrize("fields,chars_per_field,expected", [(3, 100, 1), (3, 500, 4),
@@ -229,7 +234,8 @@ def test_recommendations_deduplicate_facts_and_shared_evidence():
 
 @pytest.mark.parametrize("purpose,expected", [("상세 소개", 6), ("한 장 요약", 1), ("요약하지 말고 상세 소개", 6),
                                              ("보유한 장비와 상세한 공정 소개", 6), ("한 장으로 소개", 1),
-                                             ("11쪽 자료를 활용한 소개", 6), ("1쪽으로 소개", 1)])
+                                             ("11쪽 자료를 활용한 소개", 6), ("1쪽으로 소개", 1),
+                                             ("요약하지 않고 상세 소개", 6)])
 def test_recommendations_use_summary_purpose_without_changing_brief(purpose, expected):
     texts = {"company_name": "추천 검사 회사", **{
         key: key + "검사용내용" * 140 for key in legacy.SECTION_ORDER[:6]
@@ -376,6 +382,139 @@ def test_legacy_extraction_shape_checks_are_still_enforced(bad_kind):
             info["company_name"]["status"] = "conflict"
     with pytest.raises(AgentError, match="AGENT_OUTPUT_INVALID"):
         analyzed(FakeModel(extract_change=change))
+
+
+STRUCTURE_TEXTS = {
+    "company_name": "구성 검사 회사", "company_summary": "가짜 부품을 생산하는 시험 회사입니다.",
+    "products_services": "시험 제품 A를 공급합니다.", "technology": "시험 기술 T를 사용합니다.",
+    "processes": "세척과 검사 공정이 있습니다.", "certifications": "시험 인증 C의 적용 범위는 제품 A입니다.",
+    "lead_time": "일반 주문은 승인 후 영업일 7일이며 특수 주문은 납기를 별도 협의합니다.",
+}
+
+
+def structured_draft(brief, *, change=None):
+    agent, selected, result, model = analyze_sections(brief, STRUCTURE_TEXTS, change=change)
+    pf = PreflightOut(preflight_id="pf_structure", session_id=selected.session_id, input_revision=1,
+                      usable_source_ids=[s.source_id for s in selected.sources], facts=result.facts,
+                      issues=result.issues, recommendations=result.recommendations, can_generate=True,
+                      confirmed_at="2026-09-28T00:00:00Z")
+    return agent, DraftRequest(selected.session_id, 1, brief, selected.sources, pf), model
+
+
+@pytest.mark.parametrize("pages", [1, 6])
+@pytest.mark.parametrize("settings,order", [
+    ({}, ["company_summary", "products_services", "technology", "certifications", "processes", "lead_time"]),
+    ({"direction": "quality_process"}, ["company_summary", "technology", "processes", "certifications", "products_services", "lead_time"]),
+    ({"direction": "customer_response"}, ["company_summary", "products_services", "lead_time", "technology", "certifications", "processes"]),
+    ({"purpose": "납기 안내"}, ["company_summary", "lead_time", "products_services", "technology", "certifications", "processes"]),
+    ({"emphasis": ["공정"], "purpose": "납기 안내", "direction": "quality_process"},
+     ["company_summary", "processes", "lead_time", "technology", "certifications", "products_services"]),
+])
+def test_draft_uses_requested_structure_even_when_model_returns_reverse_order(pages, settings, order):
+    brief = BRIEF.model_copy(update={"target_pages": pages, **settings})
+    agent, request, model = structured_draft(brief)
+    before = copy.deepcopy(request)
+    model.draft_change = lambda result: result["draft_sections"].reverse()
+    draft = agent.draft(request)
+    blocks = [b for p in draft.pages for b in p.blocks]
+    headings = [b.content["text"] for b in blocks if b.type == "heading" and b.content["level"] == 2 and b.fact_ids]
+    assert headings == [legacy.SECTION_TITLES[key] for key in order]
+    assert [s["key"] for s in model.calls[-1][1]["sections_to_write"]] == order
+    # 추천의 1쪽 미리보기 4개 항목 때문에 나머지 근거 있는 항목을 버리지 않는다.
+    expected_ids = {f.fact_id for f in request.preflight.facts if f.status == "supported"}
+    assert {fid for b in blocks for fid in b.fact_ids} == expected_ids
+    assert STRUCTURE_TEXTS["lead_time"] in [b.content.get("text") for b in blocks]
+    assert validate_draft(draft, request.sources, expected_ids) is None
+    assert request == before and len(draft.pages) == pages and len(model.calls) == 2
+
+
+@pytest.mark.parametrize("phrase", ["인증 제외", "인증서 생략", "인증은 필요 없음",
+                                    "인증은 제외하지만 납기는 강조", "인증은 생략하지만 납기는 강조"])
+def test_draft_omits_explicitly_excluded_facts_only_from_generation(phrase):
+    agent, request, model = structured_draft(BRIEF.model_copy(update={"emphasis": [phrase]}))
+    before = copy.deepcopy(request)
+    draft = agent.draft(request)
+    excluded_id = next(f.fact_id for f in request.preflight.facts if f.field_key == "certifications")
+    assert all(f["field"] != "certifications" for f in model.calls[-1][1]["supported_facts"])
+    assert all(s["key"] != "certifications" for s in model.calls[-1][1]["sections_to_write"])
+    assert all(excluded_id not in b.fact_ids and b.content.get("text") != legacy.SECTION_TITLES["certifications"]
+               for p in draft.pages for b in p.blocks)
+    assert request == before
+
+
+@pytest.mark.parametrize("phrase", ["인증 강조하지 말고 납기 강조", "인증 제외하지 말고", "인증 빼지 마", "인증 불필요하지 않음",
+                                    "인증은 빼놓지 말고", "인증을 빼먹지 마", "인증 생략 없이", "인증은 빼서는 안 됨",
+                                    "인증은 제외하지는 말고", "인증은 제외가 아니라 유지"])
+def test_draft_does_not_drop_facts_for_deemphasis_or_negated_exclusion(phrase):
+    agent, request, model = structured_draft(BRIEF.model_copy(update={"emphasis": [phrase]}))
+    draft = agent.draft(request)
+    assert any(f["field"] == "certifications" for f in model.calls[-1][1]["supported_facts"])
+    assert any(b.content.get("text") == STRUCTURE_TEXTS["certifications"] for p in draft.pages for b in p.blocks)
+
+
+def test_draft_rejects_excluded_fact_returned_inside_another_section():
+    agent, request, model = structured_draft(BRIEF.model_copy(update={"emphasis": ["인증 제외"]}))
+    excluded_id = next(f.fact_id for f in request.preflight.facts if f.field_key == "certifications")
+    def inject(result):
+        result["draft_sections"][0]["paragraphs"][0]["fact_ids"].append(excluded_id)
+    model.draft_change = inject
+    with pytest.raises(AgentError, match="AGENT_OUTPUT_INVALID"):
+        agent.draft(request)
+
+
+def test_draft_keeps_excluded_conflicts_and_required_missing_in_preflight():
+    def unresolved(info):
+        info["company_name"] = {"status": "not_found", "facts": []}
+        certification = info["certifications"]
+        certification["status"] = "conflict"
+        second = copy.deepcopy(certification["facts"][0])
+        second["text"] = "다른 적용 범위: 확인 필요"
+        certification["facts"].append(second)
+    agent, request, model = structured_draft(BRIEF.model_copy(update={"emphasis": ["인증 제외"]}), change=unresolved)
+    before = copy.deepcopy(request.preflight)
+    draft = agent.draft(request)
+    assert request.preflight == before
+    assert {i.code for i in request.preflight.issues} == {"REQUIRED_MISSING", "VALUE_CONFLICT"}
+    assert all(i.severity == "blocker" and i.status == "open" for i in request.preflight.issues)
+    assert not any(f["field"] == "certifications" for f in model.calls[-1][1]["supported_facts"])
+    assert any(b.content.get("text") == "회사명" for p in draft.pages for b in p.blocks)
+
+
+def test_draft_checks_excluded_evidence_before_calling_model():
+    agent, request, model = structured_draft(BRIEF.model_copy(update={"emphasis": ["인증 제외"]}))
+    fact = next(f for f in request.preflight.facts if f.field_key == "certifications")
+    fact.evidence_refs[0].excerpt = "원문에 없는 내용"
+    with pytest.raises(AgentError, match="AGENT_OUTPUT_INVALID"):
+        agent.draft(request)
+    assert len(model.calls) == 1
+
+
+def test_draft_skips_model_when_all_supported_body_fields_are_excluded():
+    brief = BRIEF.model_copy(update={"emphasis": [f"{key} 제외" for key in legacy.SECTION_ORDER]})
+    agent, request, model = structured_draft(brief)
+    draft = agent.draft(request)
+    assert len(model.calls) == 1 and draft.title == STRUCTURE_TEXTS["company_name"]
+    assert len(draft.pages) == 1 and len(draft.pages[0].blocks) == 1
+    assert request.brief.target_pages == 6
+
+
+@pytest.mark.parametrize("order", [("technology", "company_summary"), ("company_summary", "company_summary"),
+                                  ("foreign", "company_summary"), ("company_summary",), (["company_summary"],)])
+def test_legacy_rejects_invalid_section_order_before_model_call(order):
+    model = FakeModel()
+    facts = [{"field": key, "fact_id": key, "text": STRUCTURE_TEXTS[key]}
+             for key in ("company_summary", "lead_time")]
+    with pytest.raises(legacy.AgentInputError):
+        legacy.draft_profile(facts, request_json=model, section_order=order)
+    assert model.calls == []
+
+
+def test_legacy_default_order_remains_compatible():
+    model = FakeModel()
+    facts = [{"field": key, "fact_id": key, "text": STRUCTURE_TEXTS[key]}
+             for key in ("lead_time", "company_summary")]
+    result = legacy.draft_profile(facts, request_json=model)
+    assert [s["key"] for s in result] == ["company_summary", "lead_time"]
 
 
 @pytest.mark.parametrize("pages", [1, 4, 6, 8, 10])
@@ -722,6 +861,54 @@ def test_d04_four_cases_fit_one_shared_eight_call_trial(monkeypatch):
     assert Decimal(report["known_estimated_cost_usd"]) < Decimal("1")
 
 
+@pytest.mark.parametrize("case_id", list(D04_TRIAL_CASES))
+def test_generated_missing_field_labels_pass_server_claim_checks(monkeypatch, case_id):
+    request, analysis, draft, _ = run_d04_offline_case(monkeypatch, case_id)
+    document = Document(document_id="doc_trial", session_id=request.session_id, document_revision=1,
+                        input_revision=request.input_revision, title=draft.title, target_pages=request.brief.target_pages,
+                        status="draft", pages=draft.pages)
+    segments = {segment.segment_id: segment for source in request.sources for segment in source.segments}
+    facts = {fact.fact_id: fact for fact in analysis.facts}
+    context = validation.Context(
+        seg_texts={sid: segment.text for sid, segment in segments.items()},
+        seg_source={segment.segment_id: source.source_id for source in request.sources for segment in source.segments},
+        asset_source={}, mock_sources={source.source_id for source in request.sources},
+        refs=refs.SessionRefs(set(segments), {source.source_id: source.source_version for source in request.sources},
+                              set(), set(facts)), facts=facts, preflight_issues=analysis.issues)
+    before = copy.deepcopy(analysis)
+    issues, _ = validation.server_checks(document, context)
+    assert not any(issue.code in {"UNSUPPORTED_CLAIM", "EVIDENCE_INVALID"} for issue in issues)
+    placeholders = {block.block_id for page in draft.pages for block in page.blocks
+                    if block.type == "paragraph" and not block.fact_ids}
+    warnings = [issue for issue in issues if issue.code == "PLACEHOLDER_TEXT"]
+    assert {bid for issue in warnings for bid in issue.block_ids} == placeholders
+    assert all(issue.severity == "warning" for issue in warnings)
+    assert all(not block.fact_ids and not block.evidence_refs for page in draft.pages for block in page.blocks
+               if block.block_id in placeholders or (block.type == "heading" and not block.fact_ids))
+    missing = [issue for issue in issues if issue.code == "REQUIRED_MISSING"]
+    assert len(missing) == (1 if case_id == "T02" else 0)
+    assert all(issue.severity == "blocker" for issue in missing)
+    assert any(issue.code == "MOCK_VALUE" and issue.severity == "blocker" for issue in issues)
+    assert analysis == before  # 사전 점검의 필수 누락·충돌 Issue도 그대로 남는다.
+    if case_id == "T03":
+        # 현재 서버는 문서가 참조한 충돌만 검사한다. 안내에 가짜 근거를 붙이지 않는다.
+        conflict = next(fact for fact in analysis.facts if fact.status == "conflict")
+        heading = next(block for page in document.pages for block in page.blocks
+                       if block.type == "heading" and block.content["text"] == "공정 수")
+        heading.fact_ids = [conflict.fact_id]
+        heading.evidence_refs = conflict.evidence_refs
+        checked, _ = validation.server_checks(document, context)
+        assert any(issue.code == "VALUE_CONFLICT" and issue.severity == "blocker"
+                   and issue.block_ids == [heading.block_id] for issue in checked)
+
+
+def test_all_generated_section_labels_are_recognized_by_server():
+    # Agent 제목 원본이 바뀌면 서버의 명시적 라벨 예외도 함께 검토한다.
+    for label in ["회사명", "회사소개서 초안", *legacy.SECTION_TITLES.values()]:
+        for text in (label, f"2. {label}", f"{label} 2"):
+            assert validation.is_label(text), text
+
+
 def test_d04_case_inputs_are_isolated_and_do_not_confirm_or_call_ai():
     first = build_d04_trial_request("T01")
     first.sources[0].segments[0].text = "테스트 중 변경"
@@ -945,10 +1132,10 @@ def test_postprocessing_keeps_guard_and_honors_manual_stop(monkeypatch, phase):
     entered, release = threading.Event(), threading.Event()
     name = "_facts" if phase == "analyze" else "_pages"
     original = getattr(agent, name)
-    def delayed(*args):
+    def delayed(*args, **kwargs):
         entered.set()
         assert release.wait(timeout=5)
-        return original(*args)
+        return original(*args, **kwargs)
     monkeypatch.setattr(agent, name, delayed)
     with ThreadPoolExecutor(max_workers=1) as pool:
         first = pool.submit(getattr(agent, phase), request)
@@ -1079,7 +1266,27 @@ def test_graph_failed_draft_requires_reanalysis_and_does_not_retry_model(graph_f
     assert graph_job(flow, flow.client.post(flow.base + "/drafts", json=current))["status"] == "succeeded"
 
 
-def test_graph_concurrent_same_job_calls_model_once(graph_flow):
+def test_server_stores_structure_from_current_brief_with_graph_confirmation(graph_flow):
+    flow = graph_flow
+    brief = BRIEF.model_copy(update={"emphasis": ["납기"], "direction": "customer_response"})
+    revision = flow.client.patch(flow.base + "/inputs", json={"expected_input_revision": flow.rev,
+                                                            "brief": brief.model_dump()}).json()["input_revision"]
+    analyzed_job = graph_job(flow, flow.client.post(flow.base + "/preflights", json={"expected_input_revision": revision}))
+    preflight_id = analyzed_job["result_ref"]["preflight_id"]
+    generated_job = graph_job(flow, flow.client.post(flow.base + "/drafts", json={"preflight_id": preflight_id,
+                                                                                "input_revision": revision, "confirmed": True}))
+    assert generated_job["status"] == "succeeded", generated_job
+    document = flow.client.get(flow.base + "/documents/" + generated_job["result_ref"]["document_id"]).json()["document"]
+    headings = [b["content"]["text"] for p in document["pages"] for b in p["blocks"]
+                if b["type"] == "heading" and b["content"]["level"] == 2 and b["fact_ids"]]
+    assert headings == ["회사 개요", "납기 조건", legacy.SECTION_TITLES["products_services"]]
+    assert document["target_pages"] == 6 and document["input_revision"] == revision
+    assert flow.client.get(flow.base).json()["brief"] == brief.model_dump()
+    assert len(flow.model.calls) == 3  # 최초 분석 + 새 설정 분석 + 초안
+
+
+@pytest.mark.parametrize("reanalyze", [False, True])
+def test_graph_concurrent_same_job_calls_model_once(graph_flow, reanalyze):
     flow = graph_flow
     entered, release = threading.Event(), threading.Event()
     def hold(_):
@@ -1092,13 +1299,20 @@ def test_graph_concurrent_same_job_calls_model_once(graph_flow):
             assert entered.wait(10)
             with connect(flow.settings.db_path) as conn:
                 job = jobs.find_active(conn, flow.sid, "draft", flow.rev)
+            if reanalyze:
+                updated = graph_job(flow, flow.client.post(flow.base + "/preflights",
+                                                          json={"expected_input_revision": flow.rev}))
+                assert updated["status"] == "succeeded"
+                assert updated["result_ref"]["preflight_id"] != flow.pfid
             ai_jobs.run_draft_job(flow.settings, flow.sid, job.job_id, flow.rev, flow.pfid)
             with connect(flow.settings.db_path) as conn:
                 assert jobs.get(conn, flow.sid, job.job_id).status == "running"
-            assert len(flow.model.calls) == 2
+            assert len(flow.model.calls) == (3 if reanalyze else 2)
         finally:
             release.set()
         assert graph_job(flow, running.result(timeout=10))["status"] == "succeeded"
+        with connect(flow.settings.db_path) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM documents WHERE session_id=?", (flow.sid,)).fetchone()[0] == 1
 
 
 def test_graph_rejects_old_preflight_after_new_analysis_at_same_revision(graph_flow):
