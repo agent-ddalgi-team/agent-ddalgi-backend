@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 from typing import Any
 
 from fastapi.responses import JSONResponse
 
+from app.db import Connection
 from app.config import Settings
 from app.errors import ApiError
 from app.timeutil import from_iso, now, to_iso
@@ -24,7 +24,7 @@ def body_hash(payload: Any) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def replay_or_none(conn: sqlite3.Connection, key: str | None, owner_id: str, path: str,
+def replay_or_none(conn: Connection, key: str | None, owner_id: str, path: str,
                    digest: str, settings: Settings) -> JSONResponse | None:
     """연결 세션이 종료·만료됐거나 저장 응답이 정리됐으면 sessions.raise_gone(만료 확정·정리 등록·cleanup 판정)을 거쳐
     410 {status, cleanup}을 낸다(㊵). 순서: 같은 키·다른 본문 409 → 세션 상태 → 최초 응답."""
@@ -67,7 +67,7 @@ def replay_or_none(conn: sqlite3.Connection, key: str | None, owner_id: str, pat
     return JSONResponse(status_code=row["status_code"], content=json.loads(row["response_json"]))
 
 
-def remember(conn: sqlite3.Connection, key: str | None, owner_id: str, path: str,
+def remember(conn: Connection, key: str | None, owner_id: str, path: str,
              digest: str, status_code: int, payload: Any, *, session_id: str | None = None) -> None:
     if not key:
         return
@@ -78,7 +78,7 @@ def remember(conn: sqlite3.Connection, key: str | None, owner_id: str, path: str
     )
 
 
-def purge_for_session(conn: sqlite3.Connection, session_id: str, stamp: str) -> int:
+def purge_for_session(conn: Connection, session_id: str, stamp: str) -> int:
     """세션 정리: 연결된 저장 응답 본문을 비운다(키·경로·상태 코드는 남아 같은 키 재전송이 409/410으로 판정된다)."""
     cur = conn.execute("UPDATE idempotency_keys SET response_json='{}', purged_at=? WHERE session_id=? AND purged_at IS NULL",
                        (stamp, session_id))

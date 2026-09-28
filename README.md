@@ -38,8 +38,117 @@ API 확인: http://127.0.0.1:8000/docs
 uv run pytest
 ```
 
-현재 AI 기능은 백엔드 작업 기록상 mock(가짜 응답)으로 확인한 상태다.
-실제 LLM 연결은 Agent 작업에서 별도로 구현·검증한다.
+백엔드 통합 검사는 mock(가짜 응답)으로 실행한다. 실제 LLM 분석·초안과 AG-07 원문 의미 검증의 구현/별도 시험 기록은 `task_agent.md`를 따른다. 기본 유료 호출 한도에는 content_review가 포함되지 않으므로 의미 검증 구현과 일반 서버의 호출 허용을 구분한다. 이번 PR 정리에서는 실제 AI를 호출하지 않았다.
+
+### API 요청·응답 형식 (Pydantic, 계약 1.4)
+
+Pydantic 모델은 **화면이 보내는 값과 서버가 돌려주는 값의 형식**을 검사한다. `app/models.py`에 선언하며, DB 테이블을 정의하는 `app/orm_models.py`와 역할이 다르다. 예를 들어 입력 버전은 숫자 `2`이고 문자열 `"2"`가 아니며, 사용자 확인은 `true`이고 문자열 `"true"`가 아니다. 형식이 맞아도 세션 소유자·최신 버전·근거·승인 조건 검사는 별도로 통과해야 한다.
+
+- 버전은 1 이상의 정수, 목표 쪽수는 1/4/6/8/10, 필수 문장은 공백만 입력할 수 없다. 선택 자료·대상 블록 ID는 중복 없이 보낸다.
+- 작성 조건/선택 변경은 `expected_input_revision`과 함께 `brief` 또는 `selected_source_ids`를 보낸다. 빈 목록 `[]`은 전체 선택 해제이고, 변경할 필드가 없는 요청은 거부한다.
+- 형식 오류는 `400 INVALID_REQUEST`, 최신 버전 불일치는 `409`, 명시적 확인 누락 등 업무 조건 실패는 `422`다. 모두 `{error:{code,message,retryable,details,request_id}}`이며 입력 원문을 오류 본문에 돌려주지 않는다.
+- `/docs`와 `/openapi.json`에 27개 API의 모델·오류·파일 응답을 표시한다. 구조가 있는 JSON 응답 25개와 이미지/출력 파일 응답 2개가 있다. Export는 새 작업 202와 준비된 결과 재사용 200을 구분한다.
+- 긴 작업은 접수 후 Job을 조회한다. `result_ref`는 작업 종류별 결과 ID이며 Preflight·Document·Proposal 등 결과를 별도 GET으로 읽는다. `succeeded`인 검사 Job도 검사 결과 자체는 failed일 수 있다.
+
+현재 형식과 예시는 [contracts.md](contracts.md), [API 예시](handoff/api_examples_v1.1.json)를 따른다. 예시 파일명은 기존 참조를 위해 유지하고 내부 계약 버전은 1.4이다. 프론트는 S01 세션·자료·점검부터 S02 직접 편집/수정안 비교와 S03 검증·PDF 승인/다운로드까지 기존 API에 연결했다. 실제 AI 수정안·사진 검증, 경고 확인 강제, 자료 변경 후 복귀, DOCX 승인·출력은 후속이다.
+
+실제 사용 DB에 자료를 넣지 않고, 임시 DB와 mock 자료로 형식·S01 흐름을 확인하려면 다음 검사를 실행한다.
+
+```powershell
+uv run pytest -q tests/test_api_contract.py
+```
+
+### 자료 첨부부터 초안까지 요청하는 순서
+
+1. `POST /api/v1/sessions`로 작업 세션을 만들고 응답의 소유자 쿠키를 유지한다.
+2. `POST /sessions/{sid}/sources`로 파일을 첨부한다. Job을 조회해 읽기 결과를 확인하고 `GET /sessions/{sid}/sources`에서 자료 ID를 얻는다.
+3. `PATCH /sessions/{sid}/inputs`로 자료 ID를 선택한다. 첨부와 선택은 별개이며 응답의 새 `input_revision`을 다음 요청에 사용한다.
+4. `POST /sessions/{sid}/preflights`에 최신 입력 버전을 보낸다. Job이 성공하면 결과의 `preflight_id`로 점검 내용을 조회한다.
+5. 사용자가 결과를 확인한 뒤 `POST /sessions/{sid}/drafts`에 `preflight_id`, `input_revision`, `confirmed: true`를 보낸다. Job 성공 후 결과의 문서 ID로 초안을 조회한다. 2~5의 주소 앞에는 공통 `/api/v1`을 붙인다.
+
+`Idempotency-Key`는 **한 번의 요청을 구분하는 번호**다. 통신 오류로 같은 요청을 다시 보낼 때는 같은 키를 써야 파일이나 작업이 중복 생성되지 않는다. 본문·파일 종류·역할을 바꾸면 새 키를 사용한다. 같은 키의 202 응답은 접수 당시 기록이므로 최신 성공/실패는 Job GET으로 확인한다. 이미 실패한 AI 작업을 다시 실행할 때는 새 키를 사용하고, 소비된 초안 확인은 새 점검·사용자 확인을 거친다. 저장 중 오류가 나면 이번 업로드의 파일/DB 행을 정리하며 기존 선택과 파일을 유지한다.
+
+위 흐름은 임시 DB·가짜 자료로 검사할 수 있어 실제 DB 적재를 먼저 할 필요가 없다.
+
+```powershell
+uv run pytest -q tests/test_orm_workflow.py tests/test_be04.py
+```
+
+### 실제 HTTP와 화면 연결 검사 (자료 적재 불필요)
+
+아래 명령은 별도 임시 DB와 가짜 AI 응답으로 서버를 띄워 검사하고, 끝나면 서버·테스트 자료를 정리한다. `.env`와 현재 DB를 사용하지 않으며 API 키가 필요 없다. 첫 명령은 실제 HTTP 요청으로 쿠키·전체 S01 흐름·중복 요청·접근 차단·종료를 확인한다.
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 -B scripts/check_s01_http.py
+
+# 프론트 의존성 설치/빌드 후: 실제 Chrome/Edge 버튼·Vite 프록시까지 확인
+.\.venv\Scripts\python.exe -X utf8 -B scripts/check_s01_http.py --frontend D:\frontend
+```
+
+화면 검사는 Node 24와 설치된 Chrome/Edge를 사용한다. 다른 브라우저 실행 파일은 `S01_BROWSER_PATH`로 지정한다. 기존 브라우저 프로필 대신 임시 프로필을 사용하고, 예시 화면은 프론트의 무시되는 `dist/s01-check.png`에 저장한다. 응답 유실 뒤 업로드 재시도·새로고침 복원·동의 전 생성 차단·입력 충돌·이미지만 선택한 경우·첨부 삭제·만료 복구를 포함한다. 기본 명령은 S01까지만 검사한다. 편집·승인·실제 PDF 다운로드까지 검사하려면 아래처럼 실행한다.
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 -B scripts/check_s01_http.py --publication --frontend D:\frontend --timeout 120
+```
+
+`--publication`은 설치된 Chrome/Edge를 PDF 렌더러로 사용한다. 별도 위치는 `--browser-path`로 지정한다. 실제 PDF 바이트·반복 다운로드·수정 후 승인 무효화와 편집/AI 제안 비교·적용·거절을 임시 자료로 확인한다. 미리보기는 `dist/publication-check.png`, 편집 화면은 `dist/s02-publication-check.png`에 저장한다. AI는 계속 mock이며 실제 AI 품질이나 DOCX 승인·출력 확인을 뜻하지 않는다.
+
+화면 사용 순서는 **초안 편집 → 변경 내용 저장 → 내용 검증하기 → PDF 배치 확인 → 미리보기/동의 → PDF 최종 승인 → PDF 파일 준비 → PDF 다운로드**다. 저장되지 않은 내용이 있으면 검증·승인·다운로드를 막는다. 다른 탭에서 문서가 바뀌면 작성 중인 내용은 보존하며 필요한 문장을 복사한 뒤 최신 저장본에서 다시 편집한다. 새로고침으로 저장하지 않은 내용은 복원되지 않는다. 현재 화면은 경고 없는 `passed` 검증만 승인하며, 개별 경고 확인과 서버의 D-07 강제는 아직 완료되지 않았다.
+
+### DB 개발 (SQLAlchemy Core + ORM + Alembic)
+
+- 기존 가상환경을 사용한다. 의존성/개발용 테스트 도구는 `uv sync --locked --group dev`로 맞춘다.
+- 기본 DB는 프로젝트의 `private_runs/app.sqlite3`다. `.venv`와 분리되어 있으며 `DB_PATH` 또는 `PRIVATE_RUNS_DIR` 설정을 바꾸면 사용하는 파일이 달라질 수 있다.
+- `app/db.py`의 `connect(settings.db_path)`가 SQLAlchemy Engine/Core로 쿼리를 실행한다. 정상 종료 시 commit, 예외 시 rollback하며 사용을 끝낸 DB 연결은 닫는다. 함께 성공해야 하는 저장 작업은 같은 `with connect(...)` 안에 둔다.
+- 기존 `?` 자리표시자 SQL과 행 접근을 지원한다. SQLAlchemy의 `text()`·`select()`·`insert()` 등 Core 표현식도 같은 연결의 `execute()`로 사용할 수 있다. 사용자 값을 SQL 문자열에 직접 끼워 넣지 않고 매개변수로 전달한다.
+- 쓰기 순서 보호가 필요한 기존 경로는 `immediate=True`/`BEGIN IMMEDIATE`를 유지한다. `conn.in_transaction`은 SQLAlchemy의 자동 시작 표시가 아닌 실제 SQLite 트랜잭션 상태다.
+- `app/orm_models.py`는 ERD v2의 **25개 테이블을 Python 클래스로 표현한 ORM 모델**이다. `app/models.py`는 화면과 주고받는 API 형식을 검사하는 Pydantic 모델이다. 역할이 달라 두 파일을 구분한다.
+- `app/db.py`의 `init_orm_db()`는 Alembic으로 빈 DB를 생성하고 변경 이력을 적용한다. 기존 v10은 25개 테이블·제약·인덱스가 고정된 첫 버전과 일치할 때 이력 관리에 연결한다. 기존 v9를 덮어쓰지 않는다. `init_db()`는 기존 v1~9 초기화와 v10 구조 확인을 유지하므로 새 ERD DB는 서버를 시작하기 전에 아래 명령으로 준비한다.
+- 새 쿼리는 `with orm_session(settings.db_path) as db:` 안에서 `db.add(...)`, `db.scalars(select(Source))` 같은 ORM 방식으로 작성할 수 있다. 여러 행이 함께 저장되어야 하면 같은 세션을 사용한다. 기존 서비스 SQL은 Core 호환 연결을 계속 사용한다. LangGraph 체크포인트 연결도 유지한다.
+- 새 DB는 원본 버전·읽기 실행·입력 변경·선택 자료·최종 동의를 기록한다. 이미 선택한 읽기 실행은 재읽기로 덮어쓰지 않으며, 세션 종료/만료 시 이력의 비공개 내용도 함께 비운다. 영향 검토와 개별 경고 확인은 저장 테이블만 준비했으며 해당 화면/API는 후속 작업이다.
+
+#### DB 구조 생성과 변경 이력 (자료 적재와 별개)
+
+마이그레이션은 ‘테이블에 열을 추가했다’ 같은 **DB 구조 변경의 기록**이다. ORM 파일만 수정해도 기존 DB 파일이 자동으로 바뀌지는 않으므로, Alembic 변경 파일을 만들어 적용한다. 첫 버전 `20260928_01`은 25개 테이블의 당시 SQL을 고정해 두며 이후 ORM 수정에 따라 과거 이력이 바뀌지 않는다.
+
+```powershell
+# .env의 DB_PATH 또는 PRIVATE_RUNS_DIR가 가리키는 DB에 적용
+uv run alembic upgrade head
+uv run alembic current
+uv run alembic check
+
+# 다른 빈 테스트 DB를 명시적으로 만들 때
+uv run alembic -x db_path=private_runs/schema_test/app.sqlite3 upgrade head
+```
+
+`upgrade head`는 변경을 최신 버전까지 적용하고, `current`는 적용된 버전을 출력한다. `check`는 ORM과 DB 사이에 Alembic이 감지하는 차이가 있는지 확인한다. 업무용 테이블 25개와 별도로 `alembic_version`이라는 관리 테이블 1개가 생긴다. 여기에 있는 버전 번호는 회사 자료가 아니다. 예전 v9 DB 경로를 지정하면 쓰기 전에 거부하므로 새로운 경로를 설정해야 한다.
+
+현재 자료·원본 버전·읽기 실행은 서로 연결되어 있어 `check`/자동 생성 시 순환 외래 키의 정렬 경고가 발생한다. 현재 기준 DB에서는 감지된 차이가 없음을 확인했다. 이 검사는 모든 제약의 보존을 보장하지 않으므로 새 변경 파일에서 아래 검토·시험 절차를 따른다.
+
+이후 구조를 바꾸는 순서:
+
+1. 개발용 DB를 `upgrade head`로 맞추고 `app/orm_models.py`를 수정한다.
+2. `uv run alembic revision --autogenerate -m "describe_change"`로 변경 초안을 만든다.
+3. `migrations/versions/`의 새 파일을 검토한다. 이름 변경이 삭제·추가로 생성되지 않았는지, SQLite 테이블 재생성에서 기존 CHECK·UNIQUE·FK·인덱스가 유지되는지 확인한다. 기존 열 제거나 필수 열 추가에는 데이터 보존·변환 규칙도 작성한다.
+4. 임시 DB에서 적용과 필요한 되돌리기를 시험한다. SQLite batch 재생성 시 이름 없는 CHECK는 수동으로 포함해야 한다. [Alembic 자동 생성의 한계](https://alembic.sqlalchemy.org/en/latest/autogenerate.html)와 [SQLite batch 제약 보존](https://alembic.sqlalchemy.org/en/latest/batch.html)을 참고한다.
+5. 실행 중인 서버를 멈추고 DB와 필요한 파일을 백업한 뒤, 대상 경로를 확인하고 `upgrade head` → `current` → `check`를 실행한다.
+
+DDL과 이력 기록은 하나의 명시적 트랜잭션으로 처리하고 실패 시 함께 취소한다. 마지막에 외래 키 연결을 검사한다. 기준 버전 자체를 지우는 `downgrade base`는 업무 데이터가 하나라도 있으면 거부한다. 변경 파일은 Git에 보관하며 DB 파일과 `.env`는 커밋하지 않는다. 실제 자료 적재는 현재 보류 상태다.
+
+#### 기존 자료를 새 DB에 다시 넣기
+
+```powershell
+# 아직 존재하지 않는 새 폴더를 지정한다. 기존 DB/자료/.env는 바꾸지 않는다.
+.\.venv\Scripts\python.exe -X utf8 scripts/rebuild_database.py --target-dir private_runs/erd_v2
+```
+
+이 프로젝트의 real/demo 묶음 메타데이터와 보관 파일을 검증해 다시 적재하는 명령이다. 기존 mock·세션·작성 문서·승인 기록은 옮기지 않는다. 대상 폴더가 이미 있으면 중단하며, 실패해도 자동 삭제하지 않는다. 자료나 사진 허가를 추측해서 만들지 않는다. 최적화한 카탈로그는 검증된 서비스용 사본을 유지한다. 기존 사진 묶음에 새 사진을 추가하는 증분 적재는 실행 이력 보존 때문에 v10에서 제한하며, 같은 묶음 재실행과 공개 허가 갱신은 지원한다.
+
+성공 후 `.env`의 `PRIVATE_RUNS_DIR=private_runs/erd_v2`로 경로를 지정하고 서버를 다시 시작한다. `DB_PATH`를 별도로 설정했다면 그 경로도 새 DB와 일치시켜야 한다. 이전 `private_runs/app.sqlite3`와 등록 자료는 복구용으로 보관한다. 기존 DB 경로에서 서버를 실행하면 만료 정리가 동작할 수 있으므로 백업 확인에는 읽기 전용 도구를 사용한다. 개발 가상환경은 기존 `.venv` 그대로 사용한다.
+
+검증 결과와 이번 PC에서 적용한 경로는 [task_backend.md 6.22절](task_backend.md#622-erd-v2-orm과-새-db-재적재-2026-09-28)에 기록한다. 자동화 테스트는 임시 DB만 사용한다.
+
+**현재 로컬 상태(2026-09-28):** 사용자 요청으로 자료 적재는 보류했다. `.env`는 `private_runs/erd_v2`를 사용하며, 새 DB는 **업무 테이블 25개·업무 데이터 0건**이며 Alembic 관리 테이블/버전 행은 별도로 유지한다. 이전 `private_runs/app.sqlite3`와 연결 파일은 사용자 요청으로 삭제했다(6.28절). 원본 자료와 새 폴더의 준비용 복사본은 보관한다. 나중에 적재를 요청하면 준비된 `import_packages/real`·`import_packages/demo` 묶음을 기존 적재기로 넣을 수 있다. 기존 대상 폴더에 위 재생성 명령을 다시 실행하면 보호 검사로 중단한다.
 
 ### PDF/DOCX 출력 준비 (BE-07, D-03)
 - **DOCX**는 python-docx로 만들며 추가 설치가 없다.
@@ -106,6 +215,6 @@ uv run python scripts/import_registered.py --source-dir private_runs/registered_
 | 5 | [백엔드 작업](task_backend.md) 또는 [Agent 작업](task_agent.md) · [Agent 설계](agent.md) | 내 담당 작업·코드 위치·남은 연결·검증할 내용 |
 | 6 | [공통 연결표](task.md) | 담당자 간 연결 지점과 결과 기록 위치 |
 
-2026-09-27에는 개발 전 문서를 정리했다. 당시 기존 BE/AG 작업 상태와 테스트 기록을 유지했고 실행 코드·의존성·DB는 바꾸지 않았다. 현재 공통 계약은 1.2, 데이터 schema_version은 1.0이다. 2026-09-28의 계약 1.2는 재점검 충돌로 인한 기존 승인 무효화·승인 재전송 차단을 반영한다. 상세는 [contracts.md](contracts.md), 기존 경로를 유지한 예시는 [API 예시](handoff/api_examples_v1.1.json)를 따른다. 프론트 사본 갱신은 미확인이며 검토 메모의 다른 제안은 합의 후 반영한다.
+2026-09-27에는 개발 전 문서를 정리했다. 당시 기존 BE/AG 작업 상태와 테스트 기록을 유지했고 실행 코드·의존성·DB는 바꾸지 않았다. 현재 공통 계약은 1.4, 데이터 schema_version은 1.0이다. 2026-09-28의 계약 1.2는 재점검 충돌로 인한 기존 승인 무효화·승인 재전송 차단을 반영한다. 상세는 [contracts.md](contracts.md), 기존 경로를 유지한 예시는 [API 예시](handoff/api_examples_v1.1.json)를 따른다. 프론트 계약/예시 사본은 로컬에서 문서 v1.9까지 동기화했으며 해당 프론트 구현은 이 백엔드 PR에 포함되지 않는다. 검토 메모의 다른 제안과 미구현 항목은 별도로 유지한다.
 
 Stitch 화면 설계와의 연결 기준은 [prd.md 3~5절](prd.md), 화면 상태별 데이터 연결은 [contracts.md 7.5절](contracts.md)을 따른다. 추가 기능의 채택 여부는 [plan.md 4.1절](plan.md)에서 관리한다. 화면 시연·예시 응답과 실제 기능 완료는 구분한다.

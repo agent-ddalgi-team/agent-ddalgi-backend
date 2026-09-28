@@ -27,7 +27,6 @@ import os
 import re
 import secrets
 import shutil
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -36,6 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from app.db import Connection
 from app.config import Settings
 from app.models import Document, Page
 from app.services import layout_checks
@@ -183,7 +183,7 @@ def _copy_pages(pages: list[Page]) -> list[Page]:
     return [page.model_copy(deep=True) for page in pages]
 
 
-def build_snapshot(conn: sqlite3.Connection, settings: Settings, session_id: str, document: Document) -> RenderSnapshot:
+def build_snapshot(conn: Connection, settings: Settings, session_id: str, document: Document) -> RenderSnapshot:
     """이 모듈에서 유일하게 DB·파일을 읽는 함수. image 블록의 asset을 확인하고 바이트를 고정한다.
 
     - content_hash는 승인 검사(layout_checks.asset_manifest_hash)와 같은 조회(assets.content_hash, 행 없으면 "")로 가져온다.

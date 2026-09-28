@@ -9,9 +9,9 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from dataclasses import dataclass, field
 
+from app.db import Connection
 from app.models import Document
 from app.timeutil import now, to_iso
 
@@ -47,7 +47,7 @@ def _image_refs(document: Document) -> dict[str, list[str]]:
     return refs
 
 
-def check_document(conn: sqlite3.Connection, document: Document) -> PublicationResult:
+def check_document(conn: Connection, document: Document) -> PublicationResult:
     """문서의 image 블록이 가리키는 등록 사진의 현재 허가 값을 본다."""
     blocked: list[PublicationBlock] = []
     for asset_id, block_ids in _image_refs(document).items():
@@ -61,7 +61,7 @@ def check_document(conn: sqlite3.Connection, document: Document) -> PublicationR
     return PublicationResult(ok=not blocked, blocked=blocked, checked_at=to_iso(now()))
 
 
-def check_revision(conn: sqlite3.Connection, document_id: str, revision: int) -> PublicationResult:
+def check_revision(conn: Connection, document_id: str, revision: int) -> PublicationResult:
     """저장된 특정 버전(승인본)의 image 블록 기준. Export·다운로드가 승인 버전으로 확인할 때 쓴다."""
     from app.models import Page
 
@@ -83,7 +83,7 @@ def message_for(block: PublicationBlock) -> str:
     return "등록 사진의 외부 공개 허가가 확인되지 않았습니다(미확인). 담당자가 허가를 확인하거나 사진을 제거한 뒤 배치 검사를 다시 실행하세요."
 
 
-def on_publication_changed(conn: sqlite3.Connection, asset_id: str, old_value: int | None, new_value: int | None) -> dict[str, int]:
+def on_publication_changed(conn: Connection, asset_id: str, old_value: int | None, new_value: int | None) -> dict[str, int]:
     """허가가 바뀌었을 때(재적재). 이 사진을 쓰는 승인본의 active 승인을 무효화하고 활성 Export를 확정 실패시킨다(같은 트랜잭션).
 
     true→false/null만 차단 효과가 있다. null/false→true는 기존 차단 Issue를 지우지 않는다(다음 배치 검사가 재확인한다).

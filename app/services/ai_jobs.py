@@ -436,7 +436,7 @@ def run_draft_job(settings: Settings, session_id: str, job_id: str, input_revisi
             # 미해결 blocker가 있으면 검토 필요. 검증(BE-06) 전까지는 사전 점검의 문제로만 판단한다.
             status = "review_required" if any(i.severity == "blocker" and i.status == "open" for i in preflight.issues) else "draft"
             document_id = documents.create_initial(conn, session_id, input_revision, result.title,
-                                                   brief.target_pages, result.pages, status)
+                                                   brief.target_pages, result.pages, status, preflight_id=preflight_id)
             jobs.succeed(conn, job_id, {"type": "document", "document_id": document_id, "document_revision": 1})
     except Exception:
         logger.exception("draft job crashed: %s", job_id)

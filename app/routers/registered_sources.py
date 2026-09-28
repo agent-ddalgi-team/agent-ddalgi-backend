@@ -9,14 +9,14 @@ from fastapi import APIRouter, Query, Request
 from app.access import require_owner, settings_of
 from app.db import connect
 from app.errors import ApiError
-from app.models import SourceListOut
+from app.models import SourceKind, SourceListOut
 from app.services import registered
 
 router = APIRouter(prefix="/sources", tags=["sources"])
 
 
 @router.get("", response_model=SourceListOut)
-def list_registered_sources(request: Request, kind: str | None = Query(default=None),
+def list_registered_sources(request: Request, kind: SourceKind | None = Query(default=None),
                             include_demo: bool = Query(default=False)):
     require_owner(request)
     settings = settings_of(request)

@@ -1,6 +1,6 @@
 # 백엔드 담당 전용 작업 목록
 
-기준일: 2026-09-27 · v1.8 · 이 파일의 작업 상태·결과 기록 담당: 백엔드 담당
+기준일: 2026-09-28 · v1.17 · 이 파일의 작업 상태·결과 기록 담당: 백엔드 담당
 
 범위: 파일·세션·파서·API·문서/버전 저장·승인·PDF/DOCX 출력. Agent 상세 작업은 [task_agent.md](task_agent.md)에 있다.
 
@@ -48,6 +48,7 @@
 
 - [ ] **BE-01 후속 · 현재 코드·계약·응답 예시 맞추기** — BR-02, BR-05, BR-07, BR-12, FR-02.
   - 선행/연결: 기존 BE-01~05 결과와 AG-01, 프론트. contracts C-01~C-04·C-07의 차이를 확인한다.
+  - 현행 대조표 작성 완료(2026-09-28, 6.23절): 화면·27개 API·25개 DB 테이블과 `D:\frontend`의 구형 계약 차이를 정리했다. 실제 계약/예시 갱신·프론트 연결은 미완료다.
   - 완료 확인: 유지할 필드·조회·오류를 합의하고 모델·계약·예시를 맞춘다. 실제 응답과 예시를 구분해 전달하고 프론트 사본의 반영 여부를 기록한다.
 
 - [x] **BE-07 사전 확인 · 대표 자료로 PDF/DOCX 도구·서식 비교하기** — BR-10.
@@ -763,6 +764,251 @@ PDF 폰트: 모든 문서 `Pretendard-Regular`/`Pretendard-Bold` 서브셋 임�
 - 전체 실행 시도: `.venv/bin/python -m pytest -q -p no:cacheprovider` — **154 passed / 3 failed 후 중단**, 334.43초. `tests/test_be07.py`의 `test_render_uses_snapshot_bytes_not_disk`, `test_pdf_render_pages_fonts_text`, `test_pdf_overflow_broken_placeholder_images`가 Chrome print-to-pdf 90초 시간 초과로 실패했다. 로그에 Mac의 CVDisplayLink 오류가 있으며 원인 추가 확인이 필요하다. 같은 PDF 실패의 반복 실행을 중단했고 테스트가 남긴 임시 Chrome도 종료했다. Windows에서의 과거 PASS를 현재 Mac 성공으로 간주하지 않는다.
 - 브라우저를 제외한 확인: `EXPORT_BROWSER_PATH=/private/tmp/agent-ddalgi-no-browser .venv/bin/python -m pytest -q -p no:cacheprovider` — **317 passed / 20 skipped**, 127.15초. 경고 2개는 기존 FastAPI/Starlette deprecation 안내다. skip 20개와 브라우저 조건부 검사 미실행은 PDF 성공이 아니다. 실제 AI·프론트 연결과 Mac PDF 정상 출력은 완료로 표시하지 않는다.
 - 남은 일: D-07 승인 보완, 시연 예외 범위 확인, DOCX 승인·출력, 실제 AI/프론트 연결과 함께 Mac PDF 시간 초과를 별도 확인한다. develop에 원래 포함된 폰트 라이선스·PDF fixture의 공백 경고는 원본을 보존했으며 수정한 네 문서의 공백 검사와 구분한다.
+
+### 6.19 로컬 자료 용량 정리 (2026-09-28)
+
+- 사용자 승인으로 `C:\backend\private_runs`의 로컬 보관 파일만 정리했다. 기능 개발이나 BE/AG 작업 상태 변경은 없으며 서버 코드와 DB 스키마는 수정하지 않았다.
+- `registered`에 동일 SHA-256의 보존 사본이 있는 `registered_src` 파일 45개(314,054,213바이트)와 이전 `be07` 실험 결과 172개(65,430,909바이트)를 삭제했다. 원본에만 있는 자료, 재등록 메타데이터, 서비스용 `registered`, DB, 백업은 유지했다.
+- 총 702,892,541바이트에서 323,407,419바이트로 감소했다. 절감량은 379,485,122바이트이며 남은 파일은 177개다.
+- 검증: 삭제 전 경로 범위 및 링크 여부, 파일 잠금, 전체 파일 SHA-256, DB의 stored_path 참조를 확인했다. 삭제 후 보존 파일 177개의 SHA-256 일치, SQLite quick_check=ok, DB 논리 덤프 해시 일치, 기존 DB 참조 파일의 존재 여부 불변을 확인했다. 기존부터 누락된 세션/출력 파일을 복구하거나 정상으로 간주하지 않았다. 앱 실행이나 기능 테스트는 하지 않았다.
+- 정리 목록과 결과는 이번 사용자 채팅의 outputs에 `storage-cleanup-manifest.json`, `storage-cleanup-result.json`으로 보관했다. 위치: `C:\Users\이강욱\Documents\Codex\2026-09-28\mock-zip-mock\outputs`. 중복 원본을 다시 적재하거나 원래 묶음을 전달하려면 manifest의 Duplicates 항목에 있는 RetainedPath에서 Path로 복사하고 Sha256을 대조해 45개 경로를 먼저 복원해야 한다. 서비스용 사본은 독립 백업을 대신하지 않는다.
+- 다음 작업: 실제 원본 재등록이 필요할 때 위 경로를 복원한다. 이번 정리로 기존 BE/AG 후속 과제나 공통 연결표 상태를 변경하지 않는다.
+
+### 6.20 카탈로그 서비스용 PDF 최적화 적용 (2026-09-28)
+
+- 사용자 승인으로 `private_runs/registered/REAL_DDALGI_V1_CATALOG.pdf`를 검증된 서비스용 PDF로 교체했다. 296,089,750바이트에서 7,650,189바이트로 감소했다. Illustrator의 페이지별 PieceInfo 편집 데이터만 제외했으며 이미지 재압축이나 해상도 축소는 하지 않았다.
+- 사전 검증: 원본과 최적화본 8쪽 전체를 Poppler 150dpi로 렌더링하여 모든 픽셀 일치, 페이지 크기 일치, 텍스트 추출 결과 일치(원본과 최적화본 모두 0자)를 확인했다. 화면 확인도 수행했다. DB의 기존 텍스트는 별도 적재된 근거이므로 재파싱하거나 삭제하지 않았다.
+- 적용: 해당 sources 행의 size_bytes, content_hash, hash_verified, hash_note만 갱신했다. 새 SHA-256은 `0cf6b5a389362d5fb9d6d8b6d7075930209b44e76ebfc29edeb9b96c50e205ee`다. 보이는 내용과 근거 위치가 같은 저장 최적화이므로 source_id, source_version=1, stored_path, 기존 근거 구간 22개를 유지하고 변경 사유와 원본 해시를 hash_note에 기록했다. 연결된 assets는 없고 이전 해시를 가진 다른 DB 필드도 없음을 확인했다.
+- 복구: 원본 PDF와 SQLite 온라인 백업을 사용자 채팅의 outputs에 각각 `catalog-original-backup.pdf`, `catalog-db-before-replacement.sqlite3`으로 보관했다. 원본 SHA-256은 `b6dc4206f27863a3aca5857ae46067f4ed4a5f39aee6753dbbdbb65ff9975847`이다. 6.19의 중복파일 복원 목록 중 카탈로그는 RetainedAbsolutePath의 이 원본 백업을 사용하도록 보완했다. 서비스용 파일은 편집용 원본의 대체 백업이 아니다.
+- 적용 후 검증: 파일 크기와 DB 크기 일치, 실제 파일 SHA-256과 DB 해시 일치, SQLite quick_check=ok, 대상 행의 네 필드 외 모든 DB 데이터 불변을 확인했다. 적용 후 SQLite가 WAL을 정리한 상태에서 읽기 검증이 보조 파일 생성 권한으로 한 번 실패했으며, WAL 부재와 서버 미실행을 확인한 뒤 immutable 읽기 전용 연결로 검증을 완료했다. 앱 시작은 세션 정리를 유발할 수 있어 수행하지 않았으며 실제 HTTP 다운로드 검증은 미실행이다.
+- 원본은 같은 디스크의 별도 폴더에 보존했으므로 private_runs 용량은 감소하지만 전체 디스크 사용량 절감은 아니다. 이후 전체 디스크 공간 확보가 필요하면 원본을 외부 저장소에 백업·검증한 뒤 로컬 백업을 정리한다. BE/AG 기능 작업 상태는 변경하지 않았다.
+
+### 6.21 SQLAlchemy Core 도입 (2026-09-28)
+
+- **BE-02 후속 · DONE (Core 도입 범위):** 사용자 요청으로 기존 SQLite 저장소에 SQLAlchemy Core를 도입했다. ORM 전체 전환·Alembic 추가·새 테이블 설계는 이번 범위에 포함하지 않는다. 실제 ERD 원본은 저장소에서 확인되지 않았다.
+- `pyproject.toml`·`uv.lock`에 SQLAlchemy 2.0.54 및 신규 의존성 greenlet을 기록하고 기존 `.venv`를 동기화했다. 개발 그룹의 기존 pytest도 설치했다. 기존 잠금 패키지 버전은 변경하지 않았다.
+- `app/db.py`의 공통 연결·쿼리 실행·commit/rollback을 Engine/Core로 전환했다. 기존 SQL의 위치/이름 매개변수, 행의 이름/정수 접근, 대량 실행, 변경 행 수를 보존한다. SQLite 실제 트랜잭션 상태, 명시적 commit 후 오류 응답, `BEGIN IMMEDIATE`, FK 검사, NullPool 연결 종료를 유지한다. `app/services` 21개 파일은 DB 연결/행 타입 주석과 import만 맞췄으며 SQL·실행 로직은 바꾸지 않았다.
+- DB 파일·19개 테이블·스키마 v9와 기존 init_db 마이그레이션을 유지한다. API용 Pydantic 모델과 Agent의 SqliteSaver 연결은 바꾸지 않는다. `plan.md` 4절과 README에 현재 방식과 사용법을 반영했다.
+- 사전 읽기 전용 검사: 기존 `private_runs/app.sqlite3`의 schema_version=9, 19개 테이블, quick_check=ok, foreign_key_check 위반 0건. 실제 서버 시작·자료 재적재·운영 DB 마이그레이션은 실행하지 않았다.
+- 검증: `tests/test_be02.py`에 추가한 Core/매개변수·성공 commit·실패 rollback·중간 commit·실제 트랜잭션·쓰기 잠금·FK·행/대량 실행·Windows 경로·v9 데이터 보존 테스트 **11 passed**. 처음 샌드박스 실행은 pytest 임시 폴더 권한 오류였고 권한을 허용한 재실행에서 통과했다.
+- Windows 회귀 환경 보완: 기존 `tests/test_agent_llm.py`의 외부 통신 차단이 asyncio의 표준 socketpair 내부 연결도 차단해 첫 전체 시도는 **165 passed / 3 errors**에서 중단했다. 표준 socketpair 호출 중 해당 스레드의 loopback 연결만 허용하도록 fixture를 보완하고 6개 차단/복구 검사를 추가했다. 직접 외부·loopback 연결과 실제 SDK 생성 차단은 유지한다. Agent 앱 코드는 바꾸지 않았다.
+- 최종 전체 회귀: `PYTHON_DOTENV_DISABLED=1`, `EXPORT_BROWSER_PATH=C:\backend\__db_checks_no_browser__.exe` 환경에서 `.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider --maxfail=3` 실행 — **552 passed / 20 skipped**, 150.57초. skip 20개는 브라우저 출력 검사이며 PDF 렌더 성공으로 간주하지 않는다. 경고 1개는 기존 Starlette의 AnyIO deprecation이다. 실제 AI·프론트 연결·실서버 재시작은 미실행이다.
+- 데이터 보존: 기존 `private_runs/app.sqlite3`의 SHA-256은 작업 전후 `058ec0307979ecc2719eb0977177d3796c587182153d023124f50ca9afa6dc5e`로 동일하며 WAL은 0바이트다. 스키마 초기화 코드와 서비스의 SQL·실행 로직도 유지했다. `git diff --check` 통과. 기존 사용자 작업 기록 6.19·6.20은 보존했다.
+- 다음 단계: 작성한 ERD 원본을 현재 19개 테이블과 대조하고, ORM 모델 전환이 필요하면 기능별 쿼리·Session 설계를 이어간다. 기존 BE/AG 제품 기능의 미완료 상태는 변경하지 않았다.
+
+### 6.22 ERD v2 ORM과 새 DB 재적재 (2026-09-28)
+
+- **BE-02 후속 · DONE (ORM·빈 DB 기반), 자료 적재는 사용자 요청으로 보류.** 제공된 SVG/HTML ERD를 대조해 기존 19개 테이블을 보존하고 신규 6개 이력 테이블을 선언했다. `app/orm_models.py`가 DB용 ORM, 기존 `app/models.py`가 API용 Pydantic 모델이다. 기존 서비스는 SQLAlchemy Core 호환 연결을 사용한다. 모든 쿼리를 ORM으로 재작성하거나 Alembic을 도입한 것은 아니다.
+- 실제 작업 폴더는 `C:\backend`다. 기존 `.venv`를 사용하며 새 DB는 `C:\backend\private_runs\erd_v2\app.sqlite3`, 스키마 v10이다. `.env`의 `PRIVATE_RUNS_DIR` 한 줄만 `private_runs/erd_v2`로 변경했고 다른 설정은 바이트 비교로 보존했다. 별도 DB_PATH는 없다. 새 프로세스의 `load_settings()`에서 새 경로 적용을 확인했다. 상주 서버는 시작하지 않았다.
+- `app/db.py`: 새 빈 DB에만 ORM 구조를 생성하고 실패 시 DDL까지 롤백한다. 기존 v9 및 알 수 없는 DB 덮어쓰기를 거부한다. 기존 `init_db()`는 v10 구조를 검증한 뒤 반환하며 버전을 낮추지 않는다. `orm_session()`은 성공 commit/예외 rollback을 제공한다. 빈 경로에 호환용 `init_db()`만 호출하면 v9이므로 새 ERD 초기화는 `init_orm_db()`를 사용한다.
+- `app/services/db_history.py` 및 기존 서비스 연결: 원본 버전·읽기 실행·입력/선택 스냅샷, 초안의 실제 preflight, 최종 동의를 기록한다. 읽기 결과를 다시 만들어도 이미 고정한 실행과 근거 ID를 보존한다. 읽기 전/실패 후 선택은 처음 complete/partial 실행에 연결한다. 승인 무효화 및 세션/첨부 정리에 이력 정리도 포함한다. 기존 사진 묶음의 새 독립 사진 증분 추가는 파일 쓰기 전에 명시적으로 거부한다. 중복 적재·사진 공개 허가 갱신은 유지한다.
+- `scripts/rebuild_database.py`: 존재하지 않는 새 대상만 허용하고 real/demo 자료와 사진 원본 연결·허가·해시를 검사한다. 최적화한 카탈로그의 기존 서비스용 사본을 유지하며 승인된 변환 내역을 기록한다. 실제 준비/적재 검사에서 14자료(real7/demo7), 207구간, 19사진, 14원본 버전, 14읽기 실행, hash_unverified=0, 후보 원본 누락=0을 확인했다. 검증 당시 FastAPI TestClient의 등록 자료 조회는 일반7/시연포함14 및 HTTP200이었다. 실제 AI나 상주 서버 호출은 없었다.
+- **적재 보류 반영:** 위 검증 뒤 사용자가 “일단 db적재는 나중에 하고”라고 요청했다. 새 사용자 작업이 없고 이번 적재 건수만 존재함을 확인한 다음, 새 DB의 적재 행만 한 트랜잭션으로 제거했다. 현재 **25개 테이블·전체 0건**, quick_check=ok, FK 위반0이다. 기존 DB·원본과 준비용 파일은 삭제하지 않았다. 새 폴더의 `import_packages/real`·`import_packages/demo`는 이후 사용자 요청 시 적재할 수 있다. 현재 상태를 적재 완료로 취급하지 않는다.
+- 기존 DB 보존: `private_runs/app.sqlite3` SHA-256은 시작/적재 검증/보류 반영 뒤 모두 `058ec0307979ecc2719eb0977177d3796c587182153d023124f50ca9afa6dc5e`로 동일하다. 기존 데이터의 과거 버전을 추정하거나 세션·문서·승인 이력을 새 DB로 이관하지 않았다. `.env`·private_runs·.venv는 Git 제외 상태다. 사용자 작업 기록 6.19·6.20을 보존했다.
+- 검증: 신규 `tests/test_orm_database.py` 23개, `tests/test_orm_workflow.py` 11개. 스키마 생성·ORM 저장/조회·롤백·복합 FK·v9 보존·초기화 실패 복구·경로 보호·자료 재읽기·입력 버전·초안/승인·정리를 검사한다. 전체 회귀는 `PYTHON_DOTENV_DISABLED=1`, 브라우저 경로를 존재하지 않는 파일로 지정하고 `.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider --maxfail=3` 실행: **586 passed / 20 skipped**, 151.24초. 샌드박스의 pytest 임시 폴더 접근 제한 때문에 승인된 권한으로 실행했다. 기존 Starlette deprecation 경고1. 브라우저 출력20개 skip은 PDF 성공으로 간주하지 않는다.
+- 남은 범위: 영향 검토 및 개별 경고 확인은 DB 저장 기반만 준비했으며 해당 화면/API는 후속이다. 실제 LLM·브라우저 PDF·프론트 연결은 이번에 실행하지 않았다. 공개 API 계약은 바꾸지 않았으며 기존 BE/AG 제품 기능 상태는 유지한다. 다음 자료 적재는 사용자가 다시 요청할 때 진행한다.
+
+### 6.23 화면·API·DB 연결표와 남은 작업 (2026-09-28)
+
+**BE-01 후속 · 현행 대조표 작성 DONE.** 사용자 요청의 1단계인 화면 기능/API/테이블/구현 상태 정리를 수행했다. 전체 BE-01 후속의 계약·예시 동기화, 프론트 연동 및 BE-10은 완료 처리하지 않는다. 이번에는 실행 코드·공개 계약·프론트·설정을 변경하지 않았고 자료 적재도 하지 않았다.
+
+**먼저 확인한 결과:** 백엔드에는 `/api/v1` 아래 27개 API가 있다. 확인한 `D:\frontend`는 예전 `/api/profiles`를 사용하는 단일 화면이므로 현재 백엔드와 호출 경로·입력·결과 형식이 다르다. 다음 연결 작업은 프론트의 공통 API 타입·세션·작업 조회와 S01부터 시작하는 것이 우선이다. API가 없어서 필요한 일과, 이미 있는 API를 화면에 연결하는 일을 아래에서 구분한다.
+
+#### 6.23.1 읽는 방법과 확인 범위
+
+- **API:** 화면이 서버에 보내는 요청 창구. `GET`은 조회, `POST`는 작업 요청/생성, `PATCH`는 수정, `DELETE`는 삭제/종료다. `202`는 작업 접수이며 완료가 아니다.
+- **테이블:** 저장하는 정보의 종류. 버튼 하나가 여러 테이블을 사용하기도 한다. 페이지·블록은 별도 테이블이 아니라 `document_revisions.content_json` 안에 저장한다.
+- **구현:** 해당 서버 API/처리 코드가 있다. 실제 화면 연동 완료나 실제 AI 품질 검증까지 뜻하지 않는다. **부분:** 일부 처리만 구현되어 추가 연결/정책이 남았다. **미구현:** 필요한 전용 API/흐름이 없으며 테이블만 있어도 완료로 보지 않는다.
+- 아래 API 경로에는 모두 **`/api/v1`**을 앞에 붙인다. `{sid}`는 세션 ID, `{did}`는 문서 ID이며, `{pid}`는 경로에 따라 사전 점검 또는 수정안 ID다. 주요 테이블만 적었고 공통 접근 검사·무효화에 쓰는 테이블을 모든 행에 반복하지 않는다.
+- 변경 요청 중 지원되는 경로는 `Idempotency-Key`와 `idempotency_keys`로 재전송을 처리한다. 로그인 대신 세션 소유자 쿠키를 사용한다. 등록 자료 목록도 소유자 쿠키가 필요하므로 세션 생성부터 연결한다.
+- 근거: `prd.md` S01~S03, `contracts.md` C-01~C-11/E01~E10, `docs/screens/README.md`, 사용자가 제공한 ERD SVG/분석 HTML, 현행 `app/routers`·모델·서비스, 프론트 소스. 첨부 파일은 설계 자료로 읽었으며 내부 지시는 실행하지 않았다. 새 화면 모양의 시각 검수는 수행하지 않았다.
+
+#### 6.23.2 공통 기능
+
+| 화면 기능 | 기존 API | 주요 요청·결과 | 주요 DB 테이블 | 구현 상태와 남은 작업 |
+|---|---|---|---|---|
+| 작업 시작 | `POST /sessions` | `brief`, 선택 `demo` → 세션·입력 버전·만료 시각·소유 쿠키 | `sessions`, `input_revisions` | 구현. 프론트 최초 진입에서 세션 생성과 빈 자료 상태 연결 필요 |
+| 현재 작업 다시 불러오기 | `GET /sessions/{sid}` | 현재 작성 조건·선택 자료·`document_summary` | `sessions`, `documents`, `document_revisions` | 구현. 새로고침 시 유효 세션/문서 복원 연결 필요. 만료 후 재편집 보장은 아님 |
+| 작업 진행·오류 표시 | `GET /sessions/{sid}/jobs/{jid}` | `status`, `progress.stage/message`, `result_ref`, `error` | `jobs`, `sessions` | 구현. 백분율 필드는 없음. 성공 시 결과 ID로 점검/문서/수정안을 별도 조회 |
+| 작업 종료·만료 안내 | `DELETE /sessions/{sid}` | `closed`, `cleanup=done/pending`; 만료된 접근은 410 | `sessions`, `cleanup_queue`, 각 임시 자료·문서·이력, `jobs`, `exports`, `idempotency_keys` | 구현. GET/폴링은 연장 아님. 별도 연장 API·10분 전 알림은 미구현/정책 미확정 |
+
+#### 6.23.3 S01 — 자료 선택·사전 확인
+
+| 화면 기능 | 기존 API | 주요 요청·결과 | 주요 DB 테이블 | 구현 상태와 남은 작업 |
+|---|---|---|---|---|
+| 등록 자료 목록 | `GET /sources` | `kind`, `include_demo` 선택 → `items[]` | `sources`, `segments`, `assets` | 구현. 현재 새 DB는 비어 있으므로 목록 0건이 정상. 시연 사용은 별도 서버 설정 조건 |
+| 세션 첨부 추가·읽기 시작 | `POST /sessions/{sid}/sources` | multipart `files`, `kind?`, `role?` → `job_id`, `items` | `sources`, `source_versions`, `extraction_runs`, `segments`, `assets`, `jobs` | 구현. 업로드와 사용 선택은 별도. TXT/MD/PDF/DOCX/PPTX/JPG/JPEG/PNG 지원, OCR 없음 |
+| 첨부 읽기 결과·경고 | `GET /sessions/{sid}/sources` | `parse_status`, `warnings`, `usable_segment_ids`, `asset_ids` | `sources`, `segments`, `assets` | 구현. 파일별 전체/부분/실패 상태 및 보완 안내를 프론트에 표시해야 함 |
+| 첨부 삭제 | `DELETE /sessions/{sid}/sources/{source_id}` | query `expected_input_revision` → 삭제·새 입력 버전 | `sources`, `segments`, `assets`, 원본/읽기 이력; 선택되어 있으면 입력/선택 이력도 갱신 | 구현. 현재 세션 첨부만 삭제. 등록 자료 선택 해제는 아래 inputs API 사용 |
+| 작성 조건 저장·자료 선택/해제 | `PATCH /sessions/{sid}/inputs` | `expected_input_revision`, `brief?`, `selected_source_ids?` → 새 `input_revision` | `sessions`, `input_revisions`, `session_source_selections`, 관련 `approvals`, `confirmations` | 구현. 입력 변경 시 이전 점검/승인 재사용 불가. 프론트가 최신 버전을 보관해야 함 |
+| 자료 분석·추천·결과 확인 | `POST /sessions/{sid}/preflights`<br>`GET /sessions/{sid}/preflights/{pid}` | POST `expected_input_revision` → Job; GET `facts`, `issues`, `recommendations`, `can_generate` | `jobs`, `preflights`; 선택 이력·원본 버전·읽기 실행·구간·사진 조회 | 구현. 실제 LLM 분석 구현도 존재. 이번 점검에서는 호출하지 않음. 생성 가능 표시와 사용자 확인은 별개 |
+| 사전 점검 확인 후 최초 초안 | `POST /sessions/{sid}/drafts` | `preflight_id`, `input_revision`, `confirmed=true` → Job → 문서 ID | `preflights`, `jobs`, `documents`, `document_revisions` | 구현. 확인은 `preflights.confirmed_at`에 기록. 확인 전용 API는 없고 최초 초안 요청에 포함된다. 기존 문서가 있으면 `DOCUMENT_EXISTS` |
+| 자료 사진·출력 이미지 표시(S02/S03 공용) | `GET /sessions/{sid}/assets/{asset_id}` | 사진/미리보기 이미지 바이트 | `assets`, `sources`, `layout_previews` | 이미지 조회 구현. 원본 PDF/DOCX/PPTX/TXT 또는 추출문 조회와는 다른 기능 |
+
+등록 자료를 DB에 넣는 것은 화면용 HTTP API가 아니라 `scripts/import_registered.py` 등의 CLI와 `registered_imports` 기록이다. 새 적재 도구도 준비되어 있지만 사용자의 자료 적재 보류를 유지한다. `instruction` 역할 첨부는 근거에서 제외하는 기반만 있으며 자연어 지시를 `Brief`로 자동 반영하는 기능은 후속이다.
+
+#### 6.23.4 S02 — 초안 편집
+
+| 화면 기능 | 기존 API | 주요 요청·결과 | 주요 DB 테이블 | 구현 상태와 남은 작업 |
+|---|---|---|---|---|
+| 저장한 문서 불러오기 | `GET /sessions/{sid}/documents/{did}` | `document`, 현재 검증·승인·형식별 `layout_checks` | `documents`, `document_revisions`, `validations`, `approvals`, `layout_checks` | 구현. 프론트의 단일 회사정보 출력 구조를 페이지/블록 편집 구조에 맞춰야 함 |
+| 직접 수정·페이지/블록 이동·사진 교체 저장 | `PATCH /sessions/{sid}/documents/{did}` | `expected_revision`, `operations[]` → 새 문서 버전 | `documents`, `document_revisions`; 수정안·승인·최종 동의 무효화 | 구현. 전체 요청 성공 시만 저장하며 오래된 요청은 409. 기존 블록의 근거/사실 ID를 별도로 고치는 연산은 없음 |
+| 이전 내용 복원 | `POST /sessions/{sid}/documents/{did}/restore` | `expected_revision`, `restore_from_revision` → 새 문서 버전 | `documents`, `document_revisions` 및 승인 관련 기록 | 서버 복원 구현. 버전 목록/과거 내용 조회 전용 API는 없어 복원 UI는 보완 필요. 복원은 자료 변경 영향 검토의 대체 기능이 아님 |
+| AI 문구·구성·사진 수정안 요청 | `POST /sessions/{sid}/documents/{did}/proposals` | 문서/입력 버전, `target_block_ids`, `instruction`, `kind` → Job | `jobs`, `proposals`; 문서·점검·선택 자료 조회 | 부분. API와 저장은 구현. 실제 LLM 수정안은 미연결, mock의 structure도 미지원 |
+| 수정안 비교·사진 후보 보기 | `GET /sessions/{sid}/proposals/{pid}` | `changes`, `rationale`, `candidates`, 기준 버전·상태 | `proposals` | 조회 구현. 실제 AI 수정안 연결 전에는 가짜 응답으로 UI 연결. 후보 수를 3개로 고정하지 않음 |
+| 수정안·사진 후보 적용 | `POST /sessions/{sid}/proposals/{pid}/apply` | `expected_revision`, `selected_candidate_id?` → 문서 새 버전 | `proposals`, `documents`, `document_revisions` 및 승인 관련 기록 | 구현. 후보 선택과 서버 검사 성공 후 반영. 오래된 제안은 `PROPOSAL_STALE` |
+| 수정안 취소 | `POST /sessions/{sid}/proposals/{pid}/reject` | 수정안 상태 → `rejected` | `proposals` | 구현. 제안 취소만으로 문서 내용은 바뀌지 않음 |
+
+#### 6.23.5 S02/S03 — 검증·승인·출력
+
+| 화면 기능 | 기존 API | 주요 요청·결과 | 주요 DB 테이블 | 구현 상태와 남은 작업 |
+|---|---|---|---|---|
+| 내용 검증·재검증 | `POST /sessions/{sid}/documents/{did}/validate` | `expected_revision`, `input_revision` → Job | `jobs`, `validations`, `issues`; 문서/근거 조회 | 부분. 서버 일반 검사와 mock 연결 구현. 실제 LLM 의미 검증은 미연결 |
+| 문제 목록 표시 | `GET /sessions/{sid}/documents/{did}/issues` | 문제의 `severity`, `status`, 대상·해결 기록 | `issues` | 구현. 필수 문제와 허용된 경고를 구분해 표시해야 함 |
+| 문제 해결·제외·허용 경고 확인 | `POST /sessions/{sid}/issues/{iid}/resolve` | `expected_revision`, `resolution.action/reason`, `evidence_refs?` | `issues`, `validations` | 부분. `acknowledged`와 확인자/시각/버전 기록은 이미 존재. 신규 `confirmations.warning_ack` 연결과 승인 시 확인 의무 강제는 미완료 |
+| 형식별 배치 검사·출력 미리보기 | `POST /sessions/{sid}/documents/{did}/layout-checks` | `expected_revision`, `format` → Job; 문서 GET로 결과, assets GET로 이미지 | `jobs`, `layout_checks`, `artifacts`, `layout_previews`, `issues` | PDF 구현, 실제 브라우저 필요. DOCX는 파일 생성·PDF 기준 미리보기까지이며 실제 DOCX 배치 검증은 미완료 |
+| 최종 확인·승인 | `POST /sessions/{sid}/documents/{did}/approvals` | 문서/입력 버전, `format`, `validation_id`, `layout_check_id`, `confirmed` | `approvals`, `confirmations(kind=final_consent)`; 검증·배치·자료 공개 허가 조회 | 기존 승인 조건 구현. 최종 동의는 새 테이블에도 기록. 미확인 warning을 승인에서 막는 D-07 후속 필요 |
+| 승인본 출력 요청·실패 재시도 | `POST /sessions/{sid}/exports` | `approval_id`, `format` → `export`, `job_id` | `exports`, `jobs`, `artifacts`, `approvals` | PDF 구현. 새 작업 202, 준비된 결과 재사용 200. 초안 AI를 재호출하지 않음. DOCX 승인이 막혀 정상 출력 흐름 미완료 |
+| 완성 파일 내려받기 | `GET /sessions/{sid}/exports/{eid}/download` | 승인 유효성 확인 후 파일 바이트 | `exports`, `artifacts`, `approvals` | PDF 구현. DOCX는 현재 `actual_pages=null`, 필수 `overflow=not_checked`로 승인·Export·다운로드 차단 |
+
+#### 6.23.6 ERD에 있지만 아직 화면 기능으로 완성되지 않은 부분
+
+| 남은 기능 | 이미 있는 기반 | 아직 필요한 것 | 연결 항목 |
+|---|---|---|---|
+| 원문·추출문 출처 보기 | `sources`, `source_versions`, `segments`, EvidenceRef 위치/발췌 | 접근·선택 범위를 검사하는 원문/추출문 조회 규격과 API, 화면 연결 | C-01, BE-01~03 후속 |
+| 편집 중 자료 변경 후 복귀 | 입력/선택 이력 저장, 재점검, `impact_reviews` 테이블 | 기존 문서용 점검 확인 → 영향 검토 → 선택 적용 또는 유지 사유 → 최신 입력 연결 → 재검증 API/상태 | C-05, BE-04/05 후속·BE-06 |
+| 경고 확인을 승인 조건으로 연결 | `issues.resolution_json`의 acknowledged 기록 및 관련 변경 후 재확인 기반, `confirmations` 테이블 | 허용 경고 대상·확인 유효성·저장 위치를 정하고 승인 검사에 연결. blocker를 확인 클릭으로 통과시키지 않음 | C-08/D-07, BE-06 |
+| 버전 이력 선택 화면 | `document_revisions`, 서버 복원 API | 과거 버전 목록/상세 조회 방식과 복원 UI | BE-05 후속 |
+| 실제 AI 수정안·사진 제안·의미 검증 | 해당 API·Job·mock 및 저장/적용/일반 검사 | `LlmAgent.propose/validate` 실제 구현·검증, 프론트 상태 연결 | AG-05/06/07 및 BE 연결 |
+| DOCX 승인·출력 완주 | DOCX 파일 생성과 PDF 기준 미리보기 | DOCX 배치 검사 방법·보장 범위 결정 및 승인/출력 검증 | C-09, BE-08 |
+
+`source_versions`, `extraction_runs`, `input_revisions`, `session_source_selections`는 v10에서 내부 저장에 연결되어 있다. `impact_reviews`와 `confirmations.kind=impact_keep/warning_ack`는 선언만으로 사용자 기능이 되지 않는다. 최초 초안 확인(`preflights.confirmed_at`), 기존 문제 확인(`issues.resolution_json`), 최종 승인 동의(`confirmations.final_consent`)의 저장 위치를 혼동하지 않는다.
+
+**복원 관련 주의:** 현재 편집·제안·검증·승인은 자료 변경 뒤 입력 버전이 다르면 차단된다. 반면 복원은 참조 존재를 확인하고 과거 내용을 현재 입력에 연결한다. contracts C-05에 적힌 영향 검토가 완료된 것으로 간주하지 않으며, 사용자에게 복원으로 이 절차를 대체하도록 안내하지 않는다.
+
+#### 6.23.7 현재 프론트 코드와의 차이
+
+이번에 읽은 경로는 `D:\frontend`다. 일반 생성은 실제 Axios 호출을 하고, MockLoader만 사용자가 고른 로컬 JSON을 표시하는 별도 경로다. 프론트 전체를 mock이라고 표현하지 않는다.
+
+| 비교 항목 | 현재 프론트 소스 | 현재 백엔드 / 필요한 연결 |
+|---|---|---|
+| 화면 구조 | `src/App.tsx`: 첨부·생성·상태·결과를 한 화면에 표시 | S01 자료/점검 → S02 편집 → S03 승인/출력 흐름과 상태 연결 필요 |
+| API 경로 | `src/api/profiles.ts`: `/api/profiles`, `/api/profiles/{job_id}`, `/api/profiles/{job_id}/document` | `main.py`는 세션 기반 `/api/v1` 앱을 실행. 구형 3개 경로는 이 앱에 등록되어 있지 않음 |
+| 완료 응답 | `src/types/profile.ts`, `src/hooks/useProfileJob.ts`: `ready/error`, 전체 `result` | Job은 `queued/running/waiting_user/succeeded/failed/cancelled`; `result_ref` ID로 실제 결과를 조회해야 함 |
+| 자료와 작성 조건 | 파일 + `company_name_hint`; 파일 선택 UI는 TXT/MD | `brief`·세션 생성, 지원 형식·읽기 상태, 등록/첨부 선택, `input_revision`과 연결 |
+| 문서 편집·확인 | `DraftSectionsView`는 읽기 전용, `ConfirmationList`는 질문 표시 | 페이지/블록 편집·저장, 실제 문제 해결 요청, 버전 충돌·확인 결과 처리 필요 |
+| 출력 | `DocumentButtons`는 MD/DOCX 직접 다운로드 | PDF/DOCX의 검증·배치·승인·Export·다운로드 흐름. 현재 DOCX 제한을 화면에 반영 |
+| 재사용 가능한 부분 | `src/api/client.ts` 상대경로, `vite.config.ts`의 `/api` 프록시 | 같은 origin 통신 기반은 재사용 가능. 주소만 교체하면 요청/응답·상태 차이가 해결되는 것은 아님 |
+
+대표 근거: 백엔드 `app/routers/sessions.py`, `sources.py`, `preflights.py`, `drafts.py`, `documents.py`, `proposals.py`, `validations.py`, `issues.py`, `approvals.py`, `layout_checks.py`, `exports.py`, `assets.py`, `jobs.py`, `registered_sources.py`; `app/models.py`, `app/services/db_history.py`, `issues.py`, `layout_check_jobs.py`; `app/agent_llm.py`의 `analyze/draft`는 구현되어 있고 `propose/validate`는 미지원 오류를 반환한다. 프론트 근거는 위 표의 파일과 `src/components/profile`다. 과거 S01 실제 AI 시험 기록은 task_agent 6.20에 있으며 이번에 재실행하지 않았다.
+
+#### 6.23.8 다음 작업 순서와 완료 기준
+
+1. **공통 연결 규격 맞추기:** 백엔드 기존 모델/오류/추가 GET를 contracts C-01~C-04·C-07과 대조하고 프론트 API 타입·세션·버전·Job 결과 조회를 맞춘다. 완료 기준은 구형 `/api/profiles`에 의존하지 않는 새 흐름이 별도 임시 테스트 환경에서 확인되는 것이다. 프론트 계약 사본은 이번에 수정하지 않았다.
+2. **S01 연결:** 세션 시작 → 빈 등록 목록 → 가짜 파일 첨부/읽기 → 작성 조건·자료 선택 저장 → 점검 결과 → 명시적 확인 → 초안 조회를 연결한다. 실제 회사 자료 적재는 필요하지 않으며 새 사용 DB의 빈 상태를 유지하고 임시 테스트 DB를 사용한다.
+3. **S02 연결과 C-01/C-05 보완:** 기존 문서 조회·직접 편집·저장을 먼저 연결한다. 원문/추출문 조회, 버전 이력, 자료 변경 후 복귀의 세부 규격을 정하고 빠진 API를 구현한다. 기존 초안을 덮어써 복귀를 대신하지 않는다.
+4. **S03과 D-07 연결:** 기존 문제 목록·해결·PDF 배치/최종 승인/출력을 연결하고, 경고 확인 의무를 현재 승인 검사와 일치시킨다. 실제 AI 수정안·사진 제안·의미 검증은 Agent 담당과 병행한다.
+5. **미완료 범위 검증:** DOCX 방식 결정과 구현, 실제 AI·브라우저·프론트 전체 흐름을 검증한다. 실제 회사 자료 적재는 사용자가 다시 요청할 때 진행한다.
+
+이번 검증은 **정적 대조**다. `main.py`/실서버를 시작하지 않고 AST로 라우터 27개를 추출했다. 모델·서비스·기존 테스트의 검사 대상을 읽었으며 6.22의 586 passed/20 skipped는 이전 실행 기록이다. 코드 변경이 없어 전체 테스트를 재실행하지 않았다. 자료 적재·실제 AI·브라우저 실행은 없었다. 기존 DB 해시와 새 DB의 v10/25개 테이블/총0건을 읽기 전용으로 확인했다. API 구현과 실제 프론트 연동 완료를 구분하고, 다른 담당자의 완료 상태는 바꾸지 않았다.
+
+#### 6.23.9 사용자가 제시한 11단계 개발 순서와 현재 위치
+
+사용자가 붙여넣은 안내서는 처음 만드는 프로젝트의 일반 순서다. 이 프로젝트는 기존 서버/API를 재사용하면서 DB 기반을 보완했으므로 1~11단계를 차례대로 모두 완료한 상태가 아니다. 비교 문서는 작업 순서 확인의 자료이며, 이번 질문만으로 라이브러리 설치나 다음 기능 구현을 실행하지 않았다.
+
+| 안내서 단계 | 실제 현재 상태 |
+|---|---|
+| 1. 기능·처리 규칙 / 2. API 명세 | 기존 PRD·계약·API가 있으며 이번에 27개 API/25개 테이블 연결표를 작성. 남은 정책 및 프론트 계약 동기화는 미완료 |
+| 3. 개발 환경·서버 | 현재 PC의 기존 가상환경과 실행 기반을 사용. 모든 팀원 PC에서 설치/실행되는지는 이번에 확인하지 않음 |
+| 4. ORM 모델 / 5. DB 연결·세션 | 25개 ORM 모델, Engine·트랜잭션·ORM 세션 구성 완료. 기존 서비스 SQL은 Core 호환 계층을 재사용 |
+| 6. 마이그레이션 | 이 대조 당시에는 v10 생성만 완료. 이후 사용자 요청으로 6.24절에서 Alembic 변경 파일·이력 관리 구현 및 검증 완료 |
+| 7. 요청·응답 스키마 / 8. 기능 구현 | 이후 6.25절에서 요청·응답/계약 1.3 정리 완료. 기존 주요 API/서비스 재사용. 영향 검토·승인 경고 강제·실제 AI 편집/검증 등 기능 보완은 후속 |
+| 9. 테스트 | 이전 전체 실행 586 passed/20 skipped. 실제 브라우저 출력·프론트·AI 전체 흐름 완료를 의미하지 않음 |
+| 10. 프론트 연동 | 구형 프론트와 현재 백엔드의 차이 확인. 실제 연결 작업은 미착수 |
+| 11. 배포·운영 | 이번 범위에서 외부 배포·운영 검증은 수행하지 않음 |
+
+따라서 안내서의 DB 준비 단계를 먼저 끝내려면 **6단계의 구조 변경 이력 관리부터 보완**한다. 6.23.8은 그 이후 화면 연결 작업의 순서로 읽는다. DB 구조를 생성/변경하는 것과 실제 회사 자료를 적재하는 것은 다른 작업이며, 실제 자료 적재 보류는 유지한다. 이 설명으로 마이그레이션이나 프론트 연동을 완료 처리하지 않는다.
+
+### 6.24 Alembic 구조 변경 이력 관리 (2026-09-28)
+
+- **BE-02 후속 · DONE (안내서 6단계):** 사용자 요청 “계획에 맞게 계속 진행”에 따라 Alembic 변경 이력 관리를 구현·검증했다. 실제 자료 적재 보류는 유지한다. 현재 PC에서 확인된 작업 경로는 `C:\backend`이며 기존 `.venv`를 사용한다.
+- 의존성은 Alembic 1.20.0·Mako 1.4.3을 추가했고 기존 잠금 패키지 버전은 유지했다. `alembic.ini`, `migrations/env.py`, `migrations/script.py.mako`와 `migrations/versions/20260928_01_erd_v10.py`를 추가했다. 기준 버전은 ORM을 매번 불러와 생성하지 않고 25개 테이블·28개 인덱스의 당시 SQL을 보관한다.
+- `app/schema_migrations.py`는 기존 미관리 v10을 읽기 전용으로 검사한다. 테이블/열/타입/기본값/PK/FK/UNIQUE/CHECK/부분 인덱스를 포함한 SQL이 기준과 다르거나 FK 위반이 있으면 이력을 기록하지 않는다. 기존 v9·알 수 없는 버전·내용이 있는 미버전 DB도 쓰기 전에 거부한다. 채택 시 업무 데이터는 보존하고 `alembic_version` 관리 정보만 추가한다.
+- `init_orm_db()`는 Alembic upgrade를 사용한다. `init_db()`의 v1~9 호환 초기화와 v10 검사, 기존 SQLAlchemy Core 서비스는 유지한다. 서버 시작 시 임의의 새 변경 파일을 자동 실행하지 않으며 새 ERD 환경은 먼저 명시적으로 upgrade한다. 재적재 도구의 25개 업무 테이블 검사는 Alembic 관리 테이블을 제외한다.
+- 변경 DDL·`PRAGMA user_version`·Alembic 이력은 명시적 쓰기 트랜잭션으로 묶는다. 오류 또는 변경 후 FK 위반 시 모두 롤백한다. batch를 위한 FK 비활성화는 해당 연결에 한하며 종료 후 원래 값으로 복구한다. 외부 연결에 이미 열린 트랜잭션은 손대지 않고 거부한다. 빈 DB에 테이블 없이 버전만 stamp하는 동작도 거부한다.
+- `current`·`check`·자동 생성은 DB를 조회 모드로 사용하며 WAL 변경/쓰기 잠금/이력 테이블 생성을 하지 않는다. 기본 경로는 서버와 동일한 설정이고 `-x db_path=...`로 명시할 수 있다. 운영 DB 파일과 `.env`는 Git 제외 상태다.
+- 향후 변경 파일 생성·검토·적용 절차는 README에 추가했다. 자동 생성 결과의 수동 검토, batch 재생성 시 이름 없는 CHECK 보존, 데이터가 있는 기준 DB의 전체 downgrade 거부를 설명했다. 이후 revision의 데이터 보존 방식은 각 변경에서 설계·검증해야 한다.
+- **실행 검증:** 기존 ORM·API 흐름 34 passed. 전체 회귀는 610 passed / 20 skipped(157.55초)이며, 이후 조회 보호·외부 트랜잭션 보존 등 6개 사례와 batch CHECK 보존 검사를 보강한 최종 `tests/test_migrations.py`는 30 passed(10.61초)다. 두 실행은 일부 겹치므로 개수를 합산하지 않는다. 전체 실행 중 관찰한 이름 없는 CHECK 누락 경고는 시험용 변경 파일에 CHECK를 명시하고 거부 동작까지 재검증해 해소했다. 전체에는 기존 Starlette 경고, 최종 자동 생성 검사에는 순환 FK 정렬 경고가 남는다. 감지 가능한 차이는 0건이지만 자동 생성 파일의 FK·CHECK 검토가 필요하다.
+- 테스트는 `.env` 로딩을 끄고 테스트용 브라우저 경로를 지정해 임시 DB/가짜 데이터로 실행했다. 20개 생략은 실제 브라우저 출력 관련이며 실제 AI·프론트 전체 검증 완료를 뜻하지 않는다. 가상환경 패키지 잠금 비교에서 기존 패키지 버전 변경은 0건이며 `git diff --check`를 확인했다.
+- **실제 DB 적용:** 활성 `private_runs/erd_v2/app.sqlite3`에 `upgrade head`를 적용했다. `current`는 `20260928_01 (head)`, `check`는 새 변경 없음이다. 전후 25개 업무 테이블·인덱스 SQL이 동일하고 업무 행은 모두 0건이며 `user_version=10`이다. 물리적으로는 관리 테이블 `alembic_version` 1개와 버전 행 1건만 추가됐다. FK 검사와 quick_check가 통과했다. 실제 자료 적재·실서버 시작은 수행하지 않았다. 이전 `private_runs/app.sqlite3`의 SHA-256 `058ec0307979ecc2719eb0977177d3796c587182153d023124f50ca9afa6dc5e`는 그대로다.
+- **다음 작업:** 안내서 7단계의 요청·응답 스키마(Pydantic)를 기존 27개 API/공통 계약과 맞추고, 8~9단계로 S01의 세션→자료 선택→점검→초안 경로를 임시 데이터로 검증한다. 실제 프론트 연결과 AI/브라우저 전체 검증은 완료하지 않았으며 자료 적재는 사용자 요청 때 진행한다.
+
+### 6.25 Pydantic 요청·응답과 계약 1.3 정리 (2026-09-28)
+
+- **BE-01 후속 · DONE (안내서 7단계):** 사용자 요청 “다음 작업 ㄱㄱ”에 따라 요청/응답 형식을 정리·검증했다. 기존 JSON API 25개는 이미 response_model이 있으며 파일 응답 2개를 포함해 총 27개다. 새 DB 테이블·새 업무 API는 추가하지 않았다. 실제 자료 적재 보류를 유지한다.
+- `app/models.py`: 요청의 버전 숫자를 strict 정수·1..SQLite INTEGER 상한으로 제한하고 confirmed를 실제 boolean으로 검사한다. purpose/instruction/reason/rename title은 공백만인 값을 거부하되 정상 문장의 앞뒤 공백은 보존한다. 빈 PATCH, 중복/공백 선택 ID를 거부하며 `[]`로 선택 해제하는 유효 요청은 유지한다. source 삭제 query는 문자열 숫자 전송을 고려하고 등록 목록/업로드의 kind는 공통 5종 Literal로 표시한다.
+- 응답은 `ApiErrorDetail`/`ApiErrorOut`, Job 7종 결과 참조 TypedDict, 공통 문서 상태 Literal, `layout_checks`의 pdf/docx 키를 명시한다. 기존 JSON 모양·dict 접근·선택적 null과 과거 layout Job의 demo 생략 호환은 유지한다. ORM/테이블 모델과 API용 Pydantic 역할을 README에 설명했다.
+- `app/errors.py`·앱 조립·파일 라우터: 실제 `400 INVALID_REQUEST`와 `422` 업무 오류를 공통 Pydantic 봉투로 OpenAPI에 등록했다. 기본 HTTPValidationError 문서와 실제 응답의 차이를 해소하고 프레임워크 404/405·multipart 오류도 공통 봉투로 반환한다. 예외 detail은 숨기고 Allow/요청 ID 헤더는 유지한다. 이미지·PDF/DOCX는 바이너리 MIME, Export는 202 접수/200 ready 재사용으로 명시했다. 멱등 재전송 본문과 정상 반환 경로는 유지한다.
+- **계약·예시:** contracts.md 문서 v1.6 / contract_version 1.3, 데이터 schema_version 1.0. C-01~C-04 현행 필드·결과 참조·조회 API와 C-07의 오류/OpenAPI를 본문에 반영했다. API 표의 누락 GET 3개, 전체 Document와 DocumentChangeOut의 차이, 이미지 조회와 미구현 원문 조회를 정정했다. 기존 handoff 경로를 유지하고 내부 버전을 1.3으로 갱신했다. 2개 완전 응답 예시의 필수 필드 누락과 5개 예시의 demo 위치/불필요 필드를 정정하고 새 형식 오류 6개를 추가했다. 축약·독립 객체·바이너리 설명은 전체 JSON 응답 검증과 구분한다.
+- **검증:** 기존 세션/자료/점검/편집/승인 및 ORM 흐름 178 passed. 전체 회귀 **654 passed / 20 skipped / 3 warnings**(231.27초). 최종 예시/필드 보존 확인을 포함한 `tests/test_api_contract.py`는 **38 passed**(4.58초)다. 임시 ORM DB에서 저장 전 형식 거부, 승인/Job/이력 무변경, mock S01 전체 흐름, 명시적 true/false 구분, 초대형 restore의 500 예방, OpenAPI/예시·파일/오류 형식을 확인했다. handoff의 전체 77개 예시 중 축약/독립객체/바이너리를 제외한 완전 JSON 응답 61개를 모델에 대조했고, 별도 읽기 검사에서 정상 형식의 완전 JSON 요청 35개도 확인했다.
+- `.env` 로딩을 끄고 브라우저 경로를 테스트용으로 지정한 전체 검사다. 20개 생략은 실제 브라우저 출력 관련이며 기존 Starlette 경고 1개와 Alembic 순환 FK 정렬 경고 2개가 남는다. `git diff --check`가 통과했다. 라이브 서버·실제 AI 호출·실자료 적재는 수행하지 않았다.
+- **실제 DB 보호:** 읽기 전용 확인에서 활성 DB는 v10 / Alembic `20260928_01`, 25개 업무 테이블 총 0건, FK 위반 0건이다. 이전 v9 DB SHA-256 `058ec0307979ecc2719eb0977177d3796c587182153d023124f50ca9afa6dc5e`는 그대로다. `.env`·실자료·프론트 코드는 수정하지 않았다.
+- **범위와 다음 단계:** 프론트 계약 사본·타입·호출부는 이번에 갱신하지 않았고 실제 브라우저·AI 전체 연결도 미완료다. 다음은 안내서 8~9단계에서 기존 S01 기능을 기준으로 서비스/API 흐름의 누락과 예외 처리를 보완·검증한 뒤 프론트 연결로 이어간다. 실제 자료를 적재할 필요 없이 임시 테스트 자료로 진행한다.
+
+### 6.26 S01 중복 요청·동시 저장·실패 복구 (2026-09-28)
+
+- **역할/범위:** 백엔드 BE-02·BE-04 후속. 사용자 안내서 8단계 중 기존 자료 첨부→선택→점검→초안 흐름을 보완한다. 새 API/테이블을 추가하지 않으며 실제 자료 적재 보류를 유지한다.
+- `app/routers/sources.py`·`app/services/sources.py`: 업로드의 파일 검사/읽기는 DB 연결 밖에서 하고, 파일 검사 후 세션 재확인·멱등 재전송·현재 개수 검사·파일/행·읽기 Job·응답 저장을 하나의 쓰기 잠금 안에서 처리한다. 개수 제한에 도달한 세션의 동일 요청 재전송이 잘못 413으로 끝나는 문제와 동시 요청의 중복/한도 초과 저장을 수정했다. 기존 해시·캐시는 유지하면서 최초 응답의 유효 kind/role/MIME도 비교해 변경된 첨부를 409로 거부한다.
+- 파일을 독점 생성한 직후 경로를 기록해 부분 쓰기 실패도 정리한다. DB 이력/Job/멱등 기록/커밋 오류까지 이번 업로드 파일을 정리하고 기존 파일·선택·행은 보존한다. 같은 이름 충돌은 덮어쓰기 전에 실패한다. 정리 자체의 삭제 실패는 로그를 남기고 세션 정리 대상으로 유지하며 프로세스 강제 종료까지 원자성을 보장하지 않는다.
+- `app/routers/preflights.py`·`drafts.py`: 진행 중 같은 입력의 Job을 돌려주는 경로도 새 키의 최초 202를 기록한다. 작업 성공/실패 후 해당 키를 재전송해도 새 점검/초안을 시작하지 않는다. 실제 AI가 소비한 사용자 확인의 재사용 금지, 실패 후 새 점검/새 확인 정책은 변경하지 않는다.
+- `tests/test_orm_workflow.py`: v9/v10 × 업로드 한도 경계·과거 응답 호환·종류/역할 충돌·동시 동일키/개수 경쟁·부분 파일/이력/Job/응답/커밋 실패·세션 종료 경쟁·기존 파일명 충돌 **22개** 회귀를 추가했다. 모든 테스트는 임시 DB·가짜 내용이며 실패 후 실제 재요청 성공과 기존 선택/파일 보존을 확인한다.
+- `tests/test_be04.py`: v9/v10에서 진행 중 점검/초안에 합류한 키의 성공/실패 후 재전송 **8개**를 추가했다. 새 키로 재시도 성공·원래 실패 Job 보존·변경 본문 409·세션 종료 뒤 캐시 접근 410도 확인한다. 기존 실제 AI 확인 소비 회귀는 가짜 모델로 유지한다.
+- `tests/test_demo.py`의 과거 해시 호환 테스트는 파일 목록이 빈 가짜 성공 응답을 실제 업로드 응답에서 role만 제거한 과거 형식으로 교체했다. 같은 해시·기본 evidence 역할 재전송의 최초 응답 반환과 자료/Job 추가 없음이라는 검증 목적은 유지한다. 빈 목록을 허용하도록 운영 코드를 완화하지 않았다.
+- `contracts.md`·handoff 예시는 계약 **1.4**로 맞추고 README에 비전공자용 S01 요청 순서와 재전송/새 작업의 차이를 설명했다. API/Pydantic 필드·문서 schema_version=1.0·Alembic 버전은 그대로다. 프론트 계약 사본·타입·호출부 갱신은 후속이다.
+- **검증:** 업로드/기본 세션 `57 passed`; 세션 종료·파일 충돌 추가 후 업로드/정리 `68 passed`. 최초 전체 검사에서 과거 응답 테스트의 빈 items 픽스처 1개가 실패해 위와 같이 보완했다. 최종 전체 `684 passed, 20 skipped, 3 warnings`(185.66초). 명령: `PYTHON_DOTENV_DISABLED=1`, 테스트용 존재하지 않는 `EXPORT_BROWSER_PATH`를 지정한 `.venv\\Scripts\\python.exe -B -m pytest -q -p no:cacheprovider --maxfail=1`. 20개 생략은 실제 브라우저 출력 관련이며 기존 Starlette 경고 1개와 Alembic 순환 FK 정렬 경고 2개가 남는다. 코드 문법·handoff 예시 79개의 중복 이름 없음·문서 충돌 표시 없음·`git diff --check`를 확인했다. 실제 AI 호출·실서버·실자료 적재는 실행하지 않았다.
+- **실제 DB 보호:** 읽기 전용 확인에서 활성 DB는 v10 / Alembic `20260928_01`, 25개 업무 테이블 합계 0건, FK 위반 0건이다. 이전 v9 DB SHA-256 `058ec0307979ecc2719eb0977177d3796c587182153d023124f50ca9afa6dc5e`도 유지한다. `.env`·원본 파일·프론트 코드는 수정하지 않았다.
+- **남은 범위:** C-05 자료 변경 영향 검토·D-07 경고 확인 강제·DOCX 승인, 실제 AI/브라우저/프론트 연결은 아직 완료가 아니다. 다음은 안내서 9단계의 테스트용 API 실행·흐름 확인과 10단계 S01 화면 연결을 진행하되 자료 적재는 별도 요청 때 수행한다.
+
+### 6.27 실제 HTTP 검사와 S01 프론트 연결 (2026-09-28)
+
+- **BE-10 후속 · S01 범위 DONE:** 안내서 9단계의 실제 HTTP 검사와 10단계 중 자료 선택→점검→명시적 확인→초안 조회 화면을 연결했다. 실제 경로는 백엔드 `C:\backend`, 프론트 `D:\frontend`다. 기존 미커밋 작업을 보존하고 실자료 적재 보류를 유지했다.
+- `scripts/check_s01_http.py`: 임시 ORM v10 DB·mock Settings·localhost 임의 포트 uvicorn·httpx 쿠키로 전체 흐름을 검사한다. 응답의 요청 ID, 5종 요청 재전송, 잘못된 입력 400, 무소유자 401, 다른 소유자 404, 버전 충돌 409, 종료 후 410, 확인 전 422를 확인한다. 정상/예외 모두 서버·소켓·임시 디렉터리를 정리하며 `tests/test_orm_workflow.py`에 실제 HTTP와 예외 정리 회귀 2개를 추가했다.
+- 프론트 `src/App.tsx`·새 `src/types/workflow.ts`, `src/api/workflow.ts`, `src/hooks/useWorkflow.ts`, `src/components/workflow/WorkflowPage.tsx`: 기존 Vite 프록시를 재사용해 `/api/v1`에 연결했다. 기존 profiles API/화면/가짜 JSON 파일은 보존하되 첫 화면에서 호출하지 않는다. 작성 조건·등록/세션 자료·파일 읽기·선택/삭제·점검 근거·추천·사용자 확인·초안 4쪽 조회를 연결했다. 첨부 자동 선택, 확인 전 생성, 근거 없는 이미지 자료의 생성은 막는다.
+- 요청 키는 미확정 요청의 지문별로 보관해 응답 유실 뒤 다른 POST/PATCH를 거친 재시도도 중복 저장되지 않는다. Job은 겹치지 않는 순차 조회·120초 제한·수동 재조회·언마운트 취소를 사용한다. sessionStorage에는 ID/지문/키만 남기고 원문/문서 내용은 저장하지 않는다. 새로고침 후 작업 시작/이어하기로 복원하고 사용자 동의는 다시 받는다. 입력 충돌은 최신 상태로 복구하고 만료는 로컬 접근 상태를 비운다. 기존 문서가 있으면 작성 조건을 고정하며 S02 편집/자료 변경 복귀는 후속이다.
+- 프론트 `scripts/check-s01-browser.mjs`: 새 의존성 없이 기존 Node 24·Vite·설치된 Chrome의 CDP를 사용한다. 임시 브라우저 프로필에서 실제 버튼/파일 선택·네트워크 응답 유실 주입·다른 탭의 버전 변경을 검사한다. 종료 시 브라우저·Vite·임시 프로필을 정리한다. `check_s01_http.py --frontend D:\frontend`로 두 검사를 함께 실행할 수 있다.
+- **실제 실행 결과:** HTTP 검사 통과. 브라우저 검사 15개 흐름 통과: 같은 origin/쿠키, 첨부와 선택 구분, 응답 유실 뒤 업로드 재시도, 점검/명시 동의, 변경 시 확인 무효화, 새로고침 후 점검·초안 복원/재동의, 409 복구, 버튼 연타, 4쪽 표시, 390px 가로 넘침 없음, 종료, 미지원 파일 안내, 이미지만 선택 시 차단, 첨부 삭제, 종료된 세션 초기화. `dist/s01-check.png` 화면을 열어 1440px 자료/점검/초안 배치를 확인했다. 실제 AI 내용 품질·PDF/DOCX 출력 확인으로 해석하지 않는다.
+- 프론트 최종 `npm run build`·`npm run lint` 통과. 백엔드 `tests/test_orm_workflow.py tests/test_api_contract.py` 최종 **73 passed, 1 warning**(17.73초). 기존 Starlette 경고 1개다. 양쪽 `git diff --check`를 확인했다. 기존 684개 전체 검사 기록은 6.26절이며 이번에는 변경 범위의 집중 회귀와 실제 HTTP/브라우저 검사를 실행했다.
+- **계약/문서:** 계약 1.4·문서 schema_version=1.0 유지. 연결 현황만 원본 문서 v1.8로 갱신했다. 프론트 `contracts.md`와 `handoff/api_examples_v1.1.json`은 원본과 바이트 일치를 확인했다. 양쪽 README에 실행/검사 명령·현재 연결 범위·남은 일을 적었다. TypeScript 타입은 S01 소비 필드이며 전체 27개 API의 프론트 구현을 뜻하지 않는다.
+- **실제 DB 보호:** 읽기 전용 최종 확인에서 활성 v10/Alembic `20260928_01`, 업무 테이블 25개 합계 0건, FK 위반 0건이다. 이전 v9 DB SHA-256 `058ec0307979ecc2719eb0977177d3796c587182153d023124f50ca9afa6dc5e`도 유지한다. `.env`·실자료 파일·실제 AI는 변경/호출하지 않았다. 시험 서버를 종료했고 실제 자료 적재는 보류 중이다.
+- **다음 작업:** 10단계의 남은 S02 초안 편집/저장·수정안 적용 화면을 기존 문서 버전 API에 연결하고, 이어서 승인·출력 화면을 연결한다. C-05 영향 검토·D-07 경고 확인 강제·DOCX 승인/출력과 실제 AI 품질은 기존 후속 범위를 유지한다.
+
+### 6.28 이전 DB 삭제 (2026-09-28)
+
+- 사용자 요청 “기존 db 싹다 삭제 ㄱㄱ”에 따라 이전 v9 DB `C:\backend\private_runs\app.sqlite3`와 해당 `-wal`, `-shm` 파일을 삭제했다. 이전 DB의 19개 테이블에 있던 총 563건도 함께 삭제되었다. 해당 경로의 DB 및 `-wal`/`-shm`/`-journal` 파일이 모두 없음을 확인했다. 앞 절의 이전 DB 보존 기록은 삭제 전의 검증 결과다.
+- `.env`의 `PRIVATE_RUNS_DIR=private_runs/erd_v2` 설정과 활성 `C:\backend\private_runs\erd_v2\app.sqlite3`는 유지했다. 새 DB의 삭제 전후 SHA-256은 `0386d7ee84dbb75237463fbbc4ed251e8d0a1cff5271d743beaa4dd14a37dc94`로 동일하다. 읽기 전용 확인에서 v10 / Alembic `20260928_01`, 업무 테이블 25개·업무 데이터 0건, quick_check 정상, FK 위반 0건이다.
+- 원본 자료·재적재용 파일·세션 폴더는 삭제하지 않았다. 새 환경의 `registered`·`import_packages` 디렉터리도 유지한다. 실제 자료 적재 보류와 다음 S02 편집·승인·출력 화면 작업은 그대로다. 코드·API·작업 단계 상태 변경은 없다.
+
+### 6.29 S02 편집과 S03 PDF 승인·다운로드 연결 (2026-09-28)
+
+- **BE-10 후속 · 직접 편집/수정안/PDF 화면 범위 DONE:** 사용자 요청 “이제 다시 작업 ㄱㄱ”에 따라 `D:\frontend` 화면을 기존 편집·검증·승인·출력 API에 연결했다. API·DB 스키마·런타임 의존성과 실제 자료 적재 보류는 유지한다. 실제 LLM 작업 완료를 뜻하지 않는다.
+- `src/components/workflow/DocumentWorkspace.tsx`를 추가하고 `WorkflowPage.tsx`에 연결했다. 초안 생성 후 작성 조건/자료 영역을 접고 목차·페이지 편집·AI 제안 영역을 표시한다. 페이지 제목·본문·목록·사진 설명 수정, 페이지/블록 추가·이동·삭제, 선택 자료의 기존 사진 교체, 근거 확인을 제공한다. 저장은 편집 시작 스냅샷과 최종 값의 차이를 계산하므로 입력 도중 비어 있던 값은 전송하지 않는다. 목록 빈 줄은 제외하고 빈 제목/본문은 저장 전에 안내한다.
+- 편집 버퍼는 메모리에 보관한다. 다른 탭의 문서/입력 변경과 충돌하면 자동 덮어쓰기·삭제 없이 필요한 문장을 복사한 뒤 최신 저장본에서 재편집하도록 안내한다. 미저장 변경 중에는 검증·승인·다운로드·세션 종료를 막고 새로고침/창 닫기에 브라우저 안내를 연결한다. 새로고침 후 미저장 편집 복원은 제공하지 않는다.
+- `src/hooks/useWorkflow.ts`·`src/api/workflow.ts`·`src/types/workflow.ts`: 요청 지문별 중복 방지와 기존 S01 상태를 유지하면서 문서 변경, 수정안 생성/적용/거절, 검증, PDF 배치/승인/출력/실제 Blob 다운로드를 연결했다. 비동기 작업은 2분 제한 순차 조회와 수동 재조회·새로고침 이어받기를 사용한다. 완료 Job의 잘못된 결과 참조는 진행 상태를 해제하고, 정상 참조의 일시적 조회 실패는 이어받기를 유지한다. 출력 만료와 세션 만료를 구분하고 승인 ID가 달라지면 이전 출력 참조를 제거한다.
+- AI 제안은 기존/제안 내용을 비교한 뒤 명시 적용한다. 글/사진은 나누어 요청하고 후보가 있으면 직접 선택한다. 실서버 AI 실패를 mock 성공으로 대체하지 않는다. PDF는 Job 완료와 실제 검사 통과를 구분하며 검사한 파일의 쪽별 미리보기를 표시한다. 현재 화면은 최신 `passed` 내용 검증·PDF 배치/공개 허가 통과·미해결 경고/필수 문제 없음·사용자 동의가 모두 있어야 승인한다. 동의는 문서·검사 변경/재로드 시 초기화한다. 이 화면 조건은 D-07 서버 경고 확인 강제의 완료를 뜻하지 않는다.
+- 기존 검사 스크립트 2개에 `--publication`을 추가했다. 기본 S01은 no-browser PDF 설정을 유지하며, 옵션을 지정할 때만 설치된 Chrome/Edge를 PDF 렌더러로 사용한다. 명령: `.venv\Scripts\python.exe -X utf8 -B scripts/check_s01_http.py --publication --frontend D:\frontend --timeout 120`.
+- **실제 실행 검증:** 임시 ORM v10 DB + mock AI + 실제 HTTP + 별도 Chrome 프로필에서 전체 흐름 통과. HTTP는 편집/409·검증·PDF 배치·명시 승인/재전송·반복 다운로드·수정 후 승인/기존 다운로드 차단을 확인했다. 실제 렌더러 `chrome/154.0.8037.57`, PDF 4쪽·17,360바이트다. 브라우저 **31개 흐름**은 기존 S01 15개에 미저장 차단, 편집 저장/충돌 보존, 내용 검증, PDF 배치/동의 재확인/실제 다운로드 2회, 바이트 동일·추가 초안 없음, 수정 후 승인 무효화, 페이지/제목/목록 생성·빈 줄 정리·이동/삭제, 제안 비교/적용/거절을 포함한다. 사진 교체/사진 후보의 전체 브라우저 경로는 이번 검사 목록에 포함하지 않았다.
+- 승인/편집 화면 1440px 캡처를 열어 목차·편집·제안·PDF 미리보기/다운로드 배치를 확인했다. 임시 서버·브라우저·다운로드 파일은 검사 종료 시 정리했다. 최초 브라우저 실행의 대기 시간 초과는 성공 안내의 ‘있습니다’를 작업 중으로 오인한 검사 코드였으며, `aria-busy`를 확인하도록 바꾼 최종 실행은 통과했다.
+- 백엔드 집중 회귀 `tests/test_orm_workflow.py tests/test_api_contract.py`: **73 passed, 1 warning**(24.21초, 기존 Starlette 경고). 프론트 최종 `npm run build`, `npm run lint`, 변경 코드 Prettier 검사 통과. 임시 폴더/브라우저·Vite 하위 프로세스가 기본 실행 환경에서 차단되어 허용된 승격 실행으로 확인했다. 이번에는 전체 백엔드 회귀를 다시 실행하지 않았다.
+- **DB/문서:** 활성 v10/Alembic `20260928_01`, 업무 테이블 25개·업무 데이터 0건·FK 위반 0건, SHA-256 `0386d7ee84dbb75237463fbbc4ed251e8d0a1cff5271d743beaa4dd14a37dc94`가 그대로다. 이전 DB는 삭제 상태이고 `.env`·원본·준비용 적재 자료는 변경하지 않았다. 계약 문서만 v1.9로 연결 현황을 갱신하고 계약 1.4/데이터 1.0을 유지하며 프론트 사본을 동기화했다.
+- **남은 일/다음 작업:** 실제 LLM 수정안·의미 검증(Agent), C-05 자료 변경 후 복귀, D-07 개별 경고 확인의 서버 강제, DOCX 승인/출력, 저장본 복원 UI와 사진 전체 흐름 확인은 후속이다. 다음 백엔드 작업은 확정된 D-07 경고 확인을 서버/기록/화면에 연결하는 것이다. 자료 적재는 사용자 요청 때 수행한다.
+
+### 6.30 백엔드 PR #19 충돌 해결과 통합 검증 (2026-09-28)
+
+- 백엔드 `feat/backend-sqlalchemy-erd-v10` 브랜치에 최신 `origin/develop`의 AG-07 구현과 작업 기록을 통합했다. `plan.md`, `task.md`, `tests/test_agent_llm.py` 충돌을 해결하고 기존 Agent 변경과 Windows 외부 호출 차단 검사를 보존했다. develop 직접 커밋·푸시와 프론트 커밋·푸시는 수행하지 않는다.
+- **전체 회귀:** `.env` 로딩을 끄고 테스트용 브라우저 경로로 `pytest -q -p no:cacheprovider --maxfail=1` 실행 결과 **845 passed / 20 skipped / 3 warnings**(191.89초). 생략은 실제 브라우저 관련이며 경고는 기존 Starlette 1개와 Alembic 순환 FK 정렬 2개다. 실제 AI는 호출하지 않았다.
+- **실제 HTTP/PDF:** `scripts/check_s01_http.py --publication --timeout 120` 통과. 임시 ORM DB와 mock AI로 편집·검증·승인·반복 다운로드·수정 후 승인 무효화를 확인했다. 실제 Chrome 렌더링 결과 PDF 4쪽·17,360바이트이며 임시 서버와 파일을 정리했다. 이번 PR 정리에서는 프론트 코드를 변경하지 않았다.
+- 활성 DB SHA-256은 `0386d7ee84dbb75237463fbbc4ed251e8d0a1cff5271d743beaa4dd14a37dc94`로 유지했다. DB·실자료·`.env`·가상환경은 커밋 대상이 아니다. 자료 적재 보류도 유지한다.
+- AG-07 의미 검증 구현·제한된 시험 기록은 develop에서 보존한 최신 상태다. 앞 절의 미구현 설명은 당시 기록이며 실제 AI 수정안·사진 검증, C-05, D-07 서버 강제, DOCX 승인·출력은 후속 범위다. 다음은 이 통합 커밋을 PR #19에 푸시하고 충돌 없음과 검토 가능 상태를 확인하는 것이다.
 
 ## 7. 첫 요청
 

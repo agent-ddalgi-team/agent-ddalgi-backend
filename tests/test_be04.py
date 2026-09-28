@@ -15,8 +15,9 @@ from app import create_app
 from app.agent_bridge import AgentError, AnalyzeResult, DraftResult
 from app.agent_mock import MockAgent
 from app.config import Settings
-from app.db import connect
+from app.db import connect, init_orm_db
 from app.models import Block, EvidenceRef, Page
+from app.services import ai_jobs
 
 BRIEF = {"purpose": "테스트", "emphasis": [], "direction": "balanced", "target_pages": 4, "photo_preference": "balanced"}
 SOURCE_A = "회사명: 예시 회사\n회사 개요: 예시용 기업입니다.\n사업 분야: 예시 사업 A\n공정 수: 2개\n납기 표현: 빠른 납기\n".encode()
@@ -146,6 +147,92 @@ def test_preflight_job_fails_if_input_changed_while_running(client, settings, mo
     assert job["status"] == "failed" and job["error"]["code"] == "INPUT_REVISION_CONFLICT"
     with connect(settings.db_path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM preflights WHERE session_id=?", (sid,)).fetchone()[0] == 0
+
+
+@pytest.fixture(params=[9, 10], ids=["legacy-v9", "orm-v10"])
+def retry_api(request, tmp_path):
+    settings = Settings(private_runs_dir=tmp_path / "runs", db_path=tmp_path / "runs" / "retry.sqlite3",
+                        agent_mode="mock", cleanup_sweep_interval_s=0)
+    if request.param == 10:
+        init_orm_db(settings.db_path, settings.private_runs_dir)
+    with TestClient(create_app(settings)) as client:
+        yield client, settings
+
+
+@pytest.mark.parametrize("kind", ["preflight", "draft"])
+@pytest.mark.parametrize("terminal", ["succeeded", "failed"])
+def test_active_job_join_key_replays_after_finish_and_explicit_retry(retry_api, monkeypatch, kind, terminal):
+    """진행 중 작업을 받은 요청도 첫 응답을 기억한다. 실패 재시도는 새 키로 명시한다."""
+    client, settings = retry_api
+    sid = _session(client)
+    source_ids = _upload(client, sid, ("fake.txt", SOURCE_A))
+    rev = _select(client, sid, source_ids)
+    base = f"/api/v1/sessions/{sid}"
+    path = f"{base}/{kind}s"
+    body = {"expected_input_revision": rev}
+    if kind == "draft":
+        pf = _preflight(client, sid, rev)
+        body = {"preflight_id": pf["preflight_id"], "input_revision": rev, "confirmed": True}
+    accepted_body = dict(body)
+
+    runner_name = f"run_{kind}_job"
+    runner = getattr(ai_jobs, runner_name)
+    scheduled = []
+    monkeypatch.setattr(ai_jobs, runner_name, lambda *args: scheduled.append(args))
+    first = client.post(path, json=body, headers={"Idempotency-Key": "original"})
+    joined = client.post(path, json=body, headers={"Idempotency-Key": "joined"})
+    assert first.status_code == joined.status_code == 202
+    assert joined.json() == first.json()
+    assert len(scheduled) == 1
+
+    method_name = "analyze" if kind == "preflight" else "draft"
+    original_method = getattr(MockAgent, method_name)
+    calls = []
+
+    async def finish(self, request):
+        calls.append(request)
+        if terminal == "failed":
+            raise AgentError("AI_RATE_LIMIT", "가짜 일시 실패", retryable=True)
+        return await original_method(self, request)
+
+    monkeypatch.setattr(MockAgent, method_name, finish)
+    runner(*scheduled[0])
+    monkeypatch.setattr(ai_jobs, runner_name, runner)
+    job_url = f"{base}/jobs/{first.json()['job_id']}"
+    job = client.get(job_url).json()
+    assert job["status"] == terminal
+
+    replay = client.post(path, json=body, headers={"Idempotency-Key": "joined"})
+    assert replay.status_code == 202 and replay.json() == joined.json()
+    changed_body = dict(body)
+    changed_body["expected_input_revision" if kind == "preflight" else "input_revision"] = rev + 1
+    conflict = client.post(path, json=changed_body, headers={"Idempotency-Key": "joined"})
+    assert conflict.status_code == 409 and conflict.json()["error"]["code"] == "IDEMPOTENCY_KEY_CONFLICT"
+    assert len(calls) == 1
+    with connect(settings.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM jobs WHERE session_id=? AND kind=?", (sid, kind)).fetchone()[0] == 1
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+    # 실패는 이전 작업에 남는다. 자료와 선택은 보존하고 새 요청으로 다시 진행할 수 있다.
+    if terminal == "failed":
+        monkeypatch.setattr(MockAgent, method_name, original_method)
+        session = client.get(base).json()
+        assert session["selected_source_ids"] == source_ids and session["input_revision"] == rev
+        assert session["document_summary"] is None
+        if kind == "draft":
+            latest = _preflight(client, sid, rev)
+            body = {**body, "preflight_id": latest["preflight_id"]}
+        retry = client.post(path, json=body, headers={"Idempotency-Key": "explicit-retry"})
+        assert retry.status_code == 202 and retry.json()["job_id"] != first.json()["job_id"]
+        assert client.get(f"{base}/jobs/{retry.json()['job_id']}").json()["status"] == "succeeded"
+        assert client.get(job_url).json() == job
+        assert client.post(path, json=body, headers={"Idempotency-Key": "explicit-retry"}).json() == retry.json()
+
+    # 새 합류 키도 세션에 묶여 종료 뒤에는 캐시 응답을 노출하지 않는다.
+    assert client.delete(base).status_code == 200
+    gone = client.post(path, json=accepted_body,
+                       headers={"Idempotency-Key": "joined"})
+    assert gone.status_code == 410 and gone.json()["error"]["code"] == "SESSION_EXPIRED"
 
 
 def test_agent_output_with_unknown_segment_is_rejected(client, settings, monkeypatch):

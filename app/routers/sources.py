@@ -5,13 +5,13 @@ import hashlib
 import json
 from typing import Literal
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, Header, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Form, Header, Query, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from app.access import require_owner, settings_of
 from app.db import connect
 from app.errors import ApiError
-from app.models import SourceDeleteOut, SourceListOut, UploadOut
+from app.models import MAX_SQLITE_INTEGER, SourceDeleteOut, SourceKind, SourceListOut, UploadOut
 from app.services import idempotency, jobs, reading, sessions, sources
 
 router = APIRouter(prefix="/sessions/{sid}/sources", tags=["sources"])
@@ -20,25 +20,36 @@ router = APIRouter(prefix="/sessions/{sid}/sources", tags=["sources"])
 @router.post("", status_code=202, response_model=UploadOut)
 async def upload_sources(request: Request, sid: str, background_tasks: BackgroundTasks,
                          files: list[UploadFile] = File(default=[]),
-                         kind: str | None = Form(default=None),
+                         kind: SourceKind | None = Form(default=None),
                          role: Literal["evidence", "instruction"] = Form(default="evidence"),
                          idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")):
     """저장 후 202. 읽기는 백그라운드 Job(kind=read)이 하며 GET jobs/{jid}·GET sources로 진행을 본다."""
     settings = settings_of(request)
     owner = require_owner(request)
+    # 소유·만료를 먼저 검사하되, 파일을 읽는 동안 DB 연결/쓰기 잠금을 유지하지 않는다.
     with connect(settings.db_path) as conn:
+        sessions.load_active(conn, owner, sid, settings)
+    uploads = await sources.validate_uploads(settings, 0, files, kind)
+    # 기존 저장 키의 재전송 호환성을 유지하고, 아래에서 kind/role/MIME도 비교한다.
+    digest = hashlib.sha256(
+        json.dumps([(name, hashlib.sha256(content).hexdigest()) for _, name, _, content in uploads]).encode()
+    ).hexdigest()
+    if role == "instruction":
+        digest = hashlib.sha256(f"role=instruction|{digest}".encode()).hexdigest()
+    with sources.upload_storage() as written, connect(settings.db_path, immediate=True) as conn:
         row = sessions.load_active(conn, owner, sid, settings)
-        existing = sources.count_for_session(conn, sid)
-        uploads = await sources.validate_uploads(settings, existing, files, kind)
-        digest = hashlib.sha256(
-            json.dumps([(name, hashlib.sha256(content).hexdigest()) for _, name, _, content in uploads]).encode()
-        ).hexdigest()
-        if role == "instruction":
-            digest = hashlib.sha256(f"role=instruction|{digest}".encode()).hexdigest()
         replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest, settings)
         if replay is not None:
+            previous = json.loads(replay.body)["items"]
+            actual = [(item["kind"], item.get("role", "evidence"), item["mime_type"]) for item in previous]
+            expected = [(sources.effective_kind(kind, suffix), role, mime) for suffix, _, mime, _ in uploads]
+            if actual != expected:
+                raise ApiError(409, "IDEMPOTENCY_KEY_CONFLICT",
+                               "같은 Idempotency-Key로 다른 요청이 이미 처리되었습니다.",
+                               details={"path": request.url.path})
             return replay
-        items = sources.store(conn, settings, sid, row["expires_at"], kind, uploads, role=role)
+        sources.check_capacity(settings, sources.count_for_session(conn, sid), len(uploads))
+        items = sources.store(conn, settings, sid, row["expires_at"], kind, uploads, role=role, written_paths=written)
         job = jobs.create(conn, sid, "read", f"파일 읽기 대기 중 (0/{len(items)})")
         sessions.touch(conn, settings, row)
         out = UploadOut(job_id=job.job_id, items=items)
@@ -58,7 +69,8 @@ def list_sources(request: Request, sid: str):
 
 
 @router.delete("/{source_id}", response_model=SourceDeleteOut)
-def delete_source(request: Request, sid: str, source_id: str, expected_input_revision: int):
+def delete_source(request: Request, sid: str, source_id: str,
+                  expected_input_revision: int = Query(ge=1, le=MAX_SQLITE_INTEGER)):
     settings = settings_of(request)
     owner = require_owner(request)
     with connect(settings.db_path, immediate=True) as conn:   # 세션 검사부터 쓰기까지 한 잠금(BE-09 리뷰 1)

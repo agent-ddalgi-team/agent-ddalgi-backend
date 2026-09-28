@@ -7,16 +7,17 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
 
+from app.db import Connection, Row
 from app.errors import ApiError
 from app.models import Document, DocumentSummary, Page
+from app.services import db_history
 from app.timeutil import now, to_iso
 
 
-def create_initial(conn: sqlite3.Connection, session_id: str, input_revision: int, title: str,
-                   target_pages: int, pages: list[Page], status: str) -> str:
+def create_initial(conn: Connection, session_id: str, input_revision: int, title: str,
+                   target_pages: int, pages: list[Page], status: str, *, preflight_id: str | None = None) -> str:
     document_id = f"doc_{uuid.uuid4().hex[:16]}"
     stamp = to_iso(now())
     conn.execute(
@@ -27,10 +28,11 @@ def create_initial(conn: sqlite3.Connection, session_id: str, input_revision: in
         "VALUES (?, 1, ?, ?, ?, 'draft', NULL, ?)",
         (document_id, input_revision, status,
          json.dumps({"title": title, "pages": [p.model_dump() for p in pages]}, ensure_ascii=False), stamp))
+    db_history.bind_document(conn, document_id, 1, session_id, preflight_id)
     return document_id
 
 
-def _head(conn: sqlite3.Connection, session_id: str, document_id: str) -> sqlite3.Row:
+def _head(conn: Connection, session_id: str, document_id: str) -> Row:
     head = conn.execute("SELECT * FROM documents WHERE document_id=? AND session_id=?",
                         (document_id, session_id)).fetchone()
     if head is None:
@@ -38,11 +40,11 @@ def _head(conn: sqlite3.Connection, session_id: str, document_id: str) -> sqlite
     return head
 
 
-def _session_input_revision(conn: sqlite3.Connection, session_id: str) -> int:
+def _session_input_revision(conn: Connection, session_id: str) -> int:
     return conn.execute("SELECT input_revision FROM sessions WHERE session_id=?", (session_id,)).fetchone()[0]
 
 
-def _to_document(conn: sqlite3.Connection, head: sqlite3.Row, rev: sqlite3.Row, *, computed_status: bool) -> Document:
+def _to_document(conn: Connection, head: Row, rev: Row, *, computed_status: bool) -> Document:
     from app.services import validation  # 순환 import 방지
 
     content = json.loads(rev["content_json"])
@@ -57,14 +59,14 @@ def _to_document(conn: sqlite3.Connection, head: sqlite3.Row, rev: sqlite3.Row, 
     )
 
 
-def get_current(conn: sqlite3.Connection, session_id: str, document_id: str) -> Document:
+def get_current(conn: Connection, session_id: str, document_id: str) -> Document:
     head = _head(conn, session_id, document_id)
     rev = conn.execute("SELECT * FROM document_revisions WHERE document_id=? AND revision=?",
                        (document_id, head["current_revision"])).fetchone()
     return _to_document(conn, head, rev, computed_status=True)
 
 
-def refresh_status_cache(conn: sqlite3.Connection, session_id: str, document_id: str) -> str:
+def refresh_status_cache(conn: Connection, session_id: str, document_id: str) -> str:
     """document_revisions.status는 호환용 캐시. 판정의 원본이 아니며 여기서 계산값을 써 둔다."""
     from app.services import validation
 
@@ -76,7 +78,7 @@ def refresh_status_cache(conn: sqlite3.Connection, session_id: str, document_id:
     return status
 
 
-def get_revision(conn: sqlite3.Connection, session_id: str, document_id: str, revision: int) -> Document:
+def get_revision(conn: Connection, session_id: str, document_id: str, revision: int) -> Document:
     head = _head(conn, session_id, document_id)
     rev = conn.execute("SELECT * FROM document_revisions WHERE document_id=? AND revision=?",
                        (document_id, revision)).fetchone()
@@ -91,7 +93,7 @@ def next_status(previous: str) -> str:
     return "review_required" if previous == "review_required" else "draft"
 
 
-def add_revision(conn: sqlite3.Connection, session_id: str, document_id: str, expected_revision: int,
+def add_revision(conn: Connection, session_id: str, document_id: str, expected_revision: int,
                  input_revision: int, title: str, pages: list[Page], status: str, origin: str,
                  source_ref: str | None) -> int:
     """새 버전을 만든다. expected_revision이 현재와 다르면 아무것도 바꾸지 않고 409.
@@ -116,11 +118,13 @@ def add_revision(conn: sqlite3.Connection, session_id: str, document_id: str, ex
         (document_id, new_revision, input_revision, status,
          json.dumps({"title": title, "pages": [p.model_dump() for p in pages]}, ensure_ascii=False),
          origin, source_ref, stamp))
+    # 수동 편집/복원에는 이전 생성의 preflight를 현재 근거처럼 추정해 넣지 않는다.
+    db_history.bind_document(conn, document_id, new_revision, session_id)
     on_revision_created(conn, document_id, new_revision)
     return new_revision
 
 
-def on_revision_created(conn: sqlite3.Connection, document_id: str, new_revision: int) -> None:
+def on_revision_created(conn: Connection, document_id: str, new_revision: int) -> None:
     """문서가 바뀌면: 이전 기준 편집안은 stale, active 승인은 invalidated(document_changed)."""
     from app.services import approvals  # 순환 import 방지
 
@@ -131,7 +135,7 @@ def on_revision_created(conn: sqlite3.Connection, document_id: str, new_revision
     approvals.invalidate_for_document(conn, document_id, "document_changed")
 
 
-def summary_for_session(conn: sqlite3.Connection, session_id: str) -> DocumentSummary | None:
+def summary_for_session(conn: Connection, session_id: str) -> DocumentSummary | None:
     from app.services import validation
 
     row = conn.execute("SELECT document_id, current_revision FROM documents WHERE session_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
@@ -146,6 +150,6 @@ def summary_for_session(conn: sqlite3.Connection, session_id: str) -> DocumentSu
                            demo=bool(session and session["demo"]))
 
 
-def exists_for_session(conn: sqlite3.Connection, session_id: str) -> str | None:
+def exists_for_session(conn: Connection, session_id: str) -> str | None:
     row = conn.execute("SELECT document_id FROM documents WHERE session_id=? LIMIT 1", (session_id,)).fetchone()
     return row["document_id"] if row else None

@@ -10,11 +10,11 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
-import sqlite3
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.db import Connection, Row
 from app.config import Settings
 from app.services.export_render import RenderResult
 from app.services.sessions import session_dir
@@ -79,8 +79,8 @@ def cleanup_temp_dirs(settings: Settings, older_than_s: float | None = None, pro
     return removed
 
 
-def store(conn: sqlite3.Connection, settings: Settings, session_id: str, result: RenderResult, *,
-          document_id: str, document_revision: int, input_revision: int, layout_check_id: str) -> sqlite3.Row:
+def store(conn: Connection, settings: Settings, session_id: str, result: RenderResult, *,
+          document_id: str, document_revision: int, input_revision: int, layout_check_id: str) -> Row:
     """렌더 결과 파일을 불변 artifact로 옮기고 행을 만든다. 파일은 임시 폴더에서 최종 이름으로 os.replace(같은 볼륨)."""
     artifact_id = f"art_{uuid.uuid4().hex[:16]}"
     ext = result.file_path.suffix.lower()
@@ -101,11 +101,11 @@ def store(conn: sqlite3.Connection, settings: Settings, session_id: str, result:
     return get(conn, artifact_id)
 
 
-def get(conn: sqlite3.Connection, artifact_id: str) -> sqlite3.Row | None:
+def get(conn: Connection, artifact_id: str) -> Row | None:
     return conn.execute("SELECT * FROM artifacts WHERE artifact_id=?", (artifact_id,)).fetchone()
 
 
-def path_of(settings: Settings, row: sqlite3.Row) -> Path:
+def path_of(settings: Settings, row: Row) -> Path:
     return settings.private_runs_dir / row["stored_path"]
 
 
@@ -115,7 +115,7 @@ class Integrity:
     reason: str | None   # missing / size_mismatch / hash_mismatch / not_found
 
 
-def verify(conn: sqlite3.Connection, settings: Settings, artifact_id: str | None) -> Integrity:
+def verify(conn: Connection, settings: Settings, artifact_id: str | None) -> Integrity:
     """존재·크기·sha256을 확인한다. 브라우저·렌더러와 무관하게 파일 자체만 본다."""
     if not artifact_id:
         return Integrity(False, "not_found")
@@ -132,7 +132,7 @@ def verify(conn: sqlite3.Connection, settings: Settings, artifact_id: str | None
     return Integrity(True, None)
 
 
-def identity_matches(row: sqlite3.Row, template_version: str, render_options_hash: str, asset_manifest_hash: str, fmt: str,
+def identity_matches(row: Row, template_version: str, render_options_hash: str, asset_manifest_hash: str, fmt: str,
                      *, demo: bool = False) -> bool:
     return (row["template_version"] == template_version and row["render_options_hash"] == render_options_hash
             and row["asset_manifest_hash"] == asset_manifest_hash and row["format"] == fmt and bool(row["demo"]) == demo)

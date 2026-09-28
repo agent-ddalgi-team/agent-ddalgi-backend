@@ -2,20 +2,20 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
 
+from app.db import Connection, Row
 from app.errors import ApiError
 from app.models import ApprovalCreate, ApprovalOut, Document
-from app.services import layout_checks, publication, validation
+from app.services import db_history, layout_checks, publication, validation
 from app.timeutil import now, to_iso
 
 
-def _col(row: sqlite3.Row, name: str):
+def _col(row: Row, name: str):
     return row[name] if name in row.keys() else None
 
 
-def to_out(row: sqlite3.Row) -> ApprovalOut:
+def to_out(row: Row) -> ApprovalOut:
     return ApprovalOut(approval_id=row["approval_id"], document_id=row["document_id"],
                        document_revision=row["document_revision"], input_revision=row["input_revision"],
                        format=row["format"], validation_id=row["validation_id"], layout_check_id=row["layout_check_id"],
@@ -26,8 +26,8 @@ def to_out(row: sqlite3.Row) -> ApprovalOut:
                        demo=bool(row["demo"]))
 
 
-def check_demo_identity(conn: sqlite3.Connection, session_row: sqlite3.Row, *, approval: sqlite3.Row | None = None,
-                        layout_row: sqlite3.Row | None = None) -> None:
+def check_demo_identity(conn: Connection, session_row: Row, *, approval: Row | None = None,
+                        layout_row: Row | None = None) -> None:
     """승인 생성·멱등 응답에서도 세션/승인/검사/산출물의 시연 식별값을 대조한다. 기존 승인 이력은 되살리지 않는다."""
     expected = bool(session_row["demo"])
     if approval is not None:
@@ -44,8 +44,8 @@ def check_demo_identity(conn: sqlite3.Connection, session_row: sqlite3.Row, *, a
                 raise ApiError(422, "RENDER_IDENTITY_MISMATCH", "산출물과 세션의 시연 여부가 다릅니다.", details={"reason": "demo_mismatch"})
 
 
-def active_for(conn: sqlite3.Connection, document_id: str, document_revision: int, input_revision: int,
-               fmt: str | None = None) -> sqlite3.Row | None:
+def active_for(conn: Connection, document_id: str, document_revision: int, input_revision: int,
+               fmt: str | None = None) -> Row | None:
     """현재 문서·입력 버전의 active 승인. fmt를 주면 그 형식만(형식별 승인, BE-08)."""
     query = ("SELECT * FROM approvals WHERE document_id=? AND document_revision=? AND input_revision=? AND status='active' ")
     params: list = [document_id, document_revision, input_revision]
@@ -55,8 +55,8 @@ def active_for(conn: sqlite3.Connection, document_id: str, document_revision: in
     return conn.execute(query + "ORDER BY approved_at DESC, rowid DESC LIMIT 1", params).fetchone()
 
 
-def find_matching_active(conn: sqlite3.Connection, document_id: str, document_revision: int, input_revision: int,
-                         body: ApprovalCreate) -> sqlite3.Row | None:
+def find_matching_active(conn: Connection, document_id: str, document_revision: int, input_revision: int,
+                         body: ApprovalCreate) -> Row | None:
     """형식뿐 아니라 요청한 validation_id·layout_check_id(따라서 artifact·식별값)까지 같은 active 승인만 재사용한다."""
     return conn.execute(
         "SELECT * FROM approvals WHERE document_id=? AND document_revision=? AND input_revision=? AND status='active' "
@@ -64,15 +64,16 @@ def find_matching_active(conn: sqlite3.Connection, document_id: str, document_re
         (document_id, document_revision, input_revision, body.format, body.validation_id, body.layout_check_id)).fetchone()
 
 
-def supersede_active(conn: sqlite3.Connection, document_id: str, document_revision: int, input_revision: int, fmt: str) -> int:
+def supersede_active(conn: Connection, document_id: str, document_revision: int, input_revision: int, fmt: str) -> int:
     """새 검사를 명시적으로 승인하면 같은 형식의 이전 active 승인은 superseded로 무효화한다(형식별 active 1건)."""
     cur = conn.execute("UPDATE approvals SET status='invalidated', invalidated_at=?, invalidated_reason='superseded' "
                        "WHERE document_id=? AND document_revision=? AND input_revision=? AND format=? AND status='active'",
                        (to_iso(now()), document_id, document_revision, input_revision, fmt))
+    db_history.sync_invalidations(conn)
     return cur.rowcount
 
 
-def check_conditions(conn: sqlite3.Connection, session_row: sqlite3.Row, document: Document, body: ApprovalCreate) -> tuple[sqlite3.Row, str]:
+def check_conditions(conn: Connection, session_row: Row, document: Document, body: ApprovalCreate) -> tuple[Row, str]:
     """조건 ①은 라우터(접근 검사)에서 끝났다. ②~⑦을 순서대로 검사하고 (Validation 행, asset_manifest_hash)를 돌려준다."""
     # ② 요청 버전 = 최신 저장본
     if body.expected_revision != document.document_revision:
@@ -142,8 +143,8 @@ def check_conditions(conn: sqlite3.Connection, session_row: sqlite3.Row, documen
     return v, manifest, lc_row, pub
 
 
-def create(conn: sqlite3.Connection, session_row: sqlite3.Row, owner_id: str, document: Document,
-           body: ApprovalCreate, manifest: str, lc_row: sqlite3.Row | None = None,
+def create(conn: Connection, session_row: Row, owner_id: str, document: Document,
+           body: ApprovalCreate, manifest: str, lc_row: Row | None = None,
            pub: publication.PublicationResult | None = None) -> ApprovalOut:
     stamp = to_iso(now())
     approval_id = f"apr_{uuid.uuid4().hex[:16]}"
@@ -158,22 +159,26 @@ def create(conn: sqlite3.Connection, session_row: sqlite3.Row, owner_id: str, do
          body.format, body.validation_id, body.layout_check_id, layout_checks.TEMPLATE_VERSION,
          layout_checks.RENDER_OPTIONS_HASH, manifest, stamp, owner_id, stamp, renderer, artifact_id,
          pub.checked_at if pub is not None else None, int(bool(session_row["demo"]))))
+    db_history.record_confirmation(conn, approval_id)
     return to_out(conn.execute("SELECT * FROM approvals WHERE approval_id=?", (approval_id,)).fetchone())
 
 
-def invalidate_one(conn: sqlite3.Connection, approval_id: str, reason: str) -> int:
+def invalidate_one(conn: Connection, approval_id: str, reason: str) -> int:
     cur = conn.execute("UPDATE approvals SET status='invalidated', invalidated_at=?, invalidated_reason=? "
                        "WHERE approval_id=? AND status='active'", (to_iso(now()), reason, approval_id))
+    db_history.sync_invalidations(conn)
     return cur.rowcount
 
 
-def invalidate_for_document(conn: sqlite3.Connection, document_id: str, reason: str) -> int:
+def invalidate_for_document(conn: Connection, document_id: str, reason: str) -> int:
     cur = conn.execute("UPDATE approvals SET status='invalidated', invalidated_at=?, invalidated_reason=? "
                        "WHERE document_id=? AND status='active'", (to_iso(now()), reason, document_id))
+    db_history.sync_invalidations(conn)
     return cur.rowcount
 
 
-def invalidate_for_session(conn: sqlite3.Connection, session_id: str, reason: str) -> int:
+def invalidate_for_session(conn: Connection, session_id: str, reason: str) -> int:
     cur = conn.execute("UPDATE approvals SET status='invalidated', invalidated_at=?, invalidated_reason=? "
                        "WHERE session_id=? AND status='active'", (to_iso(now()), reason, session_id))
+    db_history.sync_invalidations(conn)
     return cur.rowcount

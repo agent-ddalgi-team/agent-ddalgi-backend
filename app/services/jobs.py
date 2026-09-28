@@ -9,10 +9,10 @@ BE-09: 상태 갱신(set_progress/succeed/fail)은 아직 끝나지 않은 Job(A
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
 from typing import Any
 
+from app.db import Connection
 from app.errors import ApiError
 from app.models import JobOut
 from app.timeutil import now, to_iso
@@ -27,7 +27,7 @@ def _marks(statuses: tuple[str, ...]) -> str:
     return ",".join("?" * len(statuses))
 
 
-def create(conn: sqlite3.Connection, session_id: str, kind: str, stage_message: str,
+def create(conn: Connection, session_id: str, kind: str, stage_message: str,
            input_revision: int | None = None, target_key: str | None = None) -> JobOut:
     job_id = f"job_{uuid.uuid4().hex[:16]}"
     stamp = to_iso(now())
@@ -40,7 +40,7 @@ def create(conn: sqlite3.Connection, session_id: str, kind: str, stage_message: 
     return get(conn, session_id, job_id)
 
 
-def find_active_by_key(conn: sqlite3.Connection, session_id: str, kind: str, target_key: str) -> JobOut | None:
+def find_active_by_key(conn: Connection, session_id: str, kind: str, target_key: str) -> JobOut | None:
     """같은 대상 키(예: 문서@문서버전@입력버전)로 아직 끝나지 않은 작업. 다른 버전의 Job과 섞이지 않는다."""
     row = conn.execute(
         "SELECT job_id FROM jobs WHERE session_id=? AND kind=? AND target_key=? "
@@ -49,7 +49,7 @@ def find_active_by_key(conn: sqlite3.Connection, session_id: str, kind: str, tar
     return get(conn, session_id, row["job_id"]) if row else None
 
 
-def find_active(conn: sqlite3.Connection, session_id: str, kind: str, input_revision: int) -> JobOut | None:
+def find_active(conn: Connection, session_id: str, kind: str, input_revision: int) -> JobOut | None:
     """같은 세션·종류·입력 버전으로 아직 끝나지 않은 작업. 중복 실행 대신 이 작업을 돌려준다."""
     row = conn.execute(
         "SELECT job_id FROM jobs WHERE session_id=? AND kind=? AND input_revision=? "
@@ -58,7 +58,7 @@ def find_active(conn: sqlite3.Connection, session_id: str, kind: str, input_revi
     return get(conn, session_id, row["job_id"]) if row else None
 
 
-def get(conn: sqlite3.Connection, session_id: str, job_id: str) -> JobOut:
+def get(conn: Connection, session_id: str, job_id: str) -> JobOut:
     row = conn.execute("SELECT * FROM jobs WHERE job_id=? AND session_id=?", (job_id, session_id)).fetchone()
     if row is None:
         raise ApiError(404, "RESOURCE_NOT_FOUND", "요청한 자원을 찾을 수 없습니다.")
@@ -74,7 +74,7 @@ def get(conn: sqlite3.Connection, session_id: str, job_id: str) -> JobOut:
     )
 
 
-def set_progress(conn: sqlite3.Connection, job_id: str, stage: str, message: str | None,
+def set_progress(conn: Connection, job_id: str, stage: str, message: str | None,
                  status: str = "running") -> int:
     cur = conn.execute(
         f"UPDATE jobs SET status=?, progress_json=?, updated_at=? WHERE job_id=? AND status IN ({_marks(ACTIVE)})",
@@ -83,7 +83,7 @@ def set_progress(conn: sqlite3.Connection, job_id: str, stage: str, message: str
     return cur.rowcount
 
 
-def succeed(conn: sqlite3.Connection, job_id: str, result_ref: dict[str, Any], *,
+def succeed(conn: Connection, job_id: str, result_ref: dict[str, Any], *,
             allow: tuple[str, ...] = ACTIVE) -> int:
     cur = conn.execute(
         f"UPDATE jobs SET status='succeeded', progress_json=?, result_ref_json=?, error_json=NULL, updated_at=? "
@@ -94,7 +94,7 @@ def succeed(conn: sqlite3.Connection, job_id: str, result_ref: dict[str, Any], *
     return cur.rowcount
 
 
-def fail(conn: sqlite3.Connection, job_id: str, code: str, message: str, retryable: bool,
+def fail(conn: Connection, job_id: str, code: str, message: str, retryable: bool,
          details: dict[str, Any] | None = None, *, allow: tuple[str, ...] = ACTIVE) -> int:
     error = {"code": code, "message": message, "retryable": retryable, "details": details or {}, "request_id": None}
     cur = conn.execute(
@@ -104,7 +104,7 @@ def fail(conn: sqlite3.Connection, job_id: str, code: str, message: str, retryab
     return cur.rowcount
 
 
-def cancel_for_session(conn: sqlite3.Connection, session_id: str) -> int:
+def cancel_for_session(conn: Connection, session_id: str) -> int:
     """세션 종료·만료: 끝나지 않은 Job을 cancelled로 확정한다(고정 문구). 이후 늦은 결과는 ACTIVE 가드에 막힌다."""
     cur = conn.execute(
         f"UPDATE jobs SET status='cancelled', error_json=?, updated_at=? WHERE session_id=? AND status IN ({_marks(ACTIVE)})",
@@ -113,7 +113,7 @@ def cancel_for_session(conn: sqlite3.Connection, session_id: str) -> int:
     return cur.rowcount
 
 
-def purge_errors_for_session(conn: sqlite3.Connection, session_id: str) -> int:
+def purge_errors_for_session(conn: Connection, session_id: str) -> int:
     """세션 내용 제거: error_json의 message·details를 비운다(code·retryable은 유지). 예외 문자열에 원문·파일명이 섞일 수 있다."""
     rows = conn.execute("SELECT job_id, error_json FROM jobs WHERE session_id=? AND error_json IS NOT NULL", (session_id,)).fetchall()
     for r in rows:
@@ -127,7 +127,7 @@ def purge_errors_for_session(conn: sqlite3.Connection, session_id: str) -> int:
     return len(rows)
 
 
-def fail_stale(conn: sqlite3.Connection) -> int:
+def fail_stale(conn: Connection) -> int:
     """서버 시작 시: 이전 프로세스가 남긴 queued/running 작업을 failed로 정리한다. 정리한 개수를 돌려준다."""
     rows = conn.execute("SELECT job_id FROM jobs WHERE status IN ('queued', 'running')").fetchall()
     for r in rows:

@@ -8,14 +8,15 @@ BE-09: 요청 경로에서 만료·종료를 발견하면(raise_gone) 요청 트
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
 from datetime import datetime
 from pathlib import Path
 
+from app.db import Connection, Row
 from app.config import Settings
 from app.errors import ApiError
 from app.models import Brief, SessionOut
+from app.services import db_history
 from app.timeutil import from_iso, now, plus, to_iso
 
 
@@ -32,7 +33,7 @@ def demo_allowed(settings: Settings) -> bool:
     return bool(settings.demo_mode)
 
 
-def usable(settings: Settings, row: sqlite3.Row | None) -> str | None:
+def usable(settings: Settings, row: Row | None) -> str | None:
     """Pure policy check shared by requests and final Job writes; expiry wins over demo mode."""
     if row is None:
         return "expired"
@@ -49,7 +50,7 @@ def demo_disabled_error() -> ApiError:
     return ApiError(403, "DEMO_MODE_DISABLED", "현재 서버에서 시연 모드가 꺼져 있습니다.")
 
 
-def create(conn: sqlite3.Connection, settings: Settings, owner_id: str, brief: Brief, *, demo: bool = False) -> SessionOut:
+def create(conn: Connection, settings: Settings, owner_id: str, brief: Brief, *, demo: bool = False) -> SessionOut:
     if demo and not demo_allowed(settings):
         raise demo_disabled_error()
     session_id = f"sess_{uuid.uuid4().hex[:16]}"
@@ -60,10 +61,11 @@ def create(conn: sqlite3.Connection, settings: Settings, owner_id: str, brief: B
         (session_id, owner_id, brief.model_dump_json(), to_iso(created), to_iso(created),
          to_iso(_expires_at(settings, created, created)), int(demo)),
     )
+    db_history.input_revision(conn, session_id)
     return get(conn, owner_id, session_id, settings)
 
 
-def _row_to_out(row: sqlite3.Row) -> SessionOut:
+def _row_to_out(row: Row) -> SessionOut:
     return SessionOut(
         demo=bool(row["demo"]),
         session_id=row["session_id"],
@@ -83,7 +85,7 @@ def _gone_error(status: str, cleanup: str) -> ApiError:
     return ApiError(410, "SESSION_EXPIRED", message, details={"status": status, "cleanup": cleanup})
 
 
-def raise_gone(conn: sqlite3.Connection, settings: Settings, owner_id: str, session_id: str) -> sqlite3.Row:
+def raise_gone(conn: Connection, settings: Settings, owner_id: str, session_id: str) -> Row:
     """종료·만료로 보이는 세션(BE-09). 요청 트랜잭션을 롤백해 끝내고(잠금 해제, 관련 없는 변경은 커밋되지 않음), 정리 전용
     BEGIN IMMEDIATE 트랜잭션에서 현재 상태를 다시 확인해 만료 확정·내용 제거·큐 등록(cleanup.finalize)·정리 상태 판정을 커밋한 뒤
     410을 낸다. 그 사이 연장돼 살아 있으면(경쟁, 드묾) 이 트랜잭션을 요청 트랜잭션으로 이어 쓰고 행을 돌려준다.
@@ -114,7 +116,7 @@ def raise_gone(conn: sqlite3.Connection, settings: Settings, owner_id: str, sess
     raise _gone_error(result["status"], state)
 
 
-def load_active(conn: sqlite3.Connection, owner_id: str, session_id: str, settings: Settings) -> sqlite3.Row:
+def load_active(conn: Connection, owner_id: str, session_id: str, settings: Settings) -> Row:
     """소유자가 맞고 살아 있는 세션 행을 돌려준다. 남의 세션은 존재 여부를 숨기려고 404. 종료·만료면 raise_gone(410)."""
     row = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
     if row is None or row["owner_id"] != owner_id:
@@ -127,7 +129,7 @@ def load_active(conn: sqlite3.Connection, owner_id: str, session_id: str, settin
     return row
 
 
-def get(conn: sqlite3.Connection, owner_id: str, session_id: str, settings: Settings) -> SessionOut:
+def get(conn: Connection, owner_id: str, session_id: str, settings: Settings) -> SessionOut:
     from app.services import documents  # 순환 import 방지
 
     out = _row_to_out(load_active(conn, owner_id, session_id, settings))
@@ -135,7 +137,7 @@ def get(conn: sqlite3.Connection, owner_id: str, session_id: str, settings: Sett
     return out
 
 
-def touch(conn: sqlite3.Connection, settings: Settings, row: sqlite3.Row) -> None:
+def touch(conn: Connection, settings: Settings, row: Row) -> None:
     """상태를 바꾸는 요청에서만 부른다. 마지막 활동과 만료 시각을 갱신한다."""
     current = now()
     conn.execute(
@@ -144,7 +146,7 @@ def touch(conn: sqlite3.Connection, settings: Settings, row: sqlite3.Row) -> Non
     )
 
 
-def bump_input_revision(conn: sqlite3.Connection, session_id: str, *, brief: Brief | None,
+def bump_input_revision(conn: Connection, session_id: str, *, brief: Brief | None,
                         selected_source_ids: list[str] | None) -> int:
     row = conn.execute("SELECT input_revision, brief_json, selected_source_ids FROM sessions WHERE session_id=?",
                        (session_id,)).fetchone()
@@ -159,11 +161,12 @@ def bump_input_revision(conn: sqlite3.Connection, session_id: str, *, brief: Bri
     # 입력이 바뀌면(자료 선택·정정·제외, 목적 변경 — PATCH inputs·첨부 삭제 모두 이 함수를 지난다) 승인은 무효.
     from app.services import approvals  # 순환 import 방지
 
+    db_history.input_revision(conn, session_id)
     approvals.invalidate_for_session(conn, session_id, "input_changed")
     return new_revision
 
 
-def close(conn: sqlite3.Connection, settings: Settings, owner_id: str, session_id: str) -> str:
+def close(conn: Connection, settings: Settings, owner_id: str, session_id: str) -> str:
     """DELETE: 세션을 closed로 확정한다(BEGIN IMMEDIATE 안, 커밋은 호출자). 상태·내용 제거·Job 취소·Export 확정·멱등 본문 비움·
     큐 등록이 한 트랜잭션이다. 바이트 삭제는 커밋 뒤 cleanup.run_for_session이 즉시 시도하고 실패하면 큐가 재시도한다.
     이미 닫힌 세션이면 상태만 맞춘다(멱등)."""

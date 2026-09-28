@@ -107,12 +107,69 @@ def d04_fake_extraction(case_id, payload):
 
 @pytest.fixture(autouse=True)
 def no_external_calls(monkeypatch):
+    attempts = []
+    original_connect = socket.socket.connect
+    original_socketpair = socket.socketpair
+    socketpair_context = threading.local()
+
     def forbidden(*args, **kwargs):
+        attempts.append(True)
         raise AssertionError("이 테스트에서는 외부 네트워크와 실제 SDK 클라이언트를 사용할 수 없습니다.")
-    monkeypatch.setattr(socket.socket, "connect", forbidden)
+
+    def guarded_connect(sock, address):
+        # Windows asyncio의 self-pipe는 표준 socketpair 내부에서 loopback TCP를 쓴다.
+        # 직접 loopback 요청이나 다른 스레드의 연결까지 허용하지 않는다.
+        if (getattr(socketpair_context, "active", False) and isinstance(address, tuple)
+                and address[0] in {"127.0.0.1", "::1"}):
+            return original_connect(sock, address)
+        return forbidden()
+
+    def local_socketpair(*args, **kwargs):
+        previous = getattr(socketpair_context, "active", False)
+        socketpair_context.active = True
+        try:
+            # 원래 표준 함수는 family/type/proto만 받으며 대상 host를 지정할 수 없다.
+            return original_socketpair(*args, **kwargs)
+        finally:
+            socketpair_context.active = previous
+
+    monkeypatch.setattr(socket.socket, "connect", guarded_connect)
+    monkeypatch.setattr(socket, "socketpair", local_socketpair)
     monkeypatch.setattr(socket, "create_connection", forbidden)
     monkeypatch.setattr(llm, "OpenAI", forbidden)
     monkeypatch.setattr(llm, "_trial", llm.TrialLedger())
+    return attempts
+
+
+def test_network_guard_allows_standard_socketpair(no_external_calls):
+    left, right = socket.socketpair()
+    try:
+        left.settimeout(1)
+        right.settimeout(1)
+        left.sendall(b"x")
+        assert right.recv(1) == b"x"
+    finally:
+        left.close()
+        right.close()
+    assert no_external_calls == []
+
+
+@pytest.mark.parametrize("host", ["203.0.113.1", "127.0.0.1", "::1", "localhost"])
+def test_network_guard_blocks_direct_connections_even_after_socketpair_failure(host):
+    # 인자를 거부한 경우에도 thread-local 허용 상태가 남으면 안 된다.
+    with pytest.raises(TypeError):
+        socket.socketpair(host="203.0.113.1")
+    with socket.socket() as sock:
+        with pytest.raises(AssertionError, match="외부 네트워크"):
+            sock.connect((host, 443))
+
+
+def test_network_guard_keeps_create_connection_and_real_sdk_blocked():
+    for host in ("203.0.113.1", "127.0.0.1"):
+        with pytest.raises(AssertionError, match="외부 네트워크"):
+            socket.create_connection((host, 443), timeout=0.01)
+    with pytest.raises(AssertionError, match="실제 SDK"):
+        llm.OpenAI(api_key="not-a-real-key")
 
 
 def sources():
@@ -2010,14 +2067,9 @@ def test_review_failure_does_not_complete_or_overwrite_document(review_flow, fai
         assert saved == before
 
 
-def test_graph_wait_survives_new_app_and_contains_only_references(graph_flow, monkeypatch):
+def test_graph_wait_survives_new_app_and_contains_only_references(graph_flow, monkeypatch, no_external_calls):
     flow = graph_flow
-    attempts = []
-    def record_forbidden(*args, **kwargs):
-        attempts.append(True)
-        raise AssertionError("graph must not send external traces")
-    monkeypatch.setattr(socket.socket, "connect", record_forbidden)
-    monkeypatch.setattr(socket, "create_connection", record_forbidden)
+    attempts = no_external_calls
     assert flow.path.is_file()
     assert len(flow.model.calls) == 1
     contents = flow.path.read_bytes()

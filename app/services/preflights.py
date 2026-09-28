@@ -2,35 +2,55 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
 
+from app.db import Connection
 from app.agent_bridge import SegmentIn, SourceIn
 from app.errors import ApiError
 from app.models import Fact, Issue, PreflightOut, Recommendations
+from app.services import db_history
 from app.services.sources import evidence_scope
 from app.timeutil import now, to_iso
 
 
-def build_sources(conn: sqlite3.Connection, session_id: str, selected_source_ids: list[str]) -> list[SourceIn]:
+def build_sources(conn: Connection, session_id: str, selected_source_ids: list[str]) -> list[SourceIn]:
     """선택한 자료만 Agent 입력으로 만든다. 이 세션의 첨부 또는 등록 자료(근거 사용 허용)만.
 
     다른 세션의 자료와 use_as_company_evidence=false인 등록 자료는 선택돼 있어도 절대 포함하지 않는다.
     """
     result: list[SourceIn] = []
     scope, params = evidence_scope(conn, session_id)
+    has_history = db_history.enabled(conn)
     for source_id in selected_source_ids:
         row = conn.execute(
-            f"SELECT src.* FROM sources src WHERE src.source_id=? AND src.parse_status IN ('complete', 'partial') AND {scope}",
+            f"SELECT src.* FROM sources src WHERE src.source_id=? AND {scope}",
             (source_id, *params)).fetchone()
         if row is None:
             continue
+        run_sql, run_params = "", ()
+        source_version, name, parse_status = row["source_version"], row["name"], row["parse_status"]
+        if has_history:
+            pinned = conn.execute(
+                "SELECT sel.source_version, sel.run_id, v.original_name, r.status FROM session_source_selections sel "
+                "JOIN sessions s ON s.session_id=sel.session_id AND s.input_revision=sel.input_revision "
+                "JOIN source_versions v ON v.source_id=sel.source_id AND v.version=sel.source_version "
+                "JOIN extraction_runs r ON r.run_id=sel.run_id "
+                "WHERE sel.session_id=? AND sel.source_id=? AND v.purged_at IS NULL AND r.purged_at IS NULL",
+                (session_id, source_id)).fetchone()
+            if pinned is None:
+                continue
+            source_version, name, parse_status = pinned["source_version"], pinned["original_name"], pinned["status"]
+            run_sql, run_params = " AND run_id=?", (pinned["run_id"],)
+        if parse_status not in {"complete", "partial"}:
+            continue
         segments = [SegmentIn(r["segment_id"], json.loads(r["locator_json"]), r["text"]) for r in conn.execute(
-            "SELECT segment_id, locator_json, text FROM segments WHERE source_id=? ORDER BY ordinal", (source_id,))]
+            "SELECT segment_id, locator_json, text FROM segments WHERE source_id=?" + run_sql + " ORDER BY ordinal",
+            (source_id, *run_params))]
         assets = [r["asset_id"] for r in conn.execute(
-            "SELECT asset_id FROM assets WHERE source_id=? AND status='ready' AND deleted_at IS NULL", (source_id,))]
-        result.append(SourceIn(source_id=row["source_id"], source_version=row["source_version"], kind=row["kind"],
-                               name=row["name"], parse_status=row["parse_status"], segments=segments,
+            "SELECT asset_id FROM assets WHERE source_id=? AND status='ready' AND deleted_at IS NULL" + run_sql,
+            (source_id, *run_params))]
+        result.append(SourceIn(source_id=row["source_id"], source_version=source_version, kind=row["kind"],
+                               name=name, parse_status=parse_status, segments=segments,
                                asset_ids=assets, origin_kind=row["origin_kind"]))
     return result
 
@@ -43,7 +63,7 @@ def allowed_ids(sources: list[SourceIn]) -> tuple[set[str], set[str], dict[str, 
     return segs, assets, versions
 
 
-def save(conn: sqlite3.Connection, session_id: str, input_revision: int, usable_source_ids: list[str],
+def save(conn: Connection, session_id: str, input_revision: int, usable_source_ids: list[str],
          facts: list[Fact], issues: list[Issue], recommendations: Recommendations, can_generate: bool) -> str:
     preflight_id = f"pf_{uuid.uuid4().hex[:16]}"
     conn.execute(
@@ -57,7 +77,7 @@ def save(conn: sqlite3.Connection, session_id: str, input_revision: int, usable_
     return preflight_id
 
 
-def get(conn: sqlite3.Connection, session_id: str, preflight_id: str) -> PreflightOut:
+def get(conn: Connection, session_id: str, preflight_id: str) -> PreflightOut:
     row = conn.execute("SELECT * FROM preflights WHERE preflight_id=? AND session_id=?",
                        (preflight_id, session_id)).fetchone()
     if row is None:
@@ -72,7 +92,7 @@ def get(conn: sqlite3.Connection, session_id: str, preflight_id: str) -> Preflig
     )
 
 
-def confirm(conn: sqlite3.Connection, preflight_id: str) -> str:
+def confirm(conn: Connection, preflight_id: str) -> str:
     stamp = to_iso(now())
     conn.execute("UPDATE preflights SET confirmed_at=COALESCE(confirmed_at, ?) WHERE preflight_id=?", (stamp, preflight_id))
     return conn.execute("SELECT confirmed_at FROM preflights WHERE preflight_id=?", (preflight_id,)).fetchone()[0]

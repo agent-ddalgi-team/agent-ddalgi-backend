@@ -1,6 +1,6 @@
 # 공통 데이터·API 계약
 
-기준일: 2026-09-28 · 문서 v1.5 · contract_version: 1.2 · 데이터 schema_version: 1.0
+기준일: 2026-09-28 · 문서 v1.9 · contract_version: 1.4 · 데이터 schema_version: 1.0
 
 개발 전 대조 메모는 7절에서 관리한다. 문서 v1.2에서 경고 승인 정책(PRD BR-08/09, plan D-07)을 구체화했고, v1.3에서 로그인 MVP 제외 결정(plan D-08)을 반영했다. 두 정책은 2026-09-27 사용자 확정 사항이다. 필드·상태값·API 형식과 계약/스키마 버전은 유지한다. 7절은 확정된 제품 정책과 아직 정할 연결 규격을 구분한 목록이며, 코드·예시·프론트 사본의 반영 완료를 뜻하지 않는다.
 
@@ -9,6 +9,14 @@
 **계약 1.2(2026-09-28):** 사용자가 요청한 AG-04 연결 후속으로, 같은 입력의 재점검에서 충돌이 발견되면 기존 승인을 무효화하고 승인 요청 재전송도 현재 승인 상태를 확인한다. `invalidated_reason`의 `preflight_conflict`, 기존 `APPROVAL_NOT_ACTIVE`·`REVALIDATION_REQUIRED` 오류가 적용되는 경로를 아래에 반영했다. 모델 필드·상태값·API 경로·문서 schema_version은 그대로이며 승인 재전송의 응답 동작 변경에 맞춰 계약 버전을 올렸다. 기존 [API 예시](handoff/api_examples_v1.1.json)는 파일 경로를 유지하고 내부 contract_version과 관련 예시를 1.2로 갱신한다. 프론트 사본·오류 표시 갱신은 필요하며 아직 확인하지 않았다.
 
 이 문서는 프론트·백엔드·Agent의 데이터 교환 기준이다. 기존 API와 필드가 이미 있다면 백엔드 BE-01에서 연결표를 만들고 호환 어댑터를 우선한다. 아래 이름은 현재 코드에 구현되어 있다는 뜻이 아니다.
+
+**계약 1.3(2026-09-28, 개발 순서 7단계):** 기존 JSON API 25개와 파일 응답 2개의 실제 요청·응답 형식을 정리했다. 버전 숫자·명시적 동의·빈 입력 변경 요청의 검증을 강화하며 잘못된 입력은 `400 INVALID_REQUEST`다. 아래의 Source·Job·후보 필드, 조회 API, 문서 변경 결과를 현행 형식으로 채택하고 OpenAPI·예시를 맞춘다. 정상 응답의 필드명과 저장 문서 `schema_version=1.0`은 유지한다. 현재 프론트의 구형 `/api/profiles` 호출·타입 및 계약 사본은 이번 백엔드 작업에서 갱신하지 않았으므로 연결 전에 갱신해야 한다. C-05 영향 검토, D-07 경고 승인 강제, DOCX 승인·출력 완료를 뜻하지 않는다.
+
+**계약 1.4(2026-09-28, 개발 순서 8단계 S01 보완):** 업로드 재전송·동시 요청과 점검/초안의 진행 중 Job 재사용을 보완한다. 같은 파일이라도 자료 종류/역할이 달라지면 같은 키를 재사용할 수 없다. 기존 키/응답과 API 경로·필드·DB 구조는 유지한다. 아래 재전송 규칙과 handoff 예시를 갱신하며 프론트 사본 반영은 후속이다.
+
+**S01 프론트 연결(2026-09-28, 문서 v1.8):** 위 1.2~1.4 도입 당시의 프론트 미반영 기록 이후, 프론트 첫 화면을 `/api/v1`의 세션·자료 첨부/선택/삭제·점검·확인·초안 조회에 연결했다. 동일한 계약 원본/예시 사본과 S01 TypeScript 타입을 반영하고 임시 v10 DB·mock AI·실제 브라우저로 확인했다. 구형 `/api/profiles` 모듈은 보존하되 첫 화면에서 호출하지 않는다. 편집·승인·출력 화면, 실제 AI 품질·실자료 적재는 후속이다. 서버 필드·경로·동작 규격은 바꾸지 않아 contract_version=1.4를 유지한다.
+
+**S02/S03 프론트 연결(2026-09-28, 문서 v1.9):** 직접 문구/페이지/블록 편집·저장, 기존 자료의 사진 교체, AI 수정안 비교·명시 적용/거절, 내용 검증·PDF 배치 미리보기·최종 승인·출력/다운로드를 기존 API에 연결한다. 요청은 편집 시작 문서 버전을 사용하며 충돌 때 로컬 편집을 유지한다. 미저장 변경·검사 실패·미확인 경고는 화면에서 승인을 막고, 검사/문서가 바뀌거나 새로고침하면 최종 동의를 다시 받는다. 화면은 `Validation.status=passed`이고 현재 PDF 검사와 미해결 문제가 없는 경우만 승인한다. 이는 미구현 D-07 서버 강제를 대체하지 않는다. 실제 LLM 수정안·검증, C-05 자료 변경 복귀, DOCX 승인/출력, 저장본 이력 복원 UI는 후속이다. API/계약 버전은 1.4로 유지한다.
 
 ## 1. 공통 규칙
 
@@ -20,6 +28,14 @@
 - `document_revision`: 저장 문서의 버전. 초안 최초 저장은 1, 변경할 때마다 증가한다.
 - `schema_version`: 데이터 형식 버전으로 시작값은 `1.0`이다.
 - 화면에 전달할 파일은 접근 제어된 asset 참조로 제공한다. 내부 파일 경로나 임의 외부 URL을 AI가 만들어 넣지 않는다.
+
+### 요청 형식 검사
+
+- JSON의 `expected_input_revision`, `expected_revision`, `input_revision`, `restore_from_revision`은 1 이상 9,223,372,036,854,775,807 이하의 **정수**다. 문자열 `"1"`, 소수 `1.0`, boolean `true`를 버전으로 자동 변환하지 않는다. 값은 형식에 맞지만 현재 버전과 다르면 기존 `409` 충돌 응답이다. 자료 삭제의 query 버전은 URL 문자열 숫자를 받아 같은 범위를 검사한다.
+- `confirmed`와 세션 생성의 `demo`는 실제 JSON boolean만 허용한다. `"true"`, `"yes"`, `1`은 거부한다. `confirmed:false`는 형식에 맞지만 확인 미완료이므로 기존 업무 검사에서 `422`로 거부한다.
+- `Brief.purpose`, 수정 요청 `instruction`, 문제 해결 `reason`, 페이지 변경 `title`은 공백만으로 구성할 수 없다. 정상 문장의 앞뒤 공백을 임의로 제거하지 않는다. 목표 쪽수는 실제 정수 1/4/6/8/10이다.
+- `PATCH inputs`는 `brief` 또는 `selected_source_ids` 중 하나 이상의 non-null 값을 포함한다. 생략/null은 그 필드 유지, `selected_source_ids:[]`는 선택 전체 해제다. 동일한 값을 명시해서 다시 보내는 것은 허용한다. 선택 자료와 대상 블록 ID 목록에는 공백 ID나 중복 ID를 넣지 않는다. ID 접두사·UUID 형식은 강제하지 않는다.
+- 정의되지 않은 JSON 요청 필드는 거부한다. `kind`는 자료 업로드와 등록 목록에서 같은 5종 값을 사용한다. 형식 오류는 DB 변경/Job 접수 전에 거부하고 받은 원문·잘못된 입력값을 오류 본문에 되돌려주지 않는다. 의미·권한·자료 참조·승인 조건은 이후 업무 검사다.
 
 ## 2. 주요 객체
 
@@ -33,6 +49,8 @@
 | created_at / last_activity_at / expires_at | string | 생성·사용·만료 시간 |
 | brief | Brief | 목적·분량·강조 설정 |
 | selected_source_ids | string[] | 실제 선택한 자료 |
+| demo | boolean | 시연 세션 구분. 생성 요청에서 생략하면 false; 서버의 시연 허용 설정도 충족해야 함 |
+| document_summary | object 또는 null | 현재 문서가 있으면 demo, document_id, document_revision, status; 없으면 null |
 
 로그인은 현재 MVP에서 제외한다(plan D-08). 로그인 없이도 세션 식별자 자체를 권한으로 믿지 않고, 서버의 소유자/보안 쿠키 등 검증된 접근 컨텍스트와 함께 검사한다. 세션 간 격리는 필수이며 배경 폴링만으로 만료를 무한 연장하지 않는다. 경고 확인 사용자와 승인 주체는 해당 세션에 접근 가능한 작업 사용자를 뜻하며 별도 회원계정을 요구하지 않는다.
 
@@ -58,10 +76,16 @@
 | parse_status | queued / reading / complete / partial / failed | 읽기 결과 |
 | text_available / image_available | boolean | 텍스트 근거 및 표시 이미지 사용 가능 여부 |
 | usable_segment_ids | string[] | 근거로 사용할 수 있는 확인된 구간 |
+| asset_ids | string[] | ready 상태의 자료 이미지 ID. 없으면 빈 목록; 이미지 조회 API에 연결 |
 | warnings | object[] | 위치·원인·권장 조치 |
 | expires_at | string 또는 null | 세션 자료 만료 시간 |
+| role / origin_kind | evidence/instruction / real/mock/demo | 근거 자료와 작성 조건 첨부, 실자료와 시연 출처 구분 |
+| document_date | string 또는 null | 자료 날짜 메타. 연도만 있는 경우도 있으므로 ISO 날짜로 강제하지 않음 |
+| use_as_company_evidence / is_mock | boolean / boolean | 회사 근거 사용 가능 여부와 테스트 자료 구분 |
 
 이미지 표시가 가능해도 `text_available=false`일 수 있다. 지원하는 이미지 파일 자체의 정상 처리는 complete가 가능하지만, 그 안의 글자를 읽었다는 의미는 아니다. 파일 제외는 선택 목록에서 해제하는 것이며 등록 자료 원본 삭제와 다르다.
+
+`warnings[]`의 항목은 `code`, `message`, nullable `locator`(위치 객체), nullable `action`(권장 조치 문자열)이다. 원문/추출문 조회 API와 이미지 조회 API는 다르며 원문/추출문 조회는 아직 구현되지 않았다. 목록 응답은 `{items: Source[]}`, 업로드 접수 응답은 `{job_id, items: Source[]}`다. 업로드만으로 선택 목록에 자동 추가하지 않는다.
 
 ### Asset — 화면과 출력에 사용하는 이미지
 
@@ -173,7 +197,7 @@ after 값이 null이면 맨 앞이다. 존재하지 않는 대상, 자신 뒤로
 
 필수: `preflight_id`, `session_id`, `input_revision`, `usable_source_ids`, `facts`, `issues`, `recommendations`, `can_generate`, `confirmed_at`.
 
-- recommendations는 제안 페이지 수와 이유, 필요한 사진/인증/보완자료를 담는다.
+- recommendations는 `{suggested_pages: 1/4/6/8/10, reason: string, needed: string[]}`다. 필요한 사진/인증/보완자료 설명이 없으면 needed는 빈 목록이다. 새 고정 분류 코드는 추가하지 않는다.
 - can_generate는 읽기·최소 텍스트 근거 등 생성 조건을 뜻한다. 사용자 확인은 별도로 필요하다.
 - 필수 내용 누락과 읽기 실패를 동일하게 처리하지 않는다. 읽을 근거가 있고 필수 내용 일부가 빠진 경우 검토용 초안은 가능하다.
 
@@ -200,6 +224,8 @@ after 값이 null이면 맨 앞이다. 존재하지 않는 대상, 자신 뒤로
 - changes는 허용된 블록 수정·삽입·삭제·이동 연산과 근거를 담는다. 이미지 후보 선택 전에는 문서를 바꾸지 않는다.
 - 기준 문서 또는 입력 버전이 달라지면 stale로 바꾸고 적용을 거부한다.
 - 적용은 원자적으로 한 번만 실행하며 새 문서 버전을 만든다.
+
+현행 응답에는 `instruction`, `rationale`, nullable `candidates`, nullable `applied_revision`, `created_at`, `updated_at`도 포함한다. 후보 항목은 `{candidate_id, label, changes: Operation[]}`다. `candidates=null` 또는 빈 목록은 선택 가능한 후보 없음이며 UI가 가짜 후보를 만들지 않는다. 이미지 후보가 있으면 적용 요청의 `selected_candidate_id`로 선택한다. 후보 개수는 3개로 고정하지 않는다. `applied_revision`은 적용 전 null이며 적용되면 저장된 새 문서 버전이다.
 
 ### Validation / LayoutCheck / Approval / Export
 
@@ -254,32 +280,53 @@ after 값이 null이면 맨 앞이다. 존재하지 않는 대상, 자신 뒤로
 
 | Method / 경로 | 요청 핵심 | 결과 |
 |---|---|---|
-| POST /sessions | 초기 Brief | Session |
+| POST /sessions | `{brief: Brief, demo?: boolean}` | 201 Session, 소유자 쿠키 |
 | GET /sessions/{sid} | 없음 | 상태·최신 입력·문서 요약 |
 | DELETE /sessions/{sid} | 없음 | 접근 즉시 차단, 멱등 정리 시작; 삭제 완료 여부 |
-| GET /sources | 검색/종류 필터 | 접근 가능한 등록 자료; 현재 세션 업로드 목록과 분리 |
-| POST /sessions/{sid}/sources | multipart 파일 | Source 목록; 비동기 읽기 상태 |
+| GET /sources | `kind?`, `include_demo?` query; 텍스트 검색 파라미터 없음 | `{items: Source[]}`; 소유자 쿠키 필요, 시연 포함은 서버 설정 조건 |
+| POST /sessions/{sid}/sources | multipart `files`, `kind?`, `role?` | 202 `{job_id, items: Source[]}`; 비동기 읽기 상태 |
 | GET /sessions/{sid}/sources | 없음 | 세션 첨부·읽기 상태 |
-| DELETE /sessions/{sid}/sources/{source_id} | 현재 input_revision | 세션 첨부만 삭제; 연결 내용 영향 검사 |
-| PATCH /sessions/{sid}/inputs | expected_input_revision, Brief, selected_source_ids | 새 입력 버전, 사전 확인 무효화 |
+| DELETE /sessions/{sid}/sources/{source_id} | query `expected_input_revision` | `{source_id, deleted, input_revision}`; 세션 첨부만 삭제 |
+| PATCH /sessions/{sid}/inputs | expected_input_revision, brief?/selected_source_ids? 중 하나 이상 | `{session_id, input_revision, selected_source_ids, preflight_invalidated}` |
 | POST /sessions/{sid}/preflights | expected_input_revision | Job; 완료 시 Preflight |
+| GET /sessions/{sid}/preflights/{pid} | 없음 | 저장된 Preflight; 현재 입력 버전인지 함께 확인 |
 | POST /sessions/{sid}/drafts | preflight_id, input_revision, confirmed: true | 최신 사전 확인 기록, 초안 생성 Job |
 | GET /sessions/{sid}/documents/{did} | 없음 | Document, 검사/승인 상태 |
-| PATCH /sessions/{sid}/documents/{did} | expected_revision, operations | 새 Document; 필요한 검증 Job |
+| PATCH /sessions/{sid}/documents/{did} | expected_revision, operations | DocumentChangeOut; 전체 문서는 별도 GET |
 | POST /sessions/{sid}/documents/{did}/proposals | expected_revision, input_revision, target_block_ids, instruction, kind | Proposal 생성 Job |
-| POST /sessions/{sid}/proposals/{pid}/apply | expected_revision, selected_candidate_id 필요 시 | 새 Document; 검증 Job |
+| GET /sessions/{sid}/proposals/{pid} | 없음 | Proposal·후보·현재 상태 |
+| POST /sessions/{sid}/proposals/{pid}/apply | expected_revision, selected_candidate_id 필요 시 | DocumentChangeOut; 전체 문서는 별도 GET |
 | POST /sessions/{sid}/proposals/{pid}/reject | 없음 | rejected; 문서 변화 없음 |
-| POST /sessions/{sid}/documents/{did}/restore | expected_revision, restore_from_revision | 이전 내용의 새 버전, 재검증 |
-| POST /sessions/{sid}/issues/{iid}/resolve | expected_revision 필요 시, resolution, evidence_refs | 조치 결과, 관련 재검증 |
+| POST /sessions/{sid}/documents/{did}/restore | expected_revision, restore_from_revision | DocumentChangeOut; 이전 내용을 새 버전으로 저장 |
+| GET /sessions/{sid}/documents/{did}/issues | 없음 | `{document_id, document_revision, validation_id, issues}` |
+| POST /sessions/{sid}/issues/{iid}/resolve | expected_revision 필수, resolution, evidence_refs? | `{issue, validation, document_status}` |
 | POST /sessions/{sid}/documents/{did}/validate | expected_revision, input_revision | Validation Job |
 | POST /sessions/{sid}/documents/{did}/layout-checks | expected_revision, format | LayoutCheck Job 및 미리보기 |
 | POST /sessions/{sid}/documents/{did}/approvals | expected_revision, input_revision, format, validation_id, layout_check_id, confirmed: true | Approval |
-| POST /sessions/{sid}/exports | approval_id, format | Export 및 Job; 같은 승인 결과 재사용 가능 |
+| POST /sessions/{sid}/exports | approval_id, format | `{export, job_id}`; 신규/진행 중 202, ready 재사용 200 |
 | GET /sessions/{sid}/jobs/{jid} | 없음 | Job 상태·진행·결과 참조 |
-| GET /sessions/{sid}/assets/{asset_id} | 없음 | 접근 확인 후 이미지/원본/미리보기 바이트 |
+| GET /sessions/{sid}/assets/{asset_id} | 없음 | 접근 확인 후 JPEG/PNG 자료 이미지 또는 출력 미리보기 바이트 |
 | GET /sessions/{sid}/exports/{eid}/download | 없음 | 승인·만료 재확인 후 실제 파일 |
 
 source 업로드만으로 자동 선택하지 않는 UI를 택하면 사용자가 선택할 때 input_revision을 갱신한다. 단, 선택된 기존 원자료를 수정·삭제하거나 문서가 참조하는 자산을 바꾸면 즉시 영향 상태를 갱신한다.
+
+`DocumentChangeOut`은 `{document_id, document_revision, input_revision, status, validation_job_id}`이며 전체 문서 본문이 아니다. `validation_job_id`는 현재 직접 수정/적용/복원에서 null이고 필요하면 validate API를 호출한다. 문서 GET은 `{demo, document, validation, approval, layout_checks}`이며 `layout_checks`는 `{pdf: LayoutCheck|null, docx: LayoutCheck|null}`다. `document_summary.status`, 문서 변경의 `status`, `document_status`는 Document의 4종 상태를 공유한다. 다운로드 성공은 PDF 또는 DOCX 바이트이며 JSON 오류는 아래 공통 봉투다.
+
+### Job — 진행 상태와 결과 조회
+
+Job 조회는 `job_id`, `kind`, `status`, `progress`, `result_ref`, `error`, `created_at`, `updated_at`을 반환한다. `progress={stage: string, message: string|null}`이며 백분율은 없다. 접수 응답 `JobAccepted`는 `{job_id, status: queued/running, kind, session_id, created_at}`다. Source 업로드와 Export는 위 표의 별도 접수 형식을 사용한다.
+
+| kind | 성공한 Job의 result_ref | 이후 조회 |
+|---|---|---|
+| read | `{type:"sources", source_ids:string[]}` | 세션 Source 목록 |
+| preflight | `{type:"preflight", preflight_id}` | Preflight GET |
+| draft | `{type:"document", document_id, document_revision}` | Document GET |
+| propose | `{type:"proposal", proposal_id, status:proposed/stale}` | Proposal GET; stale은 적용 불가 |
+| validate | `{type:"validation", validation_id, status:passed/needs_review/failed}` | Document·Issue 목록 GET |
+| layout_check | `{layout_check_id, format, status:passed/failed, layout_ok, publication_policy_ok, actual_pages, artifact_id, preview_asset_ids, preview_basis:"pdf", warnings, demo?}` | Document GET의 형식별 검사, 이미지 GET |
+| export | `{export_id, artifact_id, format}` | Export 다운로드 |
+
+진행·실패 시 `result_ref`는 null일 수 있다. layout_check/export에는 기존에 `type` 필드가 없으므로 새로 추가하지 않는다. `actual_pages`는 DOCX에서 null일 수 있다. Job의 `succeeded`는 작업 실행이 끝났다는 뜻이며 검증/배치 결과의 `status=failed`도 가능하다. `error`는 없으면 null, 있으면 `{code, message, retryable, details, request_id}`이며 비동기 Job의 `request_id`는 null일 수 있다.
 
 문서 v1.4(2026-09-28)는 최초 초안의 LangGraph 내부 연결·정리 결과를 C-06/E10에 반영한다. API 형식과 계약/스키마 버전은 유지한다. 초안 확인을 소비한 뒤 생성·검사·저장에 실패하면 `retryable=false`와 재점검 안내를 반환하므로 프론트는 기존 오류 필드를 표시해야 한다. 프론트 사본 갱신은 확인하지 않았다.
 
@@ -289,6 +336,10 @@ source 업로드만으로 자동 선택하지 않는 UI를 택하면 사용자�
 - 프론트는 진행 상태를 조회한다. 초기 구현은 폴링 가능; SSE는 필수 요구가 아니다.
 - 기다리는 사용자 입력을 처리하는 API는 서버가 검증한 행동만 내부 LangGraph 재개 값으로 변환한다. 임의 노드명·thread_id 실행 API를 공개하지 않는다.
 - 상태를 바꾸는 POST/PATCH는 `Idempotency-Key`를 받아 요청자·세션·경로와 함께 중복을 식별한다. 같은 키에 다른 본문은 409다.
+- 업로드의 같은 요청은 파일 순서·표시 파일명·내용과 서버가 결정한 kind/role/MIME이 같은 경우다. kind 생략 시 사진은 photo, 나머지는 other이며 role 생략은 evidence다. 생략값과 같은 유효값을 명시한 요청은 동일하게 취급한다. 기존 저장 해시와 응답의 메타정보를 함께 검사하므로 과거 업로드 키도 재사용할 수 있다.
+- 업로드 재전송은 이미 채워진 세션 파일 개수에 다시 더하지 않고 최초 202를 반환한다. 새로운 업로드는 저장 직전에 현재 개수를 검사하며, 동시에 들어온 동일 키 요청도 파일·읽기 Job을 한 번만 만든다. 파일/DB 저장 실패 시 이번 요청의 행과 파일을 정리하고 기존 파일·선택 상태를 보존한다. 프로세스 강제 종료나 파일 삭제 권한 오류까지 원자성을 보장하지 않으며 남은 파일은 세션 정리 대상이다.
+- 사전 점검/초안의 같은 입력 작업이 진행 중이면 새 키도 기존 Job을 가리키는 202로 접수·기록한다. 그 키의 재전송은 작업이 완료/실패한 뒤에도 최초 202를 반환한다. 최신 결과는 해당 Job GET으로 확인하며 재전송 자체가 작업을 재실행하지 않는다. 종료/만료·접근 제한은 기존 정책대로 우선 검사한다.
+- 실패한 작업을 새로 실행할 때는 새 키로 요청한다. 실제 AI가 이미 소비한 초안 확인은 재사용하지 않으며, 새 사전 점검 결과를 확인한 뒤 생성한다. 문서가 이미 있으면 `DOCUMENT_EXISTS`로 편집 화면을 안내한다.
 - 같은 적용 요청의 재전송은 최초 결과를 돌려주고 문서 버전을 다시 늘리지 않는다.
 - 승인 요청은 같은 키·같은 본문이어도 저장된 승인이 현재 `active`일 때만 최초 성공 응답을 반환한다. 무효화·소실된 승인은 `409 APPROVAL_NOT_ACTIVE`이며 같은 키로 새 승인을 만들지 않는다. 같은 키·다른 본문은 기존 `409 IDEMPOTENCY_KEY_CONFLICT`를 유지한다.
 - Export 재사용 키는 승인 ID, 형식, 템플릿 버전, 렌더 설정, 자산 목록을 포함한다. 만료된 결과는 반환하지 않는다.
@@ -309,8 +360,10 @@ source 업로드만으로 자동 선택하지 않는 UI를 택하면 사용자�
 
 | HTTP | 대표 코드 | 처리 |
 |---|---|---|
+| 400 | INVALID_REQUEST | 본문/쿼리 형식 수정. details.fields에 필드 위치, 전체 본문 조건이면 body; 입력값 자체는 미반환 |
 | 401/403 | UNAUTHORIZED / FORBIDDEN | 접근 검증; 다른 세션 존재 여부를 불필요하게 노출하지 않음 |
 | 404 | RESOURCE_NOT_FOUND | 접근 가능한 범위에서 자원 없음 |
+| 405 | METHOD_NOT_ALLOWED | 요청 메서드 확인. 허용 메서드는 Allow 헤더에 유지 |
 | 409 | DOCUMENT_REVISION_CONFLICT / INPUT_REVISION_CONFLICT / PROPOSAL_STALE | 최신 상태 조회 후 재요청 |
 | 410 | SESSION_EXPIRED / ARTIFACT_EXPIRED | 만료 안내; 기존 요청을 자동 복원하지 않음 |
 | 413/415 | FILE_TOO_LARGE / UNSUPPORTED_FILE_TYPE | 업로드 전후 제한 안내 |
@@ -319,6 +372,8 @@ source 업로드만으로 자동 선택하지 않는 UI를 택하면 사용자�
 | 500 | EXPORT_FAILED / INTERNAL_ERROR | 기존 문서 보존; 안전한 오류 메시지 |
 
 업로드 후 파서 실패는 Source.parse_status=failed와 원인으로도 표현한다. 모든 파일 실패를 HTTP 500으로 묶지 않는다.
+
+HTTP 오류의 `request_id`는 필수 문자열이고 `X-Request-Id` 헤더와 연결한다. 알 수 없는 API 경로·지원하지 않는 메서드·multipart 형식 오류도 공통 봉투로 반환하며 내부 예외 내용은 숨긴다. OpenAPI에는 `400` 형식 오류와 `422` 업무 조건 오류를 구분해서 표시한다. 기본 FastAPI의 `422 {detail:[...]}`를 사용하는 계약이 아니다. 공통 응답 표는 가능한 오류 형식이며 모든 경로가 모든 상태 코드를 발생시킨다는 의미는 아니다.
 
 ## 5. 세션 전용 데이터 수명
 
@@ -345,15 +400,15 @@ source 업로드만으로 자동 선택하지 않는 UI를 택하면 사용자�
 
 ### 7.1 코드에 이미 있는 연결
 
-아래는 `app/models.py`와 라우터의 현행 구현이다. 이 표를 기준으로 채택 여부·빈 값·오류·예시를 확인한 뒤 2절과 4절의 규격에 함께 반영한다.
+아래는 `app/models.py`와 라우터의 현행 구현이다. 계약 1.3에서 C-01~C-04의 기존 필드·조회 형식과 C-07의 공통 오류/OpenAPI를 본문에 반영했다. 프론트 사본·타입·호출부 연결과 미구현 API는 후속이다.
 
 | ID | 우선순위 | 현행 코드에서 확인한 내용 | 합의·반영할 것 |
 |---|---|---|---|
-| C-01 | P0 | `SourceOut.asset_ids: list[str]`가 있고, ready 이미지 ID와 `GET /sessions/{sid}/assets/{asset_id}`로 사진을 연결함 | 기존 목록 방식의 계약 반영. 별도 목록 API가 필요한지 확인. 원본 PDF/DOCX·추출문 미리보기는 이미지 조회와 구분 |
-| C-02 | P0 | `Candidate(candidate_id, label, changes)`, `ProposalOut.rationale`, `candidates`, `applied_revision`이 있음 | 후보 없음의 null/빈 목록 규칙, 선택 적용·취소·재요청과 실제 응답 필드 정의 |
-| C-03 | P0 | `JobOut`에 kind/status/progress/result_ref/error/시각이 있음. progress는 stage/message이며 백분율 없음. Preflight·Proposal 단독 GET 구현 | 작업 종류별 result_ref와 완료 결과 조회 방식, 진행률을 모를 때의 표시. `GET /sessions/{sid}/preflights/{pid}`, `GET /sessions/{sid}/proposals/{pid}`를 API 표에 반영할지 확정 |
-| C-04 | P0 | `SourceWarning(locator, code, message, action)`, `Recommendations(suggested_pages, reason, needed: list[str])`가 있음 | 기존 구조로 화면을 연결할지 확인. 보완자료 종류를 새 고정 분류로 확장하는 경우 별도 합의 |
-| C-07 | P0 | 추가 필드·GET·임시 오류 코드가 작업 기록과 코드에 있으나 본문·예시 반영이 일부 지연됨 | 유지/변경할 항목을 정하고 모델·계약·예시·프론트 사본을 함께 맞춤 |
+| C-01 | P0 | Source.asset_ids와 이미지 GET | 기존 목록 형식은 계약 1.3 반영. 원본/추출문 미리보기 API는 미구현·별도 후속 |
+| C-02 | P0 | Proposal의 rationale/candidates/applied_revision과 선택 적용 | 기존 후보·빈 값 형식은 계약 1.3 반영. 실제 AI 후보/프론트 비교 화면은 후속 |
+| C-03 | P0 | Job.progress와 7종 result_ref, Preflight/Proposal GET | 현행 필드·결과 조회 방식을 계약 1.3/OpenAPI에 반영. 백분율은 추가하지 않음 |
+| C-04 | P0 | SourceWarning와 Recommendations | 현행 위치·문자열 보완 목록을 계약 1.3에 반영. 새 고정 보완 분류는 별도 결정 |
+| C-07 | P0 | 27개 API 경로·JSON/파일 응답·공통 오류 | Pydantic·계약·예시 정리. 프론트 사본/타입/호출부 동기화는 미실행, 추가 기능 계약은 해당 작업에서 보완 |
 
 `Source.asset_ids`, 경고, 추천, 후보 구조를 다시 만드는 작업부터 시작하지 않는다. 등록 자료 `GET /sources`, CLI 적재, 선택 자료의 Agent 전달은 구현되어 있다. `services/preflights.build_sources()`는 선택한 등록 자료와 현재 세션 첨부 중 사용 가능한 근거 자료를 준비하며, 작성 조건 첨부와 다른 세션 자료는 제외한다.
 

@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
 
+from app.db import Connection, Row
 from app.errors import ApiError
 from app.models import Candidate, Operation, ProposalOut
 from app.timeutil import now, to_iso
@@ -13,7 +13,7 @@ from pydantic import TypeAdapter
 _OPS = TypeAdapter(list[Operation])
 
 
-def save(conn: sqlite3.Connection, session_id: str, document_id: str, base_document_revision: int,
+def save(conn: Connection, session_id: str, document_id: str, base_document_revision: int,
          base_input_revision: int, target_block_ids: list[str], kind: str, instruction: str,
          changes: list[Operation], rationale: str, candidates: list[Candidate] | None, status: str) -> str:
     proposal_id = f"prop_{uuid.uuid4().hex[:16]}"
@@ -31,7 +31,7 @@ def save(conn: sqlite3.Connection, session_id: str, document_id: str, base_docum
     return proposal_id
 
 
-def get_row(conn: sqlite3.Connection, session_id: str, proposal_id: str) -> sqlite3.Row:
+def get_row(conn: Connection, session_id: str, proposal_id: str) -> Row:
     row = conn.execute("SELECT * FROM proposals WHERE proposal_id=? AND session_id=?",
                        (proposal_id, session_id)).fetchone()
     if row is None:
@@ -39,7 +39,7 @@ def get_row(conn: sqlite3.Connection, session_id: str, proposal_id: str) -> sqli
     return row
 
 
-def to_out(row: sqlite3.Row) -> ProposalOut:
+def to_out(row: Row) -> ProposalOut:
     payload = json.loads(row["changes_json"])
     return ProposalOut(
         proposal_id=row["proposal_id"], document_id=row["document_id"],
@@ -52,7 +52,7 @@ def to_out(row: sqlite3.Row) -> ProposalOut:
     )
 
 
-def set_status(conn: sqlite3.Connection, proposal_id: str, status: str, applied_revision: int | None = None) -> None:
+def set_status(conn: Connection, proposal_id: str, status: str, applied_revision: int | None = None) -> None:
     conn.execute("UPDATE proposals SET status=?, applied_revision=COALESCE(?, applied_revision), updated_at=? WHERE proposal_id=?",
                  (status, applied_revision, to_iso(now()), proposal_id))
 

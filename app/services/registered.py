@@ -22,14 +22,13 @@ import hashlib
 import json
 import io
 import shutil
-import sqlite3
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from app.config import Settings
-from app.db import connect
+from app.db import Connection, connect
 from app.models import SourceOut
 from app.services import locators
 from app.timeutil import now, to_iso
@@ -430,6 +429,29 @@ def import_bundle(settings: Settings, bundle_root: Path, ingest_dir: Path | None
                 (c["photo_id"],)).fetchone()
             if existing and (existing["source_id"] != entry["owner"] or existing["content_hash"] != entry["content_hash"]):
                 raise ImportError_("PHOTO_ID_CONFLICT", "같은 photo_id의 자료 또는 바이트 해시가 다릅니다", c["photo_id"])
+        from app.services import db_history
+
+        if db_history.enabled(conn):
+            # source_id 없는 사진은 고정된 가상 묶음 하나에 속한다. 이미 읽기 실행에
+            # 연결한 묶음에 새 사진을 덧붙이면 run_id=NULL 사진이 목록에서 사라지거나
+            # 과거 입력의 사진 집합이 바뀌므로, 파일 복사·공개 허가 갱신 전에 거부한다.
+            for entry in images:
+                candidate = entry["candidate"]
+                if candidate.get("source_id") is not None:
+                    continue
+                owner = conn.execute("SELECT current_run_id FROM sources WHERE source_id=?",
+                                     (entry["owner"],)).fetchone()
+                if owner is None or owner["current_run_id"] is None:
+                    continue
+                existing = conn.execute(
+                    "SELECT 1 FROM assets WHERE photo_id=? AND scope='registered' AND deleted_at IS NULL",
+                    (candidate["photo_id"],)).fetchone()
+                if existing is None:
+                    raise ImportError_(
+                        "SOURCE_HISTORY_CONFLICT",
+                        "이미 기록된 독립 사진 묶음에는 사진을 추가할 수 없습니다. "
+                        "새 source_id가 있는 자료 묶음으로 등록하거나 새 DB에 전체 재적재하세요.",
+                        candidate["photo_id"])
         registered_dir = settings.private_runs_dir / "registered"
         if not dry_run:
             registered_dir.mkdir(parents=True, exist_ok=True)
@@ -535,6 +557,15 @@ def import_bundle(settings: Settings, bundle_root: Path, ingest_dir: Path | None
                  _publication_value(c, f"photo_candidates.json {photo_id}"),
                  json.dumps(entry.get("locator"), ensure_ascii=False) if entry.get("locator") else None))
 
+        if not dry_run:
+            from app.services import db_history
+
+            for source_id in added_ids | {IMAGE_PSEUDO_SOURCES[o] for o in pseudo_origins}:
+                # 재적재로 이미 존재하는 실행은 중복 생성하지 않는다.
+                if db_history.enabled(conn) and conn.execute(
+                        "SELECT current_run_id FROM sources WHERE source_id=?", (source_id,)).fetchone()[0] is None:
+                    db_history.finish_extraction(conn, source_id, method="registered_bundle")
+
         conn.execute(
             "INSERT INTO registered_imports (import_id, bundle_label, with_mock, dry_run, summary_json, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",
@@ -563,7 +594,7 @@ def run(settings: Settings, bundle_root: Path, ingest_dir: Path | None = None, *
 
 # ---------------- 조회 ----------------
 
-def list_registered(conn: sqlite3.Connection, kind: str | None = None, *, include_demo: bool = False) -> list[SourceOut]:
+def list_registered(conn: Connection, kind: str | None = None, *, include_demo: bool = False) -> list[SourceOut]:
     from app.services.sources import _row_to_out  # 같은 출력 모양
 
     query = "SELECT * FROM sources WHERE scope='registered' AND deleted_at IS NULL"

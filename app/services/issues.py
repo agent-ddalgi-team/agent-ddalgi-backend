@@ -7,8 +7,8 @@ acknowledged warning만. blocker(MOCK_VALUE·UNSUPPORTED_CLAIM 포함)는 확인
 from __future__ import annotations
 
 import json
-import sqlite3
 
+from app.db import Connection, Row
 from app.errors import ApiError
 from app.models import Document, IssueOut, IssueResolveBody, PreflightOut
 from app.services import validation
@@ -24,8 +24,8 @@ def _still_present(message: str, **details) -> ApiError:
     return ApiError(422, "ISSUE_STILL_PRESENT", message, details=details)
 
 
-def resolve(conn: sqlite3.Connection, session_row: sqlite3.Row, owner_id: str, document: Document,
-            issue: sqlite3.Row, body: IssueResolveBody, preflight: PreflightOut | None) -> IssueOut:
+def resolve(conn: Connection, session_row: Row, owner_id: str, document: Document,
+            issue: Row, body: IssueResolveBody, preflight: PreflightOut | None) -> IssueOut:
     if body.expected_revision != document.document_revision:
         raise ApiError(409, "DOCUMENT_REVISION_CONFLICT", "문서가 변경되었습니다. 최신 문서에서 다시 요청해 주세요.",
                        details={"expected_revision": body.expected_revision, "current_revision": document.document_revision})

@@ -17,11 +17,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import sqlite3
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.db import Connection, Row
 from app.models import (Block, CheckRecord, Document, EvidenceRef, Fact, Issue, IssueOut, PreflightOut,
                         ValidationOut)
 from app.services import refs as refs_service
@@ -129,7 +129,7 @@ class Context:
     demo: bool = False
 
 
-def load_context(conn: sqlite3.Connection, session_id: str, preflight: PreflightOut | None) -> Context:
+def load_context(conn: Connection, session_id: str, preflight: PreflightOut | None) -> Context:
     seg_texts, seg_source = {}, {}
     for r in conn.execute(
             "SELECT s.segment_id, s.source_id, s.text FROM segments s JOIN sources src ON src.source_id=s.source_id "
@@ -174,7 +174,7 @@ class IssueDraft:
 KEY_ORIGINS = ("server", "agent", "preflight", "layout")   # layout: BE-08 배치 검사. 키 마이그레이션도 이 목록으로 판정한다
 
 
-def migrate_legacy_issue_keys(conn: sqlite3.Connection) -> int:
+def migrate_legacy_issue_keys(conn: Connection) -> int:
     """origin이 없는 옛 identity_key('scope|code|…')를 'origin|scope|code|…'로 바꾼다. 재실행 안전. 바꾼 행 수를 돌려준다."""
     changed = 0
     for row in conn.execute("SELECT issue_id, identity_key, origin FROM issues").fetchall():
@@ -338,8 +338,8 @@ def validate_agent_issues(issues: list[Issue], document: Document, ctx: Context,
 
 # ---------------- 마지막 유효 검증·변경 범위 ----------------
 
-def latest_validation(conn: sqlite3.Connection, document_id: str, document_revision: int,
-                      input_revision: int) -> sqlite3.Row | None:
+def latest_validation(conn: Connection, document_id: str, document_revision: int,
+                      input_revision: int) -> Row | None:
     # created_at은 초 단위라 같은 값이 생긴다. 저장 순서(rowid)로 보조 정렬한다(ID 문자열 정렬 금지).
     return conn.execute(
         "SELECT * FROM validations WHERE document_id=? AND document_revision=? AND input_revision=? "
@@ -347,8 +347,8 @@ def latest_validation(conn: sqlite3.Connection, document_id: str, document_revis
         (document_id, document_revision, input_revision)).fetchone()
 
 
-def base_validation(conn: sqlite3.Connection, document_id: str, document_revision: int,
-                    input_revision: int) -> sqlite3.Row | None:
+def base_validation(conn: Connection, document_id: str, document_revision: int,
+                    input_revision: int) -> Row | None:
     """재사용 기준: 같은 문서·같은 입력 버전에서 현재보다 낮은 revision의 가장 최근 유효 검증."""
     return conn.execute(
         "SELECT * FROM validations WHERE document_id=? AND input_revision=? AND document_revision<? "
@@ -356,7 +356,7 @@ def base_validation(conn: sqlite3.Connection, document_id: str, document_revisio
         (document_id, input_revision, document_revision)).fetchone()
 
 
-def changed_blocks(current: dict[str, str], base: sqlite3.Row | None) -> tuple[set[str], set[str]]:
+def changed_blocks(current: dict[str, str], base: Row | None) -> tuple[set[str], set[str]]:
     """(바뀐/새 블록, 그대로인 블록). base가 없으면 전부 바뀐 것으로 본다."""
     if base is None:
         return set(current), set()
@@ -374,7 +374,7 @@ def _anchor(draft: IssueDraft, fps: dict[str, str], ctx: Context, input_revision
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode()).hexdigest()
 
 
-def _covered_by_this_validation(row: sqlite3.Row, agent_covered_blocks: set[str], agent_full: bool) -> bool:
+def _covered_by_this_validation(row: Row, agent_covered_blocks: set[str], agent_full: bool) -> bool:
     """이번 검증에서 그 Issue가 속한 검사가 그 범위를 실제로 다시 봤는가.
 
     서버 검사는 매번 문서 전체를 다시 보므로 항상 True. Agent 검사는 이번에 넘긴 블록(agent_covered_blocks)에 한하고,
@@ -390,7 +390,7 @@ def _covered_by_this_validation(row: sqlite3.Row, agent_covered_blocks: set[str]
     return blocks <= agent_covered_blocks
 
 
-def persist_issues(conn: sqlite3.Connection, session_id: str, document: Document, validation_id: str | None,
+def persist_issues(conn: Connection, session_id: str, document: Document, validation_id: str | None,
                    drafts: list[IssueDraft], fps: dict[str, str], ctx: Context, input_revision: int,
                    agent_covered_blocks: set[str], agent_full: bool, *, resolve_missing: bool = True) -> list[str]:
     """이번 검증이 만든 Issue를 기록한다. 현재 Issue ID 목록을 돌려준다.
@@ -451,7 +451,7 @@ def persist_issues(conn: sqlite3.Connection, session_id: str, document: Document
                                                  (document.document_id,))]
 
 
-def record_preflight_conflicts(conn: sqlite3.Connection, session_id: str, document: Document,
+def record_preflight_conflicts(conn: Connection, session_id: str, document: Document,
                               preflight: PreflightOut) -> bool:
     """재점검에서 발견한 충돌만 현재 문서에 합친다. 의미 검증 완료·기존 문제 해결을 대신하지 않는다."""
     if document.input_revision != preflight.input_revision:
@@ -468,7 +468,7 @@ def record_preflight_conflicts(conn: sqlite3.Connection, session_id: str, docume
     return True
 
 
-def compute_validation_status(conn: sqlite3.Connection, document_id: str) -> str:
+def compute_validation_status(conn: Connection, document_id: str) -> str:
     # 내용 검증 상태. 배치(scope=layout) Issue는 형식별 LayoutCheck·승인 ⑥에서 판단한다(BE-08).
     rows = conn.execute("SELECT severity FROM issues WHERE document_id=? AND status='open' AND scope<>'layout'", (document_id,)).fetchall()
     if any(r["severity"] == "blocker" for r in rows):
@@ -478,7 +478,7 @@ def compute_validation_status(conn: sqlite3.Connection, document_id: str) -> str
     return "passed"
 
 
-def save_validation(conn: sqlite3.Connection, session_id: str, document: Document, input_revision: int,
+def save_validation(conn: Connection, session_id: str, document: Document, input_revision: int,
                     validation_id: str, status: str, issue_ids: list[str], checks: list[CheckRecord],
                     fps: dict[str, str], base_id: str | None, agent_called: bool) -> None:
     stamp = to_iso(now())
@@ -491,7 +491,7 @@ def save_validation(conn: sqlite3.Connection, session_id: str, document: Documen
          json.dumps(fps), base_id, int(agent_called), stamp, stamp))
 
 
-def refresh_validation_status(conn: sqlite3.Connection, validation_id: str, document_id: str) -> str:
+def refresh_validation_status(conn: Connection, validation_id: str, document_id: str) -> str:
     """Issue 해결 뒤 최종 상태를 현재 문서 전체의 미해결 문제로 다시 합산한다."""
     status = compute_validation_status(conn, document_id)
     issue_ids = [r["issue_id"] for r in conn.execute("SELECT issue_id FROM issues WHERE document_id=? ORDER BY created_at, rowid", (document_id,))]
@@ -502,7 +502,7 @@ def refresh_validation_status(conn: sqlite3.Connection, validation_id: str, docu
 
 # ---------------- 출력 ----------------
 
-def to_validation_out(row: sqlite3.Row) -> ValidationOut:
+def to_validation_out(row: Row) -> ValidationOut:
     checks = [CheckRecord.model_validate(c) for c in json.loads(row["checks_json"])]
     checked = sorted({b for c in checks if c.kind == "agent" and c.result != "skipped" and c.reused_from_validation_id is None for b in c.block_ids})
     reused = sorted({b for c in checks if c.reused_from_validation_id is not None for b in c.block_ids})
@@ -513,7 +513,7 @@ def to_validation_out(row: sqlite3.Row) -> ValidationOut:
                          base_validation_id=row["base_validation_id"], created_at=row["created_at"])
 
 
-def issue_to_out(row: sqlite3.Row) -> IssueOut:
+def issue_to_out(row: Row) -> IssueOut:
     return IssueOut(issue_id=row["issue_id"], scope=row["scope"], code=row["code"], severity=row["severity"],
                     status=row["status"], message=row["message"], source_ids=json.loads(row["source_ids_json"]),
                     fact_ids=json.loads(row["fact_ids_json"]), block_ids=json.loads(row["block_ids_json"]),
@@ -522,11 +522,11 @@ def issue_to_out(row: sqlite3.Row) -> IssueOut:
                     created_at=row["created_at"], updated_at=row["updated_at"])
 
 
-def list_issues(conn: sqlite3.Connection, document_id: str) -> list[IssueOut]:
+def list_issues(conn: Connection, document_id: str) -> list[IssueOut]:
     return [issue_to_out(r) for r in conn.execute("SELECT * FROM issues WHERE document_id=? ORDER BY created_at, rowid", (document_id,))]
 
 
-def compute_document_status(conn: sqlite3.Connection, document_id: str, document_revision: int, input_revision: int) -> str:
+def compute_document_status(conn: Connection, document_id: str, document_revision: int, input_revision: int) -> str:
     """읽을 때 한 곳에서 계산한다(문서 조회·세션 summary 공용). document_revisions.status는 캐시일 뿐이다."""
     if conn.execute("SELECT 1 FROM approvals WHERE document_id=? AND document_revision=? AND input_revision=? AND status='active'",
                     (document_id, document_revision, input_revision)).fetchone():
