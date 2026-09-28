@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import Settings, load_settings
 from app.db import connect, init_db
-from app.errors import install_error_handlers
+from app.errors import API_ERROR_RESPONSES, install_error_handlers
 from app.routers import (approvals, assets, documents, drafts, exports, issues, jobs, layout_checks, preflights, proposals,
                          registered_sources, sessions, sources, validations)
 from app.services import artifacts as artifacts_service
@@ -52,7 +52,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             sweeper.stop()
 
-    app = FastAPI(title="agent-ddalgi-backend", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="agent-ddalgi-backend", version="0.1.0", lifespan=lifespan,
+                  responses=API_ERROR_RESPONSES)
     app.state.settings = settings
 
     app.add_middleware(

@@ -191,14 +191,19 @@ def test_upload_evidence_replays_legacy_digest(app, settings):
     sid = _create(c)
     path = f"/api/v1/sessions/{sid}/sources"
     digest = hashlib.sha256(json.dumps([("example.txt", hashlib.sha256(TEXT).hexdigest())]).encode()).hexdigest()
-    original = {"job_id": "job_legacy", "items": []}
+    uploaded = _upload(c, sid)
+    assert uploaded.status_code == 202, uploaded.text
+    original = uploaded.json()
+    # 실제 업로드 성공에는 파일 항목이 있다. 역할 필드 도입 전의 응답만 재현한다.
+    for item in original["items"]:
+        item.pop("role", None)
     with connect(settings.db_path) as conn:
         owner = conn.execute("SELECT owner_id FROM sessions WHERE session_id=?", (sid,)).fetchone()[0]
         idempotency.remember(conn, "legacy", owner, path, digest, 202, original, session_id=sid)
     for role in (None, "evidence"):
         r = _upload(c, sid, role=role, key="legacy")
         assert r.status_code == 202 and r.json() == original, r.text
-    assert _count(settings, "sources", sid) == _count(settings, "jobs", sid) == 0
+    assert _count(settings, "sources", sid) == _count(settings, "jobs", sid) == 1
 
 
 def test_instruction_is_stored_but_never_company_evidence(app, settings):

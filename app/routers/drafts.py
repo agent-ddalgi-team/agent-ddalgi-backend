@@ -47,6 +47,8 @@ def create_draft(request: Request, sid: str, body: DraftCreate, background_tasks
         if active is not None:
             out = JobAccepted(job_id=active.job_id, status=active.status, kind="draft", session_id=sid,
                               created_at=active.created_at)
+            idempotency.remember(conn, idempotency_key, owner, request.url.path, digest, 202,
+                                 out.model_dump(), session_id=sid)
             return JSONResponse(status_code=202, content=out.model_dump())
         job = jobs.create(conn, sid, "draft", "초안 생성 대기 중", input_revision=row["input_revision"])
         sessions.touch(conn, settings, row)

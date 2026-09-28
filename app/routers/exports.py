@@ -24,7 +24,10 @@ DOWNLOAD_NAME = {"pdf": ("company_intro_draft.pdf", "회사소개서_초안.pdf"
                           "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
 
 
-@router.post("", response_model=ExportAccepted)
+@router.post("", status_code=202, response_model=ExportAccepted, responses={
+    200: {"model": ExportAccepted, "description": "이미 준비된 승인 결과 재사용"},
+    202: {"description": "새 출력 작업 또는 진행 중인 출력 작업 접수"},
+})
 def create_export(request: Request, sid: str, body: ExportCreate, background_tasks: BackgroundTasks,
                   idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")):
     settings = settings_of(request)
@@ -67,7 +70,21 @@ def create_export(request: Request, sid: str, body: ExportCreate, background_tas
     return JSONResponse(status_code=status_code, content=out.model_dump())
 
 
-@router.get("/{eid}/download")
+@router.get("/{eid}/download", response_class=FileResponse, responses={
+    200: {
+        "description": "승인·만료·무결성 확인을 통과한 출력 파일. DOCX는 별도 배치 검증과 승인 구현 후 이용 가능",
+        "content": {
+            "application/pdf": {"schema": {"type": "string", "format": "binary"}},
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
+                "schema": {"type": "string", "format": "binary"},
+            },
+        },
+        "headers": {
+            "Content-Disposition": {"description": "내려받을 파일 이름", "schema": {"type": "string"}},
+            "Cache-Control": {"description": "private, no-store", "schema": {"type": "string"}},
+        },
+    },
+})
 def download_export(request: Request, sid: str, eid: str):
     settings = settings_of(request)
     owner = require_owner(request)

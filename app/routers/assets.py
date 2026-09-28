@@ -13,7 +13,15 @@ from app.services.sources import resolve_path
 router = APIRouter(prefix="/sessions/{sid}/assets", tags=["assets"])
 
 
-@router.get("/{asset_id}")
+@router.get("/{asset_id}", response_class=FileResponse, responses={
+    200: {
+        "description": "접근 확인을 통과한 원자료 이미지 또는 출력 미리보기 이미지",
+        "content": {
+            "image/jpeg": {"schema": {"type": "string", "format": "binary"}},
+            "image/png": {"schema": {"type": "string", "format": "binary"}},
+        },
+    },
+})
 def get_asset(request: Request, sid: str, asset_id: str):
     settings = settings_of(request)
     owner = require_owner(request)

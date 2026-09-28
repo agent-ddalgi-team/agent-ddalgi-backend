@@ -16,9 +16,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 from collections.abc import Iterable
 
+from app.db import Connection, Row
 from app.models import Document
 
 TEMPLATE_VERSION = "template_v1"
@@ -49,7 +49,7 @@ def image_asset_ids(document: Document) -> list[str]:
     return [block.content.get("asset_id") for page in document.pages for block in page.blocks if block.type == "image"]
 
 
-def asset_manifest_hash(conn: sqlite3.Connection, document: Document) -> str:
+def asset_manifest_hash(conn: Connection, document: Document) -> str:
     """승인 검사용: 현재 assets 테이블의 content_hash로 manifest_hash를 계산한다. 없는 asset은 빈 문자열."""
     items = []
     for aid in image_asset_ids(document):
@@ -58,8 +58,8 @@ def asset_manifest_hash(conn: sqlite3.Connection, document: Document) -> str:
     return manifest_hash(items)
 
 
-def matching_passed(conn: sqlite3.Connection, layout_check_id: str, document: Document, input_revision: int,
-                    fmt: str, manifest_hash_value: str) -> tuple[sqlite3.Row | None, str | None]:
+def matching_passed(conn: Connection, layout_check_id: str, document: Document, input_revision: int,
+                    fmt: str, manifest_hash_value: str) -> tuple[Row | None, str | None]:
     """(행, 불일치 사유). 사유가 None이면 조건 ⑥ 통과."""
     row = conn.execute("SELECT * FROM layout_checks WHERE layout_check_id=?", (layout_check_id,)).fetchone()
     if row is None:

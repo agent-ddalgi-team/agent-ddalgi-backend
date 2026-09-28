@@ -5,9 +5,9 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from dataclasses import dataclass
 
+from app.db import Connection
 from app.models import Page
 from app.services.sources import evidence_scope
 
@@ -20,7 +20,7 @@ class SessionRefs:
     fact_ids: set[str]
 
 
-def load(conn: sqlite3.Connection, session_id: str) -> SessionRefs:
+def load(conn: Connection, session_id: str) -> SessionRefs:
     """이 세션의 첨부 + 등록 자료(근거 사용 허용). use_as_company_evidence=false 등록 자료의 구간·사진은 근거로 인정하지 않는다."""
     scope, params = evidence_scope(conn, session_id)
     segs = {r["segment_id"] for r in conn.execute(

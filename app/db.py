@@ -1,6 +1,10 @@
-"""SQLite 저장소. 표준 sqlite3 모듈만 쓰고 ORM은 없다.
+"""SQLite 저장소. 요청의 DB 작업은 SQLAlchemy Core로 실행한다.
 
-스키마 버전은 PRAGMA user_version으로 관리한다.
+기존 SQL/행 접근과 트랜잭션 규칙은 아래 호환 어댑터로 유지한다.
+기존 v9 초기화·마이그레이션은 sqlite3 구현을 유지한다.
+새 ERD v10 DB는 init_orm_db와 Alembic으로 별도 생성하며 app.orm_models의 모델을 사용한다.
+
+기존 스키마 계열은 PRAGMA user_version, ERD v10 이후 변경 이력은 Alembic으로 관리한다.
 - v1 (BE-02): sessions, sources(session_id NOT NULL, stored_path 절대경로), jobs, idempotency_keys
 - v2 (BE-03): sources.session_id nullable(등록 자료용) + scope CHECK, sources.warnings_json,
               stored_path를 private_runs 기준 상대경로로, segments·assets 테이블 추가
@@ -16,11 +20,21 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
+from functools import lru_cache
 from pathlib import Path
+from typing import Any
+
+from sqlalchemy import create_engine, event
+from sqlalchemy.engine import Connection as SQLAlchemyConnection
+from sqlalchemy.engine import CursorResult, Engine, Row as SQLAlchemyRow, URL
+from sqlalchemy.pool import NullPool
+from sqlalchemy.orm import Session as ORMSession
+from sqlalchemy.sql import Executable
 
 SCHEMA_VERSION = 9
+ORM_SCHEMA_VERSION = 10
 
 # v9: source provenance and attachment role, immutable session/output demo identity.
 V9_COLUMNS = {
@@ -466,13 +480,51 @@ def _backfill_idempotency_sessions(conn: sqlite3.Connection) -> int:
     return filled
 
 
+def _validate_orm_schema(conn: sqlite3.Connection | SQLAlchemyConnection) -> None:
+    """v10 표기만 믿고 부분 생성된 DB로 서버를 시작하지 않는다."""
+    from app.orm_models import Base
+
+    execute = conn.exec_driver_sql if isinstance(conn, SQLAlchemyConnection) else conn.execute
+    actual_tables = {row[0] for row in execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    missing_tables = set(Base.metadata.tables) - actual_tables
+    if missing_tables:
+        raise ValueError(f"Incomplete ORM database: missing tables {', '.join(sorted(missing_tables))}")
+    for table in Base.metadata.tables.values():
+        # 이름은 사용자 입력이 아닌 정적인 ORM metadata에서만 가져온다.
+        quoted_name = table.name.replace('"', '""')
+        actual_columns = {row[1] for row in execute(f'PRAGMA table_info("{quoted_name}")')}
+        missing_columns = set(table.columns.keys()) - actual_columns
+        if missing_columns:
+            raise ValueError(
+                f"Incomplete ORM database: {table.name} missing columns {', '.join(sorted(missing_columns))}"
+            )
+
+
+def init_orm_db(db_path: Path, private_runs_dir: Path) -> None:
+    """Alembic으로 새 ERD DB를 생성하거나 변경 이력을 적용한다.
+
+    미관리 v10은 고정 기준 구조와 일치할 때만 채택한다. 기존 v9는 보호한다.
+    private_runs_dir는 기존 호출과의 호환용이며 자료 적재는 수행하지 않는다.
+    """
+    from app.schema_migrations import upgrade_database
+
+    upgrade_database(Path(db_path))
+    with get_engine(db_path).connect() as conn:
+        _validate_orm_schema(conn)
+
+
 def init_db(db_path: Path, private_runs_dir: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
-        conn.execute("PRAGMA journal_mode=WAL")
         version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if version == ORM_SCHEMA_VERSION:
+            _validate_orm_schema(conn)
+            return
+        if version > SCHEMA_VERSION:
+            raise ValueError(f"Unsupported database schema version: {version}")
+        conn.execute("PRAGMA journal_mode=WAL")
         has_sources = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sources'").fetchone() is not None
         if version == 0 and has_sources and "warnings_json" not in _columns(conn, "sources"):
@@ -526,23 +578,144 @@ def init_db(db_path: Path, private_runs_dir: Path) -> None:
         conn.close()
 
 
+class DatabaseRow:
+    """SQLAlchemy 결과를 기존 sqlite3.Row의 이름/위치 접근 방식으로 제공한다."""
+
+    def __init__(self, row: SQLAlchemyRow):
+        self._row = row
+
+    def __getitem__(self, key: str | int | slice) -> Any:
+        return self._row._mapping[key] if isinstance(key, str) else self._row[key]
+
+    def __iter__(self) -> Iterator[Any]:
+        return iter(self._row)
+
+    def __len__(self) -> int:
+        return len(self._row)
+
+    def keys(self) -> list[str]:
+        return list(self._row._mapping.keys())
+
+
+class DatabaseResult:
+    """기존 서비스가 사용하는 cursor 결과 접근과 변경 행 수를 보존한다."""
+
+    def __init__(self, result: CursorResult | None):
+        self._result = result
+
+    def fetchone(self) -> DatabaseRow | None:
+        row = self._result.fetchone() if self._result is not None else None
+        return DatabaseRow(row) if row is not None else None
+
+    def fetchall(self) -> list[DatabaseRow]:
+        return [DatabaseRow(row) for row in self._result.fetchall()] if self._result is not None else []
+
+    def __iter__(self) -> Iterator[DatabaseRow]:
+        if self._result is not None:
+            for row in self._result:
+                yield DatabaseRow(row)
+
+    @property
+    def rowcount(self) -> int:
+        return self._result.rowcount if self._result is not None else 0
+
+
+class DatabaseConnection:
+    """SQLAlchemy Core 실행과 기존 서비스 호출 사이의 작은 호환 계층.
+
+    문자열 SQL에는 exec_driver_sql, SQLAlchemy 표현식에는 execute를 사용한다.
+    SQLAlchemy의 autobegin 상태와 SQLite의 실제 쓰기 트랜잭션은 다르다.
+    소유·만료/Agent 잠금 검사는 반드시 실제 SQLite 상태를 사용해야 한다.
+    """
+
+    def __init__(self, connection: SQLAlchemyConnection):
+        self.sqlalchemy_connection = connection
+
+    def execute(self, statement: str | Executable, parameters=()) -> DatabaseResult:
+        if isinstance(statement, str):
+            if isinstance(parameters, list):
+                parameters = tuple(parameters)
+            result = self.sqlalchemy_connection.exec_driver_sql(statement, parameters)
+        else:
+            result = self.sqlalchemy_connection.execute(statement, parameters or None)
+        return DatabaseResult(result)
+
+    def executemany(self, statement: str, parameters: Iterable) -> DatabaseResult:
+        batch = [values if isinstance(values, dict) else tuple(values) for values in parameters]
+        # exec_driver_sql(sql, [])는 빈 반복 실행 대신 1회 실행으로 해석될 수 있다.
+        return DatabaseResult(self.sqlalchemy_connection.exec_driver_sql(statement, batch) if batch else None)
+
+    @property
+    def in_transaction(self) -> bool:
+        return self.sqlalchemy_connection.connection.driver_connection.in_transaction
+
+    def commit(self) -> None:
+        self.sqlalchemy_connection.commit()
+
+    def rollback(self) -> None:
+        self.sqlalchemy_connection.rollback()
+
+
+# 기존 마이그레이션과 테스트는 sqlite3, 요청 처리는 위 SQLAlchemy 어댑터를 사용한다.
+Connection = DatabaseConnection | sqlite3.Connection
+Row = DatabaseRow | sqlite3.Row
+
+
+@lru_cache(maxsize=16)
+def _engine_for_path(absolute_path: str) -> Engine:
+    engine = create_engine(
+        URL.create("sqlite+pysqlite", database=absolute_path),
+        poolclass=NullPool,
+        connect_args={
+            "timeout": 10,
+            "check_same_thread": False,
+            # 기존 SELECT→BEGIN IMMEDIATE 흐름을 Python 기본값 변경 후에도 유지한다.
+            "autocommit": sqlite3.LEGACY_TRANSACTION_CONTROL,
+        },
+        hide_parameters=True,
+    )
+
+    @event.listens_for(engine, "connect")
+    def _enable_foreign_keys(dbapi_connection, _connection_record):
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA foreign_keys=ON")
+        finally:
+            cursor.close()
+
+    return engine
+
+
+def get_engine(db_path: Path) -> Engine:
+    """DB별 Engine만 재사용한다. NullPool이므로 사용을 끝낸 파일 연결은 닫힌다."""
+    return _engine_for_path(str(db_path.resolve()))
+
+
 @contextmanager
-def connect(db_path: Path, *, immediate: bool = False) -> Iterator[sqlite3.Connection]:
+def orm_session(db_path: Path) -> Iterator[ORMSession]:
+    """ORM 작업을 한 트랜잭션으로 묶고 정상 종료 시 저장, 예외 시 취소한다."""
+    with ORMSession(get_engine(db_path), expire_on_commit=False) as session:
+        with session.begin():
+            yield session
+
+
+@contextmanager
+def connect(db_path: Path, *, immediate: bool = False) -> Iterator[DatabaseConnection]:
     """요청마다 새 연결을 연다. 예외가 나면 롤백, 정상이면 커밋한다.
 
     immediate=True면 시작부터 쓰기 잠금을 잡는다(BEGIN IMMEDIATE). 같은 문서에 동시에 들어온 적용 요청이
     서로의 중간 상태를 보지 못하게 할 때 쓴다.
     """
-    conn = sqlite3.connect(db_path, timeout=10, isolation_level=None if immediate else "")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    if immediate:
-        conn.execute("BEGIN IMMEDIATE")
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    with get_engine(db_path).connect() as sqlalchemy_connection:
+        if immediate:
+            # 기존 isolation_level=None + 명시적 BEGIN IMMEDIATE의 동작을 유지한다.
+            sqlalchemy_connection = sqlalchemy_connection.execution_options(isolation_level="AUTOCOMMIT")
+        conn = DatabaseConnection(sqlalchemy_connection)
+        try:
+            if immediate:
+                conn.execute("BEGIN IMMEDIATE")
+            yield conn
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise

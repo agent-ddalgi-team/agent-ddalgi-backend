@@ -13,14 +13,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import sqlite3
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from app.config import Settings
-from app.db import connect
+from app.db import Connection, Row, connect
 from app.models import Document, LayoutCheckOut
 from app.services import artifacts, export_render, jobs, layout_checks, publication, sessions
 from app.services.documents import get_current
@@ -49,7 +48,7 @@ class _Failure(Exception):
     details: dict[str, Any] | None = None
 
 
-def _session_valid(conn: sqlite3.Connection, settings: Settings, session_id: str) -> sqlite3.Row:
+def _session_valid(conn: Connection, settings: Settings, session_id: str) -> Row:
     row = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
     reason = sessions.usable(settings, row) if row is not None else "expired"
     if reason == "demo_disabled":
@@ -69,7 +68,7 @@ def _fail_job(settings: Settings, session_id: str, job_id: str, failure: _Failur
         jobs.fail(conn, job_id, failure.code, failure.message, failure.retryable, failure.details)
 
 
-def _document_current(conn: sqlite3.Connection, session_row: sqlite3.Row, document_id: str, document_revision: int,
+def _document_current(conn: Connection, session_row: Row, document_id: str, document_revision: int,
                       input_revision: int) -> Document:
     document = get_current(conn, session_row["session_id"], document_id)
     if document.document_revision != document_revision:
@@ -127,13 +126,13 @@ def executed_check_keys(checks, publication_checked: bool) -> set[str]:
     return keys
 
 
-def _covered_by_this_check(row: sqlite3.Row, executed: set[str]) -> bool:
+def _covered_by_this_check(row: Row, executed: set[str]) -> bool:
     """BE-06 _covered_by_this_validation과 같은 원칙: 그 Issue가 속한 검사를 이번에 실제로 재실행했을 때만 '원인이 사라졌다'고 본다.
     block_ids=[](문서 전체 Issue)도 검사 종류로 판단한다."""
     return CHECK_OF_CODE.get(row["code"], "") in executed
 
 
-def persist_layout_issues(conn: sqlite3.Connection, session_id: str, document: Document, layout_check_id: str, fmt: str,
+def persist_layout_issues(conn: Connection, session_id: str, document: Document, layout_check_id: str, fmt: str,
                           drafts: list[IssueDraft], input_revision: int, checks=(), publication_checked: bool = True) -> list[str]:
     """이 형식의 layout Issue를 갱신한다(BE-06 정체성·재개 규칙). 다른 형식·내용 Issue는 건드리지 않는다.
 
@@ -273,7 +272,7 @@ def run_layout_check_job(settings: Settings, session_id: str, job_id: str, docum
             artifacts.discard_temp(tmp)
 
 
-def _store_previews(conn: sqlite3.Connection, settings: Settings, session_id: str, layout_check_id: str, artifact_id: str,
+def _store_previews(conn: Connection, settings: Settings, session_id: str, layout_check_id: str, artifact_id: str,
                     previews: list[dict[str, Any]]) -> list[str]:
     import os
 
@@ -298,7 +297,7 @@ def _store_previews(conn: sqlite3.Connection, settings: Settings, session_id: st
 
 # ---------------- 조회 ----------------
 
-def to_out(row: sqlite3.Row) -> LayoutCheckOut:
+def to_out(row: Row) -> LayoutCheckOut:
     def _json(col: str, default):
         return json.loads(row[col]) if row[col] else default
 
@@ -313,13 +312,13 @@ def to_out(row: sqlite3.Row) -> LayoutCheckOut:
         created_at=row["created_at"], demo=bool(row["demo"]))
 
 
-def latest_for(conn: sqlite3.Connection, document_id: str, document_revision: int, input_revision: int, fmt: str) -> sqlite3.Row | None:
+def latest_for(conn: Connection, document_id: str, document_revision: int, input_revision: int, fmt: str) -> Row | None:
     return conn.execute(
         "SELECT * FROM layout_checks WHERE document_id=? AND document_revision=? AND input_revision=? AND format=? "
         "ORDER BY created_at DESC, rowid DESC LIMIT 1", (document_id, document_revision, input_revision, fmt)).fetchone()
 
 
-def latest_by_format(conn: sqlite3.Connection, document_id: str, document_revision: int, input_revision: int) -> dict[str, LayoutCheckOut | None]:
+def latest_by_format(conn: Connection, document_id: str, document_revision: int, input_revision: int) -> dict[str, LayoutCheckOut | None]:
     out: dict[str, LayoutCheckOut | None] = {}
     for fmt in ("pdf", "docx"):
         row = latest_for(conn, document_id, document_revision, input_revision, fmt)
@@ -327,7 +326,7 @@ def latest_by_format(conn: sqlite3.Connection, document_id: str, document_revisi
     return out
 
 
-def open_layout_blockers(conn: sqlite3.Connection, document_id: str, fmt: str) -> list[str]:
+def open_layout_blockers(conn: Connection, document_id: str, fmt: str) -> list[str]:
     """이 형식의(또는 형식 무관 공개 허가) open layout blocker."""
     return [r["issue_id"] for r in conn.execute(
         "SELECT issue_id FROM issues WHERE document_id=? AND status='open' AND scope='layout' AND severity='blocker' "

@@ -8,13 +8,12 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 import uuid
 
 from app.config import Settings
-from app.db import connect
+from app.db import Connection, Row, connect
 from app.parsers import TEXT_LIMIT, ParseResult, parse, warning
-from app.services import jobs, sessions
+from app.services import db_history, jobs, sessions
 from app.services.sources import resolve_path
 from app.timeutil import from_iso, now, to_iso
 
@@ -38,10 +37,11 @@ def _apply_char_limit(result: ParseResult, limit: int) -> ParseResult:
     return result
 
 
-def _apply_result(conn: sqlite3.Connection, row: sqlite3.Row, result: ParseResult) -> None:
+def _apply_result(conn: Connection, row: Row, result: ParseResult) -> None:
     source_id = row["source_id"]
     stamp = to_iso(now())
-    conn.execute("DELETE FROM segments WHERE source_id=?", (source_id,))
+    if not db_history.enabled(conn):
+        conn.execute("DELETE FROM segments WHERE source_id=?", (source_id,))
     for ordinal, seg in enumerate(result.segments, start=1):
         conn.execute(
             "INSERT INTO segments (segment_id, source_id, source_version, session_id, ordinal, locator_json, text, created_at) "
@@ -63,9 +63,10 @@ def _apply_result(conn: sqlite3.Connection, row: sqlite3.Row, result: ParseResul
         (result.status, int(result.text_available), int(result.image_available),
          json.dumps(result.warnings, ensure_ascii=False), source_id),
     )
+    db_history.finish_extraction(conn, source_id, method="parser")
 
 
-def _policy_failure(conn: sqlite3.Connection, settings: Settings, session_id: str, job_id: str,
+def _policy_failure(conn: Connection, settings: Settings, session_id: str, job_id: str,
                     source_ids: list[str]) -> bool:
     row = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
     policy = sessions.usable(settings, row)
@@ -86,7 +87,7 @@ def _policy_failure(conn: sqlite3.Connection, settings: Settings, session_id: st
     return job is None or job["status"] not in jobs.ACTIVE
 
 
-def _session_alive(conn: sqlite3.Connection, session_id: str, settings: Settings) -> bool:
+def _session_alive(conn: Connection, session_id: str, settings: Settings) -> bool:
     row = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
     return sessions.usable(settings, row) is None
 

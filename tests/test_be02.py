@@ -263,3 +263,214 @@ def test_request_id_header_and_root(client):
     r = client.get("/")
     assert r.status_code == 200 and r.headers["X-Request-Id"].startswith("req_")
     assert client.get("/docs").status_code == 200
+
+
+# ---------- SQLAlchemy 도입: 기존 SQLite 데이터·트랜잭션 계약 ----------
+
+@pytest.fixture
+def sqlalchemy_db(tmp_path):
+    """새 임시 DB만 사용한다. 직접 sqlite3로 만든 테이블도 새 연결에서 읽을 수 있어야 한다."""
+    import sqlite3
+    from contextlib import closing
+
+    from app.db import init_db
+
+    db_path = tmp_path / "runs" / "adapter.sqlite3"
+    init_db(db_path, db_path.parent)
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute("CREATE TABLE db_adapter_probe (id INTEGER PRIMARY KEY, value TEXT NOT NULL)")
+        conn.commit()
+    return db_path
+
+
+def test_sqlalchemy_core_connection_and_bound_statements(sqlalchemy_db):
+    from sqlalchemy import Column, Integer, MetaData, Table, Text, bindparam, event, select
+    from sqlalchemy.engine import Connection, Engine
+
+    from app.db import connect, get_engine
+
+    assert isinstance(get_engine(sqlalchemy_db), Engine)
+    probe = Table("db_adapter_probe", MetaData(), Column("id", Integer, primary_key=True), Column("value", Text))
+    value = "한글 ' OR 1=1; --"
+    statements = []
+
+    def record(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    with connect(sqlalchemy_db) as conn:
+        assert isinstance(conn.sqlalchemy_connection, Connection)
+        event.listen(conn.sqlalchemy_connection, "before_cursor_execute", record)
+        try:
+            conn.execute(probe.insert(), {"id": 1, "value": value})
+            row = conn.execute(select(probe.c.id, probe.c.value).where(probe.c.value == bindparam("wanted")),
+                               {"wanted": value}).fetchone()
+            assert row["id"] == 1 and row["value"] == value
+            assert conn.execute("SELECT value FROM db_adapter_probe WHERE id=:id", {"id": 1}).fetchone()[0] == value
+        finally:
+            event.remove(conn.sqlalchemy_connection, "before_cursor_execute", record)
+    assert len(statements) == 3  # SQLAlchemy 실행 이벤트까지 도달한 실제 insert/select이다.
+    assert all(value not in statement for statement in statements)
+
+
+@pytest.mark.parametrize("immediate", [False, True])
+def test_sqlalchemy_transaction_commits_success_and_rolls_back_failure(sqlalchemy_db, immediate):
+    from app.db import connect
+
+    with connect(sqlalchemy_db, immediate=immediate) as conn:
+        conn.execute("INSERT INTO db_adapter_probe VALUES (?, ?)", (1, "보존"))
+    with pytest.raises(RuntimeError, match="저장 중 실패"):
+        with connect(sqlalchemy_db, immediate=immediate) as conn:
+            conn.execute("UPDATE db_adapter_probe SET value=? WHERE id=?", ("취소", 1))
+            conn.execute("INSERT INTO db_adapter_probe VALUES (?, ?)", (2, "부분 저장 금지"))
+            raise RuntimeError("저장 중 실패")
+    with connect(sqlalchemy_db, immediate=True) as conn:
+        rows = conn.execute("SELECT id, value FROM db_adapter_probe ORDER BY id").fetchall()
+        assert [tuple(row) for row in rows] == [(1, "보존")]
+        conn.execute("UPDATE db_adapter_probe SET value='다음 요청 성공' WHERE id=1")
+
+
+@pytest.mark.parametrize("immediate", [False, True])
+def test_sqlalchemy_explicit_commit_survives_later_error(sqlalchemy_db, immediate):
+    """만료 확정·승인 무효화 등을 커밋하고 API 오류를 내는 기존 서비스 흐름."""
+    from app.db import connect
+
+    with pytest.raises(RuntimeError, match="응답 오류"):
+        with connect(sqlalchemy_db, immediate=immediate) as conn:
+            conn.execute("INSERT INTO db_adapter_probe VALUES (?, ?)", (1, "확정"))
+            conn.commit()
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("INSERT INTO db_adapter_probe VALUES (?, ?)", (2, "취소"))
+            raise RuntimeError("응답 오류")
+    with connect(sqlalchemy_db) as conn:
+        assert [tuple(row) for row in conn.execute("SELECT id, value FROM db_adapter_probe")] == [(1, "확정")]
+
+
+def test_sqlalchemy_select_does_not_claim_a_sqlite_write_transaction(sqlalchemy_db):
+    from app.db import connect
+
+    with connect(sqlalchemy_db) as conn:
+        assert not conn.in_transaction
+        conn.execute("SELECT COUNT(*) FROM db_adapter_probe").fetchone()
+        assert not conn.in_transaction  # Agent 확인 그래프의 잠금 가드에서 사용하는 실제 SQLite 상태.
+        conn.execute("BEGIN IMMEDIATE")
+        assert conn.in_transaction
+        conn.execute("INSERT INTO db_adapter_probe VALUES (?, ?)", (1, "취소"))
+        conn.rollback()
+        assert not conn.in_transaction
+        assert conn.execute("SELECT COUNT(*) FROM db_adapter_probe").fetchone()[0] == 0
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("INSERT INTO db_adapter_probe VALUES (?, ?)", (2, "새 트랜잭션"))
+        conn.commit()
+        assert not conn.in_transaction
+    with connect(sqlalchemy_db) as conn:
+        assert conn.execute("SELECT id FROM db_adapter_probe").fetchone()[0] == 2
+
+
+def test_sqlalchemy_immediate_lock_blocks_other_writers_and_is_released(sqlalchemy_db):
+    import sqlite3
+    from contextlib import closing
+
+    from app.db import connect
+
+    with closing(sqlite3.connect(sqlalchemy_db, timeout=0.05, isolation_level=None)) as contender:
+        with connect(sqlalchemy_db, immediate=True) as conn:
+            assert conn.in_transaction
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                contender.execute("BEGIN IMMEDIATE")
+            conn.execute("INSERT INTO db_adapter_probe VALUES (?, ?)", (1, "첫 요청"))
+        contender.execute("BEGIN IMMEDIATE")
+        contender.execute("INSERT INTO db_adapter_probe VALUES (?, ?)", (2, "잠금 해제 후 요청"))
+        contender.commit()
+    with connect(sqlalchemy_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM db_adapter_probe").fetchone()[0] == 2
+
+
+def test_sqlalchemy_enforces_foreign_keys_on_each_new_connection(sqlalchemy_db):
+    from sqlalchemy.exc import IntegrityError
+
+    from app.db import connect
+
+    with connect(sqlalchemy_db) as conn:
+        conn.execute("CREATE TABLE db_adapter_child (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES db_adapter_probe(id))")
+        conn.execute("INSERT INTO db_adapter_probe VALUES (?, ?)", (1, "부모"))
+    for index, immediate in enumerate((False, True, False, True), start=1):
+        with pytest.raises(IntegrityError):
+            with connect(sqlalchemy_db, immediate=immediate) as conn:
+                assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+                conn.execute("INSERT INTO db_adapter_child VALUES (?, ?)", (index, 999))
+    with connect(sqlalchemy_db) as conn:
+        conn.execute("INSERT INTO db_adapter_child VALUES (?, ?)", (1, 1))
+        assert conn.execute("SELECT COUNT(*) FROM db_adapter_child").fetchone()[0] == 1
+
+
+def test_sqlalchemy_rows_rowcounts_and_executemany_preserve_service_contract(sqlalchemy_db):
+    from app.db import connect
+
+    with connect(sqlalchemy_db) as conn:
+        assert conn.executemany("INSERT INTO db_adapter_probe VALUES (?, ?)", []).rowcount == 0
+        assert conn.execute("SELECT COUNT(*) FROM db_adapter_probe").fetchone()[0] == 0
+        inserted = conn.executemany("INSERT INTO db_adapter_probe VALUES (?, ?)", [(1, "하나"), (2, "둘")])
+        assert inserted.rowcount == 2
+        result = conn.execute("SELECT id, value FROM db_adapter_probe ORDER BY id")
+        row = result.fetchone()
+        assert row["value"] == row[1] == row[-1] == "하나"
+        assert row[:2] == (1, "하나") and tuple(row) == (1, "하나")
+        assert list(row.keys()) == ["id", "value"] and dict(row) == {"id": 1, "value": "하나"}
+        assert [tuple(item) for item in result.fetchall()] == [(2, "둘")]
+        assert result.fetchone() is None
+        assert [row["id"] for row in conn.execute("SELECT id FROM db_adapter_probe ORDER BY id")] == [1, 2]
+        assert conn.execute("UPDATE db_adapter_probe SET value=? WHERE id=?", ("수정", 1)).rowcount == 1
+        assert conn.execute("UPDATE db_adapter_probe SET value=? WHERE id=?", ("없음", 999)).rowcount == 0
+        assert conn.executemany("UPDATE db_adapter_probe SET value=? WHERE id=?", []).rowcount == 0
+        assert conn.execute("SELECT value FROM db_adapter_probe WHERE id=1").fetchone()[0] == "수정"
+
+
+def test_sqlalchemy_handles_windows_unicode_and_url_characters_in_paths(tmp_path):
+    import sqlite3
+    from contextlib import closing
+
+    from app.db import connect, init_db
+
+    db_path = tmp_path / "한글 공백 #100%@+" / "앱 #100%@+.sqlite3"
+    init_db(db_path, db_path.parent)
+    with connect(db_path) as conn:
+        conn.execute("CREATE TABLE path_probe (value TEXT NOT NULL)")
+        conn.execute("INSERT INTO path_probe VALUES (?)", ("경로 보존",))
+    assert db_path.is_file()
+    assert list(db_path.parent.glob("*.sqlite3")) == [db_path]
+    # Windows에서도 요청 종료 뒤 파일을 옮길 수 있어야 한다(연결 풀의 열린 핸들 없음).
+    moved = db_path.with_name("옮긴 데이터.sqlite3")
+    db_path.rename(moved)
+    with closing(sqlite3.connect(moved)) as conn:
+        assert conn.execute("SELECT value FROM path_probe").fetchone()[0] == "경로 보존"
+
+
+def test_sqlalchemy_keeps_existing_v9_schema_and_data_on_reinitialization(sqlalchemy_db):
+    import sqlite3
+    from contextlib import closing
+
+    from app.db import SCHEMA_VERSION, connect, init_db
+
+    with closing(sqlite3.connect(sqlalchemy_db)) as legacy:
+        legacy.execute("INSERT INTO sessions (session_id, owner_id, status, input_revision, brief_json, selected_source_ids, "
+                       "created_at, last_activity_at, expires_at, demo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                       ("sess_kept", "owner_kept", "active", 7, '{"purpose":"기존 작업"}', '[]', "t", "t", "2099", 1))
+        legacy.execute("INSERT INTO sources (source_id, session_id, source_version, scope, name, mime_type, size_bytes, kind, "
+                       "parse_status, text_available, image_available, stored_path, content_hash, created_at, origin_kind, role) "
+                       "VALUES (?, NULL, 1, 'registered', ?, 'text/plain', 1, 'other', 'complete', 1, 0, ?, 'h', 't', 'demo', 'instruction')",
+                       ("src_kept", "기존 자료", "registered/kept.txt"))
+        legacy.commit()
+        before = tuple(legacy.iterdump())
+        version = legacy.execute("PRAGMA user_version").fetchone()[0]
+    with connect(sqlalchemy_db) as conn:
+        row = conn.execute("SELECT input_revision, brief_json, demo FROM sessions WHERE session_id=?", ("sess_kept",)).fetchone()
+        assert tuple(row) == (7, '{"purpose":"기존 작업"}', 1)
+        assert conn.execute("SELECT origin_kind, role FROM sources WHERE source_id=?", ("src_kept",)).fetchone()[:] == ("demo", "instruction")
+    init_db(sqlalchemy_db, sqlalchemy_db.parent)
+    init_db(sqlalchemy_db, sqlalchemy_db.parent)
+    with closing(sqlite3.connect(sqlalchemy_db)) as legacy:
+        assert legacy.execute("PRAGMA user_version").fetchone()[0] == version == SCHEMA_VERSION
+        assert legacy.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert tuple(legacy.iterdump()) == before
+        assert legacy.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+        assert legacy.execute("PRAGMA foreign_key_check").fetchall() == []

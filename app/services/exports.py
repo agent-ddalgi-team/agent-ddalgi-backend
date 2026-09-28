@@ -12,13 +12,12 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 import uuid
 from dataclasses import dataclass
 from typing import Any
 
 from app.config import Settings
-from app.db import connect
+from app.db import Connection, Row, connect
 from app.errors import ApiError
 from app.models import ExportOut, JobError
 from app.services import approvals as approvals_service
@@ -47,12 +46,12 @@ class Verdict:
 OK = Verdict(True)
 
 
-def reuse_key(approval: sqlite3.Row) -> str:
+def reuse_key(approval: Row) -> str:
     return "|".join([approval["approval_id"], approval["format"], approval["template_version"], approval["render_options_hash"],
                      approval["asset_manifest_hash"], f"demo={int(bool(approval['demo']))}"])
 
 
-def to_out(row: sqlite3.Row) -> ExportOut:
+def to_out(row: Row) -> ExportOut:
     error = json.loads(row["error_json"]) if row["error_json"] else None
     warnings = [DOCX_WARNING] if row["format"] == "docx" else []
     return ExportOut(export_id=row["export_id"], approval_id=row["approval_id"], format=row["format"], status=row["status"],
@@ -61,12 +60,12 @@ def to_out(row: sqlite3.Row) -> ExportOut:
                      created_at=row["created_at"], updated_at=row["updated_at"], demo=bool(row["demo"]))
 
 
-def check_export_demo(session_row: sqlite3.Row, row: sqlite3.Row) -> None:
+def check_export_demo(session_row: Row, row: Row) -> None:
     if bool(row["demo"]) != bool(session_row["demo"]):
         raise ApiError(422, "RENDER_IDENTITY_MISMATCH", "출력과 세션의 시연 여부가 다릅니다.", details={"reason": "demo_mismatch"})
 
 
-def get(conn: sqlite3.Connection, session_id: str, export_id: str) -> sqlite3.Row:
+def get(conn: Connection, session_id: str, export_id: str) -> Row:
     row = conn.execute("SELECT * FROM exports WHERE export_id=? AND session_id=?", (export_id, session_id)).fetchone()
     if row is None:
         raise ApiError(404, "RESOURCE_NOT_FOUND", "요청한 자원을 찾을 수 없습니다.")
@@ -75,7 +74,7 @@ def get(conn: sqlite3.Connection, session_id: str, export_id: str) -> sqlite3.Ro
 
 # ---------------- 유효성(승인·문서·세션·허가·artifact) ----------------
 
-def identity_mismatch(conn: sqlite3.Connection, approval: sqlite3.Row, manifest_now: str) -> str | None:
+def identity_mismatch(conn: Connection, approval: Row, manifest_now: str) -> str | None:
     """출력 식별값 일관성: 현재 서버 TEMPLATE_VERSION·RENDER_OPTIONS_HASH·문서 asset_manifest ↔ Approval ↔ LayoutCheck ↔ artifact.
     브라우저(renderer) 버전은 식별값이 아니므로 보지 않는다 — 온전한 artifact는 브라우저가 바뀌어도 그대로 쓴다. 불일치면 사유를 돌려준다."""
     if approval["template_version"] != layout_checks.TEMPLATE_VERSION:
@@ -104,7 +103,7 @@ def identity_mismatch(conn: sqlite3.Connection, approval: sqlite3.Row, manifest_
     return None
 
 
-def approval_validity(conn: sqlite3.Connection, settings: Settings, session_row: sqlite3.Row, approval: sqlite3.Row | None,
+def approval_validity(conn: Connection, settings: Settings, session_row: Row, approval: Row | None,
                       fmt: str | None = None) -> Verdict:
     """승인본으로 출력할 수 있는가. Export 생성·발행·다운로드·멱등 성공 응답·재시작 복구가 모두 이 함수를 쓴다(늦은 결과·옛 승인 차단).
     검사 순서: 존재·소유 → active → 형식 → 문서 현재 버전·입력 → 출력 식별값 일관성 → 공개 허가 → artifact 무결성."""
@@ -155,13 +154,13 @@ def approval_validity(conn: sqlite3.Connection, settings: Settings, session_row:
     return OK
 
 
-def session_verdict(row: sqlite3.Row, reason: str) -> Verdict:
+def session_verdict(row: Row, reason: str) -> Verdict:
     if reason == "demo_disabled":
         return Verdict(False, 403, "DEMO_MODE_DISABLED", "시연 모드가 꺼져 출력 결과를 제공하지 않습니다.")
     return Verdict(False, 410, "SESSION_EXPIRED", "세션이 종료되었거나 만료되었습니다.", details={"status": reason})
 
 
-def session_valid(conn: sqlite3.Connection, settings: Settings, session_id: str) -> tuple[sqlite3.Row | None, Verdict]:
+def session_valid(conn: Connection, settings: Settings, session_id: str) -> tuple[Row | None, Verdict]:
     row = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
     if row is None:
         return None, Verdict(False, 404, "RESOURCE_NOT_FOUND", "요청한 자원을 찾을 수 없습니다.")
@@ -171,11 +170,11 @@ def session_valid(conn: sqlite3.Connection, settings: Settings, session_id: str)
     return row, OK
 
 
-def export_expired(row: sqlite3.Row) -> bool:
+def export_expired(row: Row) -> bool:
     return now() >= from_iso(row["expires_at"])
 
 
-def finalize_expired(conn: sqlite3.Connection, row: sqlite3.Row) -> None:
+def finalize_expired(conn: Connection, row: Row) -> None:
     """ready/queued/generating인데 만료된 행을 failed(expired)로 확정한다. ID·expires_at은 보존, 활성 UNIQUE 대상에서 빠진다."""
     if row["status"] not in ACTIVE:
         return
@@ -185,13 +184,13 @@ def finalize_expired(conn: sqlite3.Connection, row: sqlite3.Row) -> None:
                  (json.dumps(error, ensure_ascii=False), to_iso(now()), row["export_id"]))
 
 
-def commit_and_raise(conn: sqlite3.Connection, verdict: Verdict) -> None:
+def commit_and_raise(conn: Connection, verdict: Verdict) -> None:
     """상태 변경(승인 무효화·Export 확정 실패)을 먼저 커밋한 뒤 오류를 낸다. connect()의 예외 롤백에 지워지지 않게."""
     conn.commit()
     verdict.raise_()
 
 
-def _invalidate_for_artifact(conn: sqlite3.Connection, approval_id: str, verdict: Verdict) -> None:
+def _invalidate_for_artifact(conn: Connection, approval_id: str, verdict: Verdict) -> None:
     """ARTIFACT_INVALID(파일 누락·변조·행 누락): 관련 승인 무효화 + 그 승인의 활성 Export 전부 확정 실패. 호출자가 커밋한 뒤 오류를 낸다."""
     approvals_service.invalidate_one(conn, approval_id, "artifact_invalid")
     error = {"code": "ARTIFACT_INVALID", "message": verdict.message, "retryable": False, "details": verdict.details or {}, "request_id": None}
@@ -200,7 +199,7 @@ def _invalidate_for_artifact(conn: sqlite3.Connection, approval_id: str, verdict
                  (json.dumps(error, ensure_ascii=False), to_iso(now()), approval_id))
 
 
-def reject_invalid_artifact(conn: sqlite3.Connection, approval: sqlite3.Row | None, verdict: Verdict) -> None:
+def reject_invalid_artifact(conn: Connection, approval: Row | None, verdict: Verdict) -> None:
     """요청 시점에 ARTIFACT_INVALID면 관련 승인을 무효화하고 활성 Export를 확정 실패시킨다(재검사·재승인 필요)."""
     if approval is None or verdict.code != "ARTIFACT_INVALID":
         return
@@ -212,7 +211,7 @@ def _finalized_reason(verdict: Verdict) -> str:
             "IMAGE_PUBLICATION_UNCONFIRMED": "publication_blocked", "DEMO_MODE_DISABLED": "demo_disabled"}.get(verdict.code or "", "approval_invalid")
 
 
-def fail_with(conn: sqlite3.Connection, row: sqlite3.Row, verdict: Verdict, reason: str | None) -> None:
+def fail_with(conn: Connection, row: Row, verdict: Verdict, reason: str | None) -> None:
     error = {"code": verdict.code, "message": verdict.message, "retryable": verdict.retryable, "details": verdict.details or {}, "request_id": None}
     conn.execute("UPDATE exports SET status='failed', finalized_reason=?, error_json=?, updated_at=? WHERE export_id=?",
                  (reason, json.dumps(error, ensure_ascii=False), to_iso(now()), row["export_id"]))
@@ -222,12 +221,12 @@ def fail_with(conn: sqlite3.Connection, row: sqlite3.Row, verdict: Verdict, reas
 
 # ---------------- 생성·재사용·재시도 ----------------
 
-def _expires_at(settings: Settings, session_row: sqlite3.Row) -> str:
+def _expires_at(settings: Settings, session_row: Row) -> str:
     return to_iso(min(from_iso(session_row["expires_at"]), plus(now(), minutes=settings.export_ttl_minutes)))
 
 
-def create_or_reuse(conn: sqlite3.Connection, settings: Settings, session_row: sqlite3.Row, approval: sqlite3.Row
-                    ) -> tuple[sqlite3.Row, bool]:
+def create_or_reuse(conn: Connection, settings: Settings, session_row: Row, approval: Row
+                    ) -> tuple[Row, bool]:
     """(Export 행, 새 Job 필요 여부). 호출자는 BEGIN IMMEDIATE 트랜잭션 안에서 부른다(중복 생성 방지)."""
     key = reuse_key(approval)
     stamp = to_iso(now())
@@ -259,13 +258,13 @@ def create_or_reuse(conn: sqlite3.Connection, settings: Settings, session_row: s
     return conn.execute("SELECT * FROM exports WHERE export_id=?", (export_id,)).fetchone(), True
 
 
-def attach_job(conn: sqlite3.Connection, export_id: str, job_id: str) -> None:
+def attach_job(conn: Connection, export_id: str, job_id: str) -> None:
     conn.execute("UPDATE exports SET job_id=?, updated_at=? WHERE export_id=?", (job_id, to_iso(now()), export_id))
 
 
 # ---------------- 발행(Job) ----------------
 
-def publish(conn: sqlite3.Connection, settings: Settings, row: sqlite3.Row) -> Verdict:
+def publish(conn: Connection, settings: Settings, row: Row) -> Verdict:
     """발행 직전 가드 전부 재확인 후 ready. 실패면 실제 사유·재시도 가능 여부로 failed."""
     session_row, verdict = session_valid(conn, settings, row["session_id"])
     if not verdict.ok:
@@ -335,7 +334,7 @@ def run_export_job(settings: Settings, session_id: str, job_id: str, export_id: 
 
 # ---------------- 다운로드 ----------------
 
-def download_check(conn: sqlite3.Connection, settings: Settings, session_row: sqlite3.Row, row: sqlite3.Row) -> sqlite3.Row:
+def download_check(conn: Connection, settings: Settings, session_row: Row, row: Row) -> Row:
     """소유·세션은 라우터에서 끝났다. Export ready·미만료·승인 active·현재 버전·공개 허가·artifact 무결성을 매번 확인하고 artifact 행을 돌려준다."""
     check_export_demo(session_row, row)
     if row["status"] != "ready":
@@ -364,7 +363,7 @@ def download_check(conn: sqlite3.Connection, settings: Settings, session_row: sq
 
 # ---------------- 재시작 복구 ----------------
 
-def recover_after_restart(conn: sqlite3.Connection, settings: Settings) -> dict[str, int]:
+def recover_after_restart(conn: Connection, settings: Settings) -> dict[str, int]:
     """queued/generating으로 남은 Export: 유효 조건 전부 재확인 → ready(연결 Job succeeded·오류 제거) 또는 실제 사유로 failed."""
     counts = {"ready": 0, "failed": 0}
     for row in conn.execute("SELECT * FROM exports WHERE status IN ('queued', 'generating')").fetchall():
@@ -383,7 +382,7 @@ def recover_after_restart(conn: sqlite3.Connection, settings: Settings) -> dict[
     return counts
 
 
-def finalize_for_session(conn: sqlite3.Connection, session_id: str, reason: str) -> int:
+def finalize_for_session(conn: Connection, session_id: str, reason: str) -> int:
     """세션 종료·만료 시 활성 Export를 failed로 확정한다(cleanup.finalize가 같은 트랜잭션에서 부른다; 바이트 정리는 정리 큐)."""
     error = {"code": "SESSION_EXPIRED", "message": "세션이 종료되어 출력 결과를 더 이상 제공하지 않습니다.", "retryable": False,
              "details": {}, "request_id": None}
