@@ -327,7 +327,7 @@ class ApprovalOut(BaseModel):
     approved_by: str
     status: Literal["active", "invalidated"]
     invalidated_at: str | None = None
-    invalidated_reason: str | None = None   # 계약 확인 ㉘. BE-08: superseded / artifact_invalid / publication_changed 추가
+    invalidated_reason: str | None = None   # document_changed / input_changed / superseded / artifact_invalid / publication_changed / preflight_conflict
     renderer: str | None = None             # BE-08(㉝ 근거): 검사한 렌더러. 식별값 아님
     artifact_id: str | None = None          # BE-08: 검사한 불변 산출물
 

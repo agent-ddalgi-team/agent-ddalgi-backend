@@ -117,7 +117,10 @@ def approval_validity(conn: sqlite3.Connection, settings: Settings, session_row:
         return Verdict(False, 422, "RENDER_IDENTITY_MISMATCH", "승인과 세션의 시연 여부가 다릅니다.",
                        details={"reason": "demo_mismatch", "recheck_required": True})
     if approval["status"] != "active":
-        return Verdict(False, 409, "APPROVAL_NOT_ACTIVE", "승인이 무효화되었습니다. 배치 검사와 승인을 다시 진행해 주세요.",
+        message = "승인이 무효화되었습니다. 배치 검사와 승인을 다시 진행해 주세요."
+        if approval["invalidated_reason"] == "preflight_conflict":
+            message = "자료 충돌로 승인이 무효화되었습니다. 문제를 해결하고 문서 검증을 다시 실행한 뒤 새로 승인해 주세요."
+        return Verdict(False, 409, "APPROVAL_NOT_ACTIVE", message,
                        details={"approval_id": approval["approval_id"], "invalidated_reason": approval["invalidated_reason"]})
     if fmt is not None and approval["format"] != fmt:
         return Verdict(False, 422, "EXPORT_NOT_ALLOWED", "승인된 형식과 다른 형식은 출력할 수 없습니다.",

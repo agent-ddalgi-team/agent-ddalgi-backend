@@ -1,0 +1,382 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:company-profile:1.0",
+  "title": "CompanyProfileResult",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "is_mock": {
+      "type": "boolean"
+    },
+    "company_info": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "company_name": {
+          "$ref": "#/$defs/field"
+        },
+        "company_summary": {
+          "$ref": "#/$defs/field"
+        },
+        "business_areas": {
+          "$ref": "#/$defs/field"
+        },
+        "products_services": {
+          "$ref": "#/$defs/field"
+        },
+        "technology": {
+          "$ref": "#/$defs/field"
+        },
+        "strengths": {
+          "$ref": "#/$defs/field"
+        },
+        "customers_markets": {
+          "$ref": "#/$defs/field"
+        },
+        "certifications": {
+          "$ref": "#/$defs/field"
+        },
+        "history": {
+          "$ref": "#/$defs/field"
+        },
+        "processes": {
+          "$ref": "#/$defs/field"
+        },
+        "process_count": {
+          "$ref": "#/$defs/field"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/field"
+        },
+        "lead_time": {
+          "$ref": "#/$defs/field"
+        },
+        "other_info": {
+          "$ref": "#/$defs/field"
+        }
+      },
+      "required": [
+        "company_name",
+        "company_summary",
+        "business_areas",
+        "products_services",
+        "technology",
+        "strengths",
+        "customers_markets",
+        "certifications",
+        "history",
+        "processes",
+        "process_count",
+        "capabilities",
+        "lead_time",
+        "other_info"
+      ]
+    },
+    "draft_sections": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/draft_section"
+      },
+      "minItems": 1
+    },
+    "needs_confirmation": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/question"
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/source"
+      },
+      "minItems": 1
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema_valid": {
+          "type": "boolean"
+        },
+        "evidence_links_valid": {
+          "type": "boolean"
+        },
+        "human_review_required": {
+          "const": true
+        }
+      },
+      "required": [
+        "schema_valid",
+        "evidence_links_valid",
+        "human_review_required"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "is_mock",
+    "company_info",
+    "draft_sections",
+    "needs_confirmation",
+    "sources",
+    "validation"
+  ],
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "locator": {
+          "type": "string",
+          "minLength": 1
+        },
+        "quote": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "source_id",
+        "locator",
+        "quote"
+      ]
+    },
+    "fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fact_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidence"
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "fact_id",
+        "text",
+        "evidence"
+      ]
+    },
+    "field": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "enum": [
+            "supported",
+            "conflict",
+            "needs_confirmation",
+            "not_found"
+          ]
+        },
+        "facts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fact"
+          }
+        }
+      },
+      "required": [
+        "status",
+        "facts"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "not_found"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "facts": {
+                "maxItems": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "supported",
+                  "needs_confirmation"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "facts": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "conflict"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "facts": {
+                "minItems": 2
+              }
+            }
+          }
+        }
+      ]
+    },
+    "paragraph": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fact_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "text",
+        "fact_ids"
+      ]
+    },
+    "draft_section": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "enum": [
+            "company_name",
+            "company_summary",
+            "business_areas",
+            "products_services",
+            "technology",
+            "strengths",
+            "customers_markets",
+            "certifications",
+            "history",
+            "processes",
+            "process_count",
+            "capabilities",
+            "lead_time",
+            "other_info"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "paragraphs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/paragraph"
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "key",
+        "title",
+        "paragraphs"
+      ]
+    },
+    "question": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "enum": [
+            "company_name",
+            "company_summary",
+            "business_areas",
+            "products_services",
+            "technology",
+            "strengths",
+            "customers_markets",
+            "certifications",
+            "history",
+            "processes",
+            "process_count",
+            "capabilities",
+            "lead_time",
+            "other_info"
+          ]
+        },
+        "status": {
+          "enum": [
+            "conflict",
+            "needs_confirmation",
+            "not_found"
+          ]
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "field",
+        "status",
+        "question"
+      ]
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "file_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "document_date": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "source_id",
+        "file_name",
+        "document_date"
+      ]
+    }
+  }
+}

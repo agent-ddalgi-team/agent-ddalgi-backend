@@ -22,7 +22,7 @@ from app.agent_bridge import (AgentError, AgentUnavailable, AnalyzeRequest, Anal
 from app.config import Settings
 from app.db import connect
 from app.models import Brief, CheckRecord, Document, Issue, Operation, Page
-from app.services import documents, jobs, preflights, proposals, refs, validation, sessions
+from app.services import approvals, documents, jobs, preflights, proposals, refs, validation, sessions
 from app.services.doc_ops import OpError, apply_operations, touched_block_ids
 from app.timeutil import from_iso, now
 
@@ -113,7 +113,11 @@ def validate_draft(result: DraftResult, sources: list[SourceIn], fact_ids: set[s
     return None
 
 
-def _fail_agent(conn, job_id: str, exc: Exception) -> None:
+def _fail_agent(conn, job_id: str, exc: Exception, *, requires_reanalysis: bool = False) -> None:
+    if requires_reanalysis:
+        code = exc.code if isinstance(exc, AgentError) else "SERVICE_TEMPORARY_FAILURE"
+        message = exc.message if isinstance(exc, AgentError) else "AI 초안 작업이 실패했습니다."
+        exc = AgentError(code, message + " 원인을 확인한 뒤 사전 점검부터 다시 진행해 주세요.", False)
     if isinstance(exc, AgentError):
         jobs.fail(conn, job_id, exc.code, exc.message, exc.retryable)
     elif isinstance(exc, AgentUnavailable):
@@ -160,6 +164,14 @@ def run_preflight_job(settings: Settings, session_id: str, job_id: str, input_re
             can_generate = bool(usable)  # 생성 조건: 텍스트 근거가 있는 선택 자료 1개 이상(사용자 확인은 별도)
             preflight_id = preflights.save(conn, session_id, input_revision, usable, result.facts, result.issues,
                                            result.recommendations, can_generate)
+            saved_preflight = preflights.get(conn, session_id, preflight_id)
+            for head in conn.execute("SELECT document_id FROM documents WHERE session_id=?", (session_id,)).fetchall():
+                document = documents.get_current(conn, session_id, head["document_id"])
+                if validation.record_preflight_conflicts(conn, session_id, document, saved_preflight):
+                    approvals.invalidate_for_document(conn, document.document_id, "preflight_conflict")
+                    documents.refresh_status_cache(conn, session_id, document.document_id)
+            if (wait_for_confirmation := getattr(bridge, "wait_for_confirmation", None)) is not None:
+                wait_for_confirmation(conn, session_id, input_revision, preflight_id)
             jobs.succeed(conn, job_id, {"type": "preflight", "preflight_id": preflight_id})
     except Exception:
         logger.exception("preflight job crashed: %s", job_id)
@@ -329,6 +341,13 @@ def run_validate_job(settings: Settings, session_id: str, job_id: str, input_rev
             if err or current.document_revision != document_revision:
                 jobs.fail(conn, job_id, *(err or ("DOCUMENT_REVISION_CONFLICT", "검증 중 문서가 바뀌어 결과를 버렸습니다. 다시 요청해 주세요.", False)))
                 return
+            latest_pf = conn.execute(
+                "SELECT preflight_id FROM preflights WHERE session_id=? AND input_revision=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                (session_id, input_revision)).fetchone()
+            if (latest_pf["preflight_id"] if latest_pf else None) != (preflight.preflight_id if preflight else None):
+                jobs.fail(conn, job_id, "SERVICE_TEMPORARY_FAILURE",
+                          "검증 중 사전 점검 결과가 바뀌어 검증 결과를 저장하지 않았습니다. 최신 결과로 다시 검증해 주세요.", True)
+                return
             validation_id = f"val_{uuid.uuid4().hex[:16]}"
             drafts = list(server_drafts) + [
                 validation.IssueDraft(i.scope, i.code, i.severity, i.message, list(i.block_ids), list(i.fact_ids),
@@ -348,6 +367,8 @@ def run_validate_job(settings: Settings, session_id: str, job_id: str, input_rev
             status = validation.compute_validation_status(conn, document_id)
             validation.save_validation(conn, session_id, document, input_revision, validation_id, status, issue_ids,
                                        checks, fps, base_id, agent_called)
+            if validation.preflight_conflicts(ctx):
+                approvals.invalidate_for_document(conn, document_id, "preflight_conflict")
             documents.refresh_status_cache(conn, session_id, document_id)
             jobs.succeed(conn, job_id, {"type": "validation", "validation_id": validation_id, "status": status})
     except Exception:
@@ -359,9 +380,14 @@ def run_validate_job(settings: Settings, session_id: str, job_id: str, input_rev
 
 
 def run_draft_job(settings: Settings, session_id: str, job_id: str, input_revision: int, preflight_id: str) -> None:
+    resumed = False
     try:
         with connect(settings.db_path, immediate=True) as conn:
             if _policy_failure(conn, settings, session_id, job_id):
+                return
+            # 실행권은 첫 queued → running 전이에서 확보한다. 재점검이 체크포인트를
+            # 교체해도 중복 실행이 진행 중인 원래 Job을 실패 처리하지 못하게 한다.
+            if jobs.get(conn, session_id, job_id).status == "running":
                 return
             row, err = _load_session_for_job(conn, session_id, input_revision, settings)
             if err:
@@ -371,14 +397,23 @@ def run_draft_job(settings: Settings, session_id: str, job_id: str, input_revisi
             brief = Brief.model_validate_json(row["brief_json"])
             sources = preflights.build_sources(conn, session_id, json.loads(row["selected_source_ids"]))
             preflight = preflights.get(conn, session_id, preflight_id)
+            request = DraftRequest(session_id, input_revision, brief, sources, preflight)
+            try:
+                bridge = get_bridge(settings)
+                if (resume := getattr(bridge, "resume_draft", None)) is not None:
+                    resumed = resume(conn, request, job_id)
+                    if not resumed:
+                        return
+            except Exception as exc:
+                _fail_agent(conn, job_id, exc)
+                return
         try:
-            bridge = get_bridge(settings)
-            result: DraftResult = _run(bridge.draft, DraftRequest(session_id, input_revision, brief, sources, preflight))
+            result: DraftResult = _run(bridge.draft, request)
         except Exception as exc:
             with connect(settings.db_path, immediate=True) as conn:
                 if _policy_failure(conn, settings, session_id, job_id):
                     return
-                _fail_agent(conn, job_id, exc)
+                _fail_agent(conn, job_id, exc, requires_reanalysis=resumed)
             return
         problem = validate_draft(result, sources, {f.fact_id for f in preflight.facts})
         with connect(settings.db_path, immediate=True) as conn:   # 세션 확인과 저장을 한 잠금 안에서(BE-09)
@@ -386,7 +421,10 @@ def run_draft_job(settings: Settings, session_id: str, job_id: str, input_revisi
                 return
             if problem:
                 logger.error("agent draft output rejected (%s): %s", job_id, problem)
-                jobs.fail(conn, job_id, "AGENT_OUTPUT_INVALID", "AI 초안이 자료와 맞지 않아 저장하지 않았습니다.", True)
+                message = "AI 초안이 자료와 맞지 않아 저장하지 않았습니다."
+                if resumed:
+                    message += " 사전 점검부터 다시 진행해 주세요."
+                jobs.fail(conn, job_id, "AGENT_OUTPUT_INVALID", message, not resumed)
                 return
             _, err = _load_session_for_job(conn, session_id, input_revision, settings)
             if err:
@@ -405,4 +443,7 @@ def run_draft_job(settings: Settings, session_id: str, job_id: str, input_revisi
         with connect(settings.db_path, immediate=True) as conn:
             if _policy_failure(conn, settings, session_id, job_id):
                 return
-            jobs.fail(conn, job_id, "INTERNAL_ERROR", "초안 생성 작업이 실패했습니다.", True)
+            message = "초안 생성 작업이 실패했습니다."
+            if resumed:
+                message += " 사전 점검부터 다시 진행해 주세요."
+            jobs.fail(conn, job_id, "INTERNAL_ERROR", message, not resumed)

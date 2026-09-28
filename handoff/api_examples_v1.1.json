@@ -1,6 +1,6 @@
 {
-  "_note": "프론트 전달용 계약 예시. contracts.md v1.1(contract_version 1.1, schema_version 1.0) 기준으로 백엔드 BE-01에서 손으로 작성했다. 실제 서버 응답이 아니며 모든 값은 가짜 데이터다. 실제 구현(BE-02 이후)에서 응답이 달라지면 이 파일을 먼저 갱신하고 프론트에 알린다. BE-08(2026-09-27) 예시는 실서버 응답(가상 자료) 기반. contracts.md 원본은 미수정, 계약 확인 ㉜~㊳ 참조. BE-09(2026-09-27): 세션 종료(DELETE)·종료/만료 세션 410·멱등 재전송 410 예시는 실서버 응답(가상 자료) 기반, 계약 확인 ㊵~㊸ 참조. DB v9(2026-09-27): 기존 예시는 demo/role/origin_kind/template_version 필드를 현재 모델에 맞춘 형식 참고이며 전체 재실행한 실응답이 아니다. DB v9 접두 예시는 별도 uvicorn·localhost TCP에서 가짜 자료로 받은 최신 실응답이다. 시연 자료 적재·조건 첨부 근거 제외·검증 warning 이후 PDF 배치 통과, 4쪽 미리보기, 승인 201, Export 202, 같은 키 재전송 202, ready 재사용 200, 다운로드 200을 확인했다. 모든 물리 쪽에 시연 footer가 있고 승인 artifact와 다운로드 바이트 SHA-256, 미리보기와 다운로드 PDF 페이지 렌더 SHA-256이 일치한다. 모드 OFF 접근 403·소유자 DELETE 200·종료 후 410도 실응답으로 기록했다. 이전 제한 실행 환경에서의 render_failed 관측은 task 기록에 구분하며 최신 성공 예시를 대체하지 않는다. 계약 제안 ㊹~㊿는 task_backend.md 6.17-6 참조. contracts.md 원본은 미수정.",
-  "contract_version": "1.1",
+  "_note": "현재 계약은 1.2, 데이터 schema_version은 1.0이다. 기존 파일 경로는 유지한다. 2026-09-28 재점검 충돌·승인 재전송 예시는 가짜 자료·가짜 배치 산출물을 이용한 TestClient 검증에 맞춘 설명용 예시이며 실제 웹서버/PDF 실행 결과가 아니다. 이하 기록은 과거 예시의 작성 조건이다. 프론트 전달용 계약 예시. contracts.md v1.1(contract_version 1.1, schema_version 1.0) 기준으로 백엔드 BE-01에서 손으로 작성했다. 실제 서버 응답이 아니며 모든 값은 가짜 데이터다. 실제 구현(BE-02 이후)에서 응답이 달라지면 이 파일을 먼저 갱신하고 프론트에 알린다. BE-08(2026-09-27) 예시는 실서버 응답(가상 자료) 기반. contracts.md 원본은 미수정, 계약 확인 ㉜~㊳ 참조. BE-09(2026-09-27): 세션 종료(DELETE)·종료/만료 세션 410·멱등 재전송 410 예시는 실서버 응답(가상 자료) 기반, 계약 확인 ㊵~㊸ 참조. DB v9(2026-09-27): 기존 예시는 demo/role/origin_kind/template_version 필드를 현재 모델에 맞춘 형식 참고이며 전체 재실행한 실응답이 아니다. DB v9 접두 예시는 별도 uvicorn·localhost TCP에서 가짜 자료로 받은 최신 실응답이다. 시연 자료 적재·조건 첨부 근거 제외·검증 warning 이후 PDF 배치 통과, 4쪽 미리보기, 승인 201, Export 202, 같은 키 재전송 202, ready 재사용 200, 다운로드 200을 확인했다. 모든 물리 쪽에 시연 footer가 있고 승인 artifact와 다운로드 바이트 SHA-256, 미리보기와 다운로드 PDF 페이지 렌더 SHA-256이 일치한다. 모드 OFF 접근 403·소유자 DELETE 200·종료 후 410도 실응답으로 기록했다. 이전 제한 실행 환경에서의 render_failed 관측은 task 기록에 구분하며 최신 성공 예시를 대체하지 않는다. 계약 제안 ㊹~㊿는 task_backend.md 6.17-6 참조. contracts.md 원본은 미수정.",
+  "contract_version": "1.2",
   "schema_version": "1.0",
   "base_path": "/api/v1",
   "written_at": "2026-09-25",
@@ -1199,7 +1199,7 @@
           "demo": false
         }
       },
-      "_note": "같은 키·같은 본문 재전송은 이 응답 그대로(Approval 1건). 문서 편집·순서 변경·편집안 적용·restore·입력 변경 시 status=invalidated(계약 확인 ㉘ invalidated_reason: document_changed / input_changed)이며 되살아나지 않는다."
+      "_note": "같은 키·같은 본문 재전송은 저장된 승인이 현재 active일 때만 최초 응답을 반환한다(Approval 1건). 문서/입력 변경, 재점검 충돌 등으로 무효화되면 409 APPROVAL_NOT_ACTIVE이며 새 승인으로 대체하지 않는다. invalidated_reason에는 document_changed / input_changed / preflight_conflict 등이 들어간다."
     },
     {
       "name": "출력 요청",
@@ -1873,7 +1873,7 @@
           }
         }
       },
-      "_note": "승인이 무효화되면(document_changed/input_changed/superseded/artifact_invalid/publication_changed) APPROVAL_NOT_ACTIVE. 기존 Export는 failed(approval_invalid)로 확정되고 다운로드도 409."
+      "_note": "승인이 무효화되면(document_changed/input_changed/superseded/artifact_invalid/publication_changed/preflight_conflict) APPROVAL_NOT_ACTIVE. 기존 Export는 failed(approval_invalid)로 확정되고 다운로드도 409."
     },
     {
       "name": "DB v9 demo_session_create",
@@ -2903,6 +2903,69 @@
               "cleanup": "done"
             },
             "request_id": "req_644409f629c8"
+          }
+        }
+      }
+    },
+    {
+      "name": "재점검 충돌 뒤 기존 승인 요청 재전송 거부 — 계약 1.2",
+      "_note": "설명용 가짜 값. 최초 성공한 승인 요청과 같은 키·같은 본문이다. 재점검에서 충돌을 저장하면 기존 승인과 출력 권한이 무효화된다. Tests: tests/test_be08_rules.py의 test_recheck_conflict_revokes_approval_replay_and_download_until_new_approval.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/sessions/sess_demo_01/documents/doc_demo_01/approvals",
+        "headers": {
+          "Idempotency-Key": "approval-before-recheck"
+        },
+        "body": {
+          "expected_revision": 4,
+          "input_revision": 2,
+          "format": "pdf",
+          "validation_id": "val_demo_01",
+          "layout_check_id": "lc_demo_01",
+          "confirmed": true
+        }
+      },
+      "response": {
+        "http_status": 409,
+        "body": {
+          "error": {
+            "code": "APPROVAL_NOT_ACTIVE",
+            "message": "이전 승인이 무효화되었습니다. 문제를 해결하고 재검증한 뒤 새 요청으로 승인해 주세요.",
+            "retryable": false,
+            "details": {
+              "approval_id": "apr_demo_01",
+              "invalidated_reason": "preflight_conflict"
+            },
+            "request_id": "req_demo_recheck_01"
+          }
+        }
+      }
+    },
+    {
+      "name": "충돌 없는 재점검 후 해결 버튼만으로 옛 검증을 복구할 수 없음 — 계약 1.2",
+      "_note": "설명용 가짜 값. 현재 점검에서 충돌 원인이 사라진 후에도 별도 문서 검증과 사용자 새 승인이 필요하다. 원인이 남아 있으면 ISSUE_STILL_PRESENT. 동일 조건에서 excluded도 REVALIDATION_REQUIRED.",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/sessions/sess_demo_01/issues/iss_demo_conflict/resolve",
+        "body": {
+          "expected_revision": 4,
+          "resolution": {
+            "action": "resolved",
+            "reason": "자료 충돌 보완"
+          }
+        }
+      },
+      "response": {
+        "http_status": 422,
+        "body": {
+          "error": {
+            "code": "REVALIDATION_REQUIRED",
+            "message": "사전 점검의 충돌 문제는 문서 검증을 다시 실행해야 해결됩니다.",
+            "retryable": false,
+            "details": {
+              "issue_id": "iss_demo_conflict"
+            },
+            "request_id": "req_demo_recheck_02"
           }
         }
       }

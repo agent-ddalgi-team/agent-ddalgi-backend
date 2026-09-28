@@ -4,7 +4,7 @@ AI 의미 검증(Agent validate)과 분리된 서버 검사:
   REQUIRED_MISSING   회사명·주요 사업/공정이 실제 블록에 있는지(fact_ids만으로 통과 안 함)   blocker
   UNSUPPORTED_CLAIM  근거 없는 사실 주장(계약 확인 ㉛)                                           blocker, 확인 클릭 불가
   PLACEHOLDER_TEXT   "추가 확인 필요"/"자료에서 확인되지 않음" 문단                                 warning
-  VALUE_CONFLICT     사전 점검의 자료 간 충돌을 현재 블록이 참조하는 사실에 연결                     blocker
+  VALUE_CONFLICT     사전 점검의 미해결 충돌을 문서 전체와 참조 블록에 연결                          blocker
   EVIDENCE_INVALID   근거가 지금 세션 자료에 없음                                                   blocker
   MOCK_VALUE         본문/캡션 텍스트·근거 원문·원출처(is_mock)·이미지 원출처 중 하나라도 mock           blocker, excluded·acknowledged 불가
 
@@ -69,12 +69,16 @@ def is_connector(text: str) -> bool:
 
 
 _SECTION_NUMBER = re.compile(r"^\s*\d+[.)]?\s*|\s+\d+\s*$")   # "2. 개요", "개요 2" 같은 절 번호
+# 기존 초안의 비사실 제목 중 주장 키워드(명·개·위 등)와 겹치는 표현만 정확히 허용한다.
+# Agent 모듈·mock fixture에 서버 검사를 의존시키지 않는다. 전체 생성 제목은 연결 테스트로 대조한다.
+_SECTION_LABELS = frozenset({"회사명", "회사소개서 초안", "회사 개요", "인증·승인·특허", "대응 범위", "납기 조건"})
 
 
 def is_label(text: str) -> bool:
-    """heading·캡션이 단순 표지/라벨인지. 절 번호를 뺀 뒤 숫자·주장 키워드가 있거나 길면 사실 주장으로 검사한다."""
+    """절 번호를 뺀 정확한 항목 제목을 허용한다. 나머지는 숫자·주장 키워드·길이를 검사한다."""
     t = _SECTION_NUMBER.sub("", text.strip()).strip()
-    return len(t) <= LABEL_MAX_LEN and not _DIGIT.search(t) and not any(k in t for k in _CLAIM_KEYWORDS)
+    return t in _SECTION_LABELS or (len(t) <= LABEL_MAX_LEN and not _DIGIT.search(t)
+                                    and not any(k in t for k in _CLAIM_KEYWORDS))
 
 
 def _norm(text: str) -> str:
@@ -223,6 +227,30 @@ def _required_present(document: Document, ctx: Context, keys: tuple[str, ...]) -
     return False
 
 
+def preflight_conflicts(ctx: Context) -> list[IssueDraft]:
+    """본문 참조·안내 삭제와 무관한 현재 자료의 충돌. 승인 직전에도 같은 규칙을 사용한다."""
+    conflicts: list[IssueDraft] = []
+    covered_facts: set[str] = set()
+    for issue in ctx.preflight_issues:
+        if issue.code != "VALUE_CONFLICT" or issue.severity != "blocker" or issue.status != "open":
+            continue
+        sources = set(issue.source_ids)
+        for fid in issue.fact_ids:
+            if fid in ctx.facts:
+                sources.update(ref.source_id for ref in ctx.facts[fid].evidence_refs)
+        conflicts.append(IssueDraft("content", "VALUE_CONFLICT", "blocker", issue.message,
+                                    fact_ids=sorted(set(issue.fact_ids)), source_ids=sorted(sources), origin="preflight"))
+        covered_facts.update(issue.fact_ids)
+    # 분석 결과에 Issue가 누락되거나 완화돼도 아직 conflict인 Fact를 해결된 것으로 취급하지 않는다.
+    for fact in ctx.facts.values():
+        if fact.status == "conflict" and fact.fact_id not in covered_facts:
+            conflicts.append(IssueDraft("content", "VALUE_CONFLICT", "blocker",
+                                        f"{fact.field_key}의 값이 자료마다 다릅니다. 후보 근거를 확인해 주세요.",
+                                        fact_ids=[fact.fact_id],
+                                        source_ids=sorted({ref.source_id for ref in fact.evidence_refs}), origin="preflight"))
+    return conflicts
+
+
 def server_checks(document: Document, ctx: Context) -> tuple[list[IssueDraft], list[CheckRecord]]:
     drafts: list[IssueDraft] = []
     records: list[CheckRecord] = []
@@ -237,11 +265,10 @@ def server_checks(document: Document, ctx: Context) -> tuple[list[IssueDraft], l
                                  "주요 사업/공정 설명이 실제 문서 블록에 없습니다.", fact_ids=sorted(biz_fact_ids)))
     records.append(CheckRecord(check_key="required_content", kind="server", result="issue" if drafts else "ok"))
 
-    conflict_by_fact: dict[str, Issue] = {}
-    for iss in ctx.preflight_issues:
-        if iss.code == "VALUE_CONFLICT" and iss.severity == "blocker":
-            for fid in iss.fact_ids:
-                conflict_by_fact[fid] = iss
+    conflicts = preflight_conflicts(ctx)
+    drafts.extend(conflicts)
+    records.append(CheckRecord(check_key="preflight_conflicts", kind="server", result="issue" if conflicts else "ok"))
+    conflict_by_fact = {fid: issue for issue in conflicts for fid in issue.fact_ids}
 
     for page in document.pages:
         for block in page.blocks:
@@ -363,15 +390,16 @@ def _covered_by_this_validation(row: sqlite3.Row, agent_covered_blocks: set[str]
     return blocks <= agent_covered_blocks
 
 
-def persist_issues(conn: sqlite3.Connection, session_id: str, document: Document, validation_id: str,
+def persist_issues(conn: sqlite3.Connection, session_id: str, document: Document, validation_id: str | None,
                    drafts: list[IssueDraft], fps: dict[str, str], ctx: Context, input_revision: int,
-                   agent_covered_blocks: set[str], agent_full: bool) -> list[str]:
+                   agent_covered_blocks: set[str], agent_full: bool, *, resolve_missing: bool = True) -> list[str]:
     """이번 검증이 만든 Issue를 기록한다. 현재 Issue ID 목록을 돌려준다.
 
     - 같은 identity_key(origin 포함)의 기존 행을 갱신한다(새 행 X).
     - resolved/excluded였는데 다시 검출되면 원인이 돌아온 것 → open으로 되돌리고 이전 resolution은 이력으로.
     - acknowledged는 관련 내용·근거·입력(anchor)이 바뀌었을 때만 open으로 재확인.
     - 이번에 검출되지 않은 open Issue는 그 검사가 그 범위를 실제로 다시 봤을 때만 서버가 resolved로 닫는다.
+    - 사전 점검 전달은 validation_id=None, resolve_missing=False로 새 충돌만 합친다. 다른 문제를 닫지 않는다.
     """
     stamp = to_iso(now())
     produced: set[str] = set()
@@ -400,13 +428,16 @@ def persist_issues(conn: sqlite3.Connection, session_id: str, document: Document
                 status, resolution = "open", None
             conn.execute(
                 "UPDATE issues SET severity=?, message=?, status=?, anchor_fingerprint=?, resolution_json=?, "
-                "resolution_history_json=?, last_validation_id=?, updated_at=? WHERE issue_id=?",
+                "resolution_history_json=?, first_validation_id=COALESCE(first_validation_id, ?), "
+                "last_validation_id=COALESCE(?, last_validation_id), updated_at=? WHERE issue_id=?",
                 (d.severity, d.message, status, anchor, resolution, json.dumps(history, ensure_ascii=False),
-                 validation_id, stamp, row["issue_id"]))
+                 validation_id, validation_id, stamp, row["issue_id"]))
         produced.add(key)
 
     # 이번에 다시 나오지 않은 open Issue: 그 검사가 그 범위를 실제로 다시 본 경우에만 원인이 사라진 것으로 보고 닫는다.
-    for row in conn.execute("SELECT * FROM issues WHERE document_id=? AND status='open'", (document.document_id,)).fetchall():
+    previous_open = (conn.execute("SELECT * FROM issues WHERE document_id=? AND status='open'",
+                                  (document.document_id,)).fetchall() if resolve_missing else [])
+    for row in previous_open:
         if row["identity_key"] in produced:
             continue
         if not _covered_by_this_validation(row, agent_covered_blocks, agent_full):
@@ -418,6 +449,23 @@ def persist_issues(conn: sqlite3.Connection, session_id: str, document: Document
                      (json.dumps(resolution, ensure_ascii=False), validation_id, stamp, row["issue_id"]))
     return [r["issue_id"] for r in conn.execute("SELECT issue_id FROM issues WHERE document_id=? ORDER BY created_at, rowid",
                                                  (document.document_id,))]
+
+
+def record_preflight_conflicts(conn: sqlite3.Connection, session_id: str, document: Document,
+                              preflight: PreflightOut) -> bool:
+    """재점검에서 발견한 충돌만 현재 문서에 합친다. 의미 검증 완료·기존 문제 해결을 대신하지 않는다."""
+    if document.input_revision != preflight.input_revision:
+        return False
+    ctx = load_context(conn, session_id, preflight)
+    conflicts = preflight_conflicts(ctx)
+    if not conflicts:
+        return False
+    persist_issues(conn, session_id, document, None, conflicts, fingerprints(document, ctx.seg_texts), ctx,
+                   preflight.input_revision, set(), False, resolve_missing=False)
+    latest = latest_validation(conn, document.document_id, document.document_revision, preflight.input_revision)
+    if latest is not None:
+        refresh_validation_status(conn, latest["validation_id"], document.document_id)
+    return True
 
 
 def compute_validation_status(conn: sqlite3.Connection, document_id: str) -> str:
@@ -483,6 +531,9 @@ def compute_document_status(conn: sqlite3.Connection, document_id: str, document
     if conn.execute("SELECT 1 FROM approvals WHERE document_id=? AND document_revision=? AND input_revision=? AND status='active'",
                     (document_id, document_revision, input_revision)).fetchone():
         return "approved"
+    if conn.execute("SELECT 1 FROM issues WHERE document_id=? AND origin='preflight' AND status='open' AND severity='blocker'",
+                    (document_id,)).fetchone():
+        return "review_required"
     v = latest_validation(conn, document_id, document_revision, input_revision)
     if v is None:
         return "draft"
