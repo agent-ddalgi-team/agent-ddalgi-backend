@@ -129,10 +129,11 @@ class Flow:
                           manifest, status, int(status == "passed"), renderer, art_id))
         return {"layout_check_id": lc_id, "artifact_id": art_id, "path": path, "bytes": data}
 
-    def approve(self, vid, lcid, *, fmt="pdf"):
+    def approve(self, vid, lcid, *, fmt="pdf", key=None):
         return self.c.post(f"/api/v1/sessions/{self.sid}/documents/{self.did}/approvals",
                            json={"expected_revision": self.rev(), "input_revision": self.rev_in, "format": fmt,
-                                 "validation_id": vid, "layout_check_id": lcid, "confirmed": True})
+                                 "validation_id": vid, "layout_check_id": lcid, "confirmed": True},
+                           headers={"Idempotency-Key": key} if key else {})
 
     def approved(self) -> tuple[dict, dict]:
         v = self.validate()
@@ -161,6 +162,182 @@ class Flow:
 def _row(settings, sql, *params):
     with connect(settings.db_path) as conn:
         return conn.execute(sql, params).fetchone()
+
+
+def _recheck(flow, *, expect="succeeded"):
+    response = flow.c.post(f"/api/v1/sessions/{flow.sid}/preflights",
+                           json={"expected_input_revision": flow.rev_in})
+    assert response.status_code == 202, response.text
+    return flow.job(response.json()["job_id"], expect=expect)
+
+
+def _add_recheck_conflict(monkeypatch, *, fact_only=False):
+    from app.agent_mock import MockAgent
+    from app.models import Fact, Issue
+
+    original = MockAgent.analyze
+
+    async def analyze(self, request):
+        result = await original(self, request)
+        evidence = next(f.evidence_refs for f in result.facts if f.evidence_refs)
+        if fact_only:
+            result.facts.append(Fact(fact_id="fact_recheck_conflict", field_key="process_count", value=None, status="conflict",
+                                     evidence_refs=evidence))
+        else:
+            result.issues.append(Issue(issue_id="iss_recheck_conflict", scope="content", code="VALUE_CONFLICT",
+                                       severity="blocker", message="가짜 재점검 충돌", source_ids=[evidence[0].source_id]))
+        return result
+
+    monkeypatch.setattr(MockAgent, "analyze", analyze)
+    return original
+
+
+@pytest.mark.parametrize("fact_only", [False, True])
+def test_recheck_conflict_revokes_approval_replay_and_download_until_new_approval(app, settings, monkeypatch, fact_only):
+    from app.agent_mock import MockAgent
+
+    flow = Flow(app, settings)
+    v = flow.validate()
+    fab = flow.fabricate()
+    first = flow.approve(v["validation_id"], fab["layout_check_id"], key="approval-before-recheck")
+    assert first.status_code == 201
+    approval = first.json()
+    exported = flow.export_ready(approval["approval_id"], key="export-before-recheck")
+    assert flow.download(exported["export_id"]).content == fab["bytes"]
+    before = flow.doc()
+    original = _add_recheck_conflict(monkeypatch, fact_only=fact_only)
+    _recheck(flow)
+
+    saved = flow.get()
+    assert saved["approval"] is None and saved["document"]["status"] == "review_required"
+    assert saved["validation"]["status"] == "failed"
+    assert saved["document"]["pages"] == before["pages"]
+    assert saved["document"]["document_revision"] == before["document_revision"]
+    assert saved["document"]["input_revision"] == before["input_revision"]
+    assert flow.c.get(f"/api/v1/sessions/{flow.sid}").json()["document_summary"]["status"] == "review_required"
+    revoked = _row(settings, "SELECT * FROM approvals WHERE approval_id=?", approval["approval_id"])
+    assert revoked["status"] == "invalidated" and revoked["invalidated_reason"] == "preflight_conflict"
+    conflict = _row(settings, "SELECT * FROM issues WHERE document_id=? AND origin='preflight' AND code='VALUE_CONFLICT'", flow.did)
+    assert conflict["status"] == "open" and conflict["issue_id"] in saved["validation"]["issue_ids"]
+    replay = flow.approve(v["validation_id"], fab["layout_check_id"], key="approval-before-recheck")
+    assert replay.status_code == 409 and replay.json()["error"]["code"] == "APPROVAL_NOT_ACTIVE"
+    changed_body = flow.approve(v["validation_id"], fab["layout_check_id"], fmt="docx", key="approval-before-recheck")
+    assert changed_body.status_code == 409 and changed_body.json()["error"]["code"] == "IDEMPOTENCY_KEY_CONFLICT"
+    fresh = flow.approve(v["validation_id"], fab["layout_check_id"], key="approval-during-conflict")
+    assert fresh.status_code == 422 and fresh.json()["error"]["code"] == "VALIDATION_NOT_PASSED"
+    for key in ("export-before-recheck", "export-during-conflict"):
+        blocked = flow.export(approval["approval_id"], key=key)
+        assert blocked.status_code == 409 and blocked.json()["error"]["code"] == "APPROVAL_NOT_ACTIVE"
+    blocked = flow.download(exported["export_id"])
+    assert blocked.status_code == 409 and blocked.json()["error"]["code"] == "APPROVAL_NOT_ACTIVE"
+
+    # 충돌 해소 뒤에도 과거 승인은 되살리지 않고 재검증·새 명시적 승인을 요구한다.
+    monkeypatch.setattr(MockAgent, "analyze", original)
+    _recheck(flow)
+    assert flow.get()["validation"]["status"] == "failed" and flow.get()["approval"] is None
+    for action in ("resolved", "excluded"):
+        resolution = flow.c.post(f"/api/v1/sessions/{flow.sid}/issues/{conflict['issue_id']}/resolve",
+                                 json={"expected_revision": flow.rev(), "resolution": {"action": action, "reason": "충돌 보완"}})
+        assert resolution.status_code == 422 and resolution.json()["error"]["code"] == "REVALIDATION_REQUIRED"
+    assert flow.approve(v["validation_id"], fab["layout_check_id"]).status_code == 422
+    fresh_validation = flow.validate()
+    assert _row(settings, "SELECT status FROM issues WHERE issue_id=?", conflict["issue_id"])["status"] == "resolved"
+    replay = flow.approve(v["validation_id"], fab["layout_check_id"], key="approval-before-recheck")
+    assert replay.status_code == 409 and replay.json()["error"]["code"] == "APPROVAL_NOT_ACTIVE"
+    renewed = flow.approve(fresh_validation["validation_id"], fab["layout_check_id"], key="approval-after-recheck")
+    assert renewed.status_code == 201 and renewed.json()["approval_id"] != approval["approval_id"]
+    fresh_export = flow.export_ready(renewed.json()["approval_id"])
+    assert flow.download(fresh_export["export_id"]).content == fab["bytes"]
+    assert _row(settings, "SELECT status FROM approvals WHERE approval_id=?", approval["approval_id"])["status"] == "invalidated"
+    assert flow.export(approval["approval_id"]).status_code == 409
+
+
+@pytest.mark.parametrize("recovery", [False, True])
+def test_recheck_conflict_blocks_queued_export_and_restart_recovery(app, settings, monkeypatch, recovery):
+    flow = Flow(app, settings)
+    approval, _ = flow.approved()
+    with monkeypatch.context() as patch:
+        patch.setattr(exports, "run_export_job", lambda *args: None)
+        response = flow.export(approval["approval_id"], key="queued-before-recheck")
+    assert response.status_code == 202
+    payload = response.json()
+    _add_recheck_conflict(monkeypatch)
+    _recheck(flow)
+    if recovery:
+        create_app(settings)
+    else:
+        exports.run_export_job(settings, flow.sid, payload["job_id"], payload["export"]["export_id"])
+    job = flow.job(payload["job_id"], expect="failed")
+    assert job["error"]["code"] == "APPROVAL_NOT_ACTIVE"
+    row = _row(settings, "SELECT * FROM exports WHERE export_id=?", payload["export"]["export_id"])
+    assert row["status"] == "failed" and row["finalized_reason"] == "approval_invalid" and row["published_at"] is None
+
+
+def test_recheck_without_conflict_preserves_approval_and_failed_save_rolls_back(app, settings, monkeypatch):
+    from app.services import jobs
+
+    flow = Flow(app, settings)
+    approval, fab = flow.approved()
+    exported = flow.export_ready(approval["approval_id"])
+    _recheck(flow)
+    assert flow.get()["approval"]["approval_id"] == approval["approval_id"]
+    count = _row(settings, "SELECT COUNT(*) AS n FROM preflights WHERE session_id=?", flow.sid)["n"]
+    _add_recheck_conflict(monkeypatch)
+    original = jobs.succeed
+
+    def fail_after_save(conn, job_id, result_ref):
+        if result_ref.get("type") == "preflight":
+            raise RuntimeError("fake preflight storage failure")
+        return original(conn, job_id, result_ref)
+
+    monkeypatch.setattr(jobs, "succeed", fail_after_save)
+    _recheck(flow, expect="failed")
+    assert _row(settings, "SELECT COUNT(*) AS n FROM preflights WHERE session_id=?", flow.sid)["n"] == count
+    assert flow.get()["approval"]["approval_id"] == approval["approval_id"]
+    assert flow.get()["validation"]["status"] == "passed"
+    assert _row(settings, "SELECT COUNT(*) AS n FROM issues WHERE document_id=? AND origin='preflight'", flow.did)["n"] == 0
+    assert flow.download(exported["export_id"]).content == fab["bytes"]
+
+
+def test_recheck_conflict_does_not_close_other_document_issues(app, settings, monkeypatch):
+    flow = Flow(app, settings)
+    flow.patch([{"op": "insert_block", "page_id": "page_01", "after_block_id": None,
+                 "block": {"block_id": "b_unrelated", "type": "paragraph", "content": {"text": "연 매출 100억 달성"}}}])
+    response = flow.c.post(f"/api/v1/sessions/{flow.sid}/documents/{flow.did}/validate",
+                           json={"expected_revision": flow.rev(), "input_revision": flow.rev_in})
+    flow.job(response.json()["job_id"])
+    original = _row(settings, "SELECT * FROM issues WHERE document_id=? AND code='UNSUPPORTED_CLAIM'", flow.did)
+    assert original["status"] == "open"
+    _add_recheck_conflict(monkeypatch)
+    _recheck(flow)
+    after = _row(settings, "SELECT * FROM issues WHERE issue_id=?", original["issue_id"])
+    assert after["status"] == "open" and after["resolution_json"] is None
+    assert after["last_validation_id"] == original["last_validation_id"]
+    assert flow.get()["validation"]["status"] == "failed"
+
+
+def test_recheck_during_validation_cannot_overwrite_new_conflict(app, settings, monkeypatch):
+    from app.agent_mock import MockAgent
+
+    flow = Flow(app, settings)
+    approval, _ = flow.approved()
+    original = MockAgent.validate
+    _add_recheck_conflict(monkeypatch)
+
+    async def validate(self, request):
+        _recheck(flow)  # 이전 점검으로 검증하던 사이에 같은 입력의 새 점검이 저장되는 순서를 재현한다.
+        return await original(self, request)
+
+    monkeypatch.setattr(MockAgent, "validate", validate)
+    response = flow.c.post(f"/api/v1/sessions/{flow.sid}/documents/{flow.did}/validate",
+                           json={"expected_revision": flow.rev(), "input_revision": flow.rev_in})
+    job = flow.job(response.json()["job_id"], expect="failed")
+    assert job["error"]["retryable"] and "사전 점검 결과가 바뀌어" in job["error"]["message"]
+    assert flow.get()["validation"]["status"] == "failed"
+    assert flow.get()["approval"] is None and flow.doc()["status"] == "review_required"
+    conflict = _row(settings, "SELECT * FROM issues WHERE document_id=? AND origin='preflight'", flow.did)
+    assert conflict["status"] == "open" and conflict["first_validation_id"] is None
+    assert _row(settings, "SELECT status FROM approvals WHERE approval_id=?", approval["approval_id"])["status"] == "invalidated"
 
 
 # ================= 1. 출력 식별값 일관성 =================

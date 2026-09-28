@@ -46,6 +46,13 @@ def resolve(conn: sqlite3.Connection, session_row: sqlite3.Row, owner_id: str, d
     source_ids = set(json.loads(issue["source_ids_json"]))
     doc_blocks = {b.block_id: b for p in document.pages for b in p.blocks}
 
+    if origin == "preflight" and code == "VALUE_CONFLICT" and action in ("resolved", "excluded"):
+        if any(draft.identity_key == issue["identity_key"] for draft in validation.preflight_conflicts(ctx)):
+            raise _still_present("사전 점검의 충돌이 남아 있습니다. 자료를 보완·재점검한 뒤 다시 검증하세요.",
+                                 issue_id=issue["issue_id"], code=code)
+        raise ApiError(422, "REVALIDATION_REQUIRED", "사전 점검의 충돌 문제는 문서 검증을 다시 실행해야 해결됩니다.",
+                       details={"issue_id": issue["issue_id"]})
+
     if action == "acknowledged":
         if origin == "layout":
             raise _not_allowed("배치 문제는 확인 클릭으로 넘길 수 없습니다. 해당 형식의 배치 검사를 다시 실행하세요.", code=code, severity=severity)

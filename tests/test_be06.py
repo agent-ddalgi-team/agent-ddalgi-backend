@@ -163,6 +163,165 @@ def _first(items, **cond):
     return next(i for i in items if all(i.get(k) == v for k, v in cond.items()))
 
 
+CONFLICT_TXT = CLEAN_TXT + "공정 수: 2개\n공정 수: 3개\n".encode()
+
+
+def test_unreferenced_conflict_survives_cleanup_partial_validation_and_blocks_approval(app, settings):
+    ctx = Ctx(app, txt=CONFLICT_TXT, with_photo=False)
+    pf = ctx.c.get(f"/api/v1/sessions/{ctx.sid}/preflights/{ctx.pf}").json()
+    source_issue = _first(pf["issues"], code="VALUE_CONFLICT")
+    assert not any(set(source_issue["fact_ids"]) & set(b["fact_ids"])
+                   for p in ctx.doc()["pages"] for b in p["blocks"])
+    v1 = ctx.validated()
+    assert v1["status"] == "failed"
+    conflict = _first(ctx.open_issues("VALUE_CONFLICT"), origin="preflight")
+    assert conflict["block_ids"] == [] and conflict["severity"] == "blocker"
+    assert conflict["fact_ids"] == source_issue["fact_ids"]
+    assert conflict["source_ids"] == source_issue["source_ids"]
+    assert ctx.open_issues("PLACEHOLDER_TEXT")
+    assert not ctx.open_issues("REQUIRED_MISSING") and not ctx.open_issues("MOCK_VALUE")
+    for action, code in (("acknowledged", "RESOLUTION_NOT_ALLOWED"), ("resolved", "ISSUE_STILL_PRESENT"),
+                         ("excluded", "ISSUE_STILL_PRESENT")):
+        result = ctx.resolve(conflict["issue_id"], action)
+        assert result.status_code == 422 and result.json()["error"]["code"] == code
+
+    # 안내 삭제·순서 변경으로 충돌을 해결 처리하지 않는다. Agent를 생략해도 전체 충돌을 유지한다.
+    v2 = ctx.make_clean_and_validate(settings)
+    assert v2["status"] == "failed" and not ctx.open_issues("PLACEHOLDER_TEXT")
+    MockAgent.validate_calls = 0
+    ctx.patch([{"op": "move_page", "page_id": "page_04", "after_page_id": None}])
+    v3 = ctx.validated()
+    assert v3["agent_called"] is False and MockAgent.validate_calls == 0
+    ctx.patch([{"op": "insert_block", "page_id": "page_02", "after_block_id": None,
+                "block": {"block_id": "b_conflict_connector", "type": "paragraph",
+                          "content": {"text": "다음은 자료입니다."}}}])
+    v4 = ctx.validated()
+    assert v4["checked_block_ids"] == ["b_conflict_connector"] and MockAgent.validate_calls == 1
+    assert v4["status"] == "failed"
+    assert [i["issue_id"] for i in ctx.open_issues()] == [conflict["issue_id"]]
+    assert conflict["issue_id"] in v4["issue_ids"]
+    assert ctx.doc()["status"] == "review_required"
+    assert ctx.c.get(f"/api/v1/sessions/{ctx.sid}").json()["document_summary"]["status"] == "review_required"
+    result = ctx.approve(v4["validation_id"], ctx.layout_row(settings))
+    assert result.status_code == 422 and result.json()["error"]["code"] == "VALIDATION_NOT_PASSED"
+    assert result.json()["error"]["details"]["issue_ids"] == [conflict["issue_id"]]
+    with connect(settings.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM approvals WHERE document_id=?", (ctx.did,)).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("clear_facts", [False, True])
+def test_unreferenced_conflict_missing_targets_cannot_be_excluded(app, settings, monkeypatch, clear_facts):
+    original = MockAgent.analyze
+
+    async def analyze(self, request):
+        result = await original(self, request)
+        for issue in result.issues:
+            if issue.code == "VALUE_CONFLICT":
+                issue.source_ids = []
+                if clear_facts:
+                    issue.fact_ids = []
+        return result
+
+    monkeypatch.setattr(MockAgent, "analyze", analyze)
+    ctx = Ctx(app, txt=CONFLICT_TXT, with_photo=False)
+    assert ctx.make_clean_and_validate(settings)["status"] == "failed"
+    conflict = _first(ctx.open_issues("VALUE_CONFLICT"), origin="preflight")
+    assert bool(conflict["source_ids"]) is not clear_facts  # Fact의 실제 근거로 출처를 보완한다.
+    for action in ("excluded", "resolved"):
+        result = ctx.resolve(conflict["issue_id"], action)
+        assert result.status_code == 422 and result.json()["error"]["code"] == "ISSUE_STILL_PRESENT"
+
+
+def test_latest_preflight_conflict_blocks_previously_passed_validation(app, settings, monkeypatch):
+    ctx, v = _ready(app, settings)
+    lid = ctx.layout_row(settings)
+    original = MockAgent.analyze
+
+    async def analyze(self, request):
+        from app.models import Issue
+        result = await original(self, request)
+        result.issues.append(Issue(issue_id="iss_later_conflict", scope="content", code="VALUE_CONFLICT",
+                                   severity="blocker", message="같은 입력의 재점검에서 충돌을 발견했습니다.",
+                                   source_ids=[request.sources[0].source_id]))
+        return result
+
+    monkeypatch.setattr(MockAgent, "analyze", analyze)
+    ctx.preflight()
+    # 수정 전 저장본 호환: 당시에는 재점검 충돌이 문서 Issue·Validation으로 전달되지 않았다.
+    with connect(settings.db_path) as conn:
+        conn.execute("DELETE FROM issues WHERE document_id=? AND origin='preflight'", (ctx.did,))
+        conn.execute("UPDATE validations SET status='passed' WHERE validation_id=?", (v["validation_id"],))
+    assert ctx.open_issues("VALUE_CONFLICT") == []
+    result = ctx.approve(v["validation_id"], lid)
+    assert result.status_code == 422 and result.json()["error"]["code"] == "VALIDATION_NOT_PASSED"
+    assert "재검증" in result.json()["error"]["message"]
+    with connect(settings.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM approvals WHERE document_id=?", (ctx.did,)).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("issue_state", ["missing", "warning", "resolved", "excluded", "acknowledged"])
+def test_conflicting_fact_remains_blocker_without_open_blocker_issue(app, settings, monkeypatch, issue_state):
+    original = MockAgent.analyze
+
+    async def analyze(self, request):
+        result = await original(self, request)
+        if issue_state == "missing":
+            result.issues = []
+        else:
+            for issue in result.issues:
+                if issue_state == "warning":
+                    issue.severity = "warning"
+                else:
+                    issue.status = issue_state
+        return result
+
+    monkeypatch.setattr(MockAgent, "analyze", analyze)
+    ctx = Ctx(app, txt=CONFLICT_TXT, with_photo=False)
+    assert ctx.make_clean_and_validate(settings)["status"] == "failed"
+    conflicts = ctx.open_issues("VALUE_CONFLICT")
+    assert len(conflicts) == 1 and conflicts[0]["origin"] == "preflight"
+    assert conflicts[0]["severity"] == "blocker" and conflicts[0]["block_ids"] == []
+
+
+def test_preflight_conflict_resolves_on_recheck_and_reopens_with_history(app, settings, monkeypatch):
+    ctx = Ctx(app, txt=CONFLICT_TXT, with_photo=False)
+    assert ctx.make_clean_and_validate(settings)["status"] == "failed"
+    conflict = _first(ctx.open_issues("VALUE_CONFLICT"), origin="preflight")
+    original = MockAgent.analyze
+
+    async def corrected_analysis(self, request):
+        # 가짜 분석 대역: 충돌 없는 최신 분석 결과의 서버 전달만 검증한다.
+        result = await original(self, request)
+        result.issues = []
+        for fact in result.facts:
+            if fact.status == "conflict":
+                fact.status = "supported"
+                fact.value = fact.alternatives[0]["value"]
+                fact.alternatives = []
+        return result
+
+    monkeypatch.setattr(MockAgent, "analyze", corrected_analysis)
+    ctx.preflight()
+    assert _first(ctx.issues(), issue_id=conflict["issue_id"])["status"] == "open"
+    v2 = ctx.validated()
+    assert v2["status"] == "passed"
+    resolved = _first(ctx.issues(), issue_id=conflict["issue_id"])
+    assert resolved["status"] == "resolved" and resolved["resolution"]["by"] == "server"
+    assert resolved["resolution"]["validation_id"] == v2["validation_id"]
+    assert ctx.approve(v2["validation_id"], ctx.layout_row(settings)).status_code == 201
+
+    monkeypatch.setattr(MockAgent, "analyze", original)
+    ctx.preflight()
+    v3 = ctx.validated()
+    assert v3["status"] == "failed"
+    reopened = _first(ctx.open_issues("VALUE_CONFLICT"), origin="preflight")
+    assert reopened["issue_id"] == conflict["issue_id"] and reopened["resolution"] is None
+    with connect(settings.db_path) as conn:
+        history = json.loads(conn.execute("SELECT resolution_history_json FROM issues WHERE issue_id=?",
+                                         (conflict["issue_id"],)).fetchone()[0])
+        assert len(history) == 1 and history[0]["previous_status"] == "resolved"
+
+
 # ================= 마이그레이션 =================
 
 def test_v5_to_v6_migration_keeps_data_and_is_rerunnable(tmp_path):

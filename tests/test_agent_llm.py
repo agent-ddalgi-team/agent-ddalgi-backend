@@ -478,6 +478,20 @@ def test_draft_keeps_excluded_conflicts_and_required_missing_in_preflight():
     assert all(i.severity == "blocker" and i.status == "open" for i in request.preflight.issues)
     assert not any(f["field"] == "certifications" for f in model.calls[-1][1]["supported_facts"])
     assert any(b.content.get("text") == "회사명" for p in draft.pages for b in p.blocks)
+    facts = {fact.fact_id: fact for fact in request.preflight.facts}
+    context = validation.Context(
+        seg_texts={seg.segment_id: seg.text for source in request.sources for seg in source.segments},
+        seg_source={seg.segment_id: source.source_id for source in request.sources for seg in source.segments},
+        asset_source={}, mock_sources=set(),
+        refs=refs.SessionRefs({seg.segment_id for source in request.sources for seg in source.segments},
+                              {source.source_id: source.source_version for source in request.sources}, set(), set(facts)),
+        facts=facts, preflight_issues=request.preflight.issues)
+    document = Document(document_id="doc_excluded_conflict", session_id=request.session_id, document_revision=1,
+                        input_revision=request.input_revision, title=draft.title, target_pages=request.brief.target_pages,
+                        status="draft", pages=draft.pages)
+    conflicts = [issue for issue in validation.server_checks(document, context)[0] if issue.code == "VALUE_CONFLICT"]
+    assert len(conflicts) == 1 and conflicts[0].severity == "blocker" and conflicts[0].block_ids == []
+    assert conflicts[0].fact_ids == [fact.fact_id for fact in facts.values() if fact.field_key == "certifications"]
 
 
 def test_draft_checks_excluded_evidence_before_calling_model():
@@ -891,8 +905,13 @@ def test_generated_missing_field_labels_pass_server_claim_checks(monkeypatch, ca
     assert any(issue.code == "MOCK_VALUE" and issue.severity == "blocker" for issue in issues)
     assert analysis == before  # 사전 점검의 필수 누락·충돌 Issue도 그대로 남는다.
     if case_id == "T03":
-        # 현재 서버는 문서가 참조한 충돌만 검사한다. 안내에 가짜 근거를 붙이지 않는다.
         conflict = next(fact for fact in analysis.facts if fact.status == "conflict")
+        carried = [issue for issue in issues if issue.code == "VALUE_CONFLICT" and issue.origin == "preflight"]
+        assert len(carried) == 1
+        assert carried[0].severity == "blocker" and carried[0].block_ids == []
+        assert carried[0].fact_ids == [conflict.fact_id]
+        assert set(carried[0].source_ids) == {source.source_id for source in request.sources}
+        # 안내에는 가짜 참조를 붙이지 않는다. 실제 참조가 생기면 해당 블록의 충돌도 표시한다.
         heading = next(block for page in document.pages for block in page.blocks
                        if block.type == "heading" and block.content["text"] == "공정 수")
         heading.fact_ids = [conflict.fact_id]

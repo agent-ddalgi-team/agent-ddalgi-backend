@@ -22,7 +22,7 @@ from app.agent_bridge import (AgentError, AgentUnavailable, AnalyzeRequest, Anal
 from app.config import Settings
 from app.db import connect
 from app.models import Brief, CheckRecord, Document, Issue, Operation, Page
-from app.services import documents, jobs, preflights, proposals, refs, validation, sessions
+from app.services import approvals, documents, jobs, preflights, proposals, refs, validation, sessions
 from app.services.doc_ops import OpError, apply_operations, touched_block_ids
 from app.timeutil import from_iso, now
 
@@ -164,6 +164,12 @@ def run_preflight_job(settings: Settings, session_id: str, job_id: str, input_re
             can_generate = bool(usable)  # 생성 조건: 텍스트 근거가 있는 선택 자료 1개 이상(사용자 확인은 별도)
             preflight_id = preflights.save(conn, session_id, input_revision, usable, result.facts, result.issues,
                                            result.recommendations, can_generate)
+            saved_preflight = preflights.get(conn, session_id, preflight_id)
+            for head in conn.execute("SELECT document_id FROM documents WHERE session_id=?", (session_id,)).fetchall():
+                document = documents.get_current(conn, session_id, head["document_id"])
+                if validation.record_preflight_conflicts(conn, session_id, document, saved_preflight):
+                    approvals.invalidate_for_document(conn, document.document_id, "preflight_conflict")
+                    documents.refresh_status_cache(conn, session_id, document.document_id)
             if (wait_for_confirmation := getattr(bridge, "wait_for_confirmation", None)) is not None:
                 wait_for_confirmation(conn, session_id, input_revision, preflight_id)
             jobs.succeed(conn, job_id, {"type": "preflight", "preflight_id": preflight_id})
@@ -335,6 +341,13 @@ def run_validate_job(settings: Settings, session_id: str, job_id: str, input_rev
             if err or current.document_revision != document_revision:
                 jobs.fail(conn, job_id, *(err or ("DOCUMENT_REVISION_CONFLICT", "검증 중 문서가 바뀌어 결과를 버렸습니다. 다시 요청해 주세요.", False)))
                 return
+            latest_pf = conn.execute(
+                "SELECT preflight_id FROM preflights WHERE session_id=? AND input_revision=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                (session_id, input_revision)).fetchone()
+            if (latest_pf["preflight_id"] if latest_pf else None) != (preflight.preflight_id if preflight else None):
+                jobs.fail(conn, job_id, "SERVICE_TEMPORARY_FAILURE",
+                          "검증 중 사전 점검 결과가 바뀌어 검증 결과를 저장하지 않았습니다. 최신 결과로 다시 검증해 주세요.", True)
+                return
             validation_id = f"val_{uuid.uuid4().hex[:16]}"
             drafts = list(server_drafts) + [
                 validation.IssueDraft(i.scope, i.code, i.severity, i.message, list(i.block_ids), list(i.fact_ids),
@@ -354,6 +367,8 @@ def run_validate_job(settings: Settings, session_id: str, job_id: str, input_rev
             status = validation.compute_validation_status(conn, document_id)
             validation.save_validation(conn, session_id, document, input_revision, validation_id, status, issue_ids,
                                        checks, fps, base_id, agent_called)
+            if validation.preflight_conflicts(ctx):
+                approvals.invalidate_for_document(conn, document_id, "preflight_conflict")
             documents.refresh_status_cache(conn, session_id, document_id)
             jobs.succeed(conn, job_id, {"type": "validation", "validation_id": validation_id, "status": status})
     except Exception:

@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from app.access import require_owner, settings_of
 from app.db import connect
+from app.errors import ApiError
 from app.models import ApprovalCreate, ApprovalOut
 from app.services import approvals, documents, idempotency, publication, sessions
 
@@ -30,8 +31,12 @@ def create_approval(request: Request, sid: str, did: str, body: ApprovalCreate,
         if replay is not None:
             cached_id = json.loads(replay.body)["approval_id"]
             cached_approval = conn.execute("SELECT * FROM approvals WHERE approval_id=?", (cached_id,)).fetchone()
+            if cached_approval is None or cached_approval["status"] != "active":
+                raise ApiError(409, "APPROVAL_NOT_ACTIVE", "이전 승인이 무효화되었습니다. 문제를 해결하고 재검증한 뒤 새 요청으로 승인해 주세요.",
+                               details={"approval_id": cached_id,
+                                        "invalidated_reason": cached_approval["invalidated_reason"] if cached_approval else None})
             approvals.check_demo_identity(conn, row, approval=cached_approval)
-            return replay                                       # 최초 성공 응답. invalidated를 되살리지 않는다
+            return replay                                       # 현재도 유효한 승인에만 최초 성공 응답을 반환한다.
         v, manifest, lc_row, pub = approvals.check_conditions(conn, row, document, body)   # ②~⑦
         existing = approvals.find_matching_active(conn, did, document.document_revision, row["input_revision"], body)
         if existing is not None:
