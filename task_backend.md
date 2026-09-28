@@ -1,6 +1,6 @@
 # 백엔드 담당 전용 작업 목록
 
-기준일: 2026-09-28 · v1.16 · 이 파일의 작업 상태·결과 기록 담당: 백엔드 담당
+기준일: 2026-09-28 · v1.17 · 이 파일의 작업 상태·결과 기록 담당: 백엔드 담당
 
 범위: 파일·세션·파서·API·문서/버전 저장·승인·PDF/DOCX 출력. Agent 상세 작업은 [task_agent.md](task_agent.md)에 있다.
 
@@ -1001,6 +1001,14 @@ PDF 폰트: 모든 문서 `Pretendard-Regular`/`Pretendard-Bold` 서브셋 임�
 - 백엔드 집중 회귀 `tests/test_orm_workflow.py tests/test_api_contract.py`: **73 passed, 1 warning**(24.21초, 기존 Starlette 경고). 프론트 최종 `npm run build`, `npm run lint`, 변경 코드 Prettier 검사 통과. 임시 폴더/브라우저·Vite 하위 프로세스가 기본 실행 환경에서 차단되어 허용된 승격 실행으로 확인했다. 이번에는 전체 백엔드 회귀를 다시 실행하지 않았다.
 - **DB/문서:** 활성 v10/Alembic `20260928_01`, 업무 테이블 25개·업무 데이터 0건·FK 위반 0건, SHA-256 `0386d7ee84dbb75237463fbbc4ed251e8d0a1cff5271d743beaa4dd14a37dc94`가 그대로다. 이전 DB는 삭제 상태이고 `.env`·원본·준비용 적재 자료는 변경하지 않았다. 계약 문서만 v1.9로 연결 현황을 갱신하고 계약 1.4/데이터 1.0을 유지하며 프론트 사본을 동기화했다.
 - **남은 일/다음 작업:** 실제 LLM 수정안·의미 검증(Agent), C-05 자료 변경 후 복귀, D-07 개별 경고 확인의 서버 강제, DOCX 승인/출력, 저장본 복원 UI와 사진 전체 흐름 확인은 후속이다. 다음 백엔드 작업은 확정된 D-07 경고 확인을 서버/기록/화면에 연결하는 것이다. 자료 적재는 사용자 요청 때 수행한다.
+
+### 6.30 백엔드 PR #19 충돌 해결과 통합 검증 (2026-09-28)
+
+- 백엔드 `feat/backend-sqlalchemy-erd-v10` 브랜치에 최신 `origin/develop`의 AG-07 구현과 작업 기록을 통합했다. `plan.md`, `task.md`, `tests/test_agent_llm.py` 충돌을 해결하고 기존 Agent 변경과 Windows 외부 호출 차단 검사를 보존했다. develop 직접 커밋·푸시와 프론트 커밋·푸시는 수행하지 않는다.
+- **전체 회귀:** `.env` 로딩을 끄고 테스트용 브라우저 경로로 `pytest -q -p no:cacheprovider --maxfail=1` 실행 결과 **845 passed / 20 skipped / 3 warnings**(191.89초). 생략은 실제 브라우저 관련이며 경고는 기존 Starlette 1개와 Alembic 순환 FK 정렬 2개다. 실제 AI는 호출하지 않았다.
+- **실제 HTTP/PDF:** `scripts/check_s01_http.py --publication --timeout 120` 통과. 임시 ORM DB와 mock AI로 편집·검증·승인·반복 다운로드·수정 후 승인 무효화를 확인했다. 실제 Chrome 렌더링 결과 PDF 4쪽·17,360바이트이며 임시 서버와 파일을 정리했다. 이번 PR 정리에서는 프론트 코드를 변경하지 않았다.
+- 활성 DB SHA-256은 `0386d7ee84dbb75237463fbbc4ed251e8d0a1cff5271d743beaa4dd14a37dc94`로 유지했다. DB·실자료·`.env`·가상환경은 커밋 대상이 아니다. 자료 적재 보류도 유지한다.
+- AG-07 의미 검증 구현·제한된 시험 기록은 develop에서 보존한 최신 상태다. 앞 절의 미구현 설명은 당시 기록이며 실제 AI 수정안·사진 검증, C-05, D-07 서버 강제, DOCX 승인·출력은 후속 범위다. 다음은 이 통합 커밋을 PR #19에 푸시하고 충돌 없음과 검토 가능 상태를 확인하는 것이다.
 
 ## 7. 첫 요청
 

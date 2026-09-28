@@ -38,8 +38,7 @@ API 확인: http://127.0.0.1:8000/docs
 uv run pytest
 ```
 
-현재 AI 기능은 백엔드 작업 기록상 mock(가짜 응답)으로 확인한 상태다.
-실제 LLM 연결은 Agent 작업에서 별도로 구현·검증한다.
+백엔드 통합 검사는 mock(가짜 응답)으로 실행한다. 실제 LLM 분석·초안과 AG-07 원문 의미 검증의 구현/별도 시험 기록은 `task_agent.md`를 따른다. 기본 유료 호출 한도에는 content_review가 포함되지 않으므로 의미 검증 구현과 일반 서버의 호출 허용을 구분한다. 이번 PR 정리에서는 실제 AI를 호출하지 않았다.
 
 ### API 요청·응답 형식 (Pydantic, 계약 1.4)
 
@@ -51,7 +50,7 @@ Pydantic 모델은 **화면이 보내는 값과 서버가 돌려주는 값의 �
 - `/docs`와 `/openapi.json`에 27개 API의 모델·오류·파일 응답을 표시한다. 구조가 있는 JSON 응답 25개와 이미지/출력 파일 응답 2개가 있다. Export는 새 작업 202와 준비된 결과 재사용 200을 구분한다.
 - 긴 작업은 접수 후 Job을 조회한다. `result_ref`는 작업 종류별 결과 ID이며 Preflight·Document·Proposal 등 결과를 별도 GET으로 읽는다. `succeeded`인 검사 Job도 검사 결과 자체는 failed일 수 있다.
 
-현재 형식과 예시는 [contracts.md](contracts.md), [API 예시](handoff/api_examples_v1.1.json)를 따른다. 예시 파일명은 기존 참조를 위해 유지하고 내부 계약 버전은 1.4이다. 프론트는 S01 세션·자료·점검부터 S02 직접 편집/수정안 비교와 S03 검증·PDF 승인/다운로드까지 기존 API에 연결했다. 실제 AI의 수정안·의미 검증, 경고 확인 강제, 자료 변경 후 복귀, DOCX 승인·출력은 후속이다.
+현재 형식과 예시는 [contracts.md](contracts.md), [API 예시](handoff/api_examples_v1.1.json)를 따른다. 예시 파일명은 기존 참조를 위해 유지하고 내부 계약 버전은 1.4이다. 프론트는 S01 세션·자료·점검부터 S02 직접 편집/수정안 비교와 S03 검증·PDF 승인/다운로드까지 기존 API에 연결했다. 실제 AI 수정안·사진 검증, 경고 확인 강제, 자료 변경 후 복귀, DOCX 승인·출력은 후속이다.
 
 실제 사용 DB에 자료를 넣지 않고, 임시 DB와 mock 자료로 형식·S01 흐름을 확인하려면 다음 검사를 실행한다.
 
@@ -216,6 +215,6 @@ uv run python scripts/import_registered.py --source-dir private_runs/registered_
 | 5 | [백엔드 작업](task_backend.md) 또는 [Agent 작업](task_agent.md) · [Agent 설계](agent.md) | 내 담당 작업·코드 위치·남은 연결·검증할 내용 |
 | 6 | [공통 연결표](task.md) | 담당자 간 연결 지점과 결과 기록 위치 |
 
-2026-09-27에는 개발 전 문서를 정리했다. 당시 기존 BE/AG 작업 상태와 테스트 기록을 유지했고 실행 코드·의존성·DB는 바꾸지 않았다. 현재 공통 계약은 1.4, 데이터 schema_version은 1.0이다. 2026-09-28의 계약 1.2는 재점검 충돌로 인한 기존 승인 무효화·승인 재전송 차단을 반영한다. 상세는 [contracts.md](contracts.md), 기존 경로를 유지한 예시는 [API 예시](handoff/api_examples_v1.1.json)를 따른다. 프론트 계약/예시 사본은 현재 원본과 동기화했다. 검토 메모의 다른 제안과 미구현 항목은 별도로 유지한다.
+2026-09-27에는 개발 전 문서를 정리했다. 당시 기존 BE/AG 작업 상태와 테스트 기록을 유지했고 실행 코드·의존성·DB는 바꾸지 않았다. 현재 공통 계약은 1.4, 데이터 schema_version은 1.0이다. 2026-09-28의 계약 1.2는 재점검 충돌로 인한 기존 승인 무효화·승인 재전송 차단을 반영한다. 상세는 [contracts.md](contracts.md), 기존 경로를 유지한 예시는 [API 예시](handoff/api_examples_v1.1.json)를 따른다. 프론트 계약/예시 사본은 로컬에서 문서 v1.9까지 동기화했으며 해당 프론트 구현은 이 백엔드 PR에 포함되지 않는다. 검토 메모의 다른 제안과 미구현 항목은 별도로 유지한다.
 
 Stitch 화면 설계와의 연결 기준은 [prd.md 3~5절](prd.md), 화면 상태별 데이터 연결은 [contracts.md 7.5절](contracts.md)을 따른다. 추가 기능의 채택 여부는 [plan.md 4.1절](plan.md)에서 관리한다. 화면 시연·예시 응답과 실제 기능 완료는 구분한다.
