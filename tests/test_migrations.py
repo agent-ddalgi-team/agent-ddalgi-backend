@@ -14,10 +14,10 @@ import sqlalchemy as sa
 from alembic import command
 from alembic.script import ScriptDirectory
 
-from app.db import get_engine, init_db
+from app.db import ORM_SCHEMA_VERSION, _validate_orm_schema, get_engine, init_db
 from app.orm_models import Base
 from app.schema_migrations import (
-    BASELINE_REVISION, ROOT, make_config, migration_connection, upgrade_database, validate_baseline,
+    BASELINE_REVISION, HEAD_REVISION, ROOT, make_config, migration_connection, upgrade_database, validate_baseline,
 )
 
 
@@ -51,8 +51,10 @@ def _seed(path: Path):
 
 
 def _untracked(path: Path):
-    Base.metadata.create_all(get_engine(path))
+    baseline = ScriptDirectory.from_config(make_config()).get_revision(BASELINE_REVISION).module
     with closing(sqlite3.connect(path)) as conn:
+        for statement in baseline.DDL:
+            conn.execute(statement)
         conn.execute("PRAGMA user_version=10")
 
 
@@ -70,7 +72,7 @@ def _copied_config(tmp_path: Path, path: Path, *, upgrade: str, downgrade: str):
     (directory / "versions" / "20990101_01_fixture.py").write_text(
         "from alembic import op\nimport sqlalchemy as sa\n"
         "revision = '20990101_01'\n"
-        f"down_revision = {BASELINE_REVISION!r}\nbranch_labels = None\ndepends_on = None\n\n"
+        f"down_revision = {HEAD_REVISION!r}\nbranch_labels = None\ndepends_on = None\n\n"
         f"def upgrade():\n{upgrade}\n\ndef downgrade():\n{downgrade}\n",
         encoding="utf-8",
     )
@@ -83,27 +85,101 @@ def test_fresh_database_has_25_empty_business_tables_and_revision(tmp_path):
     path = tmp_path / "new" / "app.sqlite3"
     upgrade_database(path)
     assert set(sa.inspect(get_engine(path)).get_table_names()) == set(Base.metadata.tables) | {"alembic_version"}
-    assert _read(path, "SELECT version_num FROM alembic_version") == [(BASELINE_REVISION,)]
-    assert _read(path, "PRAGMA user_version") == [(10,)]
+    assert _read(path, "SELECT version_num FROM alembic_version") == [(HEAD_REVISION,)]
+    assert _read(path, "PRAGMA user_version") == [(ORM_SCHEMA_VERSION,)]
     assert _read(path, "PRAGMA journal_mode") == [("wal",)]
     assert _read(path, "PRAGMA foreign_key_check") == []
     assert all(_read(path, f'SELECT COUNT(*) FROM "{name}"') == [(0,)] for name in Base.metadata.tables)
     with get_engine(path).connect() as connection:
         assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
-        validate_baseline(connection)
+        _validate_orm_schema(connection)
 
 
 def test_adopting_untracked_v10_preserves_existing_rows_and_is_repeatable(tmp_path):
     path = tmp_path / "existing.sqlite3"
     _untracked(path)
     _seed(path)
-    before = {name: _read(path, f'SELECT * FROM "{name}"') for name in Base.metadata.tables}
+    columns = {name: ','.join('"' + row[1] + '"' for row in _read(path, f'PRAGMA table_info("{name}")'))
+               for name in Base.metadata.tables}
+    before = {name: _read(path, f'SELECT {names} FROM "{name}"') for name, names in columns.items()}
     upgrade_database(path)
-    assert {name: _read(path, f'SELECT * FROM "{name}"') for name in Base.metadata.tables} == before
+    assert {name: _read(path, f'SELECT {names} FROM "{name}"') for name, names in columns.items()} == before
     first_dump = _dump(path)
     upgrade_database(path)
     assert _dump(path) == first_dump
-    assert _read(path, "SELECT version_num FROM alembic_version") == [(BASELINE_REVISION,)]
+    assert _read(path, "SELECT version_num FROM alembic_version") == [(HEAD_REVISION,)]
+    assert _read(path, "PRAGMA user_version") == [(11,)]
+
+
+@pytest.mark.parametrize("tracked", [False, True])
+def test_server_refuses_v10_until_explicit_upgrade_without_changing_it(tmp_path, tracked):
+    path = tmp_path / "needs_upgrade.sqlite3"
+    if tracked:
+        upgrade_database(path, BASELINE_REVISION)
+    else:
+        _untracked(path)
+    _seed(path)
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="alembic upgrade head"):
+        init_db(path, tmp_path)
+    assert path.read_bytes() == before
+    assert _read(path, "PRAGMA user_version") == [(10,)]
+    upgrade_database(path)
+    init_db(path, tmp_path)
+    assert _read(path, "PRAGMA user_version") == [(11,)]
+    assert _read(path, "SELECT session_id FROM sessions") == [("keep_session",)]
+    assert _read(path, "SELECT session_id FROM input_revisions") == [("keep_session",)]
+
+
+@pytest.mark.parametrize("kind", ["foreign_key", "unique"])
+def test_v11_startup_rejects_missing_relationship_constraints(tmp_path, kind):
+    path = tmp_path / "missing_relationship.sqlite3"
+    metadata = sa.MetaData()
+    for table in Base.metadata.tables.values():
+        table.to_metadata(metadata)
+    table = metadata.tables["document_revisions"]
+    constraint_type = sa.ForeignKeyConstraint if kind == "foreign_key" else sa.UniqueConstraint
+    constraint = next(constraint for constraint in table.constraints if isinstance(constraint, constraint_type))
+    table.constraints.remove(constraint)
+    metadata.create_all(get_engine(path))
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("PRAGMA user_version=11")
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="ORM schema mismatch.*document_revisions"):
+        init_db(path, tmp_path)
+    assert path.read_bytes() == before
+
+
+def test_stamping_v10_as_head_cannot_skip_relationship_migration(tmp_path):
+    path = tmp_path / "no_shortcut.sqlite3"
+    upgrade_database(path, BASELINE_REVISION)
+    _seed(path)
+    before = _dump(path)
+    with pytest.raises(ValueError, match="instead of stamping"):
+        command.stamp(make_config(path), HEAD_REVISION)
+    assert _dump(path) == before
+    assert _read(path, "PRAGMA user_version") == [(10,)]
+    upgrade_database(path)
+    assert _read(path, "SELECT version_num FROM alembic_version") == [(HEAD_REVISION,)]
+
+
+def test_startup_rejects_preview_relationship_losing_deferred_check(tmp_path):
+    path = tmp_path / "immediate_preview.sqlite3"
+    metadata = sa.MetaData()
+    for table in Base.metadata.tables.values():
+        table.to_metadata(metadata)
+    preview = metadata.tables["layout_previews"]
+    relation = next(item for item in preview.constraints
+                    if isinstance(item, sa.ForeignKeyConstraint) and item.name == "fk_layout_previews_layout")
+    relation.deferrable = None
+    relation.initially = None
+    metadata.create_all(get_engine(path))
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("PRAGMA user_version=11")
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="ORM schema mismatch.*layout_previews"):
+        init_db(path, tmp_path)
+    assert path.read_bytes() == before
 
 
 def test_legacy_v9_is_not_changed_or_stamped(tmp_path):
@@ -115,7 +191,7 @@ def test_legacy_v9_is_not_changed_or_stamped(tmp_path):
     assert _read(path, "SELECT session_id FROM sessions") == [("keep_session",)]
 
 
-@pytest.mark.parametrize("version", [0, 1, 11, 999])
+@pytest.mark.parametrize("version", [0, 1, 11, 12, 999])
 def test_unknown_or_unversioned_existing_database_is_unchanged(tmp_path, version):
     path = tmp_path / "unknown.sqlite3"
     with closing(sqlite3.connect(path)) as conn:
@@ -178,7 +254,7 @@ def test_baseline_is_frozen_even_when_current_model_metadata_changes(tmp_path):
     future = sa.Table("future_model_only", Base.metadata, sa.Column("id", sa.Integer, primary_key=True))
     try:
         path = tmp_path / "frozen.sqlite3"
-        upgrade_database(path)
+        upgrade_database(path, BASELINE_REVISION)
         assert "future_model_only" not in sa.inspect(get_engine(path)).get_table_names()
         with get_engine(path).connect() as connection:
             validate_baseline(connection)
@@ -204,7 +280,7 @@ def test_failed_creation_rolls_back_prior_ddl_and_revision(tmp_path):
     assert _read(path, "SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'") == []
     assert _read(path, "PRAGMA user_version") == [(0,)]
     upgrade_database(path)
-    assert _read(path, "SELECT version_num FROM alembic_version") == [(BASELINE_REVISION,)]
+    assert _read(path, "SELECT version_num FROM alembic_version") == [(HEAD_REVISION,)]
 
 
 def test_next_migration_batch_upgrade_and_downgrade_preserve_parent_and_child_rows(tmp_path):
@@ -230,11 +306,11 @@ def test_next_migration_batch_upgrade_and_downgrade_preserve_parent_and_child_ro
     with closing(sqlite3.connect(path)) as conn:
         with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
             conn.execute("UPDATE sessions SET demo=2")
-    command.downgrade(config, BASELINE_REVISION)
+    command.downgrade(config, HEAD_REVISION)
     assert _read(path, "SELECT * FROM sessions") == original_sessions
     assert _read(path, "SELECT * FROM input_revisions") == original_inputs
     assert _read(path, "PRAGMA foreign_key_check") == []
-    assert _read(path, "SELECT version_num FROM alembic_version") == [(BASELINE_REVISION,)]
+    assert _read(path, "SELECT version_num FROM alembic_version") == [(HEAD_REVISION,)]
     with closing(sqlite3.connect(path)) as conn:
         with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
             conn.execute("UPDATE sessions SET demo=2")
@@ -261,7 +337,7 @@ def test_migration_introducing_foreign_key_violation_rolls_back_schema_data_and_
 
 def test_baseline_downgrade_refuses_populated_tables_before_any_drop(tmp_path):
     path = tmp_path / "keep.sqlite3"
-    upgrade_database(path)
+    upgrade_database(path, BASELINE_REVISION)
     _seed(path)
     before = _dump(path)
     with pytest.raises(ValueError, match="populated"):
@@ -271,12 +347,12 @@ def test_baseline_downgrade_refuses_populated_tables_before_any_drop(tmp_path):
 
 def test_empty_baseline_downgrade_and_reupgrade_handle_circular_foreign_keys(tmp_path):
     path = tmp_path / "empty.sqlite3"
-    upgrade_database(path)
+    upgrade_database(path, BASELINE_REVISION)
     command.downgrade(make_config(path), "base")
     assert _read(path, "PRAGMA user_version") == [(0,)]
     assert sa.inspect(get_engine(path)).get_table_names() == ["alembic_version"]
     assert _read(path, "SELECT version_num FROM alembic_version") == []
-    upgrade_database(path)
+    upgrade_database(path, BASELINE_REVISION)
     assert _read(path, "SELECT version_num FROM alembic_version") == [(BASELINE_REVISION,)]
 
 
@@ -289,7 +365,7 @@ def test_cli_explicit_korean_percent_space_path_and_schema_check(tmp_path):
         result = subprocess.run(base + arguments, cwd=tmp_path, env=env, capture_output=True,
                                 text=True, encoding="utf-8", timeout=60)
         assert result.returncode == 0, result.stdout + result.stderr
-    assert _read(path, "SELECT version_num FROM alembic_version") == [(BASELINE_REVISION,)]
+    assert _read(path, "SELECT version_num FROM alembic_version") == [(HEAD_REVISION,)]
 
 
 def test_revision_template_creates_editable_script_in_copied_directory(tmp_path):
@@ -307,7 +383,7 @@ def test_empty_stamp_is_rolled_back_and_does_not_prevent_later_creation(tmp_path
         command.stamp(make_config(path), "head")
     assert _read(path, "SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'") == []
     upgrade_database(path)
-    assert _read(path, "SELECT version_num FROM alembic_version") == [(BASELINE_REVISION,)]
+    assert _read(path, "SELECT version_num FROM alembic_version") == [(HEAD_REVISION,)]
 
 
 def test_inspection_and_autogenerate_do_not_issue_writes_or_take_write_lock(tmp_path):

@@ -1,6 +1,6 @@
 # 공통 데이터·API 계약
 
-기준일: 2026-09-28 · 문서 v1.9 · contract_version: 1.4 · 데이터 schema_version: 1.0
+기준일: 2026-09-29 · 문서 v1.10 · contract_version: 1.5 · 데이터 schema_version: 1.0
 
 개발 전 대조 메모는 7절에서 관리한다. 문서 v1.2에서 경고 승인 정책(PRD BR-08/09, plan D-07)을 구체화했고, v1.3에서 로그인 MVP 제외 결정(plan D-08)을 반영했다. 두 정책은 2026-09-27 사용자 확정 사항이다. 필드·상태값·API 형식과 계약/스키마 버전은 유지한다. 7절은 확정된 제품 정책과 아직 정할 연결 규격을 구분한 목록이며, 코드·예시·프론트 사본의 반영 완료를 뜻하지 않는다.
 
@@ -17,6 +17,8 @@
 **S01 프론트 연결(2026-09-28, 문서 v1.8):** 위 1.2~1.4 도입 당시의 프론트 미반영 기록 이후, 프론트 첫 화면을 `/api/v1`의 세션·자료 첨부/선택/삭제·점검·확인·초안 조회에 연결했다. 동일한 계약 원본/예시 사본과 S01 TypeScript 타입을 반영하고 임시 v10 DB·mock AI·실제 브라우저로 확인했다. 구형 `/api/profiles` 모듈은 보존하되 첫 화면에서 호출하지 않는다. 편집·승인·출력 화면, 실제 AI 품질·실자료 적재는 후속이다. 서버 필드·경로·동작 규격은 바꾸지 않아 contract_version=1.4를 유지한다.
 
 **S02/S03 프론트 연결(2026-09-28, 문서 v1.9):** 직접 문구/페이지/블록 편집·저장, 기존 자료의 사진 교체, AI 수정안 비교·명시 적용/거절, 내용 검증·PDF 배치 미리보기·최종 승인·출력/다운로드를 기존 API에 연결한다. 요청은 편집 시작 문서 버전을 사용하며 충돌 때 로컬 편집을 유지한다. 미저장 변경·검사 실패·미확인 경고는 화면에서 승인을 막고, 검사/문서가 바뀌거나 새로고침하면 최종 동의를 다시 받는다. 화면은 `Validation.status=passed`이고 현재 PDF 검사와 미해결 문제가 없는 경우만 승인한다. 이는 미구현 D-07 서버 강제를 대체하지 않는다. 실제 LLM 수정안·검증, C-05 자료 변경 복귀, DOCX 승인/출력, 저장본 이력 복원 UI는 후속이다. API/계약 버전은 1.4로 유지한다.
+
+**계약 1.5(2026-09-29, D-07 백엔드):** 개별 경고 확인과 승인 검사를 연결한다. `acknowledged` 요청에는 기존 문서 버전·사유에 `input_revision`, `validation_id`가 필수이며, 완료된 최신 검증과 일치해야 한다. 확인 기록을 `confirmations(kind=warning_ack)`에 저장하고 승인·승인 재전송·출력/다운로드에서 유효성을 검사한다. 미확인 경고는 `422 WARNING_ACKNOWLEDGEMENT_REQUIRED`로 거부한다. 원문·입력·관련 블록·경고 설명/심각도가 바뀌면 재확인하고, 무관한 변경은 재검증 후 원 확인자/시각을 보존한 연결 기록을 남긴다. 프론트 계약 사본·확인 버튼/요청/오류 표시는 아직 갱신하지 않았다. 이전 절의 D-07 미구현 표기는 당시 상태다. 데이터 schema_version은 1.0, DB는 v11을 유지한다.
 
 ## 1. 공통 규칙
 
@@ -208,11 +210,12 @@ after 값이 null이면 맨 앞이다. 존재하지 않는 대상, 자신 뒤로
 - scope: source / content / layout.
 - severity: blocker / warning / info.
 - status: open / resolved / excluded / acknowledged.
-- resolution: 조치 종류, 사용자, 시간, 사유, 관련 근거, 확인 당시 문서/입력 버전.
+- resolution: 조치 종류, 사용자, 시간, 사유, 관련 근거, 확인 당시 문서/입력 버전. 경고 확인에는 원 `validation_id`, `anchor_fingerprint`, 재검증에 연결한 `validated_document_revision`, `validated_validation_id`를 추가한다. 원 확인자·시각·버전은 재사용 시 덮어쓰지 않는다.
 - excluded는 선택 주장이나 자료를 실제 문서/선택에서 제외했을 때만 가능하다. 필수 내용의 결핍에는 사용할 수 없다.
 - 사실·수치·필수 내용의 정확성 또는 출력 파일의 정상 이용에 영향을 주는 문제는 blocker다. 사진 부족·표현 반복처럼 정확성과 출력 이용에 영향 없는 문제는 warning으로 분류한다. 사용자 확인을 이유로 blocker를 warning으로 낮추지 않는다.
 - acknowledged는 위 기준의 warning을 사용자가 확인했을 때만 사용한다. blocker를 확인 클릭만으로 통과시키지 않는다. 사진 부족을 확인해도 깨진 사진·남은 사진 자리의 blocker는 유지한다.
 - 확인 기록은 resolution의 사용자·시간·관련 근거·문서/입력 버전과 문제·관련 내용에 연결한다. 관련 문장·사진·근거가 바뀌면 재확인이 필요하다. 무관한 변경의 확인 기록을 재사용할 때도 새 버전의 검증 결과에 유효성을 연결한다.
+- 현재 확인 허용 코드는 서버의 `PLACEHOLDER_TEXT`(선택 항목 안내 문구), Agent의 `REPETITION`/`PHOTO_SHORTAGE`다. 명시적 시연 세션에서 서버가 만든 `DEMO_VALUE` warning에도 개별 확인을 요구한다. 일반 세션의 DEMO_VALUE, MOCK_VALUE, 근거·사실 오류, 미지원 코드와 모든 blocker/배치 문제는 확인으로 넘길 수 없다. 필수 내용·깨진 이미지·남은 이미지 자리는 별도 blocker로 유지된다. 시연 자료의 실자료 사용을 허용하지 않는다.
 - 해결 여부는 서버가 조치와 현재 내용의 일치를 확인해 기록한다. AI가 자체 승인하지 않는다.
 
 ### Proposal — AI 편집안
@@ -266,6 +269,8 @@ after 값이 null이면 맨 앞이다. 존재하지 않는 대상, 자신 뒤로
 6. 해당 형식의 배치 검사에서 넘침·깨진 이미지·남은 사진 자리가 해결되었다.
 7. 사용자가 해당 내용을 최종 승인했다.
 
+내용 재검증에서 미해결 blocker/경고가 생기면 기존 승인을 `validation_changed`로 무효화한다. 경고 확인은 최종 승인을 대신하지 않는다. 확인 후 사용자가 새로 승인해야 한다. 같은 입력에서 경고 내용·근거가 달라졌거나 확인 기록이 없으면 캐시된 승인과 기존 다운로드도 거부한다.
+
 출력 API도 Approval이 active이며 최신 문서/입력 버전과 일치하는지 확인한다. 승인 후 문서가 바뀌면 옛 파일을 최신 승인본처럼 내려주지 않는다. 변경 전에 내려받은 파일은 사용자의 로컬 파일로 남는다.
 
 같은 `input_revision`의 재점검에서 미해결 `VALUE_CONFLICT` 또는 `Fact.status=conflict`가 발견되면, 결과 저장과 같은 트랜잭션에서 현재 입력에 연결된 문서의 충돌 Issue를 추가·재개하고 기존 승인을 `invalidated`로 바꾼다. 사유는 `preflight_conflict`다. 최신 Validation이 있으면 미해결 문제를 다시 합산하여 `failed`로 표시하고 문서·세션 요약은 `review_required`, 현재 승인 조회는 `null`을 반환한다. 새 의미 검증을 실행한 것으로 기록하지 않으며 다른 미해결 문제·문서 본문·문서 버전은 보존한다. 점검 결과 저장에 실패하면 무효화도 함께 롤백한다.
@@ -299,7 +304,7 @@ after 값이 null이면 맨 앞이다. 존재하지 않는 대상, 자신 뒤로
 | POST /sessions/{sid}/proposals/{pid}/reject | 없음 | rejected; 문서 변화 없음 |
 | POST /sessions/{sid}/documents/{did}/restore | expected_revision, restore_from_revision | DocumentChangeOut; 이전 내용을 새 버전으로 저장 |
 | GET /sessions/{sid}/documents/{did}/issues | 없음 | `{document_id, document_revision, validation_id, issues}` |
-| POST /sessions/{sid}/issues/{iid}/resolve | expected_revision 필수, resolution, evidence_refs? | `{issue, validation, document_status}` |
+| POST /sessions/{sid}/issues/{iid}/resolve | expected_revision, resolution, evidence_refs?, input_revision?, validation_id? (acknowledged는 뒤 두 필드 필수) | `{issue, validation, document_status}` |
 | POST /sessions/{sid}/documents/{did}/validate | expected_revision, input_revision | Validation Job |
 | POST /sessions/{sid}/documents/{did}/layout-checks | expected_revision, format | LayoutCheck Job 및 미리보기 |
 | POST /sessions/{sid}/documents/{did}/approvals | expected_revision, input_revision, format, validation_id, layout_check_id, confirmed: true | Approval |
@@ -422,7 +427,7 @@ HTTP 오류의 `request_id`는 필수 문자열이고 `X-Request-Id` 헤더와 �
 |---|---|---|---|
 | C-05 | P0 | 기존 문서의 입력이 오래되면 편집·제안 요청을 409로 차단. 문서가 있으면 초안 재생성은 `DOCUMENT_EXISTS`. 편집 보존 원칙은 3절에 있음 | 기존 문서용 재점검 확인 → 영향 확인 → 수정안 적용 또는 현 내용 유지 근거 → 최신 입력 연결 → 재검증의 API·중간 상태·문서 버전 증가·재시도 규칙 |
 | C-06 | P0 | 서버 시작·최종 저장 가드 유지. 최초 초안의 LangGraph 대기·재개도 세션·입력 버전·현재 preflight·DB의 사용자 확인을 검사하고 소비한 확인의 중복 호출을 거부함. 세션 폴더 체크포인트 삭제 연결 검사 완료(task_agent.md 6.22절) | 실제 모델을 붙인 그래프·편집 단계·프로세스 장애 복구 확인. 별도 SQLite 커밋 사이 장애는 재점검 필요(plan.md 4.7절) |
-| C-08 | P1 | `validate` 규격·mock 검증 Job·결과 저장·승인 연결 구현. 문서·입력 버전 검사와 최종 사용자 승인도 수행함. 허용 warning의 확인자·시각·버전 기록과 관련 변경 후 재확인 기반은 있으나, 확인 의무를 승인 조건으로 강제하는 D-07 연결은 미완료 | D-07 제품 원칙을 유지하면서 경고 확인 대상·기록 규격·변경 후 재확인 조건과 `DEMO_VALUE` 적용 범위를 먼저 합의한 뒤 백엔드 후속 작업. 기존 기록·재확인 처리를 재사용하고 needs_review의 남은 문제·확인 유효성을 승인과 연결. 실제 LLM 의미 검증은 Agent 후속 작업 |
+| C-08 | P1 | 계약 1.5에서 D-07 서버 확인 기록·최신 검증/버전 검사·승인/출력 차단 구현. 기존 정확성 blocker 유지 | 프론트 확인 UI·계약 사본 연결, 실제 Agent/화면 통합 검증은 후속. 시연 warning도 명시 확인하며 일반 문서의 정확성 기준은 완화하지 않음 |
 | C-09 | P1 | PDF 배치·미리보기·승인·Export·다운로드와 형식·버전 일치 검사 구현. DOCX 파일 생성과 PDF 기준 미리보기는 있으나 DOCX의 `actual_pages=null`·`overflow=not_checked`로 승인·Export·다운로드는 차단됨 | DOCX 배치 검증 방법과 승인 보장 범위를 별도 합의한 뒤 후속 구현. 기존 PDF 검사·미리보기·승인/출력 규격은 프론트와 맞추며 PDF 검사만으로 DOCX 검증 완료로 표시하지 않음 |
 | C-10 | P1 | 보완 메모가 근거·수명 정책에 등장하지만 전용 API/모델은 없음 | 지원 여부부터 결정. 지원하면 원자료 버전·근거 위치·수명 연결, 미지원이면 텍스트 파일 첨부로 안내 |
 | C-11 | P1 | 직접 삽입 ID는 클라이언트가 전달하고 서버가 중복 검사. 초안 ID는 Agent 결과에 포함. 페이지 구조 제안의 범위가 불명확함 | ID 발급 책임과 블록/페이지 구조 편집 범위. 빈 페이지·페이지 단독 요청 표현도 합의 후 모델·검사와 맞춤 |
@@ -441,7 +446,7 @@ C-05는 기존 문서를 새 초안으로 덮어쓰는 기능이 아니다. 사�
 ### 7.4 반영 순서와 담당
 
 1. 백엔드가 현행 모델·경로·오류·예시 연결표를 확인하고 Agent·프론트와 C-01~C-07을 맞춘다.
-2. 해당 후속 기능 착수 전에 C-08~C-11의 남은 항목을 확정한다. 특히 새 경고 확인 의무와 `DEMO_VALUE` 적용 범위는 기존 승인 동작과 구분해 합의한다. 도구·보관 기간 등 제품 결정은 [plan.md 4.1절](plan.md)에 기록한다.
+2. 해당 후속 기능 착수 전에 C-08~C-11의 남은 항목을 확정한다. D-07의 현행 요청·저장·승인 규격은 계약 1.5를 따른다. 시연 범위를 실제 문서로 확대하는 결정은 별도 합의가 필요하다. 도구·보관 기간 등 제품 결정은 [plan.md 4.1절](plan.md)에 기록한다.
 3. 합의한 내용을 1~6절·실제 모델·응답 예시에 반영하고 contract_version 변경과 schema_version 변경을 각각 판단한다.
 4. 프론트 계약 사본·타입·호출부를 갱신하고 실제 연결을 확인한다. 이번 정정에서는 문서 현황과 API 예시의 작업일지 참조만 수정했다. 프론트 사본·API 응답 형식·코드는 수정하지 않았다.
 
@@ -459,7 +464,7 @@ C-05는 기존 문서를 새 초안으로 덮어쓰는 기능이 아니다. 사�
 | E04 AI 수정안 대기·확인 | `Job.status/progress/result_ref`, Proposal 조회 및 `changes/rationale/candidates` | AI 제안은 적용 전 문서를 자동 변경하지 않는다. 사용자가 직접 편집하면 오래된 제안은 E06으로 처리한다. 현재 진행 정보는 stage/message이며 백분율은 없다. 결과 조회·적용·취소·재요청은 C-02/C-03을 따른다. |
 | E05 편집 중 자료 추가 | 선택 변경 시 `input_revision` 증가; 현재 입력이 오래된 문서는 편집 차단 | 업로드와 자료 선택을 구분한다. 편집 보존·재점검·사용자 확인·문장/사진/근거 영향 확인·선택 적용 또는 유지·최신 입력 연결은 C-05의 후속 구현이다. 배너만으로 완료 처리하지 않는다. |
 | E06 수정안 기준 버전 충돌 | `Proposal.status=stale`, `base_document_revision`, `base_input_revision`; `PROPOSAL_STALE` 등 | 오래된 제안의 적용을 막고 최신 문서에서 재요청하도록 안내한다. 현재 stale 기록을 실제 삭제로 해석하지 않는다. 늦은 결과·만료는 C-06, 오류 구분은 C-07에 연결한다. |
-| E07 필수 문제 미해결 | `Issue.severity/status/resolution`, Validation·LayoutCheck·Approval, 3절 승인 조건 | 현재 서버는 미해결 blocker·버전·검사 상태와 최종 사용자 승인을 검사한다. D-07의 경고 확인 의무를 승인과 연결하는 작업은 C-08 합의 후 진행한다. 확인으로 blocker를 낮추지 않는 원칙과 기존 확인·관련 변경 후 재확인 기반을 유지한다. |
+| E07 필수 문제 미해결 | `Issue.severity/status/resolution`, Validation·LayoutCheck·Approval, 3절 승인 조건 | D-07 서버는 미확인/무효 경고 확인을 차단한다. 허용 경고 확인 후에도 필수 문제·배치·최종 동의를 별도로 검사한다. 프론트 연결은 후속이다. |
 | E08 출력 실패 | `Export.status/error`, 승인 스냅샷·형식·버전·재사용 규칙 | PDF는 유효한 승인·세션을 확인하고 출력만 재시도하는 경로까지 구현되어 있다. AI 초안을 다시 생성하지 않는다. 가짜 자료 실서버 검증 범위이며 DOCX 승인·Export·다운로드는 C-09 후속 작업이다. |
 | E09 세션 만료 예고 | `Session.expires_at`; 현재 무활동 120분과 생성 후 24시간 중 빠른 때 | 서버 만료 시각으로 남은 시간을 표시한다. 10분 전 알림·명시적 연장은 합의 대기다. 현재 연장 전용 API는 없고 GET·폴링은 활동으로 세지 않는다. |
 | E10 세션 종료·만료 | `Session.status`, `410 SESSION_EXPIRED`, 종료·정리 상태 | BE-09 내용 제거·폴더 삭제·재시도에 최초 초안의 LangGraph 체크포인트를 연결했다(C-06). 접근 차단과 `cleanup=done/pending`을 구분한다. 등록 원본과 내용 제거 후 감사용 메타 기록은 보존하며 편집 단계 그래프·실제 운영 검증은 후속이다. |

@@ -36,6 +36,7 @@ def create_approval(request: Request, sid: str, did: str, body: ApprovalCreate,
                                details={"approval_id": cached_id,
                                         "invalidated_reason": cached_approval["invalidated_reason"] if cached_approval else None})
             approvals.check_demo_identity(conn, row, approval=cached_approval)
+            approvals.check_warning_acknowledgements(conn, row, did, document.document_revision)
             return replay                                       # 현재도 유효한 승인에만 최초 성공 응답을 반환한다.
         v, manifest, lc_row, pub = approvals.check_conditions(conn, row, document, body)   # ②~⑦
         existing = approvals.find_matching_active(conn, did, document.document_revision, row["input_revision"], body)

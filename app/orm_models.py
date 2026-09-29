@@ -166,6 +166,7 @@ class Preflight(Base):
     __table_args__ = (
         ForeignKeyConstraint(['session_id'], ['sessions.session_id']),
         Index('ix_preflights_session', 'session_id', 'input_revision'),
+        ForeignKeyConstraint(['session_id', 'input_revision'], ['input_revisions.session_id', 'input_revisions.revision'], name='fk_preflights_input_revision'),
     )
 
 
@@ -201,6 +202,7 @@ class DocumentRevision(Base):
         ForeignKeyConstraint(['session_id'], ['sessions.session_id']),
         ForeignKeyConstraint(['preflight_id'], ['preflights.preflight_id']),
         UniqueConstraint('document_id', 'revision', 'session_id'),
+        ForeignKeyConstraint(['session_id', 'input_revision'], ['input_revisions.session_id', 'input_revisions.revision'], name='fk_document_revisions_input_revision'),
     )
 
 
@@ -223,6 +225,7 @@ class Proposal(Base):
         ForeignKeyConstraint(['document_id'], ['documents.document_id']),
         ForeignKeyConstraint(['session_id'], ['sessions.session_id']),
         Index('ix_proposals_document', 'document_id', 'status'),
+        ForeignKeyConstraint(['document_id', 'base_document_revision', 'session_id'], ['document_revisions.document_id', 'document_revisions.revision', 'document_revisions.session_id'], name='fk_proposals_base_revision'),
     )
 
 
@@ -245,6 +248,7 @@ class ValidationRecord(Base):
         ForeignKeyConstraint(['document_id'], ['documents.document_id']),
         ForeignKeyConstraint(['session_id'], ['sessions.session_id']),
         Index('ix_validations_document', 'document_id', 'document_revision', 'input_revision'),
+        ForeignKeyConstraint(['document_id', 'document_revision', 'session_id'], ['document_revisions.document_id', 'document_revisions.revision', 'document_revisions.session_id'], name='fk_validations_revision'),
     )
 
 
@@ -313,6 +317,8 @@ class LayoutCheck(Base):
         ForeignKeyConstraint(['session_id'], ['sessions.session_id']),
         CheckConstraint('demo IN (0,1)'),
         Index('ix_layout_checks_document', 'document_id', 'document_revision', 'format'),
+        ForeignKeyConstraint(['document_id', 'document_revision', 'session_id'], ['document_revisions.document_id', 'document_revisions.revision', 'document_revisions.session_id'], name='fk_layout_checks_revision'),
+        ForeignKeyConstraint(['artifact_id'], ['artifacts.artifact_id'], name='fk_layout_checks_artifact'),
     )
 
 
@@ -346,6 +352,9 @@ class Approval(Base):
         CheckConstraint('demo IN (0,1)'),
         Index('ix_approvals_document', 'document_id', 'status'),
         ForeignKeyConstraint(['confirmation_id'], ['confirmations.confirmation_id']),
+        ForeignKeyConstraint(['validation_id'], ['validations.validation_id'], name='fk_approvals_validation'),
+        ForeignKeyConstraint(['layout_check_id'], ['layout_checks.layout_check_id'], name='fk_approvals_layout'),
+        ForeignKeyConstraint(['artifact_id'], ['artifacts.artifact_id'], name='fk_approvals_artifact'),
     )
 
 
@@ -373,6 +382,7 @@ class Artifact(Base):
         ForeignKeyConstraint(['session_id'], ['sessions.session_id']),
         CheckConstraint('demo IN (0,1)'),
         Index('ix_artifacts_session', 'session_id'),
+        ForeignKeyConstraint(['document_id', 'document_revision', 'session_id'], ['document_revisions.document_id', 'document_revisions.revision', 'document_revisions.session_id'], name='fk_artifacts_revision'),
     )
 
 
@@ -404,6 +414,8 @@ class Export(Base):
         CheckConstraint('demo IN (0,1)'),
         Index('ix_exports_session', 'session_id', 'status'),
         Index('ux_exports_active', 'reuse_key', unique=True, sqlite_where=sql_text("status IN ('queued', 'generating', 'ready')")),
+        ForeignKeyConstraint(['approval_id'], ['approvals.approval_id'], name='fk_exports_approval'),
+        ForeignKeyConstraint(['artifact_id'], ['artifacts.artifact_id'], name='fk_exports_artifact'),
     )
 
 
@@ -427,6 +439,9 @@ class LayoutPreview(Base):
     __table_args__ = (
         ForeignKeyConstraint(['session_id'], ['sessions.session_id']),
         Index('ix_layout_previews_session', 'session_id'),
+        # 미리보기와 배치 결과는 한 트랜잭션에서 미리보기부터 저장한다.
+        ForeignKeyConstraint(['layout_check_id'], ['layout_checks.layout_check_id'], name='fk_layout_previews_layout', deferrable=True, initially='DEFERRED'),
+        ForeignKeyConstraint(['artifact_id'], ['artifacts.artifact_id'], name='fk_layout_previews_artifact'),
     )
 
 
@@ -443,6 +458,7 @@ class IdempotencyKey(Base):
     purged_at: Mapped[str | None] = mapped_column(Text, nullable=True)
     __table_args__ = (
         Index('ix_idempotency_session', 'session_id'),
+        ForeignKeyConstraint(['session_id'], ['sessions.session_id'], name='fk_idempotency_keys_session'),
     )
 
 
@@ -465,6 +481,7 @@ class CleanupTask(Base):
     __table_args__ = (
         Index('ix_cleanup_queue_status', 'status', 'next_retry_at'),
         Index('ux_cleanup_queue_active', 'session_id', 'kind', 'target_rel', unique=True, sqlite_where=sql_text("status IN ('pending', 'running')")),
+        ForeignKeyConstraint(['session_id'], ['sessions.session_id'], name='fk_cleanup_queue_session'),
     )
 
 

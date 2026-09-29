@@ -367,8 +367,13 @@ def run_validate_job(settings: Settings, session_id: str, job_id: str, input_rev
             status = validation.compute_validation_status(conn, document_id)
             validation.save_validation(conn, session_id, document, input_revision, validation_id, status, issue_ids,
                                        checks, fps, base_id, agent_called)
+            checked = conn.execute("SELECT * FROM validations WHERE validation_id=?", (validation_id,)).fetchone()
+            validation.reconcile_acknowledgements(conn, document, checked, ctx, fps)
+            status = validation.refresh_validation_status(conn, validation_id, document_id)
             if validation.preflight_conflicts(ctx):
                 approvals.invalidate_for_document(conn, document_id, "preflight_conflict")
+            elif status != "passed":
+                approvals.invalidate_for_document(conn, document_id, "validation_changed")
             documents.refresh_status_cache(conn, session_id, document_id)
             jobs.succeed(conn, job_id, {"type": "validation", "validation_id": validation_id, "status": status})
     except Exception:

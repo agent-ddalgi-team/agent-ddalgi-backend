@@ -2,7 +2,7 @@
 
 기존 SQL/행 접근과 트랜잭션 규칙은 아래 호환 어댑터로 유지한다.
 기존 v9 초기화·마이그레이션은 sqlite3 구현을 유지한다.
-새 ERD v10 DB는 init_orm_db와 Alembic으로 별도 생성하며 app.orm_models의 모델을 사용한다.
+새 ERD v11 DB는 init_orm_db와 Alembic으로 별도 생성하며 app.orm_models의 모델을 사용한다.
 
 기존 스키마 계열은 PRAGMA user_version, ERD v10 이후 변경 이력은 Alembic으로 관리한다.
 - v1 (BE-02): sessions, sources(session_id NOT NULL, stored_path 절대경로), jobs, idempotency_keys
@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, closing
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -34,7 +34,7 @@ from sqlalchemy.orm import Session as ORMSession
 from sqlalchemy.sql import Executable
 
 SCHEMA_VERSION = 9
-ORM_SCHEMA_VERSION = 10
+ORM_SCHEMA_VERSION = 11
 
 # v9: source provenance and attachment role, immutable session/output demo identity.
 V9_COLUMNS = {
@@ -481,23 +481,87 @@ def _backfill_idempotency_sessions(conn: sqlite3.Connection) -> int:
 
 
 def _validate_orm_schema(conn: sqlite3.Connection | SQLAlchemyConnection) -> None:
-    """v10 표기만 믿고 부분 생성된 DB로 서버를 시작하지 않는다."""
+    """테이블뿐 아니라 컬럼·FK·UNIQUE·CHECK·인덱스까지 현재 ORM과 대조한다.
+
+    SQLite batch 재생성에 따른 이름/따옴표 차이는 관계 누락과 구분한다.
+    검사용 기준 구조는 메모리에서만 생성하며 실제 DB에는 쓰지 않는다.
+    """
+    from sqlalchemy.dialects.sqlite import dialect
+    from sqlalchemy.schema import CreateIndex, CreateTable
     from app.orm_models import Base
+    from app.schema_migrations import SQL_TOKEN
 
     execute = conn.exec_driver_sql if isinstance(conn, SQLAlchemyConnection) else conn.execute
-    actual_tables = {row[0] for row in execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    missing_tables = set(Base.metadata.tables) - actual_tables
-    if missing_tables:
-        raise ValueError(f"Incomplete ORM database: missing tables {', '.join(sorted(missing_tables))}")
-    for table in Base.metadata.tables.values():
-        # 이름은 사용자 입력이 아닌 정적인 ORM metadata에서만 가져온다.
-        quoted_name = table.name.replace('"', '""')
-        actual_columns = {row[1] for row in execute(f'PRAGMA table_info("{quoted_name}")')}
-        missing_columns = set(table.columns.keys()) - actual_columns
-        if missing_columns:
-            raise ValueError(
-                f"Incomplete ORM database: {table.name} missing columns {', '.join(sorted(missing_columns))}"
-            )
+
+    def tokens(sql):
+        return tuple(token if token.startswith("'") else token.strip('"`[]').lower()
+                     for token in SQL_TOKEN.findall(sql or ""))
+
+    def shape(query):
+        tables = {row[0]: row[1] for row in query(
+            "SELECT name,sql FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%' AND name!='alembic_version'")}
+        result = {}
+        for name, ddl in tables.items():
+            quoted = '"' + name.replace('"', '""') + '"'
+            columns = frozenset((row[1], row[2].upper(), row[3], tokens(row[4]), row[5], row[6])
+                                for row in query(f"PRAGMA table_xinfo({quoted})"))
+            foreign_keys = {}
+            for row in query(f"PRAGMA foreign_key_list({quoted})"):
+                foreign_keys.setdefault(row[0], []).append(tuple(row))
+            references = frozenset(
+                (rows[0][2], tuple(row[3] for row in sorted(rows, key=lambda row: row[1])),
+                 tuple(row[4] for row in sorted(rows, key=lambda row: row[1])), *rows[0][5:])
+                for rows in foreign_keys.values())
+            indexes = set()
+            for index in list(query(f"PRAGMA index_list({quoted})")):
+                if index[3] == 'pk':
+                    continue  # PK order is already represented in columns.
+                index_name = '"' + index[1].replace('"', '""') + '"'
+                fields = tuple((row[2], row[3], row[4]) for row in query(f"PRAGMA index_xinfo({index_name})") if row[5])
+                index_sql = query("SELECT sql FROM sqlite_master WHERE type='index' AND name=?", (index[1],)).fetchone()[0]
+                parts = tokens(index_sql)
+                predicate = parts[parts.index('where') + 1:] if 'where' in parts else ()
+                indexes.add((bool(index[2]), fields, predicate))
+            checks, parts = set(), tokens(ddl)
+            for start in range(len(parts) - 1):
+                if parts[start:start + 2] != ('check', '('):
+                    continue
+                depth = 1
+                for end in range(start + 2, len(parts)):
+                    depth += (parts[end] == '(') - (parts[end] == ')')
+                    if depth == 0:
+                        checks.add(parts[start + 2:end])
+                        break
+            deferred = set()
+            for start in range(len(parts) - 2):
+                if parts[start:start + 3] != ('foreign', 'key', '('):
+                    continue
+                depth, end = 0, start
+                while end < len(parts):
+                    token = parts[end]
+                    if depth == 0 and token in (',', ')'):
+                        break
+                    depth += (token == '(') - (token == ')')
+                    end += 1
+                clause = parts[start:end]
+                if 'deferrable' in clause:
+                    deferred.add(clause)
+            result[name] = (columns, references, frozenset(indexes), frozenset(checks), frozenset(deferred))
+        return result
+
+    with closing(sqlite3.connect(":memory:")) as reference:
+        for table in Base.metadata.tables.values():
+            reference.execute(str(CreateTable(table).compile(dialect=dialect())))
+        for table in Base.metadata.tables.values():
+            for index in table.indexes:
+                reference.execute(str(CreateIndex(index).compile(dialect=dialect())))
+        expected, actual = shape(reference.execute), shape(execute)
+    different = sorted(name for name in expected.keys() | actual.keys() if expected.get(name) != actual.get(name))
+    if different:
+        raise ValueError("Incomplete ORM database: ORM schema mismatch in " + ", ".join(different))
+    if list(execute("PRAGMA foreign_key_check")):
+        raise ValueError("Incomplete ORM database: foreign key violations")
 
 
 def init_orm_db(db_path: Path, private_runs_dir: Path) -> None:
@@ -522,6 +586,12 @@ def init_db(db_path: Path, private_runs_dir: Path) -> None:
         if version == ORM_SCHEMA_VERSION:
             _validate_orm_schema(conn)
             return
+        if version == 10:
+            raise ValueError(
+                "ERD database schema v10 requires migration to v11. "
+                "Stop the server and run alembic upgrade head before starting again; "
+                "server startup does not apply this migration automatically."
+            )
         if version > SCHEMA_VERSION:
             raise ValueError(f"Unsupported database schema version: {version}")
         conn.execute("PRAGMA journal_mode=WAL")

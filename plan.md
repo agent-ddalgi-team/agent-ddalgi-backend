@@ -1,6 +1,6 @@
 # 회사소개서 도우미 개발 계획
 
-기준일: 2026-09-28 · v1.41 · 교육용 2개월 프로젝트 · 담당: 백엔드 + Agent
+기준일: 2026-09-29 · v1.43 · 교육용 2개월 프로젝트 · 담당: 백엔드 + Agent
 
 이 문서는 무엇을 만들고 어떤 순서로 개발할지 설명한다. 상세 기능은 [prd.md](prd.md), API 원본은 [contracts.md](contracts.md), 실제 진행 상태는 역할별 task 파일에서 관리한다.
 
@@ -99,7 +99,7 @@ D-01/D-02 값은 `app/config.py`에서 관리한다. python-docx는 읽기·쓰�
 
 추출·초안 호출 코드는 구조화된 JSON 결과(`strict=true`)와 `store=false`를 사용한다. 외부 제공자의 무보관을 보장하는 설정은 아니다. 실제 API로 T01 기본 사실·T02 회사명 누락·T03 수치 충돌·T04 납기 조건 사례의 추출·글 초안의 의미와 근거를 확인했다(task_agent.md 6.17절). 글 항목을 목표 1·4·6·8·10개의 논리 페이지로 나누지만 실제 출력 쪽수와 실자료 품질은 미검증이다. 자료가 없거나 불명확한 항목의 제목이 서버의 사실 주장 검사와 충돌하는 부분은 백엔드와 후속 조정한다. 이번 연결로 자동 의미 검증·승인·출력까지 완료 처리하지 않는다.
 
-**병합 후 정책 적용 주의:** D-07은 확정 요구사항이다. 현재 승인 코드는 미확인 warning의 확인 여부·관련 버전 유효성을 승인 조건으로 강제하지 않으므로 후속 구현이 필요하다. 아래 시연 기반은 기존 구현 사실로 보존하며, 시연 임시 사실의 별도 허용 범위가 D-07의 예외인지 확인하기 전 일반 문서의 정확성 기준을 완화하지 않는다.
+**병합 후 정책 적용 주의:** D-07은 확정 요구사항이다. 2026-09-29 BE-06 후속에서 미확인 warning·관련 버전 유효성의 서버 강제를 구현했다(4.23절). 프론트 개별 확인 연결은 후속이다. 아래 시연 기반은 기존 구현 사실로 보존하며, 시연 임시 사실의 별도 허용 범위가 D-07의 예외인지 확인하기 전 일반 문서의 정확성 기준을 완화하지 않는다.
 
 ### 4.1 개발 전 확인할 미정 사항
 
@@ -557,6 +557,36 @@ PDF 검사 Job 완료와 실제 검사 통과를 구분한다. 현재 화면에�
 
 검사는 임시 v10 DB·mock AI·별도 브라우저 프로필에서 수행하며 `--publication`을 지정할 때만 실제 설치 브라우저로 PDF를 만든다. 새 의존성·API·테이블을 추가하지 않는다. 활성 `private_runs/erd_v2/app.sqlite3`와 원본 자료는 보존하고 적재 보류를 유지한다. 이전 v9 DB는 사용자 요청으로 삭제한 상태다. 결과는 task_backend.md 6.29절에 기록한다.
 
+### 4.22 ERD 관계 제약 보완 (2026-09-29, BE-02 후속)
+
+사용자 요청에 따라 실회사·데모 자료 적재를 보류하고 DB 관계를 먼저 보완한다. SVG의 25개 테이블·핵심 필드 103개는 기존 v10과 일치하지만 FK 표기 필드 16개에 물리 제약이 없었다. 이미 공유된 `20260928_01`은 변경하지 않고 승인받은 `migrations/versions/20260929_01_erd_relationships.py`에 추가 이력을 기록한다. 새 구조는 v11 / Alembic `20260929_01`이다.
+
+| 관계 | DB에서 강제할 범위 |
+|---|---|
+| preflights·document_revisions → input_revisions | 같은 세션의 실제 입력 버전 |
+| proposals·validations·artifacts·layout_checks → document_revisions | 같은 문서·세션의 실제 문서 버전 |
+| approvals → validations·layout_checks·artifacts | 검사/산출물 대상의 존재 |
+| exports → approvals·artifacts | 승인/다운로드 파일 대상의 존재 |
+| layout_checks → artifacts | 검사 파일 대상의 존재 |
+| layout_previews → layout_checks·artifacts | 실제 검사/미리보기 파일의 존재. layout 연결만 저장 트랜잭션 종료 시 검사 |
+| idempotency_keys·cleanup_queue → sessions | 실제 세션의 존재. 멱등 기록의 nullable 세션은 유지 |
+
+승인·출력의 모든 문서/입력/형식 일치까지 단일 ID 외래 키가 보장한다고 설명하지 않는다. 기존 서비스의 소유·버전·형식 검사를 유지한다. 세션 종료는 부모 행을 삭제하는 대신 내용을 비우는 기존 정책이며 CASCADE를 추가하지 않는다. 문서 이력의 session_id는 기존 저장 순서(INSERT 후 같은 트랜잭션에서 연결)를 유지하므로 nullable이다. JSON의 근거 참조와 자산의 선택 범위도 서비스 검사 대상으로 유지한다.
+
+마이그레이션은 동결된 v10 DDL에서 추가 제약만 생성한다. 재생성할 11개 테이블의 데이터·rowid·CHECK·UNIQUE·인덱스를 보존하며, 알 수 없는 구조 또는 기존 잘못된 참조는 테이블 재구성 전에 거부한다. 구조 변경과 이력 갱신은 한 트랜잭션이고 실패하면 롤백한다. 서버는 오래된 v10을 자동 변경하지 않고 명시적 `alembic upgrade head`를 안내한다. 기존 v9 호환은 유지한다.
+
+HTML의 상세 목표와 현재 저장 범위도 구분한다. 페이지/블록은 document_revisions.content_json, 사실/문제/추천은 preflights의 JSON을 사용한다. preflights의 별도 status/coverage_json/plan_json/confirmed_by, 블록 style, 읽기 실행 page_count의 실제 채움, 편집·복원 버전의 명시적인 점검 근거 고정은 이번 관계 제약 작업에 포함하지 않는다. 추정 데이터나 자동 동의를 생성하지 않는다. impact_reviews 기능과 confirmations의 warning_ack/impact_keep, D-07/C-05/DOCX는 후속이다. 외부 API 계약 1.4와 프론트 코드는 유지한다.
+
+### 4.23 D-07 경고 확인 기록과 승인 연결 (2026-09-29)
+
+사용자의 다음 백엔드 작업 요청에 따라 기존 Issue 해결 API와 v11 `confirmations`를 사용한다. 새 테이블·마이그레이션·파일은 필요하지 않다. `acknowledged`에는 문서 버전 외에 입력 버전과 사용자가 본 완료 검증 ID를 받는다. 현재 버전·최신 완료 결과·관련 내용이 일치할 때만 확인자/시각/사유/관련 근거와 원 버전을 기록한다. 같은 확인의 재전송·동시 요청은 한 번만 기록하며 DB 기록 실패는 Issue와 멱등 응답까지 함께 취소한다.
+
+승인 전에 개별 경고 확인을 검사하고 승인 재전송·출력·다운로드에서도 확인 기록이 여전히 유효한지 대조한다. 관련 문장·사진·근거·사실·입력 또는 경고 설명/심각도가 달라지면 다시 확인한다. 무관한 블록 변경은 재검증 뒤 원 확인자/시각을 유지하고 새 검증으로 연결한다. 새 검증에 미해결 문제가 생기면 승인을 `validation_changed`로 무효화한다. 확인 기록은 최종 사용자 승인을 대신하지 않는다.
+
+허용 대상은 기존 서버의 선택 항목 안내 문구 `PLACEHOLDER_TEXT`, Agent의 `REPETITION`/`PHOTO_SHORTAGE`다. 실제 필수 결핍·사실 오류·깨진 이미지·사진 자리·공개 허가 등 blocker는 유지한다. 미지원 warning 코드는 확인으로 통과시키지 않는다. 명시적 시연 모드의 기존 서버 `DEMO_VALUE` warning에도 개별 확인을 요구한다. 일반 문서에서 시연 자료나 가짜 사실을 허용하는 예외는 추가하지 않는다. 원문 의미 검증의 정확성과 경고 분류 품질은 Agent·실제 자료 통합 검증에서 확인할 범위다.
+
+계약 1.5 / 문서 v1.10으로 요청·오류·예시를 맞춘다. 데이터 schema_version 1.0과 DB v11은 그대로다. 구형 v9 테스트 호환 경로는 Issue resolution에 같은 유효성 정보를 저장하고 ERD DB에서는 confirmations도 필수다. 프론트 사본·확인 화면은 미변경이며 별도 연결이 필요하다. 자료 적재는 계속 보류한다. 실제 검증 결과와 남은 작업은 task_backend.md 6.32절에 기록한다.
+
 ## 5. 데이터 모델
 
 이전 문서가 ‘plan.md 5절의 진행 순서’를 가리키면 [8절](#8-구현-순서)을 읽는다. 아래는 기존 객체를 이해하기 위한 요약이며 새 테이블을 추가하는 설계가 아니다.
@@ -573,7 +603,7 @@ PDF 검사 Job 완료와 실제 검사 통과를 구분한다. 현재 화면에�
 
 자료·설정 변경은 `input_revision`, 문서 편집은 `document_revision`으로 구분한다. 수정안·검사·승인을 해당 버전에 연결해 오래된 결과의 적용을 막는다. 새 자료를 선택하면 기존 편집을 보존한 채 재점검·사용자 확인·영향 확인 후 필요한 수정과 재검증을 진행한다(C-05).
 
-검증·승인·PDF 출력 객체는 구현되어 있으며, D-07 경고 확인 연결과 DOCX 승인 등은 아직 미완료다. 필드와 구현 상태는 [contracts.md](contracts.md), [app/models.py](app/models.py), 역할별 task에서 확인한다.
+검증·승인·PDF 출력과 D-07 서버 경고 확인은 구현되어 있으며, 개별 확인 UI와 DOCX 승인 등은 아직 미완료다. 필드와 구현 상태는 [contracts.md](contracts.md), [app/models.py](app/models.py), 역할별 task에서 확인한다.
 
 ## 6. 주요 API
 
@@ -587,7 +617,7 @@ API는 화면과 서버가 주고받는 요청이다. 기본 경로는 `/api/v1`
 | 사전 점검·초안 | `POST /sessions/{sid}/preflights`, `POST /sessions/{sid}/drafts` | 코드 있음, AI는 mock |
 | 문서 조회·직접 편집 | `GET/PATCH /sessions/{sid}/documents/{did}` | 코드 있음, 검증·승인 연결 기반 포함 |
 | AI 수정안·적용 | `POST /sessions/{sid}/documents/{did}/proposals`, `POST /sessions/{sid}/proposals/{pid}/apply` | 코드 있음, 제안 생성은 mock |
-| 검증·배치·승인 | `POST /sessions/{sid}/documents/{did}/validate`, `/layout-checks`, `/approvals` | 라우트 있음. AI 검증은 mock, PDF 배치 연결. D-07 경고 확인은 후속 |
+| 검증·배치·승인 | `POST /sessions/{sid}/documents/{did}/validate`, `/layout-checks`, `/approvals` | 라우트 있음. PDF 배치·D-07 서버 경고 확인 연결. 실제 AI/확인 UI 통합은 후속 |
 | 출력·다운로드 | `POST /sessions/{sid}/exports`, `GET /sessions/{sid}/exports/{eid}/download` | 라우트 있음. PDF 구현, DOCX 승인·출력 미완료 |
 | 진행·사진 조회 | `GET /sessions/{sid}/jobs/{jid}`, `GET /sessions/{sid}/assets/{asset_id}` | 코드 있음. asset은 현재 이미지 조회 |
 

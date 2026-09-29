@@ -308,14 +308,23 @@ class DemoFlow(BaseFlow):
         self.rev_in = r.json()["input_revision"]
         self.did = None
 
-    def validate(self):
+    def validate(self, *, acknowledge=True):
         response = self.c.post(f"/api/v1/sessions/{self.sid}/documents/{self.did}/validate",
                                json={"expected_revision": self.rev(), "input_revision": self.rev_in})
         assert response.status_code == 202, response.text
         self.job(response.json()["job_id"])
         result = self.get()["validation"]
-        assert result["status"] == "needs_review", result  # DEMO_VALUE는 open warning이며 개별 확인 강제 없음
-        return result
+        assert result["status"] in {"needs_review", "passed"}, result
+        if acknowledge:
+            items = self.c.get(f"/api/v1/sessions/{self.sid}/documents/{self.did}/issues").json()["issues"]
+            for issue in items:
+                if issue["status"] == "open" and issue["severity"] == "warning":
+                    response = self.c.post(f"/api/v1/sessions/{self.sid}/issues/{issue['issue_id']}/resolve", json={
+                        "expected_revision": self.rev(), "input_revision": self.rev_in, "validation_id": result["validation_id"],
+                        "resolution": {"action": "acknowledged", "reason": "가상 자료를 사용한 시연임을 확인함"}})
+                    assert response.status_code == 200, response.text
+            assert self.get()["validation"]["status"] == "passed"
+        return self.get()["validation"]
 
     def fabricate(self):
         result = super().fabricate()
@@ -413,14 +422,20 @@ def test_late_agent_result_cannot_store_after_demo_disabled(app, settings, monke
     assert _row(settings, "SELECT status,purged_at FROM sessions WHERE session_id=?", flow.sid)[:] == ("active", None)
 
 
-def test_demo_warning_can_approve_without_acknowledgement_and_reuses_artifact_bytes(app, settings):
+def test_demo_warning_requires_acknowledgement_and_reuses_artifact_bytes(app, settings):
     flow = DemoFlow(app, settings).draft()
+    unchecked = flow.validate(acknowledge=False)
+    layout = flow.fabricate()
+    denied = flow.c.post(f"/api/v1/sessions/{flow.sid}/documents/{flow.did}/approvals", json={
+        "expected_revision": flow.rev(), "input_revision": flow.rev_in, "format": "pdf",
+        "validation_id": unchecked["validation_id"], "layout_check_id": layout["layout_check_id"], "confirmed": True})
+    assert denied.status_code == 422 and denied.json()["error"]["code"] == "WARNING_ACKNOWLEDGEMENT_REQUIRED"
     approval = flow.approved()
     assert flow.get()["demo"] is True
     assert approval["demo"] is True
     with connect(settings.db_path) as conn:
         warnings = conn.execute("SELECT status,severity FROM issues WHERE document_id=? AND code='DEMO_VALUE'", (flow.did,)).fetchall()
-    assert warnings and all(w["status"] == "open" and w["severity"] == "warning" for w in warnings)
+    assert warnings and all(w["status"] == "acknowledged" and w["severity"] == "warning" for w in warnings)
     export = flow.export_ready(approval["approval_id"])
     assert export["demo"] is True
     response = flow.download(export["export_id"])

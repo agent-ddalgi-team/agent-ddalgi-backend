@@ -73,7 +73,30 @@ def supersede_active(conn: Connection, document_id: str, document_revision: int,
     return cur.rowcount
 
 
-def check_conditions(conn: Connection, session_row: Row, document: Document, body: ApprovalCreate) -> tuple[Row, str]:
+def check_warning_acknowledgements(conn: Connection, session_row: Row, document_id: str, revision: int) -> None:
+    """승인·재전송·다운로드가 같은 경고 확인 규칙을 사용한다."""
+    rows = conn.execute("SELECT * FROM issues WHERE document_id=? AND scope<>'layout' "
+                        "AND ((status='open' AND severity='warning') OR status='acknowledged')", (document_id,)).fetchall()
+    if not rows:
+        return
+    from app.services import documents, preflights
+
+    doc = documents.get_current(conn, session_row["session_id"], document_id)
+    pf = conn.execute("SELECT preflight_id FROM preflights WHERE session_id=? AND input_revision=? "
+                      "ORDER BY created_at DESC, rowid DESC LIMIT 1", (session_row["session_id"], session_row["input_revision"])).fetchone()
+    ctx = validation.load_context(conn, session_row["session_id"],
+                                  preflights.get(conn, session_row["session_id"], pf[0]) if pf else None)
+    fps = validation.fingerprints(doc, ctx.seg_texts)
+    checked = validation.latest_validation(conn, document_id, revision, session_row["input_revision"])
+    missing = [r["issue_id"] for r in rows if checked is None
+               or not validation.warning_ack_valid(conn, r, checked, demo=bool(session_row["demo"]))
+               or r["anchor_fingerprint"] != validation.issue_anchor(r, fps, ctx, session_row["input_revision"])]
+    if missing:
+        raise ApiError(422, "WARNING_ACKNOWLEDGEMENT_REQUIRED", "미확인 경고가 있습니다. 최신 검증 결과에서 개별 경고를 확인해 주세요.",
+                       details={"issue_ids": missing, "validation_id": checked["validation_id"] if checked else None})
+
+
+def check_conditions(conn: Connection, session_row: Row, document: Document, body: ApprovalCreate) -> tuple:
     """조건 ①은 라우터(접근 검사)에서 끝났다. ②~⑦을 순서대로 검사하고 (Validation 행, asset_manifest_hash)를 돌려준다."""
     # ② 요청 버전 = 최신 저장본
     if body.expected_revision != document.document_revision:
@@ -102,9 +125,12 @@ def check_conditions(conn: Connection, session_row: Row, document: Document, bod
     # 내용 blocker만. 배치(scope=layout) blocker는 해당 형식의 승인 조건 ⑥에서 판단한다(BE-08).
     open_blockers = [r["issue_id"] for r in conn.execute(
         "SELECT issue_id FROM issues WHERE document_id=? AND status='open' AND severity='blocker' AND scope<>'layout'", (document.document_id,))]
+    if validation.validation_in_progress(conn, document.document_id, document.document_revision, session_row["input_revision"]):
+        raise ApiError(422, "VALIDATION_NOT_PASSED", "검증이 진행 중입니다. 완료된 결과를 확인해 주세요.", details={"reason": "pending"})
     if v["status"] == "pending" or open_blockers or v["status"] == "failed":
         raise ApiError(422, "VALIDATION_NOT_PASSED", "미해결 필수 문제가 있어 승인할 수 없습니다.",
                        details={"validation_id": body.validation_id, "reason": "open_blockers", "issue_ids": open_blockers})
+    check_warning_acknowledgements(conn, session_row, document.document_id, document.document_revision)
     # ⑤ 필수 내용이 실제 블록에 — 검증과 별개로 지금 문서를 다시 본다
     preflight_row = conn.execute("SELECT * FROM preflights WHERE session_id=? AND input_revision=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
                                  (session_row["session_id"], session_row["input_revision"])).fetchone()
