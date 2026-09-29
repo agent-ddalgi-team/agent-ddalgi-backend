@@ -988,3 +988,29 @@ def test_no_real_company_terms_in_new_code():
         src = inspect.getsource(mod)
         for banned in ("거산", "케미칼", "Geosan"):
             assert banned not in src, mod.__name__
+
+@pytest.mark.parametrize("caption,registered,expected", [
+    ("소개서의 생산라인 사진", None, True),
+    ("AI 생성 시연 콘셉트: 어두운 배경의 금속 부품 표지 이미지 · 실제 회사 제품 아님", "AI 생성 시연 콘셉트: 어두운 배경의 금속 부품 표지 이미지 · 실제 회사 제품 아님", True),
+    ("AI 생성 시연 콘셉트: 어두운 배경의 금속 부품 표지 이미지 · 실제 회사 제품 아님", None, False),
+    ("국내 최대 규모 설비 사진", "국내 최대 규모 설비 사진", False),
+    ("ISO 9001 인증 설비", "ISO 9001 인증 설비", False),
+    ("생산 능력 300개", "생산 능력 300개", False),
+])
+def test_photo_description_is_not_doubled_or_promoted_to_factual_evidence(caption, registered, expected):
+    from types import SimpleNamespace
+    from app.models import Block
+    block = Block(block_id="photo", type="image", content={"asset_id": "asset", "caption": caption, "alt": caption})
+    ctx = SimpleNamespace(asset_captions={"asset": registered} if registered else {})
+    assert validation.image_has_descriptive_caption(block, ctx) is expected
+    block.content["alt"] = "실제 회사가 보유한 최대 규모 설비"
+    assert not validation.image_has_descriptive_caption(block, ctx)
+
+
+def test_duplicate_caption_and_alt_do_not_create_server_blocker(app):
+    ctx = Ctx(app)
+    block = next(b for p in ctx.doc()["pages"] for b in p["blocks"] if b["type"] == "image")
+    ctx.patch([{"op": "replace_block_content", "block_id": block["block_id"], "content": {
+        **block["content"], "caption": "소개서의 생산라인 사진", "alt": "소개서의 생산라인 사진"}}])
+    ctx.validated()
+    assert not any(block["block_id"] in i["block_ids"] for i in ctx.open_issues("UNSUPPORTED_CLAIM"))

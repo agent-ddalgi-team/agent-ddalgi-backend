@@ -129,6 +129,7 @@ class Context:
     preflight_issues: list[Issue]
     demo_sources: set[str] = field(default_factory=set)
     demo: bool = False
+    asset_captions: dict[str, str] = field(default_factory=dict)
 
 
 def load_context(conn: Connection, session_id: str, preflight: PreflightOut | None) -> Context:
@@ -145,8 +146,28 @@ def load_context(conn: Connection, session_id: str, preflight: PreflightOut | No
     demo_sources = {r["source_id"] for r in conn.execute("SELECT source_id FROM sources WHERE origin_kind='demo'")}
     session = conn.execute("SELECT demo FROM sessions WHERE session_id=?", (session_id,)).fetchone()
     facts = {f.fact_id: f for f in preflight.facts} if preflight else {}
+    from app.services.preflights import build_sources
+    selected = conn.execute("SELECT selected_source_ids FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+    sources = build_sources(conn, session_id, json.loads(selected[0])) if selected else []
+    captions = {aid: meta["caption"] for src in sources for aid, meta in src.asset_descriptions.items()}
     return Context(seg_texts, seg_source, asset_source, mock_sources, refs_service.load(conn, session_id), facts,
-                   list(preflight.issues) if preflight else [], demo_sources, bool(session and session["demo"]))
+                   list(preflight.issues) if preflight else [], demo_sources, bool(session and session["demo"]), captions)
+
+
+def image_has_descriptive_caption(block: Block, ctx: Context) -> bool:
+    """캡션/alt를 각각 검사한다. 등록 설명은 출처만 제공하며 이미지 의미 검사를 대체하지 않는다."""
+    registered = ctx.asset_captions.get(block.content.get("asset_id"))
+    for text in block_texts(block):
+        # '소개서'의 '개'는 수량 주장이 아니다. 문서 출처 머리말만 분리한다.
+        description = text.removeprefix("소개서의 ")
+        if not text.strip() or is_label(description):
+            continue
+        # 선택·공개 허가가 유효한 사진의 동일 설명에만 길이 제한을 완화한다.
+        # 인증/성능/수치 등 사실 주장은 등록 캡션이라도 텍스트 근거가 필요하다.
+        if (text != registered or len(text) > 160 or _DIGIT.search(text)
+                or any(word in description for word in _CLAIM_KEYWORDS)):
+            return False
+    return True
 
 
 # ---------------- 서버 일반 검사 ----------------
@@ -288,7 +309,8 @@ def server_checks(document: Document, ctx: Context) -> tuple[list[IssueDraft], l
                     drafts.append(IssueDraft("content", "UNSUPPORTED_CLAIM", "blocker",
                                              "근거(fact_ids·evidence_refs)가 없는 사실 주장입니다. 주장을 지우거나 근거를 연결한 뒤 다시 검증하세요.",
                                              block_ids=[bid]))
-                elif block.type in ("heading", "image") and joined and not is_label(joined):
+                elif (block.type in ("heading", "image") and joined
+                      and not (image_has_descriptive_caption(block, ctx) if block.type == "image" else is_label(joined))):
                     drafts.append(IssueDraft("content", "UNSUPPORTED_CLAIM", "blocker",
                                              "제목·캡션에 근거 없는 사실 주장이 있습니다.", block_ids=[bid]))
             if block.type == "paragraph" and is_placeholder(joined):
@@ -313,7 +335,7 @@ def server_checks(document: Document, ctx: Context) -> tuple[list[IssueDraft], l
             is_demo, demo_reasons = _block_origin(block, ctx, ctx.demo_sources, "[시연]")
             if is_demo:
                 drafts.append(IssueDraft("content", "DEMO_VALUE", "warning" if ctx.demo else "blocker",
-                                         f"시연용 임시 내용이 포함되어 있습니다({', '.join(demo_reasons)}).",
+                                         "시연용 가상 내용 또는 이미지가 포함되어 있습니다. 실제 회사 실적·제품으로 오해되지 않도록 시연 표시를 확인해 주세요.",
                                          block_ids=[bid]))
             records.append(CheckRecord(check_key=f"block:{bid}", kind="server", block_ids=[bid],
                                        result="issue" if len(drafts) > before else "ok"))

@@ -419,7 +419,10 @@ def build_html(snapshot: RenderSnapshot) -> str:
         content_w_mm=PAGE_W_MM - 2 * margin, content_h_mm=PAGE_H_MM - 2 * margin - (DEMO_FOOTER_MM if snapshot.demo else 0),
         demo=snapshot.demo, demo_footer_text=DEMO_FOOTER_TEXT, demo_footer_mm=DEMO_FOOTER_MM,
         image_max_h_mm=IMAGE_MAX_H_MM, image_crop_h_mm=IMAGE_CROP_H_MM,
-        pages=[{"page_id": p.page_id, "title": _clean_text(p.title), "blocks": _view_blocks(snapshot, p)} for p in snapshot.pages],
+        pages=[{"page_id": p.page_id, "title": _clean_text(p.title),
+                "layout": layout_checks.render_layout(p.layout_key),
+                "photo_count": sum(b.type == "image" for b in p.blocks),
+                "blocks": _view_blocks(snapshot, p)} for p in snapshot.pages],
     )
 
 

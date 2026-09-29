@@ -35,8 +35,9 @@ def image_candidates(request):
             locator = source.asset_locators.get(aid, {})
             location = (f"PPT {locator['slide']}쪽 · " if locator.get("slide") else
                         f"PDF {locator['page']}쪽 · " if locator.get("page") else "")
+            caption = source.asset_descriptions.get(aid, {}).get("caption") or "자료 사진"
             block = Block(block_id=new_id, type="image", content={
-                "asset_id": aid, "alt": "자료 사진", "caption": "자료 사진", "fit": "contain"})
+                "asset_id": aid, "alt": caption, "caption": caption, "fit": "contain"})
             ops = [OpInsertBlock(op="insert_block", page_id=page.page_id,
                                  after_block_id=target.block_id, block=block)]
             # 먼저 뒤에 삽입하고 기존 사진/자리를 지워 순서를 보존한다. 이전 설명·근거는 물려주지 않는다.
