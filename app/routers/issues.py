@@ -26,6 +26,10 @@ def resolve_issue(request: Request, sid: str, iid: str, body: IssueResolveBody,
         document = documents.get_current(conn, sid, issue["document_id"])
         replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest, settings)
         if replay is not None:
+            if body.resolution.action == "acknowledged":
+                checked = issues.acknowledgement_context(conn, row, document, issue, body)
+                if not validation.warning_ack_valid(conn, issue, checked, demo=bool(row["demo"])):
+                    raise ApiError(422, "REVALIDATION_REQUIRED", "이전 경고 확인이 더 이상 유효하지 않습니다. 다시 검증해 주세요.")
             return replay
         pf_row = conn.execute("SELECT preflight_id FROM preflights WHERE session_id=? AND input_revision=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
                               (sid, row["input_revision"])).fetchone()

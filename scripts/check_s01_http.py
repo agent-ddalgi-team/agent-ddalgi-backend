@@ -195,7 +195,7 @@ def run_check(*, timeout_s: float = 30, publication: bool = False, export_browse
     _check(not publication or export_browser_path is not None, "Publication check requires an explicit installed browser")
     publication_result = None
     with temporary_server(timeout_s=timeout_s, export_browser_path=export_browser_path) as (base_url, settings):
-        from app.db import connect
+        from app.db import ORM_SCHEMA_VERSION, connect
 
         temporary_root = settings.private_runs_dir.parent
         with httpx.Client(base_url=base_url, timeout=timeout_s, trust_env=False) as client:
@@ -265,7 +265,8 @@ def run_check(*, timeout_s: float = 30, publication: bool = False, export_browse
                 _check(counts == {"sources": 1, "source_versions": 1, "extraction_runs": 1, "input_revisions": 3,
                                   "session_source_selections": 1, "jobs": 3, "preflights": 1, "documents": 1,
                                   "document_revisions": 1}, f"Unexpected DB counts: {counts}")
-                _check(conn.execute("PRAGMA user_version").fetchone()[0] == 10, "Expected ERD v10")
+                _check(conn.execute("PRAGMA user_version").fetchone()[0] == ORM_SCHEMA_VERSION,
+                       f"Expected ERD v{ORM_SCHEMA_VERSION}")
                 _check(conn.execute("PRAGMA foreign_key_check").fetchall() == [], "Foreign key violation")
             if publication:
                 publication_result = _publication_check(client, sid, document_route, timeout_s)
@@ -285,7 +286,7 @@ def run_check(*, timeout_s: float = 30, publication: bool = False, export_browse
                 _check(conn.execute("PRAGMA foreign_key_check").fetchall() == [], "Foreign key violation after cleanup")
 
     _check(not temporary_root.exists(), "Temporary test directory remains")
-    return {"status": "passed", "transport": "localhost HTTP", "agent_mode": "mock", "schema_version": 10,
+    return {"status": "passed", "transport": "localhost HTTP", "agent_mode": "mock", "schema_version": ORM_SCHEMA_VERSION,
             "checks": ["session_cookie", "upload_read_select", "preflight_confirm_draft", "idempotency_replays",
                        "invalid_400", "revision_409", "unconfirmed_422", "no_owner_401", "other_owner_404",
                        "closed_410", "foreign_keys", "session_purge", "server_and_temp_cleanup"],

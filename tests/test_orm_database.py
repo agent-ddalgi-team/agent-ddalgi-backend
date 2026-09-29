@@ -1,4 +1,4 @@
-"""ERD v10의 새 DB 생성·기존 DB 보호·실제 ORM와 버전 연결을 확인한다.
+"""현재 ERD DB의 생성·기존 DB 보호·실제 ORM와 버전 연결을 확인한다.
 
 모든 DB는 pytest 임시 폴더를 사용하며 실제 회사 자료/DB를 열지 않는다.
 """
@@ -78,7 +78,7 @@ def test_orm_schema_has_25_tables_indexes_and_foreign_keys(orm_db):
     assert any(index["name"] == "ux_exports_active" and index["unique"]
                for index in inspector.get_indexes("exports"))
     with connect(orm_db) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == ORM_SCHEMA_VERSION == 10
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == ORM_SCHEMA_VERSION == 11
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert conn.execute("PRAGMA quick_check").fetchone()[0] == "ok"
@@ -167,7 +167,7 @@ def test_v9_database_is_refused_without_changing_existing_data(tmp_path):
         assert conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0] == 19
 
 
-def test_v10_initialization_is_idempotent_and_does_not_downgrade(orm_db):
+def test_current_initialization_is_idempotent_and_does_not_downgrade(orm_db):
     _seed_versions(orm_db)
     with closing(sqlite3.connect(orm_db)) as conn:
         before = tuple(conn.iterdump())
@@ -175,7 +175,7 @@ def test_v10_initialization_is_idempotent_and_does_not_downgrade(orm_db):
     init_orm_db(orm_db, orm_db.parent)
     init_db(orm_db, orm_db.parent)
     with closing(sqlite3.connect(orm_db)) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 10
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == ORM_SCHEMA_VERSION
         assert tuple(conn.iterdump()) == before
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
@@ -186,7 +186,7 @@ def test_unknown_future_version_is_refused_without_downgrading(tmp_path, initial
     with closing(sqlite3.connect(path)) as conn:
         conn.execute("CREATE TABLE preserved (value TEXT)")
         conn.execute("INSERT INTO preserved VALUES ('keep')")
-        conn.execute("PRAGMA user_version=11")
+        conn.execute(f"PRAGMA user_version={ORM_SCHEMA_VERSION + 1}")
         conn.commit()
     before = path.read_bytes()
     with pytest.raises(ValueError):
@@ -208,21 +208,21 @@ def test_unversioned_nonempty_database_is_not_overwritten(tmp_path):
 @pytest.mark.parametrize("break_schema", [
     "DROP TABLE impact_reviews", "ALTER TABLE input_revisions DROP COLUMN brief_json",
 ])
-def test_incomplete_v10_schema_is_detected_not_silently_recreated(orm_db, break_schema):
+def test_incomplete_current_schema_is_detected_not_silently_recreated(orm_db, break_schema):
     with connect(orm_db) as conn:
         conn.execute(break_schema)
     for initializer in (init_db, init_orm_db):
         with pytest.raises(ValueError, match="Incomplete ORM database"):
             initializer(orm_db, orm_db.parent)
     with connect(orm_db) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 10
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == ORM_SCHEMA_VERSION
 
 
 def test_failed_orm_schema_creation_rolls_back_every_table(tmp_path):
     path = tmp_path / "atomic.sqlite3"
 
     def fail_after_tables_created(connection, _cursor, statement, _parameters, _context, _executemany):
-        if statement.strip() == "PRAGMA user_version=10":
+        if statement.strip() == f"PRAGMA user_version={ORM_SCHEMA_VERSION}":
             assert len(inspect(connection).get_table_names()) == 26
             raise RuntimeError("simulated DDL failure")
 

@@ -388,6 +388,14 @@ class IssueResolveBody(BaseModel):
     expected_revision: RequestRevision
     resolution: Resolution
     evidence_refs: list[EvidenceRef] = Field(default_factory=list)
+    input_revision: RequestRevision | None = None
+    validation_id: NonBlankText | None = None
+
+    @model_validator(mode="after")
+    def acknowledgement_context(self):
+        if self.resolution.action == "acknowledged" and (self.input_revision is None or self.validation_id is None):
+            raise ValueError("경고 확인에는 input_revision과 validation_id가 필요합니다.")
+        return self
 
 
 class IssueResolveOut(BaseModel):

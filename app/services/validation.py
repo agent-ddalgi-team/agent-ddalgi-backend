@@ -31,7 +31,8 @@ PLACEHOLDERS = {"추가 확인 필요", "자료에서 확인되지 않음"}
 MOCK_LABEL = "[MOCK]"
 REQUIRED_NAME_KEYS = ("company_name",)
 REQUIRED_BUSINESS_KEYS = ("company_summary", "business_areas", "processes", "products_services", "technology")
-NON_ACKNOWLEDGEABLE = {"MOCK_VALUE", "UNSUPPORTED_CLAIM"}   # blocker는 원래 확인 클릭 불가. 명시적으로도 막는다
+NON_ACKNOWLEDGEABLE = {"MOCK_VALUE", "UNSUPPORTED_CLAIM", "REQUIRED_MISSING", "VALUE_CONFLICT", "EVIDENCE_INVALID",
+                      "UNVERIFIED_SUPERLATIVE", "VALUE_MISMATCH", "CONDITION_LOSS", "CERTIFICATION_MISMATCH"}
 LAYOUT_ISSUE_CODES = {"LAYOUT_OVERFLOW", "BROKEN_IMAGE", "PLACEHOLDER_REMAINING", "IMAGE_PUBLICATION_UNCONFIRMED"}   # BE-08 ㉜·㊱
 NON_EXCLUDABLE = {"MOCK_VALUE", "REQUIRED_MISSING"} | LAYOUT_ISSUE_CODES
 
@@ -368,10 +369,72 @@ def changed_blocks(current: dict[str, str], base: Row | None) -> tuple[set[str],
 # ---------------- Issue 기록 ----------------
 
 def _anchor(draft: IssueDraft, fps: dict[str, str], ctx: Context, input_revision: int) -> str:
-    payload = {"blocks": [fps.get(b, "") for b in sorted(draft.block_ids)],
-               "facts": [ (ctx.facts[f].value if f in ctx.facts else None) for f in sorted(draft.fact_ids)],
+    payload = {"blocks": {b: fps.get(b, "") for b in sorted(draft.block_ids or fps)},
+               "facts": {f: ctx.facts[f].model_dump() if f in ctx.facts else None for f in sorted(draft.fact_ids)},
+               "sources": sorted(draft.source_ids), "code": draft.code, "scope": draft.scope,
+               "severity": draft.severity, "message": draft.message,
                "input_revision": input_revision}
-    return hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode()).hexdigest()
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
+def issue_anchor(issue: Row, fps: dict[str, str], ctx: Context, input_revision: int) -> str:
+    return _anchor(IssueDraft(issue["scope"], issue["code"], issue["severity"], issue["message"],
+                              json.loads(issue["block_ids_json"]), json.loads(issue["fact_ids_json"]),
+                              json.loads(issue["source_ids_json"]), issue["origin"]), fps, ctx, input_revision)
+
+
+def acknowledgeable(issue: Row, *, demo: bool) -> bool:
+    """검증기가 warning으로 보냈다는 이유만으로 정확성 문제를 승인 가능한 문제로 바꾸지 않는다."""
+    if issue["severity"] != "warning" or issue["scope"] == "layout":
+        return False
+    if issue["origin"] == "server":
+        return issue["code"] == "PLACEHOLDER_TEXT" or (issue["code"] == "DEMO_VALUE" and demo)
+    return issue["origin"] == "agent" and issue["code"] in {"REPETITION", "PHOTO_SHORTAGE"}
+
+
+def validation_in_progress(conn: Connection, document_id: str, revision: int, input_revision: int) -> bool:
+    return conn.execute("SELECT 1 FROM jobs WHERE kind='validate' AND status IN ('queued','running') AND target_key=?",
+                        (f"{document_id}@{revision}@{input_revision}",)).fetchone() is not None
+
+
+def warning_ack_valid(conn: Connection, issue: Row, checked: Row, *, demo: bool) -> bool:
+    from app.services import db_history
+
+    proof = json.loads(issue["resolution_json"]) if issue["resolution_json"] else {}
+    return (issue["status"] == "acknowledged" and acknowledgeable(issue, demo=demo)
+            and proof.get("action") == "acknowledged" and bool(proof.get("by")) and bool(proof.get("at"))
+            and proof.get("anchor_fingerprint") == issue["anchor_fingerprint"]
+            and proof.get("input_revision") == checked["input_revision"]
+            and proof.get("validated_document_revision") == checked["document_revision"]
+            and proof.get("validated_validation_id") == checked["validation_id"]
+            and db_history.warning_record_exists(conn, issue, checked))
+
+
+def reconcile_acknowledgements(conn: Connection, document: Document, checked: Row, ctx: Context,
+                               fps: dict[str, str]) -> None:
+    """검증 저장 후 관련 지문을 대조한다. 관련 없는 편집만 원 확인의 재사용 연결을 허용한다."""
+    from app.services import db_history
+
+    for issue in conn.execute("SELECT * FROM issues WHERE document_id=? AND status='acknowledged' AND scope<>'layout'",
+                              (document.document_id,)).fetchall():
+        proof = json.loads(issue["resolution_json"]) if issue["resolution_json"] else {}
+        anchor = issue_anchor(issue, fps, ctx, checked["input_revision"])
+        if (not acknowledgeable(issue, demo=ctx.demo) or not proof.get("by") or not proof.get("at")
+                or proof.get("anchor_fingerprint") != anchor or proof.get("input_revision") != checked["input_revision"]):
+            history = json.loads(issue["resolution_history_json"])
+            if proof:
+                history.append({**proof, "reopened_at": to_iso(now()), "previous_status": "acknowledged",
+                                "reopened_by_validation": checked["validation_id"]})
+            conn.execute("UPDATE issues SET status='open', resolution_json=NULL, resolution_history_json=?, "
+                         "anchor_fingerprint=?, updated_at=? WHERE issue_id=?",
+                         (json.dumps(history, ensure_ascii=False), anchor, to_iso(now()), issue["issue_id"]))
+            db_history.invalidate_warning(conn, issue["issue_id"])
+            continue
+        proof.update(validated_document_revision=document.document_revision,
+                     validated_validation_id=checked["validation_id"])
+        conn.execute("UPDATE issues SET resolution_json=?, last_validation_id=?, updated_at=? WHERE issue_id=?",
+                     (json.dumps(proof, ensure_ascii=False), checked["validation_id"], to_iso(now()), issue["issue_id"]))
+        db_history.record_warning(conn, issue, proof)
 
 
 def _covered_by_this_validation(row: Row, agent_covered_blocks: set[str], agent_full: bool) -> bool:
@@ -422,6 +485,8 @@ def persist_issues(conn: Connection, session_id: str, document: Document, valida
             reopen = (status in ("resolved", "excluded")                       # 다시 검출됨 = 원인이 돌아옴
                       or (status == "acknowledged" and row["anchor_fingerprint"] != anchor))  # 관련 내용이 바뀜
             if reopen:
+                from app.services import db_history
+                db_history.invalidate_warning(conn, row["issue_id"])
                 if resolution:
                     history.append({**json.loads(resolution), "reopened_at": stamp, "reopened_by_validation": validation_id,
                                     "previous_status": status})
@@ -435,13 +500,21 @@ def persist_issues(conn: Connection, session_id: str, document: Document, valida
         produced.add(key)
 
     # 이번에 다시 나오지 않은 open Issue: 그 검사가 그 범위를 실제로 다시 본 경우에만 원인이 사라진 것으로 보고 닫는다.
-    previous_open = (conn.execute("SELECT * FROM issues WHERE document_id=? AND status='open'",
+    previous_open = (conn.execute("SELECT * FROM issues WHERE document_id=? AND status IN ('open','acknowledged')",
                                   (document.document_id,)).fetchall() if resolve_missing else [])
     for row in previous_open:
         if row["identity_key"] in produced:
             continue
         if not _covered_by_this_validation(row, agent_covered_blocks, agent_full):
             continue  # 재실행하지 않은 검사의 Issue(문서 전체 Issue 포함)는 보존
+        from app.services import db_history
+        db_history.invalidate_warning(conn, row["issue_id"])
+        if row["resolution_json"]:
+            history = json.loads(row["resolution_history_json"])
+            history.append({**json.loads(row["resolution_json"]), "closed_at": stamp,
+                            "closed_by_validation": validation_id, "previous_status": row["status"]})
+            conn.execute("UPDATE issues SET resolution_history_json=? WHERE issue_id=?",
+                         (json.dumps(history, ensure_ascii=False), row["issue_id"]))
         resolution = {"action": "resolved", "by": "server", "reason": "재검증에서 원인이 더 이상 확인되지 않음",
                       "at": stamp, "document_revision": document.document_revision, "input_revision": input_revision,
                       "validation_id": validation_id}

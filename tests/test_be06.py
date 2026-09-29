@@ -112,6 +112,9 @@ class Ctx:
     def resolve(self, iid, action, reason="테스트", expected=None, evidence=None, headers=None):
         body = {"expected_revision": self.rev() if expected is None else expected,
                 "resolution": {"action": action, "reason": reason}}
+        if action == "acknowledged":
+            checked = self.get()["validation"]
+            body.update(input_revision=self.rev_in, validation_id=checked["validation_id"] if checked else "val_missing")
         if evidence:
             body["evidence_refs"] = evidence
         return self.c.post(f"/api/v1/sessions/{self.sid}/issues/{iid}/resolve", json=body, headers=headers or {})

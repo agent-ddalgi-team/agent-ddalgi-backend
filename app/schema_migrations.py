@@ -18,6 +18,7 @@ from sqlalchemy.engine import Connection
 
 ROOT = Path(__file__).resolve().parent.parent
 BASELINE_REVISION = "20260928_01"
+HEAD_REVISION = "20260929_01"
 # Preserve quoted text exactly; ignore whitespace only between SQL tokens.
 SQL_TOKEN = re.compile(r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`[^`]*`|\[[^\]]*\]|\w+|[^\s]", re.UNICODE)
 SCHEMA_QUERY = (
@@ -69,10 +70,20 @@ def _preflight(connection: Connection | sqlite3.Connection) -> None:
         if has_revision:
             raise ValueError("Cannot record an Alembic revision without the ERD schema; use upgrade head")
         return
-    if version != 10:
-        raise ValueError("Alembic requires an empty database or ERD v10; preserve the legacy DB at its separate path")
-    if not has_revision:
+    if version not in (10, 11):
+        raise ValueError("Alembic requires an empty database or ERD v10/v11; preserve the legacy DB at its separate path")
+    if version == 10 and not has_revision:
         validate_baseline(connection)
+    if version == 10 and has_revision and execute(
+        "SELECT 1 FROM alembic_version WHERE version_num!=?", (BASELINE_REVISION,)
+    ).fetchone():
+        raise ValueError("ERD v10 requires its baseline revision; run upgrade head instead of stamping a later revision")
+    if version == 11 and not has_revision:
+        raise ValueError("ERD v11 requires its Alembic migration history; do not stamp an untracked database")
+    if version == 11 and execute(
+        "SELECT 1 FROM alembic_version WHERE version_num=?", (BASELINE_REVISION,)
+    ).fetchone():
+        raise ValueError("ERD v11 schema and Alembic baseline revision disagree; preserve the database for inspection")
 
 
 def _database_path(config: Config, arguments: dict[str, str]) -> Path:

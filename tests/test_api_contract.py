@@ -71,7 +71,7 @@ REVISION_REQUESTS = [
                              "target_block_ids": ["block_example"], "instruction": "정리", "kind": "text"}),
     (models.ApplyBody, {"expected_revision": 1}),
     (models.ValidateBody, {"expected_revision": 1, "input_revision": 1}),
-    (models.IssueResolveBody, {"expected_revision": 1,
+    (models.IssueResolveBody, {"expected_revision": 1, "input_revision": 1, "validation_id": "val_example",
                                "resolution": {"action": "acknowledged", "reason": "내용 확인"}}),
     (models.LayoutCheckCreate, {"expected_revision": 1, "format": "pdf"}),
     (models.ApprovalCreate, {"expected_revision": 1, "input_revision": 1, "format": "pdf",

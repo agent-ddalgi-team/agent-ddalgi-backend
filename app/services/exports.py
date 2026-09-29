@@ -138,6 +138,10 @@ def approval_validity(conn: Connection, settings: Settings, session_row: Row, ap
                        details={"approved_input_revision": approval["input_revision"], "current_input_revision": session_row["input_revision"]})
     from app.services.documents import get_current
 
+    try:
+        approvals_service.check_warning_acknowledgements(conn, session_row, approval["document_id"], approval["document_revision"])
+    except ApiError as exc:
+        return Verdict(False, exc.status_code, exc.code, exc.message, details=exc.details)
     manifest_now = layout_checks.asset_manifest_hash(conn, get_current(conn, session_row["session_id"], approval["document_id"]))
     mismatch = identity_mismatch(conn, approval, manifest_now)
     if mismatch is not None:

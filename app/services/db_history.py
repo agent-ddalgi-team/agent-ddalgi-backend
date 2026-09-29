@@ -8,12 +8,12 @@ from __future__ import annotations
 import json
 import uuid
 
-from app.db import Connection
+from app.db import Connection, Row
 from app.timeutil import now, to_iso
 
 
 def enabled(conn: Connection) -> bool:
-    return conn.execute("PRAGMA user_version").fetchone()[0] == 10
+    return conn.execute("PRAGMA user_version").fetchone()[0] in (10, 11)
 
 
 def source_version(conn: Connection, source_id: str, *, provenance: str) -> None:
@@ -105,12 +105,56 @@ def record_confirmation(conn: Connection, approval_id: str) -> None:
     conn.execute("UPDATE approvals SET confirmation_id=? WHERE approval_id=?", (confirmation_id, approval_id))
 
 
+def invalidate_warning(conn: Connection, issue_id: str) -> None:
+    if enabled(conn):
+        conn.execute("UPDATE confirmations SET status='invalidated', invalidated_at=COALESCE(invalidated_at, ?) "
+                     "WHERE kind='warning_ack' AND issue_id=? AND status='active'", (to_iso(now()), issue_id))
+
+
+def record_warning(conn: Connection, issue: Row, resolution: dict) -> None:
+    """명시 확인을 저장하거나, 동일 내용의 재검증에 원 확인을 연결한다. 확인자/시각은 보존한다."""
+    if not enabled(conn):
+        return
+    vid = resolution["validated_validation_id"]
+    existing = conn.execute("SELECT confirmation_id FROM confirmations WHERE issue_id=? AND kind='warning_ack' "
+                            "AND validation_id=? AND status='active'", (issue["issue_id"], vid)).fetchone()
+    if existing:
+        return
+    previous = conn.execute("SELECT confirmation_id FROM confirmations WHERE issue_id=? AND kind='warning_ack' "
+                            "ORDER BY rowid DESC LIMIT 1", (issue["issue_id"],)).fetchone()
+    invalidate_warning(conn, issue["issue_id"])
+    proof = dict(resolution)
+    if previous and resolution["validation_id"] != vid:
+        proof["reused_from_confirmation_id"] = previous[0]
+    conn.execute(
+        "INSERT INTO confirmations (confirmation_id, session_id, document_id, document_revision, input_revision, "
+        "kind, confirmed_by, confirmed_at, issue_id, validation_id, reasons_json, status) "
+        "VALUES (?, ?, ?, ?, ?, 'warning_ack', ?, ?, ?, ?, ?, 'active')",
+        (f"cfm_{uuid.uuid4().hex[:16]}", issue["session_id"], issue["document_id"],
+         resolution["validated_document_revision"], resolution["input_revision"], resolution["by"], resolution["at"],
+         issue["issue_id"], vid, json.dumps([proof], ensure_ascii=False)))
+
+
+def warning_record_exists(conn: Connection, issue: Row, validation: Row) -> bool:
+    return not enabled(conn) or conn.execute(
+        "SELECT 1 FROM confirmations WHERE kind='warning_ack' AND issue_id=? AND session_id=? AND document_id=? "
+        "AND document_revision=? AND input_revision=? AND validation_id=? AND status='active'",
+        (issue["issue_id"], issue["session_id"], issue["document_id"], validation["document_revision"],
+         validation["input_revision"], validation["validation_id"])).fetchone() is not None
+
+
 def sync_invalidations(conn: Connection) -> None:
     if enabled(conn):
         conn.execute(
             "UPDATE confirmations SET status='invalidated', invalidated_at=COALESCE(invalidated_at, ?) "
             "WHERE status='active' AND confirmation_id IN "
             "(SELECT confirmation_id FROM approvals WHERE status='invalidated')", (to_iso(now()),))
+        conn.execute(
+            "UPDATE confirmations SET status='invalidated', invalidated_at=COALESCE(invalidated_at, ?) "
+            "WHERE kind='warning_ack' AND status='active' AND "
+            "(document_revision<>(SELECT current_revision FROM documents WHERE documents.document_id=confirmations.document_id) "
+            "OR input_revision<>(SELECT input_revision FROM sessions WHERE sessions.session_id=confirmations.session_id))",
+            (to_iso(now()),))
 
 
 def purge_source(conn: Connection, source_id: str, stamp: str) -> None:
