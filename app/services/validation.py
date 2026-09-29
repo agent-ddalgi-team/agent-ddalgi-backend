@@ -102,6 +102,16 @@ def value_in_text(value: str | None, text: str) -> bool:
     return sum(1 for w in tokens if w in t) / len(tokens) >= 0.6
 
 
+def _required_value_in_text(fact: Fact, text: str) -> bool:
+    if fact.field_key == "company_name":
+        from app.config import company_name_aliases
+        aliases = company_name_aliases(fact.value)
+        if aliases:
+            return any(re.search(r"(?<![\w])" + re.escape(alias) + r"(?![\w])", text, re.IGNORECASE)
+                       for alias in aliases)
+    return value_in_text(fact.value, text)
+
+
 # ---------------- 지문 ----------------
 
 def fingerprint_block(block: Block, seg_texts: dict[str, str]) -> str:
@@ -245,9 +255,30 @@ def _required_present(document: Document, ctx: Context, keys: tuple[str, ...]) -
                 continue
             for fid in block.fact_ids:
                 f = ctx.facts.get(fid)
-                if f and fid in ctx.refs.fact_ids and f.status == "supported" and f.field_key in keys and value_in_text(f.value, text):
+                if f and fid in ctx.refs.fact_ids and f.status == "supported" and f.field_key in keys and _required_value_in_text(f, text):
                     return True
     return False
+
+
+def _required_issue(document: Document, ctx: Context, keys: tuple[str, ...], label: str) -> IssueDraft:
+    """차단 기준은 유지하고, 표기 누락과 근거 미확인을 구분해 관련 블록을 안내한다."""
+    facts = [f for f in ctx.facts.values() if f.field_key in keys]
+    matches = [(block, f) for page in document.pages for block in page.blocks
+               for f in facts if not is_placeholder(" ".join(block_texts(block)))
+               and _required_value_in_text(f, " ".join(block_texts(block)))]
+    if matches:
+        if any(f.status == "supported" and f.fact_id in ctx.refs.fact_ids for _, f in matches):
+            message = (f"{label} 표기는 있지만 해당 문구에 확인된 {label} 근거가 연결되지 않았습니다. "
+                       "관련 문구의 근거를 확인하고, 자료 점검 결과를 반영해 수정한 뒤 다시 검증해 주세요.")
+        else:
+            message = (f"{label} 표기는 있지만 자료 점검에서 사용할 수 있는 확인된 근거가 없습니다. "
+                       "자료 점검의 해당 항목과 원문을 확인하고 다시 점검해 주세요. 문구만 반복해서 고쳐도 해결되지 않습니다.")
+    else:
+        message = (f"문서 전체에서 자료의 {label}과 일치하는 문구를 찾지 못했습니다. "
+                   "자료 점검에서 확인된 내용을 제목 또는 본문에 쓰고 해당 근거를 연결해 주세요.")
+    return IssueDraft("content", "REQUIRED_MISSING", "blocker", message,
+                      block_ids=sorted({block.block_id for block, _ in matches}),
+                      fact_ids=sorted(f.fact_id for f in facts))
 
 
 def preflight_conflicts(ctx: Context) -> list[IssueDraft]:
@@ -277,15 +308,10 @@ def preflight_conflicts(ctx: Context) -> list[IssueDraft]:
 def server_checks(document: Document, ctx: Context) -> tuple[list[IssueDraft], list[CheckRecord]]:
     drafts: list[IssueDraft] = []
     records: list[CheckRecord] = []
-    name_fact_ids = [f.fact_id for f in ctx.facts.values() if f.field_key in REQUIRED_NAME_KEYS]
-    biz_fact_ids = [f.fact_id for f in ctx.facts.values() if f.field_key in REQUIRED_BUSINESS_KEYS]
     if not _required_present(document, ctx, REQUIRED_NAME_KEYS):
-        drafts.append(IssueDraft("content", "REQUIRED_MISSING", "blocker",
-                                 "회사명이 실제 문서 블록에 없습니다(사실 참조만으로는 통과하지 않습니다).",
-                                 fact_ids=sorted(name_fact_ids)))
+        drafts.append(_required_issue(document, ctx, REQUIRED_NAME_KEYS, "회사명"))
     if not _required_present(document, ctx, REQUIRED_BUSINESS_KEYS):
-        drafts.append(IssueDraft("content", "REQUIRED_MISSING", "blocker",
-                                 "주요 사업/공정 설명이 실제 문서 블록에 없습니다.", fact_ids=sorted(biz_fact_ids)))
+        drafts.append(_required_issue(document, ctx, REQUIRED_BUSINESS_KEYS, "주요 사업/공정 설명"))
     records.append(CheckRecord(check_key="required_content", kind="server", result="issue" if drafts else "ok"))
 
     conflicts = preflight_conflicts(ctx)

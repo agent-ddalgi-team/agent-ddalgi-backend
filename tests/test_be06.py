@@ -455,12 +455,53 @@ def test_required_content_needs_real_text_not_only_fact_ids(app, settings):
     assert r.status_code == 422 and r.json()["error"]["code"] == "RESOLUTION_NOT_ALLOWED"
 
 
+@pytest.mark.parametrize("status,linked,available,visible,expected", [
+    ("needs_confirmation", True, True, True, "자료 점검에서"),
+    ("supported", False, True, True, "연결되지 않았습니다"),
+    ("supported", True, False, True, "자료 점검에서"),
+    ("supported", True, True, False, "문서 전체에서"),
+    ("supported", True, True, True, None),
+])
+def test_required_company_diagnostic_locates_text_without_weakening_checks(status, linked, available, visible, expected):
+    from app.models import Document, Fact
+    from app.services.refs import SessionRefs
+    fact = Fact(fact_id="f_name", field_key="company_name", value="예시 회사", status=status)
+    doc = Document(document_id="doc", session_id="sess", document_revision=1, input_revision=1,
+                   title="소개", target_pages=1, status="draft", pages=[{
+                       "page_id": "p1", "title": "소개", "layout_key": "text_photo", "blocks": [{
+                           "block_id": "b1", "type": "heading", "content": {"text": "예시 회사 | 소개" if visible else "소개", "level": 1},
+                           "fact_ids": ["f_name"] if linked else [],
+                       }]}])
+    ctx = validation.Context({}, {}, {}, set(), SessionRefs(set(), {}, set(), {"f_name"} if available else set()),
+                             {fact.fact_id: fact}, [])
+    issues, _ = validation.server_checks(doc, ctx)
+    required = [i for i in issues if i.code == "REQUIRED_MISSING" and i.fact_ids == ["f_name"]]
+    if expected is None:
+        assert required == []
+    else:
+        assert len(required) == 1 and required[0].severity == "blocker"
+        assert expected in required[0].message
+        assert required[0].block_ids == (["b1"] if visible else [])
+
+
 def test_required_business_content_accepts_related_fact_kinds(app, settings):
     """company_summary가 없어도 business_areas 설명이 실제 블록에 있으면 인정."""
     txt = "회사명: 예시 회사\n사업 분야: 가상 부품 표면처리\n".encode()
     ctx = Ctx(app, txt=txt, with_photo=False)
     ctx.make_clean_and_validate(settings)
     assert ctx.open_issues("REQUIRED_MISSING") == []
+
+
+def test_company_alias_match_is_explicit_and_does_not_accept_unrelated_claim(monkeypatch):
+    from app.models import Fact
+    monkeypatch.setenv("COMPANY_NAME_ALIASES", json.dumps([["㈜가상표면기술", "가상표면기술", "EXAMPLE SURFACE"]]))
+    fact = Fact(fact_id="f", field_key="company_name", value="EXAMPLE SURFACE", status="supported")
+    assert validation._required_value_in_text(fact, "가상표면기술 | 소개")
+    assert not validation._required_value_in_text(fact, "다른가상표면기술회사")
+    business = fact.model_copy(update={"field_key": "business_areas"})
+    assert not validation._required_value_in_text(business, "가상표면기술 | 소개")
+    monkeypatch.delenv("COMPANY_NAME_ALIASES")
+    assert not validation._required_value_in_text(fact, "가상표면기술 | 소개")
 
 
 # ================= MOCK_VALUE =================
