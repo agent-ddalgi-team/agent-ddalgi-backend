@@ -44,6 +44,7 @@ class SourceIn:
     segments: list[SegmentIn] = field(default_factory=list)   # 글자를 읽은 구간(없으면 빈 목록)
     asset_ids: list[str] = field(default_factory=list)        # 화면·출력에 쓸 수 있는 이미지
     origin_kind: str = "real"                              # real = 입수 자료, 회사 확인 완료를 뜻하지 않음
+    asset_locators: dict[str, dict[str, int]] = field(default_factory=dict)  # 선택 사진의 원본 쪽수만, 파일 경로 제외
 
 
 @dataclass
@@ -99,6 +100,17 @@ class ProposeResult:
 
 
 @dataclass
+class ImageIn:
+    """서버가 선택 자료·접근 권한·파일 해시를 확인한 이미지. 바이트를 DB/로그에 기록하지 않는다."""
+    asset_id: str
+    source_id: str
+    content_hash: str
+    mime_type: str
+    data: bytes = field(repr=False)
+    locator: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
 class ValidateRequest:
     session_id: str
     input_revision: int
@@ -108,6 +120,7 @@ class ValidateRequest:
     preflight: PreflightOut          # 확인된 사실·문제
     changed_block_ids: list[str]     # 마지막 유효 검증 이후 바뀐 블록. 전체 검사면 모든 블록 ID
     server_issues: list[Issue]       # 서버 일반 검사 결과(참고용). 삭제·완화 대상이 아니다
+    images: list[ImageIn] = field(default_factory=list, repr=False)
 
 
 @dataclass

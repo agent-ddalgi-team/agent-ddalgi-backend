@@ -1,6 +1,6 @@
 # 공통 데이터·API 계약
 
-기준일: 2026-09-29 · 문서 v1.10 · contract_version: 1.5 · 데이터 schema_version: 1.0
+기준일: 2026-09-29 · 문서 v1.11 · contract_version: 1.5 · 데이터 schema_version: 1.0
 
 개발 전 대조 메모는 7절에서 관리한다. 문서 v1.2에서 경고 승인 정책(PRD BR-08/09, plan D-07)을 구체화했고, v1.3에서 로그인 MVP 제외 결정(plan D-08)을 반영했다. 두 정책은 2026-09-27 사용자 확정 사항이다. 필드·상태값·API 형식과 계약/스키마 버전은 유지한다. 7절은 확정된 제품 정책과 아직 정할 연결 규격을 구분한 목록이며, 코드·예시·프론트 사본의 반영 완료를 뜻하지 않는다.
 
@@ -238,6 +238,12 @@ after 값이 null이면 맨 앞이다. 존재하지 않는 대상, 자신 뒤로
 | LayoutCheck | layout_check_id, document_revision, input_revision, format, template_version, render_options_hash, asset_manifest_hash, status, actual_pages 또는 null, issue_ids |
 | Approval | approval_id, document_id, document_revision, input_revision, format, validation_id, layout_check_id, template_version, render_options_hash, asset_manifest_hash, approved_at, approved_by, status: active/invalidated |
 | Export | export_id, approval_id, format, status: queued/generating/ready/failed, artifact_id 또는 null, expires_at, error 또는 null |
+
+**사진 후보·실제 이미지 검증 연결(2026-09-29, 문서 v1.11):** 기존 `kind=image`/`Candidate.changes`/`selected_candidate_id` 계약을 사용한다. 단일 블록 후보는 선택 자료 사진의 목록이며 AI 적합성 순위가 아니다. 텍스트 뒤에 사진을 삽입하거나 image/image_placeholder를 같은 위치에서 교체한다. 새 사진은 새 블록 ID·기본 설명으로 시작하고 이전 사실·근거를 이어받지 않는다. 적용 전에는 문서가 바뀌지 않는다.
+
+LLM 내용 검증은 선택 범위·접근 권한·해시를 확인한 실제 PNG/JPEG 바이트와 caption/alt를 전달한다. 최대 20장/사진당 5MiB·1,600만 화소/합계 20MiB다. 미선택·누락·변조·손상·한도 초과는 호출 전에 실패하며 일부 사진을 빼고 통과시키지 않는다. 사진 블록은 매 검증에서 다시 확인한다. 모델의 모든 대상 블록/이미지 검사 ID를 확인하고 검증 중 사진이 바뀌면 결과를 저장하지 않는다. `IMAGE_MISMATCH`(설명 불일치), `IMAGE_UNVERIFIABLE`(시각 확인 불가)는 content blocker이며 확인 클릭으로 해소할 수 없다. 등록 사진 공개 허가·최종 승인 기준은 유지한다.
+
+HTTP 필드·상태·DB 스키마는 그대로여서 contract_version 1.5/schema_version 1.0을 유지한다. 내부 ValidateRequest.images와 이미지 요청 함수의 images 키워드만 확장했다. 바이트를 DB/로그/브라우저 저장소에 추가 보관하지 않는다. 프론트 Candidate.changes 타입·선택 적용·사진 설명 편집을 맞췄다. 현재 C 경로 프론트에는 contracts.md 사본이 없으며 사본 동기화 완료라고 간주하지 않는다.
 
 부분 재검증을 하더라도 Validation의 최종 상태는 현재 문서 전체의 미해결 문제를 합산한다. 변경되지 않은 영역의 blocker가 사라져서는 안 된다. 새 문서 버전의 검사 결과에 재사용한 검사와 새로 수행한 검사를 연결한다.
 

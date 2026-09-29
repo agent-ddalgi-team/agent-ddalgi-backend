@@ -46,13 +46,27 @@ def build_sources(conn: Connection, session_id: str, selected_source_ids: list[s
         segments = [SegmentIn(r["segment_id"], json.loads(r["locator_json"]), r["text"]) for r in conn.execute(
             "SELECT segment_id, locator_json, text FROM segments WHERE source_id=?" + run_sql + " ORDER BY ordinal",
             (source_id, *run_params))]
-        assets = [r["asset_id"] for r in conn.execute(
-            "SELECT asset_id FROM assets WHERE source_id=? AND status='ready' AND deleted_at IS NULL" + run_sql,
-            (source_id, *run_params))]
+        asset_rows = conn.execute(
+            "SELECT asset_id, photo_locator_json FROM assets WHERE source_id=? AND status='ready' AND deleted_at IS NULL" + run_sql,
+            (source_id, *run_params)).fetchall()
+        assets = [r["asset_id"] for r in asset_rows]
+        asset_locators = {r["asset_id"]: photo_locator(r["photo_locator_json"]) for r in asset_rows}
         result.append(SourceIn(source_id=row["source_id"], source_version=source_version, kind=row["kind"],
                                name=name, parse_status=parse_status, segments=segments,
-                               asset_ids=assets, origin_kind=row["origin_kind"]))
+                               asset_ids=assets, origin_kind=row["origin_kind"], asset_locators=asset_locators))
     return result
+
+
+def photo_locator(raw: str | None) -> dict[str, int]:
+    """원본 위치 중 양의 쪽수만 전달한다. 경로·해시·임의 문구는 모델 입력에 복사하지 않는다."""
+    try:
+        value = json.loads(raw or "{}")
+    except (ValueError, TypeError):
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    return {key: value[key] for key in ("slide", "page")
+            if type(value.get(key)) is int and 0 < value[key] <= 1_000_000}
 
 
 def allowed_ids(sources: list[SourceIn]) -> tuple[set[str], set[str], dict[str, int]]:
