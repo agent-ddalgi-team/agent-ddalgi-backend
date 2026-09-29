@@ -204,6 +204,12 @@ uv run python scripts/import_registered.py --source-dir private_runs/registered_
 
 `verify_bundle.py`는 기존 fixture 전용이다. 실제 구조 호환성은 `tests/test_registered_import.py`의 가짜 묶음으로 검증한다. 실제 시연 묶음 작성·실자료 로컬 적재·실제 AI 생성 품질은 아직 완료하지 않았다. 회귀 테스트는 `uv run pytest tests/test_demo.py tests/test_registered_import.py`로 실행한다.
 
+## 브로슈어형 문서 배치
+
+설계도의 S01~S03 흐름을 유지하면서 S02 편집 문서와 PDF에 사진 카드·캡션·색상 구성을 적용한다. 기존 `Page.layout_key` 5종(`cover_photo`, `text_photo`, `process_steps`, `product_grid`, `contact_photo`)을 사용하며 알 수 없는 값은 텍스트 배치로 표시한다. 편집 캔버스는 실제 PDF 쪽 나눔의 검사 증거가 아니다. PDF 배치 검사와 승인 절차는 그대로 필요하다.
+
+4쪽 이상이며 사용 가능한 사진이 있으면 실제 LLM은 페이지별 제목·요약·정보 목록·사진 ID를 한 초안 호출에서 구성한다. 지원된 사실 ID와 선택·허용된 사진 설명만 전달하며, 원문의 실제/demo 구분·제외 조건을 보존한다. 사진 없음·1쪽은 기존 글 중심 경로를 유지한다. `process_steps` 목록은 번호 카드, `product_grid` 목록은 비교 카드로 표현하며, 편집 가능한 기존 heading/paragraph/list/image 블록을 사용한다. 등록 사진 공개 허가가 명시적으로 true인 경우만 자동 후보로 제공하며 사진 설명만으로 피사체 검증이 끝났다고 보지 않는다. 템플릿은 `template_v3`이며 이전 검사·승인은 다시 확인해야 한다. DOCX 승인 제한은 유지한다. 로컬 시연 묶음과 회사 사진은 Git에 포함하지 않으며 기존 mock fixture와 내부 demo 출처를 구분한다. 상세 결정은 plan.md 4.32~4.34, 실제 검증은 task_backend.md의 브로슈어 배치 기록을 따른다.
+
 ## 문서
 
 처음에는 다음 순서로 읽는다. 코드 변경 전에는 [AGENTS.md](AGENTS.md)의 작업 규칙을 확인한다.
@@ -220,3 +226,9 @@ uv run python scripts/import_registered.py --source-dir private_runs/registered_
 2026-09-27에는 개발 전 문서를 정리했다. 당시 기존 BE/AG 작업 상태와 테스트 기록을 유지했고 실행 코드·의존성·DB는 바꾸지 않았다. 현재 공통 계약은 1.4, 데이터 schema_version은 1.0이다. 2026-09-28의 계약 1.2는 재점검 충돌로 인한 기존 승인 무효화·승인 재전송 차단을 반영한다. 상세는 [contracts.md](contracts.md), 기존 경로를 유지한 예시는 [API 예시](handoff/api_examples_v1.1.json)를 따른다. 프론트 계약/예시 사본은 로컬에서 문서 v1.9까지 동기화했으며 해당 프론트 구현은 이 백엔드 PR에 포함되지 않는다. 검토 메모의 다른 제안과 미구현 항목은 별도로 유지한다.
 
 Stitch 화면 설계와의 연결 기준은 [prd.md 3~5절](prd.md), 화면 상태별 데이터 연결은 [contracts.md 7.5절](contracts.md)을 따른다. 추가 기능의 채택 여부는 [plan.md 4.1절](plan.md)에서 관리한다. 화면 시연·예시 응답과 실제 기능 완료는 구분한다.
+
+### 로컬 시연: 문구 수정안·내용 검증 함께 켜기
+
+현재 시연 흐름은 `powershell -File scripts/run_llm.ps1 -Demo -ContentReview -TextProposals -RequestTimeoutSeconds 120 -MaxInputChars 40000 -MaxReviewInputChars 80000 -MaxOutputTokens 24000`로 실행한다. `-TextProposals`를 생략하면 실제 AI 문구 수정안은 비활성화된다. 설정은 해당 실행에만 적용하며 기본 모드나 비밀 설정을 변경하지 않는다. 유료 호출은 기존 호출·비용 한도 안에서 수행한다.
+
+미리보기는 첫 heading 블록이 있으면 별도의 페이지 제목을 추가하지 않는다. 저장된 문제도 화면에서 한국어 항목명·권장 조치로 표시하지만 문제 코드와 승인 차단 여부는 바꾸지 않는다. 사진 캡션과 대체 텍스트는 각각 검사하고, 선택·허가된 사진의 등록 설명은 AI 의미 검사에 출처 정보로 전달한다. 등록 설명은 인증·성능·회사 소유의 증빙이 아니다.

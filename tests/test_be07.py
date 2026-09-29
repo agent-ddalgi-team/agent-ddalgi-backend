@@ -33,6 +33,8 @@ BANNED = ("거산", "케미칼", "Geosan")
 
 # 템플릿·폰트·DOCX 배치 상수·PDF 렌더 상수의 sha256(줄바꿈 정규화). 이 중 하나라도 바꾸면 TEMPLATE_VERSION을 올리고 여기 값을 갱신한다.
 TEMPLATE_FINGERPRINTS = {
+    "template_v3": "e0e3f49e66c8564353bc357022845e40c936e273147883ce49dde3cc500a3512",
+    "template_v2": "f7a692ddd4ee706e3bb93daec8dce2ce07548d608f1c6009962d1ff049905e4a",
     "template_v0": "7b1b3eaabcad9c23078f68a09fd2ccba89a372cbaec9b13643ebfc3abbbe8096",
     "template_v1": "2bb7dcf9660011db9d907f7ead738cf0859fe5b64a3beef7736ff07711f60781",
 }
@@ -161,7 +163,7 @@ class Flow:
 
 def test_identity_values_come_from_layout_checks(out_dir):
     r = er.render(_fixture_snapshot("1pages"), "docx", out_dir)
-    assert r.template_version == layout_checks.TEMPLATE_VERSION == "template_v1"
+    assert r.template_version == layout_checks.TEMPLATE_VERSION == "template_v3"
     assert r.render_options_hash == layout_checks.RENDER_OPTIONS_HASH == layout_checks.render_options_hash(layout_checks.DEFAULT_RENDER_OPTIONS)
     assert len(r.render_options_hash) == 16 and int(r.render_options_hash, 16) >= 0
     changed = dict(layout_checks.DEFAULT_RENDER_OPTIONS, margin_mm=20)
@@ -754,3 +756,51 @@ def test_demo_pdf_missing_footer_is_rejected_before_publication(out_dir, monkeyp
         er.render(er.snapshot_from_document(document, {}, demo=True), "pdf", out_dir)
     assert exc.value.code == "demo_footer_missing" and exc.value.details["page_numbers"] == [1]
     assert not list(out_dir.glob("*.pdf"))
+
+
+def _brochure_snapshot(*, long_text=False):
+    layouts = ["cover_photo", "text_photo", "process_steps", "product_grid", "contact_photo"]
+    pages = [Page(page_id=f"page_{i}", title="가상 제품 소개", layout_key=key, blocks=[
+        _blk(f"h_{i}", "heading", text="제품과 공정을 소개합니다", level=1),
+        _blk(f"p_{i}", "paragraph", text=(LONG_UNIT * 100 if long_text else "가상 자료를 사용한 배치 시험입니다. 사진과 설명의 순서를 유지합니다.")),
+        _blk(f"im_{i}", "image", asset_id="photo", alt="가상 이미지", caption="가상 제품 사진", fit="contain"),
+        *([_blk(f"im2_{i}", "image", asset_id="photo", alt="가상 이미지", caption="두 번째 사진", fit="contain")]
+          if key in {"process_steps", "product_grid"} else []),
+        *([_blk(f"list_{i}", "list", items=["가상 품목 — 요청 수량 300개", "가상 검사 — 샘플 측정값이며 전량 결과 아님",
+                                           "가상 도면 — 개정 A-01 확인", "확인 상태 — 외관 기준 합의 대기"])]
+          if key in {"process_steps", "product_grid"} else []),
+    ]) for i, key in enumerate(layouts)]
+    return er.snapshot_from_document(_doc(pages), {"photo": er.asset_from_bytes("photo", _png(600, 400))}, demo=True)
+
+
+def test_brochure_html_preserves_block_order_and_escapes_unknown_layout():
+    snapshot = _brochure_snapshot()
+    html = er.build_html(snapshot)
+    for p in snapshot.pages:
+        positions = [html.index(f'data-block-id="{b.block_id}"') for b in p.blocks]
+        assert positions == sorted(positions)
+        assert f'layout-{p.layout_key}' in html
+    snapshot.pages[0].layout_key = '\"><script>alert(1)</script>'
+    assert '<script>alert(1)</script>' not in er.build_html(snapshot)
+
+
+@needs_browser
+def test_brochure_pdf_all_layouts_keep_text_images_footer_and_page_count(out_dir):
+    from pypdf import PdfReader
+    result = er.render(_brochure_snapshot(), "pdf", out_dir)
+    assert result.layout_ok and result.actual_pages == 5
+    pdf = PdfReader(result.file_path)
+    for p in pdf.pages:
+        text = ''.join((p.extract_text() or '').split())
+        assert '제품과공정을소개합니다' in text
+        assert ''.join(er.DEMO_FOOTER_TEXT.split()) in text
+        assert p.images
+    all_text = ''.join(''.join((p.extract_text() or '').split()) for p in pdf.pages)
+    assert '요청수량300개' in all_text and '전량결과아님' in all_text and '외관기준합의대기' in all_text
+
+
+@needs_browser
+def test_brochure_layout_never_hides_long_content_to_pass_overflow(out_dir):
+    result = er.render(_brochure_snapshot(long_text=True), "pdf", out_dir)
+    assert not result.layout_ok
+    assert any(f.kind == "overflow" for f in result.findings)

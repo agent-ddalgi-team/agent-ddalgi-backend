@@ -223,7 +223,16 @@ class FakeModel:
             result, change = extraction(payload), self.extract_change
         else:
             assert schema_name == "draft_sections"
-            result, change = draft_response(payload), self.draft_change
+            if "page_limits" in payload:
+                facts = payload["supported_facts"]
+                photos = payload["photos"][:payload["page_limits"]["photos_per_page"]]
+                result = {"pages": [{"heading": {"text": "가상 회사의 구체적인 정보", "fact_ids": [facts[0]["fact_id"]]},
+                    "lead": {"text": facts[0]["text"], "fact_ids": [facts[0]["fact_id"]]},
+                    "points": [{"text": f["text"], "fact_ids": [f["fact_id"]]} for f in facts[1:1 + payload["page_limits"]["points_per_page"]]],
+                    "photo_ids": [p["asset_id"] for p in photos], "layout": "product_grid"}]}
+            else:
+                result = draft_response(payload)
+            change = self.draft_change
         if change:
             change(result)
         return result
@@ -479,6 +488,45 @@ def structured_draft(brief, *, change=None):
                       issues=result.issues, recommendations=result.recommendations, can_generate=True,
                       confirmed_at="2026-09-28T00:00:00Z")
     return agent, DraftRequest(selected.session_id, 1, brief, selected.sources, pf), model
+
+
+@pytest.mark.parametrize("preference,maximum", [("none", 0), ("balanced", 1), ("many", 2)])
+def test_brochure_draft_uses_only_described_selected_photos_and_keeps_facts(preference, maximum):
+    agent, request, model = structured_draft(BRIEF.model_copy(update={"photo_preference": preference}))
+    source = request.sources[0]
+    source.origin_kind = "demo"
+    source.asset_ids = ["photo_1", "photo_2", "unapproved"]
+    source.asset_descriptions = {
+        aid: {"caption": "시험 공정 생산라인", "width": 640, "height": 480}
+        for aid in ("photo_1", "photo_2", "not_selected")}
+    before = copy.deepcopy(request)
+    draft = agent.draft(request)
+    photos = [b for p in draft.pages for b in p.blocks if b.type == "image"]
+    assert bool(photos) == bool(maximum)
+    assert all(sum(b.type == "image" for b in p.blocks) <= maximum for p in draft.pages)
+    assert len({b.content["asset_id"] for b in photos}) == len(photos)
+    assert all(b.content["asset_id"] in {"photo_1", "photo_2"} and not b.fact_ids for b in photos)
+    assert request == before
+    assert validate_draft(draft, request.sources, {f.fact_id for f in request.preflight.facts}) is None
+    assert len(model.calls) == 2  # 배치 때문에 AI를 추가 호출하지 않는다.
+
+
+@pytest.mark.parametrize("blocked_by", ["mock", "too_small", "no_description", "excluded_topic"])
+def test_brochure_draft_does_not_place_ineligible_or_excluded_photos(blocked_by):
+    brief = BRIEF.model_copy(update={"photo_preference": "many", "emphasis": ["공정 제외"] if blocked_by == "excluded_topic" else []})
+    agent, request, _ = structured_draft(brief)
+    source = request.sources[0]
+    source.origin_kind = "demo"
+    source.asset_ids = ["photo_1"]
+    source.asset_descriptions = {"photo_1": {"caption": "생산 공정", "width": 640, "height": 480}}
+    if blocked_by == "mock":
+        source.origin_kind = "mock"
+    elif blocked_by == "too_small":
+        source.asset_descriptions["photo_1"]["width"] = 100
+    elif blocked_by == "no_description":
+        source.asset_descriptions = {}
+    draft = agent.draft(request)
+    assert not any(b.type == "image" for p in draft.pages for b in p.blocks)
 
 
 @pytest.mark.parametrize("pages", [1, 6])
@@ -1247,6 +1295,7 @@ def test_paraphrase_trial_preserves_legacy_inputs_and_answers():
         assert request.pop("images") == []  # 새 내부 입력은 비어 있으며 기존 텍스트 시험 원문은 동일하다.
         for source in request["sources"]:
             assert source.pop("asset_locators") == {}
+            assert source.pop("asset_descriptions") == {}  # 사진 설명 추가가 기존 텍스트 평가 입력을 바꾸지 않는다.
     encoded = json.dumps(requests, ensure_ascii=False, sort_keys=True, default=lambda value: value.model_dump())
     assert hashlib.sha256(encoded.encode()).hexdigest() == "09b8db6ebe1b01dfb4766ea38a143aa4e8b8be194ca80d00c237e877c436900b"
 
@@ -1449,6 +1498,7 @@ def test_holdout_review_trial_freezes_cases_and_preserves_previous_evaluations()
         assert request.pop("images") == []  # 최신 사진 입력은 비어 있고 기존 텍스트 사례는 그대로다.
         for source in request["sources"]:
             assert source.pop("asset_locators") == {}
+            assert source.pop("asset_descriptions") == {}
     encoded = json.dumps(requests, ensure_ascii=False, sort_keys=True, default=lambda value: value.model_dump())
     assert hashlib.sha256(encoded.encode()).hexdigest() == "9eebc9a7b398d7cfd49876609f6a73d89bfdd494e04703aae701a8332db8b322"
     old_cases = [*REVIEW_TRIAL_CASES.values(), *PARAPHRASE_TRIAL_CASES.values()]
@@ -2214,7 +2264,8 @@ def run_d04_offline_case(monkeypatch, case_id, *, wrong_lead_time=False):
         payload = json.loads(kwargs["input"])
         if kwargs["text"]["format"]["name"] == "company_info":
             # 평가용 이름·기대 상태·정답은 실제 Agent 입력에 섞이지 않는다.
-            assert set(payload) == {"company_name_hint", "source_units"}
+            assert set(payload) == {"company_name_hint", "source_units", "source_origins"}
+            assert payload["source_origins"] == {s.source_id: s.origin_kind for s in build_d04_trial_request(case_id).sources}
             body = extraction_wire_result(d04_fake_extraction(case_id, payload), payload)
         else:
             body = draft_response(payload)
@@ -3770,3 +3821,97 @@ def test_llm_photo_candidates_with_no_selected_photos_fail_without_model():
     with pytest.raises(AgentError, match="NO_IMAGE_CANDIDATES"):
         llm.LlmAgent(model).propose(request)
     assert not model.calls
+
+
+def page_plan_request():
+    agent, request, model = structured_draft(BRIEF.model_copy(update={"photo_preference": "many", "target_pages": 8}))
+    src = request.sources[0]
+    src.origin_kind = "demo"
+    src.asset_ids = ["demo_image_a", "demo_image_b"]
+    src.asset_descriptions = {a: {"caption": "AI 생성 시연 부품 · 실제 제품 아님", "width": 1200, "height": 900} for a in src.asset_ids}
+    return agent, request, model
+
+
+def test_page_plan_keeps_origin_evidence_and_editable_list_without_extra_call():
+    agent, request, model = page_plan_request()
+    before = copy.deepcopy(request)
+    out = agent.draft(request)
+    assert request == before
+    assert len(model.calls) == 2
+    payload = model.calls[-1][1]
+    assert payload["page_limits"]["maximum_pages"] == 8
+    assert all(f["sources"][0]["origin"] == "demo" for f in payload["supported_facts"])
+    block = next(b for p in out.pages for b in p.blocks if b.type == "list")
+    assert all("시연" in t or "가상" in t for t in block.content["items"])
+    assert block.fact_ids and block.evidence_refs
+    assert validate_draft(out, request.sources, {f.fact_id for f in request.preflight.facts}) is None
+    assert all(b.content["caption"] == "AI 생성 시연 부품 · 실제 제품 아님" for p in out.pages for b in p.blocks if b.type == "image")
+
+
+@pytest.mark.parametrize("bad", ["foreign_fact", "excluded_fact", "empty_fact", "duplicate_fact", "foreign_photo", "duplicate_photo", "reused_photo", "too_long", "bad_layout", "empty_pages", "too_many_pages", "cover_with_points"])
+def test_page_plan_rejects_invalid_scope_or_unrenderable_structure(bad):
+    agent, request, model = page_plan_request()
+    if bad == "excluded_fact":
+        request.brief.emphasis = ["납기 제외"]
+    def change(result):
+        p = result["pages"][0]
+        if bad == "foreign_fact": p["lead"]["fact_ids"] = ["foreign"]
+        elif bad == "excluded_fact": p["lead"]["fact_ids"] = [next(f.fact_id for f in request.preflight.facts if f.field_key == "lead_time")]
+        elif bad == "empty_fact": p["lead"]["fact_ids"] = []
+        elif bad == "duplicate_fact": p["lead"]["fact_ids"] *= 2
+        elif bad == "foreign_photo": p["photo_ids"] = ["unapproved"]
+        elif bad == "duplicate_photo": p["photo_ids"] = ["demo_image_a"] * 2
+        elif bad == "reused_photo": result["pages"].append(copy.deepcopy(p))
+        elif bad == "too_long": p["lead"]["text"] = "가" * 181
+        elif bad == "bad_layout": p["layout"] = "javascript:bad"
+        elif bad == "empty_pages": result["pages"] = []
+        elif bad == "too_many_pages": result["pages"] *= 9
+        elif bad == "cover_with_points": p["layout"] = "cover_photo"
+    model.draft_change = change
+    with pytest.raises(AgentError, match="AGENT_OUTPUT_INVALID"):
+        agent.draft(request)
+
+
+def test_page_plan_direction_and_exclusion_reach_model_without_excluded_facts():
+    agent, request, model = page_plan_request()
+    request.brief.direction = "quality_process"
+    request.brief.emphasis = ["납기 제외", "인증 중심"]
+    agent.draft(request)
+    payload = model.calls[-1][1]
+    assert payload["brief"]["direction"] == "quality_process"
+    assert payload["brief"]["emphasis"] == request.brief.emphasis
+    assert all(f["field"] != "lead_time" for f in payload["supported_facts"])
+
+
+def test_review_gets_server_photo_origin_and_description_without_changing_document():
+    request = image_review_request()
+    source = request.sources[0]
+    source.origin_kind = "demo"
+    source.asset_descriptions = {"photo_test": {"caption": "AI 생성 시연 이미지 · 실제 제품 아님"}}
+    before = copy.deepcopy(request)
+    captured = []
+    def model(instructions, payload, schema, name, **kwargs):
+        captured.append(payload)
+        return image_review_answer(request)
+    llm.LlmAgent(model).validate(request)
+    image = captured[0]["images"][0]
+    assert image["origin_kind"] == "demo"
+    assert image["registered_description"] == source.asset_descriptions["photo_test"]["caption"]
+    assert request == before
+
+
+def test_preflight_issue_uses_korean_label_and_action_without_weakening_blocker():
+    from app.models import Fact
+    fact = Fact(fact_id="delivery", field_key="lead_time", value="조건 미확정", status="needs_confirmation", evidence_refs=[])
+    issue = next(i for i in llm.LlmAgent._issues([fact]) if i.fact_ids == ["delivery"])
+    assert "납기" in issue.message and "자료를 보완" in issue.message and "제외" in issue.message
+    assert "lead_time" not in issue.message and issue.severity == "blocker"
+
+
+def test_brochure_schema_individual_limits_fit_total_budget_with_demo_prefix():
+    schema = llm._BrochurePlan.model_json_schema()['$defs']
+    heading = schema['_BrochureHeading']['properties']['text']['maxLength']
+    lead = schema['_BrochureText']['properties']['text']['maxLength']
+    point = schema['_BrochurePoint']['properties']['text']['maxLength']
+    count = schema['_BrochurePage']['properties']['points']['maxItems']
+    assert heading + lead + count * point + (count + 1) * len('[시연] ') <= 600

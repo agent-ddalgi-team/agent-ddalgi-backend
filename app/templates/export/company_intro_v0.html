@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-{#- 회사소개서 템플릿 v0 (BE-07, D-06). 이 파일을 바꾸면 app/services/layout_checks.py의 TEMPLATE_VERSION을 올린다.
+{#- 회사소개서 템플릿 v3 (기존 파일 경로 유지). 이 파일을 바꾸면 app/services/layout_checks.py의 TEMPLATE_VERSION을 올린다.
     모든 문서 값은 Jinja2 autoescape로 이스케이프된다. 외부 리소스 없음(CSP default-src 'none'), 폰트·이미지는 data URI. -#}
 <html lang="ko">
 <head>
@@ -36,12 +36,52 @@ figcaption { font-size: 9pt; color: #555; margin-top: 1.5mm; word-break: keep-al
        color: #666; text-align: center; break-inside: avoid; page-break-inside: avoid; word-break: keep-all; }
 .box.broken { border-color: #c0392b; color: #a93226; }
 .box .box-title { font-weight: 700; display: block; margin-bottom: 1mm; }
+/* 순서·본문을 보존하는 문서 배치. 사진은 연속할 때만 같은 행에 놓이며 잘라 숨기는 컨테이너는 없다. */
+.brochure .page-label { color: #527078; border-top: 0.6mm solid #163b55; padding-top: 3mm;
+  margin-bottom: 9mm; display: flex; justify-content: space-between; gap: 5mm; }
+.brochure .page-label .series { font-size: 7pt; letter-spacing: 1.3pt; white-space: nowrap; }
+.brochure .page-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 3mm 5mm; }
+.brochure .blk { grid-column: 1 / -1; min-width: 0; }
+.brochure h1 { color: #163b55; font-size: 29pt; letter-spacing: -0.6pt; margin-bottom: 5mm; }
+.brochure h2 { color: #163b55; font-size: 19pt; margin-top: 2mm; padding-left: 4mm; border-left: 1mm solid #007a78; }
+.brochure h3 { color: #007a78; font-size: 13pt; }
+.brochure p { color: #354752; line-height: 1.65; margin-bottom: 2mm; }
+.brochure ul { background: #f1f6f7; padding: 5mm 5mm 5mm 10mm; margin: 1mm 0 4mm; }
+.brochure figure { background: #f1f6f7; padding: 3mm; margin: 2mm 0; }
+.brochure figure img.contain { width: 100%; height: 74mm; max-height: none; max-width: 100%; object-fit: contain; }
+.brochure figure img.crop { width: 100%; height: 74mm; object-fit: cover; }
+.brochure figcaption { text-align: left; color: #163b55; font-size: 9pt; line-height: 1.5; padding: 3mm 1mm 1mm; }
+.brochure.multi-photo figure { grid-column: auto; }
+.brochure.layout-cover_photo figure img.contain, .brochure.layout-cover_photo figure img.crop { height: 119mm; }
+.brochure.layout-cover_photo h1 { font-size: 32pt; margin-top: 8mm; }
+.brochure.layout-product_grid figure { background: #edf3f6; border-bottom: 1.2mm solid #163b55; }
+.brochure.layout-process_steps figure { border-top: 0.8mm solid #007a78; }
+.brochure.layout-contact_photo .page-body { border-bottom: 2mm solid #163b55; padding-bottom: 7mm; }
+/* 기존 list 블록의 문자와 순서를 그대로 유지하는 카드/단계 표현. 넘치는 내용은 검사하며 숨기지 않는다. */
+.brochure.layout-product_grid ul, .brochure.layout-process_steps ul {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 3mm;
+  list-style: none; padding: 0; background: none; counter-reset: step;
+}
+.brochure.layout-product_grid li, .brochure.layout-process_steps li {
+  background: #edf3f2; padding: 4mm; margin: 0; min-width: 0; line-height: 1.6;
+  break-inside: avoid; page-break-inside: avoid;
+}
+.brochure.layout-process_steps li { border-top: 0.7mm solid #007f7a; counter-increment: step; }
+.brochure.layout-process_steps li::before { content: counter(step, decimal-leading-zero); display: block;
+  font-size: 16pt; font-weight: 700; color: #007f7a; margin-bottom: 2mm; }
+.brochure.layout-cover_photo .page-body { background: #102d3d; padding: 7mm; color: white; }
+.brochure.layout-cover_photo h1 { color: white; font-size: 30pt; margin: 3mm 0; }
+.brochure.layout-cover_photo p { color: #d2e2e4; }
+.brochure.layout-cover_photo figure { padding: 0; background: #102d3d; }
+.brochure.layout-cover_photo figcaption { color: #bfd4d9; font-size: 8pt; }
+.brochure.layout-contact_photo ul { background: #102d3d; color: white; }
 </style>
 </head>
 <body>
 {%- for page in pages %}
-<section class="page" data-page-id="{{ page.page_id }}">
-  <div class="page-label">{{ loop.index }} / {{ page.title }}</div>
+<section class="page{% if page.layout != 'text' %} brochure layout-{{ page.layout }}{% if page.photo_count > 1 %} multi-photo{% endif %}{% endif %}" data-page-id="{{ page.page_id }}">
+  <div class="page-label">{% if page.layout != 'text' %}<span class="series">COMPANY PROFILE</span>{% endif %}<span>{{ loop.index }} / {{ page.title }}</span></div>
+<div class="page-body">
 {%- for b in page.blocks %}
 {%- if b.type == "heading" %}
   <h{{ b.level }} class="blk" data-block-id="{{ b.block_id }}">{{ b.text }}</h{{ b.level }}>
@@ -57,6 +97,7 @@ figcaption { font-size: 9pt; color: #555; margin-top: 1.5mm; word-break: keep-al
   <div class="blk box placeholder" data-block-id="{{ b.block_id }}"><span class="box-title">[사진 자리]</span>{{ b.description }}</div>
 {%- endif %}
 {%- endfor %}
+</div>
 </section>
 {%- endfor %}
 <script nonce="{{ nonce }}">

@@ -47,13 +47,20 @@ def build_sources(conn: Connection, session_id: str, selected_source_ids: list[s
             "SELECT segment_id, locator_json, text FROM segments WHERE source_id=?" + run_sql + " ORDER BY ordinal",
             (source_id, *run_params))]
         asset_rows = conn.execute(
-            "SELECT asset_id, photo_locator_json FROM assets WHERE source_id=? AND status='ready' AND deleted_at IS NULL" + run_sql,
+            "SELECT asset_id, photo_locator_json, caption_candidate, width, height, scope, approved_for_external_use "
+            "FROM assets WHERE source_id=? AND status='ready' AND deleted_at IS NULL" + run_sql,
             (source_id, *run_params)).fetchall()
         assets = [r["asset_id"] for r in asset_rows]
         asset_locators = {r["asset_id"]: photo_locator(r["photo_locator_json"]) for r in asset_rows}
+        asset_descriptions = {r["asset_id"]: {
+            "caption": r["caption_candidate"] or "자료 사진",
+            "width": r["width"], "height": r["height"],
+        } for r in asset_rows if row["origin_kind"] != "mock" and
+            (r["scope"] == "session" or r["approved_for_external_use"] == 1)}
         result.append(SourceIn(source_id=row["source_id"], source_version=source_version, kind=row["kind"],
                                name=name, parse_status=parse_status, segments=segments,
-                               asset_ids=assets, origin_kind=row["origin_kind"], asset_locators=asset_locators))
+                               asset_ids=assets, origin_kind=row["origin_kind"], asset_locators=asset_locators,
+                               asset_descriptions=asset_descriptions))
     return result
 
 
