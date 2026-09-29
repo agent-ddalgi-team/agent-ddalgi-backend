@@ -815,6 +815,15 @@ checked_block_ids에는 검사한 changed_block_ids를 빠짐없이 한 번씩 �
 모든 문제에는 원인 reason과 문장 수정/근거 보완/선택 주장 삭제 등 구체적 action을 쓴다.
 reason에는 바뀐 구절과 추가·손실·변경된 의미를 짚고, evidence와 action은 그 차이를 뒷받침하고 바로잡아야 한다.
 원문과 단어가 다르다는 이유만으로 문제를 만들거나 같은 의미 차이를 여러 문제로 중복 반환하지 않는다.
+findings의 단위는 오류 코드의 개수가 아니라 블록 안에서 바로잡아야 할 서로 다른 의미 차이다.
+응답 전에 각 지적의 대상 주장·원문과 다른 의미·필요한 수정을 대조한다.
+같은 주장의 같은 차이에 여러 kind가 적용되면 가장 직접적인 kind 하나로 반환한다.
+동일한 범위 확대를 값 불일치와 제외 조건 누락으로 각각 지적하는 경우도 하나로 묶는다.
+묶은 reason과 action에는 바로잡을 범위·조건·예외를 모두 담고 필요한 근거와 사실 참조를 보존한다.
+한 차이를 바로잡아도 다른 차이가 남으면 별도 문제로 반환한다. 서로 다른 수치·시점·조건 오류는
+같은 문장·블록·fact_id·원문 구간이나 같은 kind를 공유하더라도 각각 지적한다.
+문장 전체 삭제나 재작성으로 여러 오류를 한꺼번에 고칠 수 있다는 이유만으로 묶지 않는다.
+블록당 문제 수를 하나로 제한하거나 중복을 줄이려고 서로 다른 오류를 생략하지 않는다.
 사용자 확인 클릭만으로 사실 문제를 해결하라고 안내하지 않는다.
 evidence는 source_units 또는 sources.segments의 실제 unit_id 정수 목록만 반환한다.
 인용문·자료 ID·구간 ID를 다시 쓰지 않는다. 서버가 선택한 구간의 원문을 그대로 연결한다.
@@ -1231,12 +1240,16 @@ class LlmAgent:
                 size += len(paragraph["text"])
             groups.append(group)
         unresolved = {f.field_key for f in facts.values() if f.status != "supported"} - (excluded or set())
+        review_group: list[Block] = []
         for key in legacy.COMPANY_INFO_KEYS:
             if key in unresolved:
                 missing_only = all(f.status == "missing" for f in facts.values() if f.field_key == key)
                 label = "회사명" if key == "company_name" else legacy.SECTION_TITLES[key]
-                groups.append([block("heading", {"text": label, "level": 2}),
-                               block("paragraph", {"text": "자료에서 확인되지 않음" if missing_only else "추가 확인 필요"})])
+                review_group.extend([block("heading", {"text": label, "level": 2}),
+                                     block("paragraph", {"text": "자료에서 확인되지 않음" if missing_only else "추가 확인 필요"})])
+        if review_group:
+            # 확인 항목은 본문 뒤의 한 묶음으로 보존한다. 안내만으로 여러 쪽을 채우지 않는다.
+            groups.append(review_group)
         # 빈 쪽을 만들지 않고 항목 수 대신 실제 글 분량을 고려해 페이지를 구성한다.
         count = min(request.brief.target_pages, max(1, len(groups)))
         pages = []

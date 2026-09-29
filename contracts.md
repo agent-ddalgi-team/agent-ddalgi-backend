@@ -1,6 +1,10 @@
 # 공통 데이터·API 계약
 
-기준일: 2026-09-29 · 문서 v1.13 · contract_version: 1.5 · 데이터 schema_version: 1.0
+기준일: 2026-09-30 · 문서 v1.15 · contract_version: 1.5 · 데이터 schema_version: 1.0
+
+**초안의 사실 참조·구성 보완(2026-09-30, 문서 v1.15):** 내부 작성 입력 `sections_to_write`에 항목별 `fact_ids`를 함께 전달한다. 각 항목은 자기 항목의 사실을 하나 이상 참조해야 하며, 작성에 전달한 회사명 외 모든 supported ID가 본문에서 사용되어야 한다. 명시적 항목 제외는 전달 전에 적용한다. 누락은 기존 `AGENT_OUTPUT_INVALID`로 거부하고 자동 재호출하지 않는다. 이는 ID 누락 검사이며 실제 문장의 의미·조건 보존을 보장하지 않는다. 원 응답 전체 검사 후 같은 항목의 text·fact_ids 집합이 모두 같은 문단만 첫 한 건으로 유지한다. 부족·확인 안내는 기존 제목과 정확한 안내 문구·빈 근거를 유지한 채 본문 뒤 한 묶음으로 구성한다. 공개 필드·상태·API·DB와 계약/데이터 버전은 유지한다. 프론트에서 목표 쪽수와 실제 `pages` 개수를 구분해 표시하는지 확인이 필요하며, 프론트 코드·계약 사본은 이번에 갱신하지 않았다.
+
+**추출 결과의 완전중복 정리(2026-09-30, 문서 v1.14):** 새 분석에서 원 응답의 형식·상태·모든 근거를 검사한 뒤, 같은 항목의 supported 사실 중 text와 `(source_id, locator, quote)` 근거 집합이 모두 같은 중복만 ID 부여 전에 한 건으로 유지한다. 첫 사실의 문자열·근거 순서를 보존하며 서로 다른 근거·조건·시점 표현과 conflict/needs_confirmation 후보는 합치지 않는다. 실패한 값을 자동 보정하거나 상태를 바꾸지 않는다. 기존 점검·문서의 ID와 저장 내용은 변경하지 않는다. 공개 필드·상태·API·DB와 계약/데이터 버전은 유지한다. 프론트 코드 변경은 필요하지 않으며 이 문서 설명의 사본 동기화는 아직 하지 않았다.
 
 **내부 내용 검증 전송 형식(2026-09-29, 문서 v1.13):** `content_review` 원문 구간에 요청 내 `unit_id`를 붙이고, 각 finding의 `evidence`는 해당 번호의 정수 배열로 반환한다. 서버가 선택 원문 전체를 복원하고 기존 출처·원문·검사 범위를 확인한다. 이전 내부 requester의 인용 객체도 기존의 엄격한 원문 검사로 처리하지만 실제 모델 생성 스키마는 번호만 허용한다. 공개 Issue·Validation JSON, DB, 승인 조건과 contract_version은 유지한다. 검증 전송 JSON 한도는 `OPENAI_REVIEW_MAX_INPUT_CHARS`로 별도 설정하며 미지정 시 기존 시험 입력 한도를 따른다. 프론트 코드 변경은 필요하지 않으며 이번 설명 갱신은 프론트 계약 사본에 복사하지 않았다.
 
@@ -130,6 +134,7 @@
 필수: `schema_version`, `document_id`, `session_id`, `document_revision`, `input_revision`, `title`, `target_pages`, `pages`, `status`.
 
 - status: `draft`, `review_required`, `ready_for_approval`, `approved`.
+- `target_pages`는 사용자 목표이며 `pages` 개수와 같음을 보장하지 않는다. 새 초안은 자료 부족·확인 안내를 마지막 묶음으로 모으므로 본문이 적으면 목표보다 적은 논리 페이지를 반환한다. 실제 PDF/DOCX 출력 배치는 별도 검사한다.
 - 서버가 검증 결과와 승인 상태로 status를 계산한다. 클라이언트가 임의로 approved를 설정할 수 없다.
 - Page: `page_id`, `title`, `layout_key`, `blocks`.
 - Block 공통: `block_id`, `type`, `content`, `fact_ids`, `evidence_refs`.

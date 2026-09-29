@@ -1,14 +1,14 @@
 # 회사소개서 도우미 공통 작업 현황판
 
 > **서비스 목표**: 선택한 회사 자료로 근거가 연결된 소개서를 만들고, 사용자가 수정·검증·승인한 뒤 파일로 내려받는다.\
-> **현재 집중 영역**: [F-08 실제 화면 연결·품질 평가] · Agent는 [F-05 내용 검증·경고 확인·승인] (전체 진행률: 약 64%)
+> **현재 집중 영역**: [F-08 실제 화면 연결·품질 평가] · Agent 최우선은 [F-02 자료 점검·작성 조건 추천] · [F-03 사용자 확인·초안 생성] (전체 진행률: 약 64%)
 
 ---
 
 ## 1. Quick Status
 
-- **현재 작업**: **[F-08 실제 화면 연결·품질 평가] [AG-08 / BE-10] → 연결 결과·남은 품질 검수 확인**. 백엔드의 S01~S03 연결·실제 LLM 표본 완주 기록은 유지한다. **[F-05 내용 검증·경고 확인·승인] [AG-07 / BE-06] → 의미 검증 평가**는 새 업종 8쌍 준비를 마쳤고 실제 품질 평가는 진행중이다.
-- **다음 작업**: **[F-05 내용 검증·경고 확인·승인] [AG-07] → 새 사례의 실제 평가 범위 확정**. 이후 **[F-04 직접 편집·AI 수정안·사진] [AG-02/03/05/07 / BE-04/05/06] → 자료 변경 후 편집 보존**과 **[F-06 PDF·DOCX 내려받기] [AG-04/08 / BE-08] → DOCX 승인 범위**를 맞춘다.
+- **현재 작업**: **[F-08 실제 화면 연결·품질 평가] [AG-08 / BE-10] → 연결 결과·남은 품질 검수 확인**. 백엔드의 S01~S03 연결·실제 LLM 표본 완주 기록은 유지한다. **Agent 최우선은 [F-02 자료 점검·작성 조건 추천] · [F-03 사용자 확인·초안 생성] [AG-01~04] → 근거 기반 초안 품질 개선**이다. 2026-09-30 · [Agent 현재 작업](task_agent.md#grounded-draft-quality).
+- **다음 작업**: **[F-03] [AG-03/04] → DQ01 4쪽의 기존/개선 지침 실제 비교**. 복합 조건 사례 준비 완료/실제 실행 미완료 · 2026-09-30 · [Agent 사례 준비·실행 제안](task_agent.md#draft-condition-case-preparation) · [Agent 작업 순서·완료 기준](task_agent.md#grounded-draft-quality). 실제 회사 자료 확보 후 재진단·전후 비교는 필수다. AG-07의 추가 반복 평가와 Agent 편집·사진·출력 확대는 [Agent 후속 작업](task_agent.md#4-향후-예정-기능)를 따른다. 백엔드·프론트의 기존 후속 작업은 [백엔드 작업표](task_backend.md#4-향후-예정-기능)를 유지한다.
 - **주요 메모**: 2026-09-29, 원격 develop / 22fc345에서 PR #21~#23 병합 확인. 계약 1.5·데이터 형식 1.0·DB 코드 v11이며 실제 자료 적재 보류는 유지한다. 이전 시연·화면 시험 결과는 담당별 기록을 따르며 프론트 저장소·현재 실행 환경은 이번 PR에서 재확인하지 않았다.
 - **상태 기준**: 최신 develop의 BE-10 진행중과 나머지 BE/AG 상태를 유지한다. 약 64%는 기존 담당 업무 18개를 같은 비중으로 계산한 참고값이다((완료 8 + 진행·부분 완료 7 × 0.5) / 18). F 기능의 완료율이나 진행 순서를 뜻하지 않는다. 실제 서비스 완성 여부는 F-08의 전체 검증으로 판단한다.
 - **기록 운영**: [task_backend.md](task_backend.md)·[task_agent.md](task_agent.md)가 담당별 결과의 원본이다. 공통 현황판의 보고는 **[F 번호 기능명] [AG 번호 / BE 번호] → 세부 업무**로 시작한다. 해당 세부 업무의 담당 번호를 옆에 적고 한 담당의 업무이면 그 번호만 표시한다. 이 파일의 2절은 상태·날짜·위치와 기존 업무 참조를 연결하며, 담당 파일의 상태·선행 조건 변경 시 같은 변경에 이 표도 맞춘다. 프론트 작업·검수는 별도 저장소에서 관리한다.
@@ -35,10 +35,10 @@
 | 기능 번호 | 기능명 | Agent (AG) | 백엔드 (BE) | 상태 | 담당별 상태·날짜·기록 위치 |
 |---|---|---|---|---|---|
 | **F-01** | 자료 선택·파일 읽기 | **AG-01/02** | **BE-02/03** | 진행중 | BE-02/03 서버 범위 완료·시연 DB 적재·프론트 S01 연결 완료 · AG-01/02 진행중 · 2026-09-29 · [백엔드 5절 F-01](task_backend.md#f-01), [Agent 5절 F-01](task_agent.md#f-01) |
-| **F-02** | 자료 점검·작성 조건 추천 | **AG-01/02** | **BE-04** | 진행중 | BE-04 점검 API 완료·프론트 실제 LLM 점검 연결·실자료 점검 통과 · AG-01/02 진행중·출력 한도/구간 번호 인용 보완·현 시연 서버의 동일 자료 15개 점검 저장/조회 통과 · 2026-09-29 · [백엔드 5절 F-02](task_backend.md#f-02), [Agent 5절 F-02](task_agent.md#f-02) |
-| **F-03** | 사용자 확인·초안 생성 | **AG-03/04** | **BE-04** | 진행중 | BE-04 서버 범위 완료·실자료 초안 생성 통과 · AG-03/04 진행중·문장/분량 배치 개선·513개 회귀 및 실제 작성 2회 확인, 표현 품질 후속 · 2026-09-29 · [백엔드 5절 F-03](task_backend.md#f-03), [Agent 5절 F-03](task_agent.md#f-03) |
+| **F-02** | 자료 점검·작성 조건 추천 | **AG-01/02** | **BE-04** | 진행중 | BE-04 점검 API 완료·프론트 실제 LLM 점검 연결·실자료 점검 통과 · AG-01/02 진행중·추출 개선 구현/가상 회귀 완료·실제 자료 평가 미완료 · 2026-09-30 · 기존 BE 결과 2026-09-29 · [백엔드 5절 F-02](task_backend.md#f-02), [Agent 5절 F-02](task_agent.md#f-02), [Agent 추출 개선 기록](task_agent.md#extraction-quality-improvement) |
+| **F-03** | 사용자 확인·초안 생성 | **AG-03/04** | **BE-04** | 진행중 | BE-04 서버 범위 완료·실자료 초안 생성 통과 · AG-03/04 진행중·복합 조건 사례 준비 완료/신규 사례 실제 실행·실제 자료 전후 비교 미완료 · 2026-09-30 · 기존 BE 결과 2026-09-29 · [백엔드 5절 F-03](task_backend.md#f-03), [Agent 5절 F-03](task_agent.md#f-03), [Agent 사례 준비 기록](task_agent.md#draft-condition-case-preparation) |
 | **F-04** | 직접 편집·AI 수정안·사진 | **AG-05/06** | **BE-05** | 진행중 | BE-05 API 완료·프론트 S02 편집/실제 LLM 문구 수정안/사진 후보·이미지 검증 연결 완료·문서형 편집/사진 취소창 개선·C-05 후속 · AG-05/06 대기(초기 구현 인계 필요) · 2026-09-29 · [백엔드 5절 F-04](task_backend.md#f-04), [Agent 개선 검증](task_agent.md#f-03), [Agent 4절](task_agent.md#4-향후-예정-기능) |
-| **F-05** | 내용 검증·경고 확인·승인 | **AG-07** | **BE-06** | 진행중 | BE-06 서버 완료·프론트 경고 확인/승인 연결·실제 LLM 검증 완주 · AG-07 검증 입력 한도/인용 번호 연결 보완·새 평가 사례 준비 완료·진행중 · 2026-09-29 · [백엔드 5절 F-05](task_backend.md#f-05), [Agent 5절 F-05](task_agent.md#f-05) · [Agent 새 사례](task_agent.md#ag07-holdout-preparation) |
+| **F-05** | 내용 검증·경고 확인·승인 | **AG-07** | **BE-06** | 진행중 | BE-06 서버 완료·프론트 경고 확인/승인 연결·실제 LLM 검증 완주 · AG-07 진행중·추가 반복 평가 후순위(2026-09-30)·2/9회 · 기존 결과 2026-09-29 · [백엔드 5절 F-05](task_backend.md#f-05), [Agent 5절 F-05](task_agent.md#f-05) · [Agent 실행 기록](task_agent.md#ag07-review-stability-batch-1) |
 | **F-06** | PDF·DOCX 내려받기 | **AG-04/08** | **BE-07/08** | 진행중 | BE-07 완료·BE-08 PDF 완료(실제 LLM 검증본 PDF 완주)/DOCX 미완료 · AG-04 진행중·AG-08 대기 · 2026-09-29 · [백엔드 5절 F-06](task_backend.md#f-06), [Agent 4절](task_agent.md#4-향후-예정-기능) |
 | **F-07** | 세션 보호·종료 정리 | **AG-03** | **BE-02/09** | 진행중 | BE-02/09 서버 범위 완료·Chrome 폴더 정리 재시도 후속 · AG-03 진행중 · 2026-09-29 · [백엔드 5절 F-07](task_backend.md#f-07), [Agent 5절 F-07](task_agent.md#f-07) |
 | **F-08** | 실제 화면 연결·품질 평가 | **AG-08** | **BE-01/10** | 진행중 | BE-01 완료·BE-10 진행중(S01~S03 실제 연결·설계도 적용·실자료 표본 완주) · AG-08 대기 · 2026-09-29 · [백엔드 3절](task_backend.md#3-현재-진행-작업-f-08-실제-화면-연결품질-평가-now), [백엔드 5절 F-08](task_backend.md#f-08), [Agent 5절 F-08](task_agent.md#f-08) |
@@ -49,21 +49,51 @@
 
 ## 3. 현재 진행 작업: [F-08 실제 화면 연결·품질 평가] [AG-08 / BE-10] [NOW]
 
+**Agent 최우선 (2026-09-30): [F-02 자료 점검·작성 조건 추천] · [F-03 사용자 확인·초안 생성] [AG-01~04] → 근거 기반 초안 품질 개선.** 진행중 · [Agent 3절](task_agent.md#grounded-draft-quality). 아래 기존 통합·검증 기록과 백엔드 상태는 유지한다.
+
 - [x] **[AG-07]** Agent의 원문 검증·부분 재검증·바꿔쓰기 평가 연결을 develop에 반영했다.
 - [x] **[BE-06]** 백엔드가 경고 확인을 최신 문서·자료·검증과 연결하고 승인·출력에서 검사한다. 계약 1.5와 예시를 백엔드 원본에 반영했다.
 - [x] **[BE-06/10 · 프론트 연계]** 백엔드가 현재 프론트에 계약 1.5의 경고 확인 요청·차단 안내·승인·PDF 흐름을 연결하고 실제 화면·실제 LLM으로 확인했다(F-05의 프론트 연결 항목 완료).
 - [x] **[BE-10 · 프론트 연계]** 백엔드가 현재 프론트 S01~S03을 화면설계도 v1.0 배치로 적용하고 mock 전체 흐름 검사 19개 묶음을 통과했다.
-- [/] **[AG-07/08 / BE-10] Agent 의미 검증 평가·남은 통합 검수 (진행중)**: 백엔드 PR #21~#23 병합 확인. 프론트 공유 상태는 별도 확인이 필요하다.
+- [/] **[AG-07/08 / BE-10] Agent 의미 검증 평가·남은 통합 검수 (진행중)**: 백엔드 PR #21~#23 병합 확인. 프론트 공유 상태는 별도 확인이 필요하다. Agent 추가 반복 평가는 후순위(2026-09-30)이며 [Agent 후속 기록](task_agent.md#ag07-review-evaluation-history)을 따른다.
 - [x] **[AG-07]** 새 업종 정상/오류 8쌍·16개 평가 입력과 별도 정답표를 준비했다. [Agent 평가 준비](task_agent.md#ag07-holdout-preparation).
-- [ ] **[AG-07]** 새 표현 평가 결과를 검토하고 실제 AI 결과가 승인 조건으로 이어지는지 확인한다.
+- [x] **[AG-07]** H01A/B 실제 비교와 Codex 원문 대조를 기록했다. [Agent H01 기록](task_agent.md#ag07-h01-live-evaluation).
+- [x] **[AG-07]** H02A/B 실제 비교·불일치 중단과 오프라인 재현을 기록했다. [Agent H02 기록](task_agent.md#ag07-h02-live-evaluation).
+- [x] **[AG-07]** 중복 지적 지침·독립 오류 평가 준비를 완료했다. [Agent 준비 기록](task_agent.md#ag07-finding-group-preparation).
+- [x] **[AG-07]** G01B/C 실제 비교·원문 검토를 완료했다. [Agent G01 기록](task_agent.md#ag07-g01-live-evaluation).
+- [x] **[AG-07]** G01A/G02C 실제 비교·저장 손실 재현을 완료했다. [Agent 실행 기록](task_agent.md#ag07-g01a-g02c-live-evaluation).
+- [x] **[AG-07]** 독립 문제 저장·ID/확인 이력 보완과 회귀 확인을 완료했다. [Agent 저장 보완 기록](task_agent.md#ag07-independent-issue-storage).
+- [x] **[AG-07]** G02A/B 실제 비교와 G02A/B/C 실제 응답의 저장 재생을 완료했다. [Agent 실행 기록](task_agent.md#ag07-g02ab-live-evaluation).
+- [x] **[AG-07]** H03A/B 접속 가능 인원·실적 표현 비교와 응답 저장 재생을 완료했다. [Agent H03 기록](task_agent.md#ag07-h03-live-evaluation).
+- [x] **[AG-07]** H04A/B 번역·검수 수행 주체 비교와 응답 저장 재생을 완료했다. [Agent H04 기록](task_agent.md#ag07-h04-live-evaluation).
+- [x] **[AG-07]** H05A/B 공개 예정·완료 표현 비교와 응답 저장 재생을 완료했다. [Agent H05 기록](task_agent.md#ag07-h05-live-evaluation).
+- [x] **[AG-07]** H06A/B 적재 가능 무게·단위 환산 비교와 응답 저장 재생을 완료했다. [Agent H06 기록](task_agent.md#ag07-h06-live-evaluation).
+- [x] **[AG-07]** H07A/B 취급 대상·제외 조건 비교와 응답 저장 재생을 완료했다. [Agent H07 기록](task_agent.md#ag07-h07-live-evaluation).
+- [x] **[AG-07]** H08A/B 병렬 사실·인과관계 표현 비교와 응답 저장 재생을 완료했다. [Agent H08 기록](task_agent.md#ag07-h08-live-evaluation).
+- [x] **[AG-07]** H02A/B 중복 지적 재시험과 응답 저장 재생을 완료했다. 첫 시험 실패는 별도 보존한다. [Agent H02 재시험 기록](task_agent.md#ag07-h02-retest).
+- [x] **[AG-07]** 중복·독립 오류 반복 안정성 평가 준비를 완료했다. 준비 당시 실제 반복 평가는 미실행이었다. [Agent 준비 기록](task_agent.md#ag07-review-stability-preparation).
+- [x] **[AG-07]** 반복 평가 1묶음 실행·원문/저장 확인을 완료했다. [Agent 1묶음 기록](task_agent.md#ag07-review-stability-batch-1).
+- [ ] **[AG-07]** BE-06 담당 검토·남은 새 표현·반복 안정성·사용자 판정과 실제 모델 결과의 서버 저장/승인·화면 연결을 확인한다. [Agent 남은 일](task_agent.md#ag07-independent-issue-storage).
 - [ ] **[AG-08 / BE-08/10]** 실자료 전체·사진별 품질 검수와 AG-08 전달, DOCX 승인 범위, C-05 자료 변경 복귀를 담당 간 맞춘다.
 
 ### 완료 검증 기준 (Definition of Done)
 
-환경 준비가 필요한 PC는 저장소 루트에서 `uv sync --locked --group dev`를 실행한다. PowerShell에서 `$env:PYTHON_DOTENV_DISABLED = "1"`을 설정한 뒤 검사한다. 아래 백엔드·프론트 검사는 2026-09-29 담당자의 `C:\backend`·`C:\frontend` 실행 기록이다. 이번 PC의 Agent 검사 결과는 [Agent PR 준비 기록](task_agent.md#ag07-pr-preparation)을 따른다.
+환경 준비가 필요한 PC는 저장소 루트에서 `uv sync --locked --group dev`를 실행한다. PowerShell에서 `$env:PYTHON_DOTENV_DISABLED = "1"`을 설정한 뒤 검사한다. 아래 백엔드·프론트 검사는 2026-09-29 담당자의 `C:\backend`·`C:\frontend` 실행 기록이다. 현재 Mac의 Agent 실제 반복 1묶음 결과는 [Agent 실행 기록](task_agent.md#ag07-review-stability-batch-1), 준비 검사 결과는 [Agent 준비 기록](task_agent.md#ag07-review-stability-preparation), 이전 Windows 검사는 [Agent PR 준비 기록](task_agent.md#ag07-pr-preparation)을 따른다.
 
 - [/] **[BE-10]** `uv run pytest -q` 전체: 2026-09-29 1,034 passed / 3 failed. 실패 3건(be08 스트레스 테스트의 D-07 요청 형식 불일치, be05·be07의 순서 의존)은 [백엔드 3절 DoD](task_backend.md#3-현재-진행-작업-f-08-실제-화면-연결품질-평가-now)에 기록했으며 미커밋 변경이 원인이 아니다.
-- [x] **[AG-07]** 2026-09-29 최신 develop 통합 후 `tests/test_agent_llm.py` 전체 **582 passed / 1 warning**. 평가 입력·정답 분리와 서버 실패 경로를 포함하며 실제 실행 명령·한계는 [Agent PR 준비 기록](task_agent.md#ag07-pr-preparation)을 따른다.
+- [x] **[AG-07]** 2026-09-29 G01 실제 비교 전 선택 검사 **41 passed / 567 deselected / 1 warning**, 실제 G01B/C·응답 재생 확인 완료. [Agent G01 기록](task_agent.md#ag07-g01-live-evaluation). 이전 전체 608개·관련 2개 결과는 [준비 기록](task_agent.md#ag07-finding-group-preparation), 583개·H02B 불일치는 [H02 기록](task_agent.md#ag07-h02-live-evaluation), 582개는 [H01 기록](task_agent.md#ag07-h01-live-evaluation)·[PR 준비 기록](task_agent.md#ag07-pr-preparation)에 보존한다.
+- [x] **[AG-07]** 2026-09-29 G01A/G02C 실제 응답·오프라인 재생과 독립 지적 손실 재현 완료. 당시 결과는 [Agent 실행 기록](task_agent.md#ag07-g01a-g02c-live-evaluation)에 보존한다.
+- [x] **[AG-07]** 2026-09-29 독립 지적 저장 보완 후 선택 회귀 830개 최종 통과(최초 828개 통과·포트 제한 2개 재실행 통과). 가짜 모델과 임시 DB의 저장·API 검사이며 실제 전체 화면 연결은 미확인이다. [Agent 저장 보완 기록](task_agent.md#ag07-independent-issue-storage).
+- [x] **[AG-07]** 2026-09-29 G02A/B 실제 비교·응답 저장 재생 확인 완료. 코드·테스트 변경이 없어 pytest는 반복 실행하지 않았다. [Agent 실행 기록](task_agent.md#ag07-g02ab-live-evaluation).
+- [x] **[AG-07]** 2026-09-29 H03A/B 실제 비교·응답 재생·0/1건 저장과 반복 ID 보존 확인 완료. 기존 회귀 결과는 유지하며 실제 전체 화면 연결은 미확인이다. [Agent H03 기록](task_agent.md#ag07-h03-live-evaluation).
+- [x] **[AG-07]** 2026-09-29 H04A/B 실제 비교·응답 재생·0/1건 저장과 반복 ID 보존 확인 완료. 코드·테스트 변경이 없어 pytest는 반복 실행하지 않았다. [Agent H04 기록](task_agent.md#ag07-h04-live-evaluation).
+- [x] **[AG-07]** 2026-09-29 H05A/B 실제 비교·응답 재생·0/1건 저장과 반복 ID 보존 확인 완료. 코드·테스트 변경이 없어 pytest는 반복 실행하지 않았다. [Agent H05 기록](task_agent.md#ag07-h05-live-evaluation).
+- [x] **[AG-07]** 2026-09-29 H06A/B 실제 비교·응답 재생·0/1건 저장과 반복 ID 보존 확인 완료. 코드·테스트 변경이 없어 pytest는 반복 실행하지 않았다. [Agent H06 기록](task_agent.md#ag07-h06-live-evaluation).
+- [x] **[AG-07]** 2026-09-29 H07A/B 실제 비교·응답 재생·0/1건 저장과 반복 ID 보존 확인 완료. 코드·테스트 변경이 없어 pytest는 반복 실행하지 않았다. [Agent H07 기록](task_agent.md#ag07-h07-live-evaluation).
+- [x] **[AG-07]** 2026-09-29 H08A/B 실제 비교·응답 재생·0/1건 저장과 반복 ID 보존 확인 완료. 코드·테스트 변경이 없어 pytest는 반복 실행하지 않았다. [Agent H08 기록](task_agent.md#ag07-h08-live-evaluation).
+- [x] **[AG-07]** 2026-09-29 H02A/B 재시험·실패 재현 검사 1개 통과·실제 응답 재생·0/1건 저장·반복 ID 보존 확인 완료. 전체 회귀는 반복 실행하지 않았다. [Agent H02 재시험 기록](task_agent.md#ag07-h02-retest).
+- [x] **[AG-07]** 2026-09-29 반복 평가 준비 후 Agent 전체 **650 passed / 1 warning**. 가짜 모델 검사이며 준비 당시 실제 반복·승인/화면 연결은 미실행이었다. [Agent 준비 기록](task_agent.md#ag07-review-stability-preparation).
+- [x] **[AG-07]** 2026-09-29 반복 1묶음의 실제 응답·원문 대조·저장 재생·부분 집계를 확인했다. 전체 AG-07은 진행중이다. [Agent 1묶음 기록](task_agent.md#ag07-review-stability-batch-1).
 - [x] **[BE-10 · 프론트 연계]** `C:\frontend`에서 `node scripts/check-ai-workflow.mjs --publication --photos`가 `result: PASS`다. 2026-09-29 19개 검사 묶음 통과, 시연 PDF 4쪽·26,213바이트.
 - [ ] **[BE-06/08/10]** Chrome/Edge 환경에서 `uv run python -X utf8 -B scripts/check_s01_http.py --publication --timeout 120`이 `status: passed`로 끝난다. 설계도 적용 뒤 재실행하지 않았다.
 - [x] **[BE-06 · 프론트 연계]** 프론트 연결 후 화면에서 허용 경고 확인 전·후의 승인 상태가 달라지고, 필수 문제가 남으면 확인 여부와 관계없이 승인이 막힌다. 관련 내용 변경 시 다시 검사·확인을 요구한다. 실제 LLM 시험(6.36·6.42·6.43)과 mock 검사에서 확인했다.
@@ -74,7 +104,7 @@
 ## 4. 향후 예정 기능
 
 - **[F-08 실제 화면 연결·품질 평가] [AG-08 / BE-01/10] → 변경 공유 확인·실자료 전체 검수**: BE-10 + AG-08 + 프론트 FE-08. 백엔드 PR #21~#23의 병합을 확인했으며 프론트 공유 상태를 확인한 뒤 실자료 전체·사진 19개·목적별 분량을 검수한다. 핵심 검증은 해당 개발 담당이 수행하고, 보조 확인만으로 완료 처리하지 않는다. [백엔드 4절](task_backend.md#4-향후-예정-기능).
-- **[F-05 내용 검증·경고 확인·승인] [AG-07 / BE-06] → 실제 검증 품질 확대**: AG-07. 의미 검증의 새 사례 평가와 반복 안정성. [Agent 현재 작업](task_agent.md#3-현재-진행-작업-f-05-내용-검증경고-확인승인-now).
+- **[F-05 내용 검증·경고 확인·승인] [AG-07 / BE-06] → 실제 검증 품질 확대**: AG-07 진행중·추가 반복 평가 후순위 · 2026-09-30 · [Agent 기존 평가·남은 일](task_agent.md#ag07-review-evaluation-history).
 - **[F-04 직접 편집·AI 수정안·사진] [AG-05/06 / BE-05] → 자료 변경 후 편집 유지·수정안·사진 인계**: BE-04/05/06 + AG-02/03/05/06/07. C-05 복귀 흐름, 설계도 S02의 자료 변경 배너·페이지 추가, 백엔드가 초기 구현한 실제 문구 수정안·사진 검증의 Agent 인계. [백엔드 4절](task_backend.md#4-향후-예정-기능)·[Agent 4절](task_agent.md#4-향후-예정-기능).
 - **[F-01 자료 선택·파일 읽기] [AG-01/02 / BE-02/03] → 실제 자료·원문 확인**: BE-01~03 + AG-01/02. 원문 조회와 공유 범위 정리. 적재 보류는 유지한다. [백엔드 4절](task_backend.md#4-향후-예정-기능).
 - **[F-06 PDF·DOCX 내려받기] [AG-04/08 / BE-07/08] → DOCX 승인·다운로드**: BE-08 + AG-04/08. 배치 확인 방법과 승인 범위를 정하고 실제 파일의 본문·사진·편집성을 확인한다. [백엔드 4절](task_backend.md#4-향후-예정-기능).

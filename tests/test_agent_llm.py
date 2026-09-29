@@ -10,10 +10,12 @@ import copy
 import hashlib
 import json
 import socket
+import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from decimal import Decimal
+from itertools import product
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -424,6 +426,131 @@ def test_multiple_facts_conflict_candidates_and_uncertain_text_are_preserved():
     assert "추가 확인 필요" in body and "공정은 3개" not in body and "납기는 빠릅니다" not in body
 
 
+def test_extraction_removes_exact_supported_duplicates_before_draft_without_mutating_response():
+    returned = []
+    def repeat(info):
+        item = info["products_services"]["facts"][0]
+        info["products_services"]["facts"] = [copy.deepcopy(item) for _ in range(3)]
+        returned.append(info)
+    agent, request, model = analyzed(FakeModel(extract_change=repeat))
+    original = copy.deepcopy(returned[0])
+    products = [f for f in request.preflight.facts if f.field_key == "products_services"]
+    assert len(products) == 1
+    assert products[0].value == TEXTS["products_services"]
+    assert products[0].evidence_refs[0].excerpt == TEXTS["products_services"]
+    assert len(request.preflight.facts) == 14
+    baseline = analyzed()[1].preflight
+    assert request.preflight.recommendations == baseline.recommendations
+    draft = agent.draft(request)
+    assert validate_draft(draft, request.sources, {f.fact_id for f in request.preflight.facts}) is None
+    sent = [f for f in model.calls[-1][1]["supported_facts"] if f["field"] == "products_services"]
+    assert len(sent) == 1 and sent[0]["text"] == TEXTS["products_services"]
+    assert [kind for kind, _ in model.calls] == ["company_info", "draft_sections"]
+    assert returned[0] == original and len(returned[0]["products_services"]["facts"]) == 3
+    assert all("fact_id" not in f for f in returned[0]["products_services"]["facts"])
+
+
+@pytest.mark.parametrize("difference", ["exact", "reference_order", "reference_repeat", "text_space", "text_condition",
+                                       "source", "locator", "quote", "extra_reference", "field"])
+def test_extraction_duplicate_comparison_keeps_distinct_text_and_evidence(difference):
+    text = "제품 A, 100개 이하, 자재 확보 후 5영업일; 재검사 시 별도 협의."
+    agent_input = {"schema_version": "1.0", "source_units": [
+        {"source_id": "mock_a", "locator": "1", "text": text},
+        {"source_id": "mock_a", "locator": "2", "text": text},
+        {"source_id": "mock_b", "locator": "1", "text": text},
+    ]}
+    refs = [{"source_id": "mock_a", "locator": str(i), "quote": text} for i in (1, 2)]
+    first = {"text": text, "evidence": copy.deepcopy(refs if difference == "reference_order" else refs[:1])}
+    second = copy.deepcopy(first)
+    second_field = "lead_time"
+    if difference == "reference_order":
+        second["evidence"].reverse()
+    elif difference == "reference_repeat":
+        second["evidence"] *= 2
+    elif difference == "text_space":
+        second["text"] += " "
+    elif difference == "text_condition":
+        second["text"] = "제품 A, 100개 이하, 자재 확보 후 5영업일"
+    elif difference in {"source", "locator", "quote"}:
+        key, value = {"source": ("source_id", "mock_b"), "locator": ("locator", "2"),
+                      "quote": ("quote", "재검사 시 별도 협의.")}[difference]
+        second["evidence"][0][key] = value
+    elif difference == "extra_reference":
+        second["evidence"].append(copy.deepcopy(refs[1]))
+    elif difference == "field":
+        second_field = "capabilities"
+    info = {key: {"status": "not_found", "facts": []} for key in legacy.COMPANY_INFO_KEYS}
+    info["lead_time"] = {"status": "supported", "facts": [first]}
+    if second_field != "lead_time":
+        info[second_field] = {"status": "supported", "facts": []}
+    info[second_field]["facts"].append(second)
+    before, calls = copy.deepcopy(info), []
+    def respond(*args):
+        calls.append(args)
+        return info
+    result = legacy.extract_company_info(agent_input, request_json=respond)
+    actual = [f for item in result.values() for f in item["facts"]]
+    assert len(actual) == (1 if difference in {"exact", "reference_order", "reference_repeat"} else 2)
+    assert actual[0]["text"] == first["text"] and actual[0]["evidence"] == first["evidence"]
+    if len(actual) == 2:
+        preserved = [{k: v for k, v in f.items() if k != "fact_id"} for f in actual]
+        assert first in preserved and second in preserved
+    assert info == before and len(calls) == 1
+    assert len({f["fact_id"] for f in actual}) == len(actual)
+
+
+@pytest.mark.parametrize("status", ["conflict", "needs_confirmation"])
+def test_extraction_keeps_repeated_unresolved_candidates_and_blockers(status):
+    def repeat(info):
+        item = copy.deepcopy(info["products_services"]["facts"][0])
+        info["products_services"] = {"status": status, "facts": [item, copy.deepcopy(item)]}
+    agent, request, _ = analyzed(FakeModel(extract_change=repeat))
+    products = [f for f in request.preflight.facts if f.field_key == "products_services"]
+    if status == "conflict":
+        assert len(products) == 1 and len(products[0].alternatives) == 2
+        assert all(a["value"] == TEXTS["products_services"] and a["evidence_refs"]
+                   for a in products[0].alternatives)
+    else:
+        assert len(products) == 2 and all(f.value == TEXTS["products_services"] for f in products)
+    assert all(f.status == status for f in products)
+    assert any(i.severity == "blocker" and set(i.fact_ids).intersection(f.fact_id for f in products)
+               for i in request.preflight.issues)
+    draft = agent.draft(request)
+    assert all(not set(b.fact_ids).intersection(f.fact_id for f in products)
+               for page in draft.pages for b in page.blocks)
+
+
+@pytest.mark.parametrize("bad_reference", [{"source_id": "other_session"},
+                                           {"locator": "segment:unknown"}, {"quote": "fake-private-quote"}])
+def test_extraction_checks_every_duplicate_reference_before_reduction(bad_reference, caplog):
+    model = FakeModel()
+    def repeat(info):
+        duplicate = copy.deepcopy(info["products_services"]["facts"][0])
+        duplicate["evidence"].append(dict(duplicate["evidence"][0], **bad_reference))
+        info["products_services"]["facts"].append(duplicate)
+    model.extract_change = repeat
+    with pytest.raises(AgentError, match="AGENT_OUTPUT_INVALID"):
+        analyzed(model)
+    assert len(model.calls) == 1
+    assert "fake-private-quote" not in caplog.text
+
+
+@pytest.mark.parametrize("extra_key", ["fact_id", "evidence_metadata"])
+def test_extraction_rejects_invalid_shape_even_when_duplicate_key_matches(extra_key):
+    def repeat(info):
+        duplicate = copy.deepcopy(info["products_services"]["facts"][0])
+        if extra_key == "fact_id":
+            duplicate["fact_id"] = "model_must_not_assign_ids"
+        else:
+            duplicate["evidence"][0]["metadata"] = "not_allowed"
+        # text와 근거 비교 키는 첫 fact와 같다. 중복 축소보다 전체 검사가 먼저여야 한다.
+        info["products_services"]["facts"].append(duplicate)
+    model = FakeModel(extract_change=repeat)
+    with pytest.raises(AgentError, match="AGENT_OUTPUT_INVALID"):
+        analyzed(model)
+    assert len(model.calls) == 1
+
+
 @pytest.mark.parametrize("bad", [
     {"source_id": "other_session"}, {"source_id": "src_session"}, {"locator": "segment:unknown"},
     {"locator": "segment:seg_b"}, {"quote": "원문에 없는 회사"}, {"quote": ""},
@@ -618,7 +745,7 @@ def test_draft_keeps_confirmed_fact_ids_and_evidence_in_text_pages(pages):
     before = request.preflight.model_dump()
     result = agent.draft(request)
     assert validate_draft(result, request.sources, {f.fact_id for f in request.preflight.facts}) is None
-    assert len(result.pages) == pages
+    assert len(result.pages) == min(pages, 4)  # 본문 3개 항목 + 확인 사항 한 묶음
     assert result.title == TEXTS["company_name"]
     facts = {f.fact_id: f for f in request.preflight.facts}
     blocks = [b for p in result.pages for b in p.blocks]
@@ -640,6 +767,451 @@ def test_legacy_allows_company_name_reference_inside_business_paragraph():
         result["draft_sections"][0]["paragraphs"][0]["fact_ids"].append(company.fact_id)
     model.draft_change = change
     assert agent.draft(request).pages
+
+
+@pytest.mark.parametrize("omission", ["product_b", "all_product_refs", "company_name_only"])
+def test_draft_rejects_missing_body_fact_references_without_retry(omission):
+    def split(info):
+        item = info["products_services"]["facts"][0]
+        info["products_services"]["facts"] = [dict(item, text="시험 제품 A"), dict(item, text="시험 제품 B")]
+    agent, request, model = analyzed(FakeModel(extract_change=split))
+    company = next(f.fact_id for f in request.preflight.facts if f.field_key == "company_name")
+    summary = next(f.fact_id for f in request.preflight.facts if f.field_key == "company_summary")
+    def omit(result):
+        section = next(s for s in result["draft_sections"] if s["key"] == "products_services")
+        if omission == "product_b":
+            section["paragraphs"].pop()
+        else:
+            for p in section["paragraphs"]:
+                p["fact_ids"] = [company if omission == "company_name_only" else summary]
+    model.draft_change = omit
+    before = copy.deepcopy(request)
+    with pytest.raises(AgentError, match="AGENT_OUTPUT_INVALID"):
+        agent.draft(request)
+    assert len(model.calls) == 2 and request == before
+
+
+def test_draft_requires_own_section_reference_even_when_all_ids_appear_elsewhere():
+    agent, request, model = analyzed()
+    def swap(result):
+        sections = result["draft_sections"]
+        sections[0]["paragraphs"], sections[1]["paragraphs"] = sections[1]["paragraphs"], sections[0]["paragraphs"]
+    model.draft_change = swap
+    with pytest.raises(AgentError, match="AGENT_OUTPUT_INVALID"):
+        agent.draft(request)
+
+
+def test_draft_preserves_multiple_facts_in_one_paragraph_and_passes_section_fact_ids():
+    def split(info):
+        item = info["products_services"]["facts"][0]
+        info["products_services"]["facts"] = [dict(item, text="시험 제품 A"), dict(item, text="시험 제품 B")]
+    agent, request, model = analyzed(FakeModel(extract_change=split))
+    products = [f for f in request.preflight.facts if f.field_key == "products_services"]
+    def combine(result):
+        section = next(s for s in result["draft_sections"] if s["key"] == "products_services")
+        section["paragraphs"] = [{"text": "시험 제품 A와 시험 제품 B를 소개합니다.",
+                                  "fact_ids": [f.fact_id for f in products]}]
+    model.draft_change = combine
+    draft = agent.draft(request)
+    payload = model.calls[-1][1]
+    for section in payload["sections_to_write"]:
+        assert section["fact_ids"] == [f["fact_id"] for f in payload["supported_facts"] if f["field"] == section["key"]]
+    paragraph = next(b for page in draft.pages for b in page.blocks
+                     if b.type == "paragraph" and b.content["text"] == "시험 제품 A와 시험 제품 B를 소개합니다.")
+    assert paragraph.fact_ids == [f.fact_id for f in products]
+    assert all(ref in paragraph.evidence_refs for f in products for ref in f.evidence_refs)
+
+
+@pytest.mark.parametrize("variant", ["exact", "reference_order", "different_ids", "condition", "whitespace"])
+def test_draft_deduplicates_only_same_section_text_and_fact_ids(variant):
+    agent, request, model = analyzed()
+    company = next(f.fact_id for f in request.preflight.facts if f.field_key == "company_name")
+    original = []
+    def repeat(result):
+        section = next(s for s in result["draft_sections"] if s["key"] == "lead_time")
+        first = section["paragraphs"][0]
+        first["fact_ids"].append(company)
+        second = copy.deepcopy(first)
+        if variant == "reference_order":
+            second["fact_ids"].reverse()
+        elif variant == "different_ids":
+            second["fact_ids"].remove(company)
+        elif variant == "condition":
+            second["text"] = "특수 주문은 별도 협의"
+        elif variant == "whitespace":
+            second["text"] += " "
+        section["paragraphs"].append(second)
+        original.append(result)
+    model.draft_change = repeat
+    draft = agent.draft(request)
+    lead_id = next(f.fact_id for f in request.preflight.facts if f.field_key == "lead_time")
+    body = [b for page in draft.pages for b in page.blocks if b.type == "paragraph" and lead_id in b.fact_ids]
+    assert len(body) == (1 if variant in {"exact", "reference_order"} else 2)
+    assert body[0].content["text"] == TEXTS["lead_time"]
+    assert body[0].fact_ids == [lead_id, company]
+    assert len(next(s for s in original[0]["draft_sections"] if s["key"] == "lead_time")["paragraphs"]) == 2
+    assert len(model.calls) == 2
+
+
+def test_draft_validates_duplicate_paragraph_before_reduction():
+    def repeat(result):
+        duplicate = copy.deepcopy(result["draft_sections"][0]["paragraphs"][0])
+        duplicate["extra"] = "forbidden"
+        result["draft_sections"][0]["paragraphs"].append(duplicate)
+    agent, request, _ = analyzed(FakeModel(draft_change=repeat))
+    with pytest.raises(AgentError, match="AGENT_OUTPUT_INVALID"):
+        agent.draft(request)
+
+
+def test_draft_keeps_same_paragraph_in_different_sections_for_semantic_review():
+    agent, request, model = analyzed()
+    shared = {}
+    def repeat(result):
+        sections = result["draft_sections"][:2]
+        paragraph = {"text": "서로 다른 항목에 걸친 가상 설명입니다.",
+                     "fact_ids": [s["paragraphs"][0]["fact_ids"][0] for s in sections]}
+        for section in sections:
+            section["paragraphs"] = [copy.deepcopy(paragraph)]
+        shared.update(paragraph)
+    model.draft_change = repeat
+    draft = agent.draft(request)
+    paragraphs = [b for page in draft.pages for b in page.blocks
+                  if b.type == "paragraph" and b.content["text"] == shared["text"]]
+    assert len(paragraphs) == 2
+    assert all(b.fact_ids == shared["fact_ids"] and b.evidence_refs for b in paragraphs)
+
+
+@pytest.mark.parametrize("target_pages", [1, 4, 6, 8, 10])
+def test_draft_groups_missing_materials_at_end_and_preserves_requested_target(target_pages):
+    agent, request, _ = analyzed()
+    request.brief = request.brief.model_copy(update={"target_pages": target_pages})
+    before = copy.deepcopy(request)
+    draft = agent.draft(request)
+    assert len(draft.pages) == min(target_pages, 4)  # 본문 3개 항목 + 확인 사항 한 묶음
+    placeholder_pages = {i for i, page in enumerate(draft.pages) for b in page.blocks
+                         if b.type == "paragraph" and not b.fact_ids}
+    assert placeholder_pages == {len(draft.pages) - 1}
+    placeholders = [b for b in draft.pages[-1].blocks if b.type == "paragraph" and not b.fact_ids]
+    assert len(placeholders) == sum(f.status != "supported" for f in request.preflight.facts)
+    assert all(b.content["text"] == "자료에서 확인되지 않음" and not b.evidence_refs for b in placeholders)
+    assert request == before
+    assert validate_draft(draft, request.sources, {f.fact_id for f in request.preflight.facts}) is None
+
+
+# AG-03/04 작성 평가용 신규 가상 원문. 실제 회사·모델 출력이 아니며 서비스 지침에 넣지 않는다.
+# facts의 위치는 (원자료 1-based 순번, 줄 번호). 서로 떨어진 조건도 한 사실의 근거로 연결한다.
+DRAFT_CONDITION_CASES = {
+    "DQ01": {
+        "sources": (
+            ("해솔시험제작",
+             "해솔시험제작은 부품별 표면처리 조건을 설명하기 위해 만든 가상 기업이다.",
+             "링 R7은 알루미늄 부품에 적용하는 무색 표면처리 품목이다.",
+             "판 P9는 강재 부품에 적용하는 흑색 표면처리 품목이다.",
+             "링 R7의 하루 80개는 작업자 2명을 배치한 모의 시험의 목표 수량이며 실제 생산 실적이나 보장 능력이 아니다."),
+            ("링 R7의 1회 주문이 40개 이하이면 도면 승인과 자재 입고가 모두 끝난 다음 영업일부터 처리 기간을 4영업일로 계산한다.",
+             "링 R7 주문이 40개를 넘거나 재작업이 필요한 경우 처리 기간은 별도 협의한다.",
+             "판 P9의 1회 주문이 18개 이하이면 조건 확인서 서명 후 처리 기간은 7영업일이다.",
+             "판 P9에 방청 포장을 추가하면 수량이 18개 이하라도 처리 기간을 별도 협의한다.",
+             "두 품목의 처리 기간에는 운송 시간이 포함되지 않으며 도착일을 보장하지 않는다."),
+        ),
+        "facts": (
+            ("company_name", "supported", ((1, 1),)),
+            ("company_summary", "supported", ((1, 2),)),
+            ("products_services", "supported", ((1, 3),)),
+            ("products_services", "supported", ((1, 4),)),
+            ("capabilities", "supported", ((1, 5),)),
+            ("lead_time", "supported", ((2, 1), (2, 2))),
+            ("lead_time", "supported", ((2, 3), (2, 4))),
+            ("lead_time", "supported", ((2, 5),)),
+        ),
+    },
+    "DQ02": {
+        "sources": (
+            ("모래시험필터",
+             "모래시험필터는 필터 조립과 시험 이력을 소개하는 가상 기업이며 이 자료의 기준일은 2026년 9월 30일이다.",
+             "교체형 필터 F2와 F8을 소개한다. F2는 소형 하우징, F8은 대형 하우징을 사용한다.",
+             "외부 협력사가 여과재를 가공하고 모래시험필터가 하우징 조립과 외관 검사를 맡는다.",
+             "2024년에는 익명 고객의 시험용 필터 F2 18세트 조립을 완료했다. 상업 납품 실적으로 분류하지 않는다.",
+             "2027년 필터 F8 24세트의 시험 조립은 계획이며 아직 실행하지 않았다."),
+            ("가상 시험표시 Q-LAB-8의 적용 대상은 필터 F2의 하우징이다. 필터 F8과 완제품의 여과 성능은 적용 대상이 아니다.",
+             "Q-LAB-8 확인서에 적힌 유효기간은 2025년 1월 1일부터 2025년 12월 31일까지다.",
+             "2026년 9월 30일 기준 갱신 확인서는 제공되지 않았고 현재 유효성을 확인할 자료가 없다."),
+        ),
+        "facts": (
+            ("company_name", "supported", ((1, 1),)),
+            ("company_summary", "supported", ((1, 2),)),
+            ("products_services", "supported", ((1, 3),)),
+            ("processes", "supported", ((1, 4),)),
+            ("history", "supported", ((1, 5),)),
+            ("capabilities", "supported", ((1, 6),)),
+            ("certifications", "supported", ((2, 1), (2, 2), (2, 3))),
+        ),
+    },
+    "DQ03": {
+        "sources": (
+            ("가온시험검사",
+             "가온시험검사는 포장재별 검사 범위와 접수 조건을 소개하는 가상 기업이다.",
+             "봉투 S는 외관 검사만 제공하며 누설 시험은 제공하지 않는다.",
+             "상자 T는 치수 검사만 제공하며 적재 하중 시험은 제공하지 않는다.",
+             "내륙 방문 수거의 검사 기간은 평일 오전 11시 이전에 접수가 확정된 건에 한해 접수일 다음 영업일부터 3영업일이다.",
+             "오전 11시 이후 또는 휴일에 들어온 건은 다음 영업일에 접수를 확정한다.",
+             "도서 지역은 방문 수거 대상에서 제외한다. 재검사가 필요한 건의 검사 기간은 별도 협의한다.",
+             "야간 검사 서비스는 협의 중이며 실제 운영 여부는 추가 확인이 필요하다."),
+            ("2026년 9월 20일 작성한 운영표에는 검사 공정이 총 2개라고 적혀 있다.",),
+            ("2026년 9월 20일 작성한 작업 메모에는 검사 공정이 총 3개라고 적혀 있다.",),
+        ),
+        "facts": (
+            ("company_name", "supported", ((1, 1),)),
+            ("company_summary", "supported", ((1, 2),)),
+            ("products_services", "supported", ((1, 3),)),
+            ("products_services", "supported", ((1, 4),)),
+            ("lead_time", "supported", ((1, 5), (1, 6), (1, 7))),
+            ("capabilities", "needs_confirmation", ((1, 8),)),
+            ("process_count", "conflict", ((2, 1), (3, 1))),
+        ),
+    },
+}
+
+# 평가자용 기준과 의도적으로 틀린 대조 문장. 입력 builder는 이 표를 읽지 않는다.
+# (대상 항목, 보존할 의미, 오류 예시). 키워드 일치로 의미 통과를 자동 판정하지 않는다.
+DRAFT_CONDITION_RUBRICS = {
+    "DQ01": (
+        ("products_services", "R7의 알루미늄·무색과 P9의 강재·흑색을 각각 유지",
+         "링 R7과 판 P9는 모두 알루미늄의 무색 표면처리 품목입니다."),
+        ("lead_time", "R7 40개 이하·도면 승인과 자재 입고 모두 완료·다음 영업일 시작·4영업일·초과/재작업 별도 협의",
+         "링 R7은 주문 수량과 관계없이 주문일부터 4일 안에 처리합니다."),
+        ("lead_time", "P9 18개 이하·조건 확인서 서명 후·7영업일·방청 포장 추가 시 별도 협의",
+         "판 P9는 18개 이하이면 방청 포장 여부와 관계없이 7영업일 안에 처리합니다."),
+        ("lead_time", "두 품목 모두 운송 시간 제외·도착일 보장 없음",
+         "두 품목 모두 안내된 처리 기간 안에 고객에게 도착합니다."),
+        ("capabilities", "R7 하루 80개·작업자 2명·모의 목표이며 실제 실적/능력 보장 아님",
+         "링 R7과 판 P9를 하루 80개씩 생산한 실적을 보유합니다."),
+    ),
+    "DQ02": (
+        ("certifications", "Q-LAB-8은 F2 하우징만 대상·F8과 완제품 성능 제외",
+         "Q-LAB-8로 필터 F2와 F8 완제품의 여과 성능을 인증받았습니다."),
+        ("certifications", "2025년 유효기간·2026-09-30 현재 갱신 자료 부재로 현재 유효성 주장 불가",
+         "Q-LAB-8은 2026년 9월 30일 현재 유효합니다."),
+        ("processes", "여과재 가공은 외부 협력사·자사는 하우징 조립과 외관 검사",
+         "모든 여과재 가공과 하우징 조립을 자체 인력으로 수행합니다."),
+        ("history", "2024년 익명 고객 F2 18세트는 시험 조립이며 상업 납품 아님",
+         "2024년에 주요 거래처에 필터 F2 18세트를 상업 납품했습니다."),
+        ("capabilities", "2027년 F8 24세트는 미실행 계획",
+         "필터 F8 24세트의 시험 조립을 완료했습니다."),
+    ),
+    "DQ03": (
+        ("products_services", "봉투 S 외관만/누설 제외·상자 T 치수만/하중 제외",
+         "봉투 S의 누설 시험과 상자 T의 적재 하중 시험을 제공합니다."),
+        ("lead_time", "내륙 방문 수거·평일11시이전 확정·다음 영업일부터3영업일·늦은/휴일 접수는 다음 영업일 확정",
+         "모든 접수는 접수 시각과 관계없이 당일부터 3일 안에 검사를 마칩니다."),
+        ("lead_time", "도서 방문 수거 제외·재검사 기간 별도 협의",
+         "도서 지역도 방문 수거하며 재검사까지 3영업일 안에 마칩니다."),
+        ("products_services", "2개/3개 공정 수 충돌은 본문에서 확정하지 않고 확인 안내와 blocker 유지",
+         "검사 공정은 총 3개입니다."),
+        ("products_services", "야간 운영은 미확인 상태로 본문에서 확정하지 않고 안내와 blocker 유지",
+         "야간 검사 서비스를 운영합니다."),
+    ),
+}
+
+
+def build_draft_condition_request(case_id, *, target_pages=4):
+    """가상 원문과 수동 사실로 작성 입력만 준비한다. 승인·추출·API·DB 호출은 하지 않는다."""
+    if case_id not in DRAFT_CONDITION_CASES:
+        raise ValueError("없는 작성 평가 사례입니다.")
+    if type(target_pages) is not int or target_pages not in (1, 4):
+        raise ValueError("이번 비교는 목표 1쪽·4쪽만 준비합니다.")
+    case = DRAFT_CONDITION_CASES[case_id]
+    sources = [SourceIn(
+        f"src_{case_id}_{i}", 1, "company", f"가상 작성 자료 {i}", "complete",
+        [SegmentIn(f"seg_{case_id}_{i}_{n}", {"line_start": n, "line_end": n}, text)
+         for n, text in enumerate(lines, 1)], origin_kind="mock")
+        for i, lines in enumerate(case["sources"], 1)]
+    facts = []
+    for number, (key, status, locations) in enumerate(case["facts"], 1):
+        evidence = []
+        for source_no, line_no in locations:
+            source = sources[source_no - 1]
+            segment = source.segments[line_no - 1]
+            evidence.append(EvidenceRef(source_id=source.source_id, source_version=source.source_version,
+                                        segment_id=segment.segment_id, locator=dict(segment.locator),
+                                        excerpt=segment.text))
+        facts.append(Fact(fact_id=f"fact_{case_id}_{number:02}", field_key=key, status=status,
+                          value=None if status == "conflict" else " ".join(ref.excerpt for ref in evidence),
+                          evidence_refs=evidence,
+                          alternatives=[{"value": ref.excerpt, "evidence_refs": [ref.model_dump()]}
+                                        for ref in evidence] if status == "conflict" else None))
+    used = {fact.field_key for fact in facts}
+    facts.extend(Fact(fact_id=f"fact_{case_id}_missing_{key}", field_key=key, status="missing", value=None)
+                 for key in legacy.COMPANY_INFO_KEYS if key not in used)
+    issues = llm.LlmAgent._issues(facts)
+    # _issues는 실행 때마다 ID를 발급한다. 같은 평가 입력을 재구성할 수 있도록 시험 ID만 고정한다.
+    for n, issue in enumerate(issues, 1):
+        issue.issue_id = f"issue_{case_id}_{n}"
+    session_id = f"ses_{case_id}"
+    brief = Brief(purpose="신규 거래처에 제품별 서비스 범위와 이용 조건을 소개",
+                  emphasis=["제품", "납기 조건", "대응 범위"], direction="balanced",
+                  target_pages=target_pages, photo_preference="none")
+    preflight = PreflightOut(
+        preflight_id=f"pf_{case_id}", session_id=session_id, input_revision=1,
+        usable_source_ids=[source.source_id for source in sources], facts=facts, issues=issues,
+        recommendations=Recommendations(suggested_pages=target_pages, reason="비교용 고정 분량"),
+        can_generate=True, confirmed_at=None)
+    return DraftRequest(session_id, 1, brief, sources, preflight)
+
+
+def draft_condition_measurements(request, result):
+    """참조·분량만 측정한다. 유효한 ID가 붙은 잘못된 문장도 의미 통과로 바꾸지 않는다."""
+    paragraphs = [block for page in result.pages for block in page.blocks if block.type == "paragraph"]
+    body = [block for block in paragraphs if block.fact_ids]
+    required = {fact.fact_id for fact in request.preflight.facts
+                if fact.status == "supported" and fact.field_key != "company_name"}
+    used = {fid for block in body for fid in block.fact_ids}
+    supported = {fact.fact_id for fact in request.preflight.facts if fact.status == "supported"}
+    texts = [block.content["text"] for block in body]
+    return {
+        "schema_error": validate_draft(result, request.sources, {f.fact_id for f in request.preflight.facts}),
+        "required_fact_count": len(required), "referenced_fact_count": len(required & used),
+        "missing_fact_ids": sorted(required - used), "unsupported_fact_ids": sorted(used - supported),
+        "body_paragraphs": len(body), "body_chars": sum(map(len, texts)),
+        "exact_duplicate_paragraphs": len(texts) - len(set(texts)),
+        "target_pages": request.brief.target_pages, "logical_pages": len(result.pages),
+        "placeholder_count": sum(not block.fact_ids for block in paragraphs),
+        "human_review_required": True, "semantic_passed": None,
+    }
+
+
+@pytest.mark.parametrize("case_id", list(DRAFT_CONDITION_CASES))
+def test_draft_condition_sources_facts_statuses_and_fresh_requests(case_id):
+    request = build_draft_condition_request(case_id)
+    assert request.preflight.confirmed_at is None
+    assert {f.field_key for f in request.preflight.facts} == set(legacy.COMPANY_INFO_KEYS)
+    assert all(s.origin_kind == "mock" and not s.asset_ids for s in request.sources)
+    index = llm.SourceIndex(request.sources)
+    for fact in request.preflight.facts:
+        for ref in fact.evidence_refs:
+            index.check(ref)
+        if fact.status == "supported":
+            assert fact.value == " ".join(ref.excerpt for ref in fact.evidence_refs)
+        if fact.status == "conflict":
+            assert fact.value is None and len(fact.alternatives) == 2
+            assert [alt["evidence_refs"][0] for alt in fact.alternatives] == [r.model_dump() for r in fact.evidence_refs]
+    assert any(len(f.evidence_refs) > 1 and f.status == "supported" for f in request.preflight.facts)
+    assert request == build_draft_condition_request(case_id)
+    request.sources[0].segments[0].text = "변경"
+    request.preflight.facts[0].evidence_refs[0].locator["line_start"] = 999
+    fresh = build_draft_condition_request(case_id)
+    assert fresh.sources[0].segments[0].text != "변경"
+    assert fresh.preflight.facts[0].evidence_refs[0].locator["line_start"] == 1
+
+
+@pytest.mark.parametrize("case_id", list(DRAFT_CONDITION_CASES))
+def test_draft_condition_short_and_long_variants_only_change_target(case_id):
+    short = build_draft_condition_request(case_id, target_pages=1)
+    long = build_draft_condition_request(case_id, target_pages=4)
+    short.brief.target_pages = 4
+    short.preflight.recommendations.suggested_pages = 4
+    assert short == long
+
+
+@pytest.mark.parametrize("case_id,target_pages", list(product(DRAFT_CONDITION_CASES, (1, 4))))
+def test_draft_condition_offline_payload_preserves_all_conditions_and_separates_rubric(case_id, target_pages):
+    request = build_draft_condition_request(case_id, target_pages=target_pages)
+    # 준비 builder는 미확인 상태다. 가짜 응답 경로의 검사에만 확인 시각을 넣는다.
+    request.preflight.confirmed_at = "2026-09-30T00:00:00Z"
+    before = copy.deepcopy(request)
+    calls = []
+    def respond(instructions, payload, schema, name):
+        assert instructions == legacy.load_draft_prompt() and name == "draft_sections"
+        assert set(payload) == {"supported_facts", "sections_to_write", "brief"}
+        assert set(payload["supported_facts"][0]) == {"field", "fact_id", "text"}
+        expected = [dict(field=f.field_key, fact_id=f.fact_id, text=f.value)
+                    for f in request.preflight.facts if f.status == "supported"]
+        assert payload["supported_facts"] == expected
+        wire = llm._json_input(payload)
+        assert 0 < len(wire) <= 10_000
+        assert all(bad not in wire for _, _, bad in DRAFT_CONDITION_RUBRICS[case_id])
+        assert not any(key in wire for key in ("required_meaning", "semantic_passed", "human_review_required"))
+        calls.append(copy.deepcopy(payload))
+        return draft_response(payload)
+    result = llm.LlmAgent(respond).draft(request)
+    metrics = draft_condition_measurements(request, result)
+    assert metrics["schema_error"] is None and not metrics["missing_fact_ids"]
+    assert not metrics["unsupported_fact_ids"] and metrics["semantic_passed"] is None
+    assert metrics["human_review_required"]
+    assert 1 <= metrics["logical_pages"] <= target_pages
+    assert metrics["placeholder_count"] == sum(f.status != "supported" for f in request.preflight.facts)
+    by_id = {fact.fact_id: fact for fact in request.preflight.facts}
+    for page in result.pages:
+        for block in page.blocks:
+            if block.type == "paragraph" and block.fact_ids:
+                fact = by_id[block.fact_ids[0]]
+                assert block.content["text"] == fact.value and block.evidence_refs == fact.evidence_refs
+    assert request == before and len(calls) == 1
+
+
+@pytest.mark.parametrize("case_id,rule_number", [
+    (case_id, n) for case_id, rules in DRAFT_CONDITION_RUBRICS.items() for n in range(len(rules))])
+def test_draft_condition_wrong_meaning_with_valid_ids_stays_unjudged(case_id, rule_number):
+    request = build_draft_condition_request(case_id)
+    request.preflight.confirmed_at = "2026-09-30T00:00:00Z"
+    field_key, required_meaning, wrong_text = DRAFT_CONDITION_RUBRICS[case_id][rule_number]
+    assert required_meaning and all(wrong_text not in seg.text for src in request.sources for seg in src.segments)
+    def respond(instructions, payload, schema, name):
+        response = draft_response(payload)
+        section = next(s for s in response["draft_sections"] if s["key"] == field_key)
+        section["paragraphs"][0]["text"] = wrong_text  # ID/원문 근거는 그대로 유지한 의도적 의미 오류.
+        return response
+    result = llm.LlmAgent(respond).draft(request)
+    metrics = draft_condition_measurements(request, result)
+    assert metrics["schema_error"] is None and metrics["missing_fact_ids"] == []
+    assert metrics["human_review_required"] and metrics["semantic_passed"] is None
+    assert any(block.content.get("text") == wrong_text for page in result.pages for block in page.blocks)
+
+
+def test_draft_condition_unconfirmed_fixture_cannot_call_model():
+    request = build_draft_condition_request("DQ01")
+    calls = []
+    with pytest.raises(AgentError, match="PREFLIGHT_NOT_CONFIRMED"):
+        llm.LlmAgent(lambda *args: calls.append(args)).draft(request)
+    assert calls == []
+
+
+@pytest.mark.parametrize("target_pages", [1, 4])
+def test_draft_condition_preserves_review_facts_and_server_conflict(target_pages):
+    request = build_draft_condition_request("DQ03", target_pages=target_pages)
+    request.preflight.confirmed_at = "2026-09-30T00:00:00Z"
+    before = copy.deepcopy(request)
+    result = llm.LlmAgent(lambda instructions, payload, schema, name: draft_response(payload)).draft(request)
+    document = Document(document_id="doc_DQ03", session_id=request.session_id, document_revision=1,
+                        input_revision=1, title=result.title, target_pages=target_pages, status="draft", pages=result.pages)
+    segments = {seg.segment_id: seg for source in request.sources for seg in source.segments}
+    facts = {fact.fact_id: fact for fact in request.preflight.facts}
+    context = validation.Context(
+        seg_texts={sid: seg.text for sid, seg in segments.items()},
+        seg_source={seg.segment_id: source.source_id for source in request.sources for seg in source.segments},
+        asset_source={}, mock_sources={source.source_id for source in request.sources},
+        refs=refs.SessionRefs(set(segments), {s.source_id: s.source_version for s in request.sources}, set(), set(facts)),
+        facts=facts, preflight_issues=request.preflight.issues)
+    issues, _ = validation.server_checks(document, context)
+    for status, code in (("conflict", "VALUE_CONFLICT"), ("needs_confirmation", "UNSUPPORTED_CLAIM")):
+        fact = next(f for f in facts.values() if f.status == status)
+        assert any(issue.code == code and issue.severity == "blocker" and fact.fact_id in issue.fact_ids
+                   for issue in request.preflight.issues)
+        if status == "conflict":
+            assert any(issue.code == code and issue.severity == "blocker" and fact.fact_id in issue.fact_ids
+                       for issue in issues)
+        assert not any(fact.fact_id in b.fact_ids for p in result.pages for b in p.blocks)
+        assert any(b.content.get("text") == legacy.SECTION_TITLES[fact.field_key] for p in result.pages for b in p.blocks)
+    assert sum(b.content.get("text") == "추가 확인 필요" for p in result.pages for b in p.blocks) == 2
+    # 서버 일반 검사의 미참조 needs_confirmation 전달은 이번 준비의 통과 범위가 아니다.
+    # 사전 점검 보존과 VALUE_CONFLICT의 서버 전달을 구분한다(task_agent.md 준비 기록 참조).
+    assert request == before
+
+
+@pytest.mark.parametrize("case_id,target_pages", [("absent", 4), ("DQ01", True), ("DQ01", 4.0), ("DQ01", 6)])
+def test_draft_condition_rejects_unprepared_case_or_target(case_id, target_pages):
+    with pytest.raises(ValueError):
+        build_draft_condition_request(case_id, target_pages=target_pages)
 
 
 @pytest.mark.parametrize("value,excerpt,expected", [
@@ -1336,7 +1908,8 @@ for _pair_number, _pair in enumerate(_HOLDOUT_REVIEW_PAIRS, 1):
             "block_id": "b_target", "severity": "blocker" if _suffix == "B" else None,
             "reason": _pair["reason"] if _suffix == "B" else "원문의 의미를 유지한 표현입니다.",
             "action": _pair["action"] if _suffix == "B" else "해당 표현의 사실 수정은 필요하지 않습니다.",
-            "evaluation_status": "fixed", "exposure": "held_out_from_prompt",
+            "evaluation_status": "fixed",
+            "exposure": "development" if _pair_number == 2 else "held_out_from_prompt",
         }
 
 
@@ -1348,6 +1921,7 @@ def build_holdout_review_trial_request(case_id):
 def holdout_review_trial_checks(case_id, result):
     return _review_trial_checks(case_id, result, HOLDOUT_REVIEW_EXPECTATIONS[case_id]) | {
         "evaluation_status": "fixed", "scored": True, "actual_issue_count": len(result.issues),
+        "exposure": HOLDOUT_REVIEW_EXPECTATIONS[case_id]["exposure"],
     }
 
 
@@ -1442,7 +2016,14 @@ def test_holdout_review_trial_checks_reject_bad_results(mistake):
 
 def test_holdout_review_trial_freezes_cases_and_preserves_previous_evaluations():
     assert len(HOLDOUT_REVIEW_CASES) == len(HOLDOUT_REVIEW_EXPECTATIONS) == 16
-    assert holdout_review_trial_fingerprint() == "0830623607a590a702f9f3242a10cd0f4222d0691a0816ed56c2e3960ad3181c"
+    # H02만 지침 보완에 사용한 개발 사례로 바꾼다. 입력·정답·과거 불일치는 그대로다.
+    historical = copy.deepcopy({"cases": HOLDOUT_REVIEW_CASES, "expectations": HOLDOUT_REVIEW_EXPECTATIONS})
+    for cid, expected in historical["expectations"].items():
+        assert expected["exposure"] == ("development" if cid in {"H02A", "H02B"} else "held_out_from_prompt")
+        expected["exposure"] = "held_out_from_prompt"
+    assert hashlib.sha256(json.dumps(historical, ensure_ascii=False, sort_keys=True).encode()).hexdigest() == \
+        "0830623607a590a702f9f3242a10cd0f4222d0691a0816ed56c2e3960ad3181c"
+    assert holdout_review_trial_fingerprint() == "4c1a7cb195c948d91a20302f575f87202a462256f61b7aa830702ceed12a3b35"
     assert paraphrase_trial_fingerprint() == "4e375c2942200a0d622e6aa40dbbb3069d95650ac13f9d3591a236f76a151619"
     requests = {cid: asdict(build_paraphrase_trial_request(cid)) for cid in PARAPHRASE_TRIAL_CASES}
     for request in requests.values():
@@ -1456,6 +2037,610 @@ def test_holdout_review_trial_freezes_cases_and_preserves_previous_evaluations()
         assert case["source"] not in {old["source"] for old in old_cases}
         assert case["text"] not in {old["text"] for old in old_cases}
         assert case["source"] not in llm._REVIEW_INSTRUCTIONS and case["text"] not in llm._REVIEW_INSTRUCTIONS
+
+
+def test_holdout_review_trial_preserves_h02_overlapping_findings_as_mismatch():
+    """H02B 실제 평가의 두 지적을 재현한다. API 호출이나 정답표 변경은 하지 않는다."""
+    findings = [
+        ("value_mismatch", "‘전국 모든 지역’은 원문의 배송 대상인 ‘내륙 지역’보다 범위를 넓힙니다.",
+         "배송 지역을 ‘내륙 지역’으로 수정하세요."),
+        ("condition_loss", "원문은 도서 지역을 서비스에서 제외하지만, 문장에는 이 예외가 빠져 있습니다.",
+         "도서 지역 제외 조건을 명시하세요."),
+    ]
+    def respond(instructions, payload, schema, schema_name):
+        unit = next(unit for unit in payload["source_units"] if unit["segment_id"] == "seg_review_3")
+        return {"checked_block_ids": payload["changed_block_ids"], "findings": [
+            {"kind": kind, "block_ids": ["b_target"], "fact_ids": ["fact_review_3"],
+             "reason": reason, "action": action, "evidence": [unit["unit_id"]]}
+            for kind, reason, action in findings]}
+    request = build_holdout_review_trial_request("H02B")
+    before = copy.deepcopy(request)
+    result = llm.LlmAgent(respond).validate(request)
+    assert request == before
+    assert [issue.code for issue in result.issues] == ["VALUE_MISMATCH", "CONDITION_LOSS"]
+    for issue, (_, reason, action) in zip(result.issues, findings, strict=True):
+        assert issue.severity == "blocker" and issue.status == "open" and issue.resolution is None
+        assert reason in issue.message and action in issue.message
+        assert HOLDOUT_REVIEW_CASES["H02B"]["source"] in issue.message
+    checks = holdout_review_trial_checks("H02B", result)
+    assert checks["matching_issue_count"] == 2 and checks["duplicate_issue_count"] == 1
+    assert not checks["missed_expected_issue"] and checks["unexpected_issue_count"] == 0
+    assert not checks["rubric_matched"]
+    assert checks["semantic_passed"] is None and checks["human_review_required"]
+
+
+# 중복 지적 지침을 고정한 뒤 준비한 별도 가상 입력. 정답·문제 개수는 모델에 보내지 않는다.
+_FINDING_GROUP_INPUTS = [
+    ("검증시험회사는 악기 대여 서비스를 제공하는 가상 기업이다.",
+     "대여 서비스는 성인 회원만 이용할 수 있으며 미성년 회원은 이용할 수 없다. 대여 기간은 최대 14일이다.",
+     ("성인 회원은 악기를 최대 14일간 대여할 수 있으며, 미성년 회원은 서비스를 이용할 수 없습니다.",
+      "모든 연령의 회원은 악기를 최대 14일간 대여할 수 있습니다.",
+      "모든 연령의 회원은 악기를 최대 30일간 대여할 수 있습니다.")),
+    ("검증시험회사는 도예 체험 수업을 운영하는 가상 기업이다.",
+     "체험 수업의 정원은 12명이며 수업 시간은 90분이다.",
+     ("체험 수업은 정원 12명으로 운영되며 90분 동안 진행합니다.",
+      "체험 수업은 정원 24명으로 운영되며 90분 동안 진행합니다.",
+      "체험 수업은 정원 24명으로 운영되며 45분 동안 진행합니다.")),
+]
+FINDING_GROUP_CASES = {
+    f"G{number:02d}{suffix}": {"field": "other_info", "context": context, "source": source,
+                              "fact_value": source, "text": text, "extra_source": None}
+    for number, (context, source, variants) in enumerate(_FINDING_GROUP_INPUTS, 1)
+    for suffix, text in zip("ABC", variants, strict=True)
+}
+
+# 각 항목은 서로 독립적으로 바로잡아야 할 의미 차이 하나다. 코드는 대체 가능한 선택지다.
+_AGE_FINDING = {"codes": ["VALUE_MISMATCH", "CONDITION_LOSS"],
+                "reason": "성인 회원 한정과 미성년 회원 제외를 없애 모든 연령으로 확대했습니다.",
+                "action": "이용 대상을 성인 회원으로 한정하고 미성년 회원 제외를 함께 명시하세요."}
+_DURATION_FINDING = {"codes": ["VALUE_MISMATCH"],
+                     "reason": "최대 대여 기간을 14일에서 30일로 늘렸습니다.",
+                     "action": "최대 대여 기간을 14일로 수정하세요."}
+_CLASS_SIZE_FINDING = {"codes": ["VALUE_MISMATCH"],
+                       "reason": "수업 정원을 12명에서 24명으로 늘렸습니다.",
+                       "action": "수업 정원을 12명으로 수정하세요."}
+_CLASS_TIME_FINDING = {"codes": ["VALUE_MISMATCH"],
+                       "reason": "수업 시간을 90분에서 45분으로 줄였습니다.",
+                       "action": "수업 시간을 90분으로 수정하세요."}
+FINDING_GROUP_EXPECTATIONS = {
+    cid: {"findings": copy.deepcopy(findings), "block_id": "b_target", "evaluation_status": "fixed",
+          "exposure": "held_out_from_prompt"}
+    for cid, findings in {
+        "G01A": [], "G01B": [_AGE_FINDING], "G01C": [_AGE_FINDING, _DURATION_FINDING],
+        "G02A": [], "G02B": [_CLASS_SIZE_FINDING], "G02C": [_CLASS_SIZE_FINDING, _CLASS_TIME_FINDING],
+    }.items()
+}
+
+
+def build_finding_group_trial_request(case_id):
+    return _build_review_trial_request(FINDING_GROUP_CASES[case_id])
+
+
+def finding_group_trial_checks(case_id, result):
+    """개수·코드·위치만 대조한다. 바꿔 쓴 중복이나 의미 오류는 원문과 직접 비교해야 한다."""
+    expected = FINDING_GROUP_EXPECTATIONS[case_id]
+    code_options = product(*(finding["codes"] for finding in expected["findings"]))
+    codes_match = any(sorted(issue.code for issue in result.issues) == sorted(codes) for codes in code_options)
+    invalid_shapes = sum(not (issue.block_ids == [expected["block_id"]] and issue.scope == "content"
+                             and issue.severity == "blocker" and issue.status == "open"
+                             and issue.resolution is None) for issue in result.issues)
+    # 응답을 삭제·병합하지 않는다. 임의 issue_id만 다른 완전 동일 지적도 실패로 표시한다.
+    signatures = [json.dumps(issue.model_dump(exclude={"issue_id"}), ensure_ascii=False, sort_keys=True)
+                  for issue in result.issues]
+    duplicates = len(signatures) - len(set(signatures))
+    return {"case_id": case_id, "expected_issue_count": len(expected["findings"]),
+            "actual_issue_count": len(result.issues), "invalid_issue_count": invalid_shapes,
+            "exact_duplicate_count": duplicates, "structure_matched": codes_match and not invalid_shapes and not duplicates,
+            "semantic_passed": None, "human_review_required": True, "exposure": expected["exposure"]}
+
+
+def _finding_group_fake_response(case_id, payload):
+    unit = next(unit for unit in payload["source_units"] if unit["segment_id"] == "seg_review_3")
+    return {"checked_block_ids": payload["changed_block_ids"], "findings": [
+        {"kind": finding["codes"][0].lower(), "block_ids": ["b_target"], "fact_ids": ["fact_review_3"],
+         "reason": finding["reason"], "action": finding["action"], "evidence": [unit["unit_id"]]}
+        for finding in FINDING_GROUP_EXPECTATIONS[case_id]["findings"]]}
+
+
+@pytest.mark.parametrize("case_id", FINDING_GROUP_CASES)
+def test_finding_group_trial_input_isolated_from_answers(case_id, monkeypatch):
+    request = build_finding_group_trial_request(case_id)
+    before = copy.deepcopy(request)
+    expected = copy.deepcopy(FINDING_GROUP_EXPECTATIONS[case_id])
+    with monkeypatch.context() as patch:
+        patch.setitem(globals(), "FINDING_GROUP_EXPECTATIONS", {})
+        assert build_finding_group_trial_request(case_id) == before
+    def capture(instructions, payload, schema, name):
+        encoded = llm._json_input(payload)
+        assert name == "content_review" and instructions == llm._REVIEW_INSTRUCTIONS
+        assert len(encoded) <= 10_000
+        assert all(key not in encoded for key in ("exposure", "evaluation_status", "findings", "codes", case_id))
+        for finding in expected["findings"]:
+            assert finding["reason"] not in encoded and finding["action"] not in encoded
+        assert payload["source_units"][2]["text"] == FINDING_GROUP_CASES[case_id]["source"]
+        assert schema["properties"]["findings"].get("maxItems", 2) >= 2
+        return _finding_group_fake_response(case_id, payload)
+    result = llm.LlmAgent(capture, max_input_chars=10_000).validate(request)
+    assert request == before
+    checks = finding_group_trial_checks(case_id, result)
+    assert checks["structure_matched"] and checks["semantic_passed"] is None and checks["human_review_required"]
+    for issue, finding in zip(result.issues, expected["findings"], strict=True):
+        assert finding["reason"] in issue.message and finding["action"] in issue.message
+        assert FINDING_GROUP_CASES[case_id]["source"] in issue.message
+    request.document.pages[0].blocks[-1].content["text"] = "변경"
+    assert build_finding_group_trial_request(case_id) == before
+
+
+@pytest.mark.parametrize("case_id", ["G01C", "G02C"])
+@pytest.mark.parametrize("mistake", ["missing", "duplicate", "extra", "wrong_code", "wrong_block", "warning", "resolved"])
+def test_finding_group_trial_rejects_missing_independent_errors_and_duplicates(case_id, mistake):
+    result = llm.LlmAgent(lambda instructions, payload, schema, name:
+                          _finding_group_fake_response(case_id, payload)).validate(build_finding_group_trial_request(case_id))
+    if mistake == "missing": result.issues.pop()
+    elif mistake == "duplicate": result.issues[1] = result.issues[0].model_copy(update={"issue_id": "duplicate"})
+    elif mistake == "extra": result.issues.append(result.issues[0].model_copy(update={"issue_id": "extra"}))
+    elif mistake == "wrong_code": result.issues[1].code = "UNSUPPORTED_CLAIM"
+    elif mistake == "wrong_block": result.issues[1].block_ids = ["b_context_1"]
+    elif mistake == "warning": result.issues[1].severity = "warning"
+    elif mistake == "resolved": result.issues[1].status = "resolved"
+    before = copy.deepcopy(result)
+    checks = finding_group_trial_checks(case_id, result)
+    assert not checks["structure_matched"] and result == before
+    assert checks["semantic_passed"] is None and checks["human_review_required"]
+
+
+@pytest.mark.parametrize("code", ["VALUE_MISMATCH", "CONDITION_LOSS"])
+def test_finding_group_trial_accepts_alternative_code_without_losing_second_error(code):
+    def respond(instructions, payload, schema, name):
+        response = _finding_group_fake_response("G01C", payload)
+        response["findings"][0]["kind"] = code.lower()
+        response["findings"].reverse()
+        return response
+    result = llm.LlmAgent(respond).validate(build_finding_group_trial_request("G01C"))
+    checks = finding_group_trial_checks("G01C", result)
+    assert checks["structure_matched"] and checks["actual_issue_count"] == 2
+    assert all(issue.block_ids == ["b_target"] and issue.fact_ids == ["fact_review_3"] for issue in result.issues)
+
+
+@pytest.mark.parametrize("case_id", ["G01A", "G01B"])
+def test_finding_group_trial_rejects_false_alarm_or_two_codes_for_one_difference(case_id):
+    def respond(instructions, payload, schema, name):
+        response = _finding_group_fake_response("G01B", payload)
+        response["findings"].append(dict(response["findings"][0], kind="condition_loss"))
+        return response
+    result = llm.LlmAgent(respond).validate(build_finding_group_trial_request(case_id))
+    checks = finding_group_trial_checks(case_id, result)
+    assert checks["actual_issue_count"] == 2 and not checks["structure_matched"]
+    assert checks["semantic_passed"] is None and checks["human_review_required"]
+
+
+def test_finding_group_trial_has_fresh_texts_and_only_target_sentence_varies():
+    data = {"cases": FINDING_GROUP_CASES, "expectations": FINDING_GROUP_EXPECTATIONS}
+    assert hashlib.sha256(json.dumps(data, ensure_ascii=False, sort_keys=True).encode()).hexdigest() == \
+        "4d13e14bdafa6d5a096e22a602d4e9e1d049afff22008a403b237b062e38fb46"
+    previous = [*REVIEW_TRIAL_CASES.values(), *PARAPHRASE_TRIAL_CASES.values(), *HOLDOUT_REVIEW_CASES.values()]
+    for case in FINDING_GROUP_CASES.values():
+        assert case["source"] not in llm._REVIEW_INSTRUCTIONS and case["text"] not in llm._REVIEW_INSTRUCTIONS
+        assert all(case["source"] != old["source"] and case["text"] != old["text"] for old in previous)
+    for prefix in ("G01", "G02"):
+        normal = build_finding_group_trial_request(prefix + "A")
+        for suffix in "BC":
+            changed = build_finding_group_trial_request(prefix + suffix)
+            assert changed.document.pages[0].blocks[-1].content != normal.document.pages[0].blocks[-1].content
+            changed.document.pages[0].blocks[-1].content = copy.deepcopy(normal.document.pages[0].blocks[-1].content)
+            assert changed == normal
+
+
+# AG-07 repeated review preparation. These helpers never call a model.
+REVIEW_STABILITY_ROUNDS = (
+    ("H02B", "G01C", "G02C"),
+    ("G01C", "G02C", "H02B"),
+    ("G02C", "H02B", "G01C"),
+)
+REVIEW_STABILITY_BUDGET = Decimal("0.30")
+REVIEW_STABILITY_WIRES = {
+    "H02B": (2662, "29bc6003b0aaf84d62945bb3314335bd3fd1351267e39b805bf04471a9a2c9e1"),
+    "G01C": (2637, "90eafabdff4685e147e4b5ea102f90bef2818c3cfe474207dc3d5b7aa5f8421e"),
+    "G02C": (2516, "793d1bb019720836f2fac3fa601df64e8cd7a8e5ec27d960c96e688298c6fab2"),
+}
+
+
+def review_stability_plan():
+    return [{"trial_no": index + 1, "round_no": index // 3 + 1,
+             "batch_no": index // 2 + 1, "case_id": case_id}
+            for index, case_id in enumerate(case for row in REVIEW_STABILITY_ROUNDS for case in row)]
+
+
+def _review_stability_step(trial_no):
+    if type(trial_no) is not int or not 1 <= trial_no <= 9:
+        raise ValueError("trial_no must be an integer from 1 to 9")
+    return review_stability_plan()[trial_no - 1]
+
+
+def build_review_stability_request(trial_no):
+    case_id = _review_stability_step(trial_no)["case_id"]
+    builder = build_holdout_review_trial_request if case_id == "H02B" else build_finding_group_trial_request
+    return builder(case_id)
+
+
+def review_stability_observation(trial_no, result):
+    """Record structure only; source/storage review and usage must be supplied separately."""
+    step = _review_stability_step(trial_no)
+    case_id = step["case_id"]
+    check = holdout_review_trial_checks if case_id == "H02B" else finding_group_trial_checks
+    checks = check(case_id, result)
+    return step | {"checks": checks, "code_signature": sorted(issue.code for issue in result.issues),
+                   "source_review": "pending", "storage_review": "pending", "estimated_cost_usd": None}
+
+
+def summarize_review_stability(observations):
+    """Summarize a consecutive prefix; never turn a structural match into semantic approval."""
+    if len(observations) > 9:
+        raise ValueError("too many observations")
+    by_case = {cid: {"planned": 3, "observed": 0, "structure_matched": 0,
+                    "source_matched": 0, "storage_matched": 0, "code_signatures": []}
+               for cid in REVIEW_STABILITY_WIRES}
+    spent, cost_complete, reason = Decimal("0"), True, None
+    for trial_no, item in enumerate(observations, 1):
+        if reason is not None:
+            raise ValueError("observations continued after a stop or pending review")
+        step = _review_stability_step(trial_no)
+        if any(type(item.get(key)) is not type(value) or item[key] != value for key, value in step.items()):
+            raise ValueError("observations must preserve the fixed order without gaps or repeats")
+        checks = item["checks"]
+        cid = step["case_id"]
+        matched = checks["rubric_matched" if cid == "H02B" else "structure_matched"]
+        exposure = "development" if cid == "H02B" else "held_out_from_prompt"
+        if (type(matched) is not bool or checks["case_id"] != cid or checks["exposure"] != exposure
+                or checks["semantic_passed"] is not None or checks["human_review_required"] is not True):
+            raise ValueError("invalid evaluation metadata")
+        reviews = (item["source_review"], item["storage_review"])
+        if any(value not in {"pending", "matched", "mismatched"} for value in reviews):
+            raise ValueError("invalid review state")
+        counts = by_case[cid]
+        counts["observed"] += 1
+        counts["structure_matched"] += int(matched)
+        counts["source_matched"] += int(reviews[0] == "matched")
+        counts["storage_matched"] += int(reviews[1] == "matched")
+        counts["code_signatures"].append(list(item["code_signature"]))
+        cost = item["estimated_cost_usd"]
+        if cost is None:
+            cost_complete, reason = False, "usage_unconfirmed"
+        else:
+            if not isinstance(cost, str):
+                raise ValueError("cost must be a decimal string")
+            try:
+                value = Decimal(cost)
+            except ArithmeticError:
+                raise ValueError("invalid cost") from None
+            if not value.is_finite() or value < 0:
+                raise ValueError("invalid cost")
+            spent += value
+        if reason is None:
+            if not matched:
+                reason = "structure_mismatch"
+            elif "mismatched" in reviews:
+                reason = "source_mismatch" if reviews[0] == "mismatched" else "storage_mismatch"
+            elif spent > REVIEW_STABILITY_BUDGET:
+                reason = "budget_exceeded"
+            elif "pending" in reviews:
+                reason = "review_required"
+            elif trial_no < 9 and REVIEW_STABILITY_BUDGET - spent < llm._call_reserve_usd(8000):
+                reason = "budget_reserve"
+    remaining = REVIEW_STABILITY_BUDGET - spent if cost_complete else None
+    complete = len(observations) == 9 and reason is None
+    return {"status": "complete" if complete else ("review_required" if reason == "review_required" else
+            "stopped" if reason else "incomplete"), "reason": reason,
+            "planned_calls": 9, "observed_calls": len(observations), "by_case": by_case,
+            "next_trial_no": len(observations) + 1 if not complete and reason is None else None,
+            "known_estimated_cost_usd": str(spent), "cost_complete": cost_complete,
+            "remaining_usd": str(remaining) if remaining is not None else None,
+            "semantic_passed": None, "human_review_required": True}
+
+
+def _stability_fake_response(trial_no, payload, *, reverse=False, alternative=False):
+    cid = _review_stability_step(trial_no)["case_id"]
+    if cid != "H02B":
+        response = _finding_group_fake_response(cid, payload)
+    else:
+        expected = HOLDOUT_REVIEW_EXPECTATIONS[cid]
+        response = {"checked_block_ids": payload["changed_block_ids"], "findings": [
+            {"kind": "condition_loss", "block_ids": ["b_target"], "fact_ids": ["fact_review_3"],
+             "reason": expected["reason"], "action": expected["action"], "evidence": [3]}]}
+    if alternative and cid in {"H02B", "G01C"}:
+        current = response["findings"][0]["kind"]
+        response["findings"][0]["kind"] = "value_mismatch" if current == "condition_loss" else "condition_loss"
+    if reverse:
+        response["findings"].reverse()
+    return response
+
+
+def _stability_fake_result(trial_no, *, reverse=False, alternative=False):
+    def respond(instructions, payload, schema, name):
+        return _stability_fake_response(trial_no, payload, reverse=reverse, alternative=alternative)
+    return llm.LlmAgent(respond).validate(build_review_stability_request(trial_no))
+
+
+def _stability_reviewed(trial_no):
+    observation = review_stability_observation(trial_no, _stability_fake_result(
+        trial_no, reverse=trial_no % 2 == 0, alternative=trial_no > 3))
+    return observation | {"source_review": "matched", "storage_review": "matched",
+                          "estimated_cost_usd": "0.0003"}
+
+
+def test_review_stability_plan_and_input_are_fixed_and_isolated(monkeypatch):
+    plan = review_stability_plan()
+    assert [row["case_id"] for row in plan] == [
+        "H02B", "G01C", "G02C", "G01C", "G02C", "H02B", "G02C", "H02B", "G01C"]
+    assert [row["batch_no"] for row in plan] == [1, 1, 2, 2, 3, 3, 4, 4, 5]
+    assert REVIEW_STABILITY_BUDGET == Decimal("0.30") and llm._call_reserve_usd(8000) == Decimal("0.2685")
+    wires = {cid: set() for cid in REVIEW_STABILITY_WIRES}
+    for step in plan:
+        trial_no, cid = step["trial_no"], step["case_id"]
+        request = build_review_stability_request(trial_no)
+        before = copy.deepcopy(request)
+        with monkeypatch.context() as isolated:
+            isolated.setitem(globals(), "HOLDOUT_REVIEW_EXPECTATIONS", {})
+            isolated.setitem(globals(), "FINDING_GROUP_EXPECTATIONS", {})
+            assert build_review_stability_request(trial_no) == before
+        def capture(instructions, payload, schema, name):
+            assert name == "content_review"
+            assert hashlib.sha256(instructions.encode()).hexdigest() == \
+                "6c69b59b24aae7cb87d97754fcaeae1f4bf8a7087828379ef97cffde71bfe1a3"
+            assert hashlib.sha256(json.dumps(schema, ensure_ascii=False, sort_keys=True).encode()).hexdigest() == \
+                "e3e2d60ce6e77e0ecddfa7cf12889bc4443c2d813a6cbfde930689562376994a"
+            wire = llm._json_input(payload)
+            assert (len(wire), hashlib.sha256(wire.encode()).hexdigest()) == REVIEW_STABILITY_WIRES[cid]
+            assert all(key not in wire for key in ("trial_no", "round_no", "batch_no", "exposure",
+                                                  "source_review", "storage_review", cid))
+            expected = ([HOLDOUT_REVIEW_EXPECTATIONS[cid]] if cid == "H02B"
+                        else FINDING_GROUP_EXPECTATIONS[cid]["findings"])
+            assert all(finding[key] not in wire for finding in expected for key in ("reason", "action"))
+            wires[cid].add(wire)
+            return {"checked_block_ids": payload["changed_block_ids"], "findings": []}
+        llm.LlmAgent(capture).validate(request)
+        assert request == before
+        request.document.pages[0].blocks[-1].content["text"] = "mutated"
+        assert build_review_stability_request(trial_no) == before
+    assert all(len(values) == 1 for values in wires.values())
+
+
+def test_review_stability_summary_counts_only_new_runs_and_keeps_manual_review():
+    empty = summarize_review_stability([])
+    assert empty["status"] == "incomplete" and empty["next_trial_no"] == 1
+    assert all(v["observed"] == 0 for v in empty["by_case"].values())
+    observations = [_stability_reviewed(i) for i in range(1, 10)]
+    before = copy.deepcopy(observations)
+    partial = summarize_review_stability(observations[:4])
+    assert partial["observed_calls"] == 4 and partial["next_trial_no"] == 5
+    assert [partial["by_case"][cid]["observed"] for cid in REVIEW_STABILITY_WIRES] == [1, 2, 1]
+    report = summarize_review_stability(observations)
+    assert observations == before and report["status"] == "complete" and report["next_trial_no"] is None
+    assert report["known_estimated_cost_usd"] == "0.0027" and report["remaining_usd"] == "0.2973"
+    assert report["semantic_passed"] is None and report["human_review_required"] is True
+    assert all(v[key] == 3 for v in report["by_case"].values()
+               for key in ("planned", "observed", "structure_matched", "source_matched", "storage_matched"))
+
+
+@pytest.mark.parametrize("change,reason", [
+    ({"estimated_cost_usd": None}, "usage_unconfirmed"),
+    ({"estimated_cost_usd": "0.04"}, "budget_reserve"),
+    ({"estimated_cost_usd": "0.31"}, "budget_exceeded"),
+    ({"source_review": "pending"}, "review_required"),
+    ({"storage_review": "pending"}, "review_required"),
+    ({"source_review": "mismatched"}, "source_mismatch"),
+    ({"storage_review": "mismatched"}, "storage_mismatch"),
+])
+def test_review_stability_stops_for_unconfirmed_review_usage_or_budget(change, reason):
+    report = summarize_review_stability([_stability_reviewed(1) | change])
+    assert report["reason"] == reason and report["next_trial_no"] is None
+    assert report["semantic_passed"] is None
+
+
+@pytest.mark.parametrize("trial_no,mistake", [(1, "duplicate"), (2, "missing"), (3, "duplicate")])
+def test_review_stability_stops_on_duplicate_or_missing_error(trial_no, mistake):
+    result = _stability_fake_result(trial_no)
+    if mistake == "missing":
+        result.issues.pop()
+    else:
+        result.issues.append(result.issues[0].model_copy(update={"issue_id": "another"}))
+    observations = [_stability_reviewed(i) for i in range(1, trial_no)]
+    observation = review_stability_observation(trial_no, result) | {
+        "source_review": "matched", "storage_review": "matched", "estimated_cost_usd": "0.0003"}
+    report = summarize_review_stability(observations + [observation])
+    assert report["reason"] == "structure_mismatch" and report["next_trial_no"] is None
+
+
+def test_review_stability_same_code_semantic_duplicate_requires_source_review():
+    result = _stability_fake_result(3)
+    result.issues[1].message = result.issues[0].message + " (different wording)"
+    observation = review_stability_observation(3, result) | {"estimated_cost_usd": "0.0003"}
+    assert observation["checks"]["structure_matched"]
+    report = summarize_review_stability([_stability_reviewed(1), _stability_reviewed(2), observation])
+    assert report["status"] == "review_required" and report["semantic_passed"] is None
+    observation.update(source_review="mismatched")
+    assert summarize_review_stability([_stability_reviewed(1), _stability_reviewed(2), observation])[
+        "reason"] == "source_mismatch"
+
+
+@pytest.mark.parametrize("kind", ["gap", "duplicate", "case", "round", "bool", "after_stop", "after_pending",
+                                 "after_budget", "too_many"])
+def test_review_stability_rejects_invalid_or_continued_history(kind):
+    rows = [_stability_reviewed(1), _stability_reviewed(2)]
+    if kind == "gap": rows = rows[1:]
+    elif kind == "duplicate": rows[1] = copy.deepcopy(rows[0])
+    elif kind == "case": rows[0]["case_id"] = "G02C"
+    elif kind == "round": rows[0]["round_no"] = 2
+    elif kind == "bool": rows[0]["trial_no"] = True
+    elif kind == "after_stop": rows[0]["source_review"] = "mismatched"
+    elif kind == "after_pending": rows[0]["storage_review"] = "pending"
+    elif kind == "after_budget": rows[0]["estimated_cost_usd"] = "0.04"
+    elif kind == "too_many": rows *= 5
+    with pytest.raises(ValueError):
+        summarize_review_stability(rows)
+
+
+@pytest.mark.parametrize("value", [True, 0, 10, "1"])
+def test_review_stability_rejects_invalid_trial_number(value):
+    with pytest.raises(ValueError):
+        build_review_stability_request(value)
+
+
+@pytest.mark.parametrize("cost", [True, 0.001, "NaN", "Infinity", "-0.01", "unknown"])
+def test_review_stability_rejects_invalid_cost(cost):
+    with pytest.raises(ValueError):
+        summarize_review_stability([_stability_reviewed(1) | {"estimated_cost_usd": cost}])
+
+
+def test_review_stability_two_call_batches_carry_cost_without_sdk_network(monkeypatch):
+    remaining, paid_records = REVIEW_STABILITY_BUDGET, []
+    for batch_no in range(1, 6):
+        steps = [step for step in review_stability_plan() if step["batch_no"] == batch_no]
+        def respond(**kwargs):
+            assert kwargs["store"] is False and kwargs["truncation"] == "disabled"
+            assert "previous_response_id" not in kwargs
+            payload = json.loads(kwargs["input"])
+            response = _stability_fake_response(step["trial_no"], payload)
+            return metered_response(output_text=json.dumps(response, ensure_ascii=False))
+        calls = fake_sdk(monkeypatch, response=respond)
+        ledger = llm.TrialLedger(max_calls=len(steps), review_only=True, budget_usd=remaining)
+        requester = llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=ledger)
+        agent = llm.LlmAgent(requester)
+        for step in steps:
+            result = agent.validate(build_review_stability_request(step["trial_no"]))
+            checks = review_stability_observation(step["trial_no"], result)["checks"]
+            assert checks.get("rubric_matched", checks.get("structure_matched"))
+        snapshot = ledger.snapshot()
+        assert snapshot["calls_started"] == len(steps) and snapshot["stop_reason"] == "call_limit"
+        assert snapshot["cost_complete"] and not snapshot["in_flight"]
+        with pytest.raises(AgentError):
+            agent.validate(build_review_stability_request(step["trial_no"]))
+        assert len([call for call in calls if call[0] == "response"]) == len(steps)
+        paid_records.extend(snapshot["records"])
+        remaining -= Decimal(snapshot["known_estimated_cost_usd"])
+    assert len(paid_records) == 9 and remaining == REVIEW_STABILITY_BUDGET - Decimal("0.0001395") * 9
+
+
+@pytest.fixture
+def finding_store():
+    """G02C 실제 응답 형태를 현행 Issue 테이블에 저장한다. 사용자 DB는 열지 않는다."""
+    from sqlalchemy.dialects import sqlite
+    from sqlalchemy.schema import CreateTable
+    from app.orm_models import Issue as StoredIssue
+
+    request = build_finding_group_trial_request("G02C")
+    def respond(instructions, payload, schema, name):
+        return {"checked_block_ids": payload["changed_block_ids"], "findings": [
+            {"kind": "value_mismatch", "block_ids": ["b_target"], "fact_ids": ["fact_review_3"],
+             "reason": reason, "action": action, "evidence": [3]}
+            for reason, action in (
+                ("‘정원 24명’은 원문의 정원 12명과 다릅니다.", "정원을 12명으로 수정하세요."),
+                ("‘45분 동안’은 원문의 수업 시간 90분과 다릅니다.", "수업 시간을 90분으로 수정하세요."))]}
+    result = llm.LlmAgent(respond).validate(request)
+    texts = {seg.segment_id: seg.text for source in request.sources for seg in source.segments}
+    facts = {f.fact_id: f for f in request.preflight.facts}
+    ctx = validation.Context(texts, {seg.segment_id: s.source_id for s in request.sources for seg in s.segments},
+        {}, set(), refs.SessionRefs(set(texts), {s.source_id: s.source_version for s in request.sources}, set(), set(facts)),
+        facts, [])
+    drafts = [validation.IssueDraft(i.scope, i.code, i.severity, i.message, i.block_ids, i.fact_ids, i.source_ids,
+                                     origin="agent") for i in result.issues]
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(str(CreateTable(StoredIssue.__table__).compile(dialect=sqlite.dialect())))
+    def save(items, covered=None):
+        return validation.persist_issues(conn, request.session_id, request.document, "val_replay", items,
+            validation.fingerprints(request.document, texts), ctx, request.input_revision,
+            {"b_target"} if covered is None else covered, False)
+    def rows():
+        return {row["message"]: dict(row) for row in conn.execute("SELECT * FROM issues")}
+    try:
+        yield SimpleNamespace(conn=conn, drafts=drafts, save=save, rows=rows, request=request)
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_finding_storage_preserves_g02c_order_repeat_partial_and_history(finding_store, reverse):
+    store = finding_store
+    drafts = store.drafts[::-1] if reverse else store.drafts
+    before = copy.deepcopy(drafts)
+    assert len(store.save(drafts)) == 2
+    initial = store.rows()
+    assert set(initial) == {d.message for d in drafts}
+    assert all(r["status"] == "open" and r["severity"] == "blocker" for r in initial.values())
+    assert validation.migrate_legacy_issue_keys(store.conn) == 0
+    store.save(drafts[::-1])
+    assert {m: r["issue_id"] for m, r in store.rows().items()} == {m: r["issue_id"] for m, r in initial.items()}
+    store.save([], covered={"b_context_1"})
+    assert all(r["status"] == "open" for r in store.rows().values())
+    store.save([drafts[1]])
+    assert store.rows()[drafts[0].message]["status"] == "resolved"
+    assert store.rows()[drafts[1].message]["status"] == "open"
+    store.save(drafts)
+    reopened = store.rows()[drafts[0].message]
+    assert reopened["issue_id"] == initial[drafts[0].message]["issue_id"]
+    assert reopened["status"] == "open" and reopened["resolution_json"] is None
+    assert json.loads(reopened["resolution_history_json"])[0]["action"] == "resolved"
+    assert drafts == before
+
+
+def test_finding_storage_expands_legacy_row_without_reassigning_its_id(finding_store):
+    store = finding_store
+    first, second = store.drafts
+    store.save([second])
+    legacy = store.rows()[second.message]
+    assert legacy["identity_key"] == second.identity_key
+    store.save([first, second])
+    assert len(store.rows()) == 2
+    assert store.rows()[second.message]["issue_id"] == legacy["issue_id"]
+    store.save([first])
+    assert store.rows()[second.message]["status"] == "resolved"
+    assert store.rows()[first.message]["status"] == "open"
+
+
+@pytest.mark.parametrize("ambiguous", [False, True])
+def test_finding_storage_changed_warning_requires_confirmation(finding_store, ambiguous):
+    store = finding_store
+    drafts = copy.deepcopy(store.drafts)
+    for d in drafts:
+        d.code, d.severity = "REPETITION", "warning"
+    original = drafts if ambiguous else drafts[:1]
+    store.save(original)
+    proof = {"action": "acknowledged", "by": "test-owner", "reason": "확인함", "at": "2026-09-29T00:00:00Z"}
+    store.conn.execute("UPDATE issues SET status='acknowledged', resolution_json=?", (json.dumps(proof),))
+    old = store.rows()
+    store.save(original[::-1])
+    assert all(r["status"] == "acknowledged" and json.loads(r["resolution_json"]) == proof for r in store.rows().values())
+    changed = copy.deepcopy(original[0])
+    changed.message = "새로운 반복 위치의 설명과 수정 안내"
+    store.save([changed, *original[1:]])
+    current = store.rows()[changed.message]
+    assert current["status"] == "open" and current["resolution_json"] is None
+    if ambiguous:
+        assert current["issue_id"] not in {r["issue_id"] for r in old.values()}
+        assert store.rows()[original[0].message]["status"] == "resolved"
+        assert store.rows()[original[1].message]["status"] == "acknowledged"
+    else:
+        assert current["issue_id"] == old[original[0].message]["issue_id"]
+    retired = store.rows()[original[0].message] if ambiguous else current
+    assert json.loads(retired["resolution_history_json"])[0]["by"] == "test-owner"
+
+
+def test_finding_storage_does_not_reassign_legacy_confirmation_to_two_new_findings(finding_store):
+    store = finding_store
+    legacy = copy.deepcopy(store.drafts[0])
+    legacy.code, legacy.severity = "REPETITION", "warning"
+    store.save([legacy])
+    old_id = store.rows()[legacy.message]["issue_id"]
+    store.conn.execute("UPDATE issues SET status='acknowledged', resolution_json=?",
+                       (json.dumps({"action": "acknowledged", "by": "old-owner"}),))
+    changed = [copy.deepcopy(legacy), copy.deepcopy(legacy)]
+    changed[0].message, changed[1].message = "첫 번째 새 설명", "두 번째 새 설명"
+    store.save(changed)
+    rows = store.rows()
+    assert len(rows) == 3 and rows[legacy.message]["status"] == "resolved"
+    assert all(rows[d.message]["issue_id"] != old_id and rows[d.message]["status"] == "open"
+               and rows[d.message]["resolution_json"] is None for d in changed)
 
 
 def review_request():
@@ -1930,6 +3115,82 @@ def test_sdk_extraction_selects_references_and_preserves_exact_source_text(monke
     assert request == original
 
 
+@pytest.mark.parametrize("include_conditions,split_conditions", [(False, False), (True, False), (True, True)])
+def test_sdk_extraction_keeps_mock_products_conditions_and_all_original_references(
+        monkeypatch, include_conditions, split_conditions):
+    # 기존 가상 원문으로 변환 보존을 검사한다. 기대 응답을 만든 대역이며 모델 품질 평가는 아니다.
+    root = Path(__file__).parent / "fixtures" / "ddalgi_mock_bundle_v1"
+    originals = {sid: (root / "ingest" / "originals" / f"{sid}.txt").read_text(encoding="utf-8").splitlines()
+                 for sid in (["MOCK01", "MOCK05"] if include_conditions else ["MOCK01"])}
+    selected, segments_by_line = [], {}
+    for source_id, lines in originals.items():
+        segments = []
+        for line_no, line in enumerate(lines, 1):
+            # 같은 원문 줄을 파서가 둘로 나눈 경우에도 두 근거를 모두 복원해야 한다.
+            if source_id == "MOCK05" and line_no == 1 and split_conditions:
+                before, after = line.split(". ", 1)
+                texts = [before + ".", after]
+            else:
+                texts = [line]
+            parts = [SegmentIn(f"seg_quality_{source_id}_{line_no}_{i}",
+                               {"line_start": line_no, "line_end": line_no}, text)
+                     for i, text in enumerate(texts, 1)]
+            segments.extend(parts)
+            segments_by_line[source_id, line_no] = parts
+        selected.append(SourceIn(source_id, 1, "company" if source_id == "MOCK01" else "interview",
+                                 "가상 추출 품질 검사", "complete", segments, origin_kind="mock"))
+    request = AnalyzeRequest("ses_extraction_quality", 1, BRIEF, selected)
+    before_request = copy.deepcopy(request)
+    # 원문의 11개 항목과 추가 조건 4개를 대조하는 기대 목록. SDK 입력에는 넣지 않는다.
+    expected = [(key, "MOCK01", n) for n, key in enumerate((
+        "company_name", "company_summary", "business_areas", "products_services", "technology", "strengths",
+        "customers_markets", "processes", "process_count", "capabilities", "other_info"), 1)]
+    if include_conditions:
+        expected += [(key, "MOCK05", n) for n, key in enumerate(
+            ("lead_time", "capabilities", "other_info", "other_info"), 1)]
+    records = []
+    for key, sid, line_no in expected:
+        value = originals[sid][line_no - 1].split(": ", 1)[1]
+        values = ["예시 제품 A", "예시 제품 B"] if key == "products_services" else [value]
+        records.extend((key, text, sid, line_no) for text in values)
+    def respond(**kwargs):
+        payload = json.loads(kwargs["input"])
+        assert kwargs["instructions"] == legacy.load_extract_prompt()
+        assert set(payload) == {"company_name_hint", "source_units"}
+        units = payload["source_units"]
+        assert [u["text"] for u in units] == [s.text for src in selected for s in src.segments]
+        refs = {(u["source_id"], u["locator"]): u["unit_id"] for u in units}
+        info = {key: {"status": "not_found", "facts": []} for key in legacy.COMPANY_INFO_KEYS}
+        for key, value, sid, line_no in records:
+            evidence = [{"unit_id": refs[sid, "segment:" + s.segment_id]}
+                        for s in segments_by_line[sid, line_no]]
+            info[key]["status"] = "supported"
+            info[key]["facts"].append({"text": value, "evidence": evidence})
+        info["products_services"]["facts"].append(copy.deepcopy(info["products_services"]["facts"][0]))
+        return metered_response(output_text=json.dumps(info, ensure_ascii=False))
+    calls = fake_sdk(monkeypatch, response=respond)
+    ledger = llm.TrialLedger(max_calls=1)
+    result = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=ledger)).analyze(request)
+    assert validate_analyze(result, request.sources) is None
+    assert {f.field_key for f in result.facts} == set(legacy.COMPANY_INFO_KEYS)
+    actual = [f for f in result.facts if f.status == "supported"]
+    assert len(actual) == len(records)
+    for key, value, sid, line_no in records:
+        fact = next(f for f in actual if f.field_key == key and f.value == value)
+        assert [(ref.source_id, ref.source_version, ref.segment_id, ref.locator, ref.excerpt)
+                for ref in fact.evidence_refs] == [
+                    (sid, 1, seg.segment_id, seg.locator, seg.text) for seg in segments_by_line[sid, line_no]]
+    assert [f.value for f in actual if f.field_key == "products_services"] == ["예시 제품 A", "예시 제품 B"]
+    assert {f.field_key for f in result.facts if f.status == "missing"} == (
+        {"certifications", "history"} if include_conditions else {"certifications", "history", "lead_time"})
+    if include_conditions:
+        lead = next(f for f in actual if f.field_key == "lead_time")
+        assert all(text in lead.value for text in ("예시 품목 A", "100개 이하", "자재 확보 후", "5영업일", "재검사", "별도 협의"))
+        assert any("월 250개" in f.value and "실제 생산 능력이 아닙니다" in f.value for f in actual)
+    assert request == before_request
+    assert len(calls) == 2 and ledger.snapshot()["calls_started"] == 1  # 대역 SDK 생성 + 요청 1회
+
+
 @pytest.mark.parametrize("ref", [{"unit_id": 0}, {"unit_id": 999}, {"unit_id": True},
     {"unit_id": 1.0}, {"unit_id": "1"}, {"unit_id": 1, "quote": "위조 인용"},
     {"source_id": "other_session", "locator": "secret", "quote": "위조 인용"}])
@@ -2263,7 +3524,8 @@ def test_d04_trial_case_preserves_expected_facts_issues_and_draft(monkeypatch, c
                 assert ref.excerpt in segment.text
     paragraphs = [block for page in draft.pages for block in page.blocks if block.type == "paragraph"]
     body = "\n".join(block.content["text"] for block in paragraphs)
-    assert len(draft.pages) == D04_TRIAL_CASES[case_id]["target_pages"]
+    assert request.brief.target_pages == D04_TRIAL_CASES[case_id]["target_pages"]
+    assert len(draft.pages) == {"T01": 1, "T02": 3, "T03": 3, "T04": 4}[case_id]
     assert all(block.type != "image" for page in draft.pages for block in page.blocks)
     supported_ids = {fact.fact_id for fact in analysis.facts if fact.status == "supported"}
     for block in paragraphs:
@@ -2801,9 +4063,12 @@ def test_last_successful_result_is_returned_after_postprocessing(monkeypatch):
 
 
 @pytest.fixture
-def graph_flow(tmp_path, monkeypatch):
+def graph_flow(tmp_path, monkeypatch, request):
     settings = Settings(private_runs_dir=tmp_path / "runs", db_path=tmp_path / "app.sqlite3",
                         agent_mode="llm", cleanup_sweep_interval_s=0)
+    if getattr(request, "param", None) == "orm":
+        from app.db import init_orm_db
+        init_orm_db(settings.db_path, settings.private_runs_dir)
     model = FakeModel()
     # Job마다 실제 graph를 가진 Agent를 새로 만든다. 모델 응답만 가짜다.
     monkeypatch.setattr(ai_jobs, "get_bridge", lambda settings: llm.LlmAgent(model, settings=settings))
@@ -2915,6 +4180,90 @@ def test_review_server_persistence_partial_reuse_resolution_and_reopening(review
     with TestClient(create_app(flow.settings)) as client:
         client.cookies.update(flow.client.cookies)
         assert client.get(flow.url).json() == flow.get()
+
+
+@pytest.mark.parametrize("graph_flow", ["legacy", "orm"], indirect=True)
+def test_review_server_independent_findings_keep_ids_and_partial_history(review_flow):
+    flow = review_flow
+    reasons = [("납기 수치가 원문과 다릅니다.", "납기 수치를 원문대로 복원하세요."),
+               ("특수 주문의 적용 범위가 원문과 다릅니다.", "특수 주문의 별도 협의 조건을 복원하세요.")]
+    active = list(reasons)
+    def respond(response, payload):
+        response["findings"] = []
+        if flow.lead["block_id"] in payload["changed_block_ids"]:
+            response["findings"] = [dict(review_finding(payload, flow.lead, "value_mismatch"), reason=reason, action=action)
+                                    for reason, action in active]
+    flow.model.change = respond
+    first = flow.validate({"Idempotency-Key": "independent-first"})
+    assert first["status"] == "succeeded", first
+    agent_rows = lambda: {i["message"]: i for i in flow.issues() if i["origin"] == "agent"}
+    initial = agent_rows()
+    assert len(initial) == 2 and all(i["status"] == "open" for i in initial.values())
+    assert flow.get()["validation"]["status"] == "failed"
+    calls = len(flow.model.calls)
+    assert flow.validate({"Idempotency-Key": "independent-first"})["job_id"] == first["job_id"]
+    assert len(flow.model.calls) == calls
+    active.reverse()
+    assert flow.validate()["status"] == "succeeded"
+    assert {m: i["issue_id"] for m, i in agent_rows().items()} == {m: i["issue_id"] for m, i in initial.items()}
+
+    flow.patch([replace_review_text(flow.summary, TEXTS["company_summary"] + " ")])
+    assert flow.validate()["status"] == "succeeded"
+    assert flow.get()["validation"]["checked_block_ids"] == [flow.summary["block_id"]]
+    assert all(i["status"] == "open" for i in agent_rows().values())
+    active[:] = reasons[1:]
+    flow.patch([replace_review_text(flow.lead, TEXTS["lead_time"] + " ")])
+    assert flow.validate()["status"] == "succeeded"
+    disappeared = next(i for m, i in agent_rows().items() if m.startswith(reasons[0][0]))
+    remaining = next(i for m, i in agent_rows().items() if m.startswith(reasons[1][0]))
+    assert disappeared["status"] == "resolved" and remaining["status"] == "open"
+    assert flow.get()["validation"]["status"] == "failed"
+    active[:] = reasons
+    flow.patch([replace_review_text(flow.lead, TEXTS["lead_time"])])
+    assert flow.validate()["status"] == "succeeded"
+    assert {m: i["issue_id"] for m, i in agent_rows().items()} == {m: i["issue_id"] for m, i in initial.items()}
+    assert all(i["status"] == "open" for i in agent_rows().values())
+    with connect(flow.settings.db_path) as conn:
+        row = conn.execute("SELECT resolution_history_json FROM issues WHERE issue_id=?", (disappeared["issue_id"],)).fetchone()
+        assert json.loads(row[0])[0]["action"] == "resolved"
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+@pytest.mark.parametrize("graph_flow", ["orm"], indirect=True)
+def test_review_server_independent_warning_confirmations_are_not_transferred(review_flow):
+    flow = review_flow
+    reasons = ["같은 설명의 첫 번째 반복을 정리하세요.", "같은 설명의 두 번째 반복을 정리하세요."]
+    active = list(reasons)
+    def respond(response, payload):
+        response["findings"] = [dict(review_finding(payload, flow.lead, "repetition"), reason=reason,
+                                     action="중복 문구를 정리하거나 표현을 확인하세요.") for reason in active]
+    flow.model.change = respond
+    assert flow.validate()["status"] == "succeeded"
+    rows = lambda: [i for i in flow.issues() if i["origin"] == "agent"]
+    assert len(rows()) == 2
+    first = next(i for i in rows() if i["message"].startswith(reasons[0]))
+    checked = flow.get()["validation"]
+    response = flow.client.post(flow.base + f"/issues/{first['issue_id']}/resolve", json={
+        "expected_revision": flow.get()["document"]["document_revision"], "input_revision": flow.rev,
+        "validation_id": checked["validation_id"], "resolution": {"action": "acknowledged", "reason": "표현 확인"}})
+    assert response.status_code == 200, response.text
+    proof = next(i for i in rows() if i["issue_id"] == first["issue_id"])["resolution"]
+    active.reverse()
+    assert flow.validate()["status"] == "succeeded"
+    unchanged = next(i for i in rows() if i["issue_id"] == first["issue_id"])
+    assert unchanged["status"] == "acknowledged"
+    assert unchanged["resolution"]["by"] == proof["by"] and unchanged["resolution"]["at"] == proof["at"]
+    active[:] = ["새 위치의 반복을 다시 확인하세요.", reasons[1]]
+    assert flow.validate()["status"] == "succeeded"
+    retired = next(i for i in rows() if i["issue_id"] == first["issue_id"])
+    new = next(i for i in rows() if i["message"].startswith(active[0]))
+    assert retired["status"] == "resolved" and new["status"] == "open" and new["resolution"] is None
+    assert new["issue_id"] != first["issue_id"]
+    with connect(flow.settings.db_path) as conn:
+        assert conn.execute("SELECT 1 FROM confirmations WHERE issue_id=? AND status='active'", (first["issue_id"],)).fetchone() is None
+        row = conn.execute("SELECT resolution_history_json FROM issues WHERE issue_id=?", (first["issue_id"],)).fetchone()
+        assert json.loads(row[0])[0]["by"] == proof["by"]
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
 @pytest.mark.parametrize("failure,code", [("bad_output", "AGENT_OUTPUT_INVALID"),
@@ -3260,7 +4609,8 @@ def test_stopped_trial_preserves_existing_document_through_server(tmp_path, monk
         saved = client.get(document_url).json()
         document = saved["document"]
         assert document["document_revision"] == 1 and document["input_revision"] == rev
-        assert len(document["pages"]) == case["target_pages"]
+        assert document["target_pages"] == case["target_pages"]
+        assert len(document["pages"]) == 4  # T04 본문 3개 항목 + 확인 사항 한 묶음
         assert saved["validation"] is None and saved["approval"] is None
         summary = client.get(base).json()["document_summary"]
         assert summary["document_id"] == document["document_id"] and summary["document_revision"] == 1

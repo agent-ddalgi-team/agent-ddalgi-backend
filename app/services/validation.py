@@ -454,12 +454,45 @@ def _covered_by_this_validation(row: Row, agent_covered_blocks: set[str], agent_
     return blocks <= agent_covered_blocks
 
 
+def _agent_issue_keys(conn: Connection, document_id: str, drafts: list[IssueDraft]) -> dict[tuple[str, str], str]:
+    """같은 대상의 독립 지적을 구분하고, 내용이 같은 기존 지적의 ID·이력을 유지한다."""
+    incoming: dict[str, set[str]] = {}
+    for draft in drafts:
+        if draft.origin == "agent":
+            incoming.setdefault(draft.identity_key, set()).add(draft.message)
+    if not incoming:
+        return {}
+    existing: dict[str, list[Row]] = {}
+    for row in conn.execute("SELECT * FROM issues WHERE document_id=? AND origin='agent' ORDER BY rowid",
+                            (document_id,)).fetchall():
+        group = IssueDraft(row["scope"], row["code"], row["severity"], row["message"],
+                           json.loads(row["block_ids_json"]), json.loads(row["fact_ids_json"]),
+                           json.loads(row["source_ids_json"]), origin="agent").identity_key
+        existing.setdefault(group, []).append(row)
+    keys = {}
+    for group, messages in incoming.items():
+        old = existing.get(group, [])
+        by_message = {row["message"]: row["identity_key"] for row in old}
+        for message in messages:
+            if message in by_message:
+                key = by_message[message]
+            elif len(messages) == 1 and (not old or (len(old) == 1 and old[0]["identity_key"] == group)):
+                # 기존 단일 지적은 설명이 바뀌어도 ID를 유지한다. anchor 비교가 경고 재확인을 맡는다.
+                key = group
+            else:
+                # 여러 지적의 의미 대응을 추측하지 않는다. 순서 대신 전체 설명으로 새 문제를 식별한다.
+                key = group + "|finding:" + hashlib.sha256(message.encode("utf-8")).hexdigest()
+            keys[group, message] = key
+    return keys
+
+
 def persist_issues(conn: Connection, session_id: str, document: Document, validation_id: str | None,
                    drafts: list[IssueDraft], fps: dict[str, str], ctx: Context, input_revision: int,
                    agent_covered_blocks: set[str], agent_full: bool, *, resolve_missing: bool = True) -> list[str]:
     """이번 검증이 만든 Issue를 기록한다. 현재 Issue ID 목록을 돌려준다.
 
-    - 같은 identity_key(origin 포함)의 기존 행을 갱신한다(새 행 X).
+    - Agent의 같은 대상·코드에 여러 설명이 있으면 각각 기록한다. 같은 설명의 ID·이력을 재사용한다.
+    - 서버·사전 점검·배치 문제는 기존 identity_key(origin 포함)로 갱신한다.
     - resolved/excluded였는데 다시 검출되면 원인이 돌아온 것 → open으로 되돌리고 이전 resolution은 이력으로.
     - acknowledged는 관련 내용·근거·입력(anchor)이 바뀌었을 때만 open으로 재확인.
     - 이번에 검출되지 않은 open Issue는 그 검사가 그 범위를 실제로 다시 봤을 때만 서버가 resolved로 닫는다.
@@ -467,8 +500,9 @@ def persist_issues(conn: Connection, session_id: str, document: Document, valida
     """
     stamp = to_iso(now())
     produced: set[str] = set()
+    agent_keys = _agent_issue_keys(conn, document.document_id, drafts)
     for d in drafts:
-        key = d.identity_key
+        key = agent_keys[d.identity_key, d.message] if d.origin == "agent" else d.identity_key
         anchor = _anchor(d, fps, ctx, input_revision)
         row = conn.execute("SELECT * FROM issues WHERE document_id=? AND identity_key=?", (document.document_id, key)).fetchone()
         if row is None:
