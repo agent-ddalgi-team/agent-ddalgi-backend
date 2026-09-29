@@ -417,7 +417,8 @@ def test_mock_unsupported_kinds_fail_not_empty_success(client):
     job = ctx.propose([image], kind="text")
     assert job["status"] == "failed" and job["error"]["code"] == "UNSUPPORTED_PROPOSAL"
     job = ctx.propose([para], kind="image")
-    assert job["status"] == "failed" and job["error"]["code"] == "UNSUPPORTED_PROPOSAL"
+    assert job["status"] == "succeeded"  # 텍스트는 보존하고 바로 뒤에 사진을 추가하는 후보를 지원한다.
+    assert ctx.doc() == d
 
 
 def test_image_proposal_candidates_and_selection(client):
@@ -460,7 +461,7 @@ def test_image_proposal_on_placeholder_with_asset_replaces_block(client):
     r = ctx.apply(pid, candidate="cand_01")
     assert r.status_code == 200
     blocks = _blocks(ctx.doc())
-    assert blocks[0]["type"] == "image" and blocks[0]["block_id"] == "block_ph_img1"
+    assert blocks[0]["type"] == "image" and blocks[0]["block_id"].startswith("block_ph_img_")
     assert "block_ph" not in [b["block_id"] for b in blocks]
 
 
@@ -595,3 +596,114 @@ def test_mock_source_has_no_real_company_terms():
     import app.agent_mock as m
     for banned in ("거산", "케미칼", "Geosan"):
         assert banned not in inspect.getsource(m)
+
+
+def test_photo_validation_routes_send_selected_bytes_and_recheck_images(client, settings, monkeypatch):
+    from dataclasses import replace
+    from app.agent_llm import LlmAgent
+    from app.services import ai_jobs
+    ctx = Ctx(client)
+    client.app.state.settings = replace(settings, agent_mode="llm")
+    calls = []
+    mismatch = True
+    def respond(instructions, payload, schema, name, *, images):
+        assert name == "content_review" and len(images) == 1 and images[0].data == _png()
+        assert payload["images"][0]["asset_id"] == images[0].asset_id
+        calls.append(payload)
+        bid = payload["images"][0]["block_ids"][0]
+        return {"checked_block_ids": payload["changed_block_ids"], "checked_image_ids": [images[0].asset_id],
+                "findings": [{"kind": "image_mismatch", "block_ids": [bid], "fact_ids": [],
+                    "reason": "검은 사진을 푸른 원으로 설명하고 있습니다.", "action": "사진 설명을 고쳐 주세요.",
+                    "evidence": []}] if mismatch else []}
+    monkeypatch.setattr(ai_jobs, "get_bridge", lambda config: LlmAgent(respond, max_input_chars=40000))
+    base = f"/api/v1/sessions/{ctx.sid}"
+    url = base + f"/documents/{ctx.did}"
+    def check():
+        r = client.post(url + "/validate", json={"expected_revision": ctx.doc()["document_revision"],
+                                                 "input_revision": ctx.rev_in})
+        assert r.status_code == 202, r.text
+        job = client.get(base + "/jobs/" + r.json()["job_id"]).json()
+        assert job["status"] == "succeeded", job
+    check()
+    issues = client.get(url + "/issues").json()["issues"]
+    issue, = [i for i in issues if i["code"] == "IMAGE_MISMATCH"]
+    assert issue["severity"] == "blocker" and issue["status"] == "open"
+    assert client.get(url).json()["approval"] is None
+    # 다른 문단만 수정해도 이미지 검사를 생략하거나 이전 사진 문제를 조용히 닫지 않는다.
+    paragraph = _find(ctx.doc(), "paragraph")
+    ctx.patch([{"op": "replace_block_content", "block_id": paragraph["block_id"],
+                "content": {"text": paragraph["content"]["text"] + " "}}])
+    mismatch = False
+    check()
+    assert len(calls) == 2
+    assert _find(ctx.doc(), "image")["block_id"] in calls[-1]["changed_block_ids"]
+    assert all(i["status"] == "resolved" for i in client.get(url + "/issues").json()["issues"] if i["code"] == "IMAGE_MISMATCH")
+
+
+@pytest.mark.parametrize("bad", ["unselected", "tampered", "missing", "oversize", "changed_during_review"])
+def test_photo_validation_refuses_inaccessible_or_changed_files(client, settings, monkeypatch, bad):
+    from dataclasses import replace
+    from app.db import connect
+    from app.models import Document
+    from app.services import ai_jobs, preflights, sources
+    from app.agent_bridge import AgentError
+    from app.agent_llm import LlmAgent
+    ctx = Ctx(client)
+    aid = _find(ctx.doc(), "image")["content"]["asset_id"]
+    with connect(settings.db_path) as conn:
+        row = conn.execute("SELECT * FROM assets WHERE asset_id=?", (aid,)).fetchone()
+        path = sources.resolve_path(settings, row["stored_path"])
+        selected = preflights.build_sources(conn, ctx.sid, ctx.src)
+    if bad == "unselected":
+        selected = [s for s in selected if aid not in s.asset_ids]
+    elif bad == "tampered": path.write_bytes(b"changed")
+    elif bad == "missing": path.unlink()
+    elif bad == "oversize": path.write_bytes(b"x" * (5 * 1024 * 1024 + 1))
+    if bad != "changed_during_review":
+        with connect(settings.db_path) as conn, pytest.raises(AgentError):
+            ai_jobs.review_images(conn, settings, ctx.sid, Document.model_validate(ctx.doc()), selected)
+        return
+    client.app.state.settings = replace(settings, agent_mode="llm")
+    def respond(instructions, payload, schema, name, *, images):
+        path.write_bytes(b"changed-after-send")
+        return {"checked_block_ids": payload["changed_block_ids"], "checked_image_ids": [aid], "findings": []}
+    monkeypatch.setattr(ai_jobs, "get_bridge", lambda config: LlmAgent(respond, max_input_chars=40000))
+    base = f"/api/v1/sessions/{ctx.sid}"
+    url = base + f"/documents/{ctx.did}"
+    r = client.post(url + "/validate", json={"expected_revision": ctx.doc()["document_revision"], "input_revision": ctx.rev_in})
+    job = client.get(base + "/jobs/" + r.json()["job_id"]).json()
+    assert job["status"] == "failed" and job["error"]["code"] == "INVALID_REQUEST"
+    assert client.get(url).json()["validation"] is None
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ('{"slide":11,"page":2,"original_path":"private/file","original_sha256":"private"}', {"slide":11,"page":2}),
+    ('{"slide":true,"page":-1}', {}),
+    ('{"slide":"11","page":1000001}', {}),
+    ('[]', {}), ('not-json', {}), (None, {}),
+])
+def test_photo_locator_exposes_only_valid_page_numbers(raw, expected):
+    from app.services.preflights import photo_locator
+    assert photo_locator(raw) == expected
+
+
+def test_photo_location_reaches_candidate_and_vision_without_original_path(client, settings):
+    from app.services import ai_jobs, preflights
+    from app.agent_bridge import ProposeRequest
+    from app.agent_llm import LlmAgent
+    from app.models import Brief, Document
+    ctx = Ctx(client)
+    doc = Document.model_validate(ctx.doc())
+    aid = _find(ctx.doc(), "image")["content"]["asset_id"]
+    with connect(settings.db_path, immediate=True) as conn:
+        conn.execute("UPDATE assets SET photo_locator_json=? WHERE asset_id=?",
+                     (json.dumps({"slide":11,"original_path":"private/original-secret.jpg","original_sha256":"hidden"}), aid))
+        selected = preflights.build_sources(conn, ctx.sid, ctx.src)
+        pictures = ai_jobs.review_images(conn, settings, ctx.sid, doc, selected)
+    assert pictures[0].locator == {"slide":11}
+    assert next(s for s in selected if aid in s.asset_ids).asset_locators == {aid:{"slide":11}}
+    request = ProposeRequest(ctx.sid, ctx.rev_in, Brief.model_validate(BRIEF), selected, doc,
+                              [doc.pages[0].blocks[0].block_id], "사진 후보", "image")
+    result = LlmAgent(lambda *a, **k: pytest.fail("candidate listing must not call AI")).propose(request)
+    assert "PPT 11쪽" in result.candidates[0].label
+    assert "private" not in result.candidates[0].label and "secret" not in repr(pictures[0])

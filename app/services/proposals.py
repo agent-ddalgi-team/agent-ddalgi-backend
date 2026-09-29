@@ -13,6 +13,43 @@ from pydantic import TypeAdapter
 _OPS = TypeAdapter(list[Operation])
 
 
+def image_candidates(request):
+    """선택 자료의 실제 사진 목록. 의미 추천이나 AI 호출 없이 명시적 선택을 기다린다."""
+    from app.agent_bridge import AgentError, ProposeResult
+    from app.models import Block, OpDeleteBlock, OpInsertBlock
+
+    doc = request.document
+    if doc.session_id != request.session_id or doc.input_revision != request.input_revision:
+        raise AgentError("INPUT_REVISION_CONFLICT", "현재 자료와 문서 기준으로 다시 요청해 주세요.")
+    targets = [(p, b) for p in doc.pages for b in p.blocks if b.block_id in request.target_block_ids]
+    if len(request.target_block_ids) != 1 or len(targets) != 1:
+        raise AgentError("UNSUPPORTED_PROPOSAL", "사진을 넣거나 교체할 블록 하나를 선택해 주세요.")
+    page, target = targets[0]
+    new_id = f"{target.block_id}_img_{uuid.uuid4().hex[:8]}"
+    candidates, seen = [], set()
+    for source in request.sources:
+        for n, aid in enumerate(source.asset_ids, 1):
+            if aid in seen:
+                continue
+            seen.add(aid)
+            locator = source.asset_locators.get(aid, {})
+            location = (f"PPT {locator['slide']}쪽 · " if locator.get("slide") else
+                        f"PDF {locator['page']}쪽 · " if locator.get("page") else "")
+            block = Block(block_id=new_id, type="image", content={
+                "asset_id": aid, "alt": "자료 사진", "caption": "자료 사진", "fit": "contain"})
+            ops = [OpInsertBlock(op="insert_block", page_id=page.page_id,
+                                 after_block_id=target.block_id, block=block)]
+            # 먼저 뒤에 삽입하고 기존 사진/자리를 지워 순서를 보존한다. 이전 설명·근거는 물려주지 않는다.
+            if target.type in {"image", "image_placeholder"}:
+                ops.append(OpDeleteBlock(op="delete_block", block_id=target.block_id))
+            candidates.append(Candidate(candidate_id=f"cand_{len(candidates) + 1:02d}",
+                                        label=f"{source.name} · {location}사진 {n}", changes=ops))
+    if not candidates:
+        raise AgentError("NO_IMAGE_CANDIDATES", "선택한 자료에 사용할 사진이 없습니다. 사진 자료를 선택한 뒤 다시 점검해 주세요.")
+    return ProposeResult(changes=[], rationale="선택한 자료의 사진입니다. 적합성 순위가 아니며, 적용 후 설명을 입력하고 다시 검증해 주세요.",
+                         candidates=candidates)
+
+
 def save(conn: Connection, session_id: str, document_id: str, base_document_revision: int,
          base_input_revision: int, target_block_ids: list[str], kind: str, instruction: str,
          changes: list[Operation], rationale: str, candidates: list[Candidate] | None, status: str) -> str:

@@ -167,6 +167,9 @@ class MockAgent:
     SHORTEN_AT = 60
 
     async def propose(self, request: ProposeRequest) -> ProposeResult:
+        if request.kind == "image" and len(request.target_block_ids) == 1:
+            from app.services.proposals import image_candidates
+            return image_candidates(request)
         blocks = {b.block_id: (page, b) for page in request.document.pages for b in page.blocks}
         targets = [blocks[bid] for bid in request.target_block_ids if bid in blocks]
         if len(targets) != len(request.target_block_ids):

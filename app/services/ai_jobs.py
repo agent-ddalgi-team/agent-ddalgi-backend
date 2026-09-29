@@ -17,7 +17,7 @@ from typing import Any
 import uuid
 
 from app.agent_bridge import (AgentError, AgentUnavailable, AnalyzeRequest, AnalyzeResult, DraftRequest,
-                              DraftResult, ProposeRequest, ProposeResult, SourceIn, ValidateRequest, ValidateResult,
+                              DraftResult, ImageIn, ProposeRequest, ProposeResult, SourceIn, ValidateRequest, ValidateResult,
                               get_bridge)
 from app.config import Settings
 from app.db import connect
@@ -275,6 +275,27 @@ def run_propose_job(settings: Settings, session_id: str, job_id: str, input_revi
             jobs.fail(conn, job_id, "INTERNAL_ERROR", "편집안 작업이 실패했습니다.", True)
 
 
+def review_images(conn, settings: Settings, session_id: str, document: Document, sources: list[SourceIn]) -> list[ImageIn]:
+    """AI에 보낼 사진을 선택 자료 안에서만 읽는다. 실패/초과를 조용히 생략하지 않는다."""
+    from app.services.export_render import build_snapshot
+
+    selected = {aid: source.source_id for source in sources for aid in source.asset_ids}
+    locations = {aid: source.asset_locators.get(aid, {}) for source in sources for aid in source.asset_ids}
+    wanted = {b.content.get("asset_id") for p in document.pages for b in p.blocks if b.type == "image"}
+    if not wanted <= selected.keys():
+        raise AgentError("INVALID_REQUEST", "문서 사진이 현재 선택 자료에 없습니다. 자료 선택과 사진을 확인해 주세요.")
+    if len(wanted) > 20:
+        raise AgentError("INVALID_REQUEST", "AI 사진 검증은 한 문서에서 서로 다른 사진 20장까지 지원합니다.")
+    snapshot = build_snapshot(conn, settings, session_id, document, max_asset_bytes=5 * 1024 * 1024,
+                              max_asset_pixels=16_000_000)
+    if any(not a.ok or a.data is None for a in snapshot.assets.values()):
+        raise AgentError("INVALID_REQUEST", "사진 파일이 없거나 변경·손상되었거나 크기 한도를 넘었습니다. 사진당 5MB·1,600만 화소 이하 PNG/JPEG를 사용해 주세요.")
+    if sum(len(a.data) for a in snapshot.assets.values()) > 20 * 1024 * 1024:
+        raise AgentError("INVALID_REQUEST", "AI에 전달할 사진의 전체 크기가 20MB를 넘었습니다. 사진 수나 크기를 줄여 주세요.")
+    return [ImageIn(a.asset_id, selected[a.asset_id], a.content_hash, a.mime_type, a.data, locations[a.asset_id])
+            for a in snapshot.assets.values()]
+
+
 def run_validate_job(settings: Settings, session_id: str, job_id: str, input_revision: int, document_id: str,
                      document_revision: int) -> None:
     """검증 Job. 서버 일반 검사 → (바뀐 블록이 있으면) Agent 의미 검증 → Issue 기록 → Validation 저장.
@@ -303,6 +324,17 @@ def run_validate_job(settings: Settings, session_id: str, job_id: str, input_rev
             fps = validation.fingerprints(document, ctx.seg_texts)
             base = validation.base_validation(conn, document_id, document_revision, input_revision)
             changed, unchanged = validation.changed_blocks(fps, base)
+            images = []
+            if settings.agent_mode == "llm":
+                # 이미지 바이트는 텍스트 지문에 없으므로 검증 실행마다 실제 사진을 다시 확인한다.
+                image_blocks = {b.block_id for p in document.pages for b in p.blocks if b.type == "image"}
+                changed |= image_blocks
+                unchanged -= image_blocks
+                try:
+                    images = review_images(conn, settings, session_id, document, sources)
+                except AgentError as exc:
+                    _fail_agent(conn, job_id, exc)
+                    return
             server_drafts, checks = validation.server_checks(document, ctx)
 
         agent_issues: list[Issue] = []
@@ -314,7 +346,7 @@ def run_validate_job(settings: Settings, session_id: str, job_id: str, input_rev
                     session_id, input_revision, brief, sources, document, preflight, sorted(changed),
                     [Issue(issue_id=f"srv_{i}", scope=d.scope, code=d.code, severity=d.severity, message=d.message,
                            source_ids=d.source_ids, fact_ids=d.fact_ids, block_ids=d.block_ids)
-                     for i, d in enumerate(server_drafts)]))
+                     for i, d in enumerate(server_drafts)], images=images))
                 agent_called = True
             except Exception as exc:
                 with connect(settings.db_path, immediate=True) as conn:
@@ -348,6 +380,16 @@ def run_validate_job(settings: Settings, session_id: str, job_id: str, input_rev
                 jobs.fail(conn, job_id, "SERVICE_TEMPORARY_FAILURE",
                           "검증 중 사전 점검 결과가 바뀌어 검증 결과를 저장하지 않았습니다. 최신 결과로 다시 검증해 주세요.", True)
                 return
+            if images:
+                try:
+                    current_sources = preflights.build_sources(conn, session_id, json.loads(
+                        conn.execute("SELECT selected_source_ids FROM sessions WHERE session_id=?", (session_id,)).fetchone()[0]))
+                    latest_images = review_images(conn, settings, session_id, current, current_sources)
+                    if [(a.asset_id, a.content_hash, a.locator) for a in latest_images] != [(a.asset_id, a.content_hash, a.locator) for a in images]:
+                        raise AgentError("INVALID_REQUEST", "검증 중 사진이 바뀌었습니다. 다시 검증해 주세요.")
+                except AgentError as exc:
+                    _fail_agent(conn, job_id, exc)
+                    return
             validation_id = f"val_{uuid.uuid4().hex[:16]}"
             drafts = list(server_drafts) + [
                 validation.IssueDraft(i.scope, i.code, i.severity, i.message, list(i.block_ids), list(i.fact_ids),

@@ -144,7 +144,7 @@ def _document_content_hash(title: str, pages: list[Page], demo: bool = False) ->
 
 
 def asset_from_bytes(asset_id: str, data: bytes | None, *, mime_type: str = "image/png", content_hash: str | None = None,
-                     reason: str | None = None) -> SnapshotAsset:
+                     reason: str | None = None, max_pixels: int | None = None) -> SnapshotAsset:
     """바이트를 검증해 SnapshotAsset을 만든다. content_hash를 주면 sha256 일치를 확인한다(불일치 → hash_mismatch).
     data가 None이면 reason(기본 missing)의 실패 asset. 테스트·실험·build_snapshot이 공용으로 쓴다."""
     if data is None:
@@ -156,6 +156,8 @@ def asset_from_bytes(asset_id: str, data: bytes | None, *, mime_type: str = "ima
         from PIL import Image
 
         with Image.open(io.BytesIO(data)) as probe:
+            if max_pixels is not None and probe.width * probe.height > max_pixels:
+                return SnapshotAsset(asset_id, content_hash or digest, mime_type, 0, 0, None, False, "too_large")
             probe.verify()
         with Image.open(io.BytesIO(data)) as img:
             width, height, fmt = img.width, img.height, img.format
@@ -183,7 +185,8 @@ def _copy_pages(pages: list[Page]) -> list[Page]:
     return [page.model_copy(deep=True) for page in pages]
 
 
-def build_snapshot(conn: Connection, settings: Settings, session_id: str, document: Document) -> RenderSnapshot:
+def build_snapshot(conn: Connection, settings: Settings, session_id: str, document: Document, *,
+                   max_asset_bytes: int | None = None, max_asset_pixels: int | None = None) -> RenderSnapshot:
     """이 모듈에서 유일하게 DB·파일을 읽는 함수. image 블록의 asset을 확인하고 바이트를 고정한다.
 
     - content_hash는 승인 검사(layout_checks.asset_manifest_hash)와 같은 조회(assets.content_hash, 행 없으면 "")로 가져온다.
@@ -225,11 +228,15 @@ def build_snapshot(conn: Connection, settings: Settings, session_id: str, docume
             continue
         path = resolve_path(settings, row["stored_path"])
         try:
-            data = path.read_bytes()
+            with path.open("rb") as stream:
+                data = stream.read() if max_asset_bytes is None else stream.read(max_asset_bytes + 1)
+            if max_asset_bytes is not None and len(data) > max_asset_bytes:
+                assets[aid] = SnapshotAsset(aid, chash, mime, 0, 0, None, False, "too_large")
+                continue
         except OSError:
             assets[aid] = SnapshotAsset(aid, chash, mime, 0, 0, None, False, "missing")
             continue
-        assets[aid] = asset_from_bytes(aid, data, mime_type=mime, content_hash=chash)
+        assets[aid] = asset_from_bytes(aid, data, mime_type=mime, content_hash=chash, max_pixels=max_asset_pixels)
     return RenderSnapshot(document.document_id, document.document_revision, document.input_revision, document.title,
                           document.target_pages, _copy_pages(document.pages), assets, _document_content_hash(document.title, document.pages, demo), demo)
 
