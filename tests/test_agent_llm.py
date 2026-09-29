@@ -1251,6 +1251,213 @@ def test_paraphrase_trial_preserves_legacy_inputs_and_answers():
     assert hashlib.sha256(encoded.encode()).hexdigest() == "09b8db6ebe1b01dfb4766ea38a143aa4e8b8be194ca80d00c237e877c436900b"
 
 
+# AG-07 새 업종 평가: 기존 검증 지침을 고정한 뒤 작성한 가상 사례다.
+# 모델 응답을 보고 지침을 고치는 데 사용하면 이후에는 개발 사례로 분류한다.
+# H의 A/B는 원문·문맥·Fact·ID가 같고 대상 문장만 다르다.
+_HOLDOUT_REVIEW_PAIRS = [
+    {"industry": "소프트웨어", "topic": "백업과 복구 보장", "field": "products_services",
+     "context": "검증시험회사는 업무용 소프트웨어를 제공하는 가상 기업이다.",
+     "source": "당사 서비스는 매일 오전 2시에 고객 데이터를 자동 백업한다.",
+     "normal": "고객 데이터의 자동 백업은 당사 서비스에서 매일 오전 2시에 이뤄집니다.",
+     "changed": "고객 데이터의 자동 백업은 당사 서비스에서 매일 오전 2시에 이뤄지며, 데이터 복구 성공을 보장합니다.",
+     "codes": ["UNSUPPORTED_CLAIM", "UNVERIFIED_SUPERLATIVE"],
+     "reason": "자동 백업 시간에 관한 근거만 있고 데이터 복구 성공을 보장한다는 근거는 없습니다.",
+     "action": "복구 성공 보장 구절을 삭제하거나 보장 범위와 조건을 확인할 자료를 보완하세요."},
+    {"industry": "물류", "topic": "지역 제한과 접수 조건", "field": "lead_time",
+     "context": "검증시험회사는 배송 서비스를 제공하는 가상 기업이다.",
+     "source": "내륙 지역의 상온 화물은 오후 2시 전에 접수가 확정되면 다음 영업일에 배송한다. 도서 지역은 이 서비스에서 제외한다.",
+     "normal": "오후 2시 전 접수가 확정된 내륙 지역 상온 화물은 다음 영업일에 배송하며, 도서 지역은 서비스 대상에서 제외합니다.",
+     "changed": "오후 2시 전 접수가 확정된 전국 모든 지역의 상온 화물은 다음 영업일에 배송합니다.",
+     "codes": ["CONDITION_LOSS", "VALUE_MISMATCH"],
+     "reason": "도서 지역을 제외한 내륙 한정 서비스를 전국 모든 지역으로 넓혔습니다.",
+     "action": "내륙 지역 한정과 도서 지역 제외 조건을 복원하세요."},
+    {"industry": "온라인 교육", "topic": "접속 가능 인원과 실적", "field": "capabilities",
+     "context": "검증시험회사는 온라인 강의 시스템을 제공하는 가상 기업이다.",
+     "source": "온라인 강의실 한 곳에 동시에 접속할 수 있는 수강생은 최대 120명이다.",
+     "normal": "온라인 강의실 한 곳은 수강생의 동시 접속을 최대 120명까지 지원합니다.",
+     "changed": "온라인 강의실 한 곳의 수강생 동시 접속 실적은 120명입니다.",
+     "codes": ["UNSUPPORTED_CLAIM", "VALUE_MISMATCH"],
+     "reason": "접속 가능한 최대 인원을 실제 동시 접속 실적으로 바꿨습니다.",
+     "action": "실적 표현을 최대 동시 접속 가능 인원으로 복원하거나 실제 접속 기록을 보완하세요."},
+    {"industry": "번역", "topic": "두 작업의 수행 주체", "field": "processes",
+     "context": "검증시험회사는 번역 프로젝트를 관리하는 가상 기업이다.",
+     "source": "외부 협력 번역사가 초벌 번역을 맡고, 당사는 번역문의 검수를 담당한다.",
+     "normal": "초벌 번역은 외부 협력 번역사가, 번역문 검수는 당사가 맡습니다.",
+     "changed": "초벌 번역과 번역문 검수를 모두 당사가 맡습니다.",
+     "codes": ["VALUE_MISMATCH"],
+     "reason": "외부 협력 번역사가 맡는 초벌 번역의 주체를 당사로 바꿨습니다.",
+     "action": "초벌 번역은 외부 협력 번역사, 검수는 당사가 담당한다는 구분을 복원하세요."},
+    {"industry": "디자인", "topic": "예정과 완료", "field": "history",
+     "context": "검증시험회사는 디자인 전시를 기획하는 가상 기업이다.",
+     "source": "2026년 9월 안내 기준으로 온라인 전시관은 같은 해 11월에 공개할 예정이며, 아직 공개되지 않았다.",
+     "normal": "2026년 9월 안내에 따르면 온라인 전시관은 아직 미공개이며, 2026년 11월 공개 예정입니다.",
+     "changed": "2026년 9월 안내에 따르면 온라인 전시관은 이미 공개되었습니다.",
+     "codes": ["VALUE_MISMATCH"],
+     "reason": "기준일 당시 아직 공개되지 않은 전시관을 이미 공개된 상태로 바꿨습니다.",
+     "action": "2026년 9월 기준 미공개 상태와 같은 해 11월 공개 예정이라는 표현을 복원하세요."},
+    {"industry": "자원 회수", "topic": "같은 양의 단위 환산", "field": "capabilities",
+     "context": "검증시험회사는 재활용 원료를 회수하는 가상 기업이다.",
+     "source": "회수 차량 한 대에 한 번에 실을 수 있는 폐지의 최대 무게는 750kg이다.",
+     "normal": "회수 차량 한 대에는 한 번에 폐지를 최대 0.75톤까지 실을 수 있습니다.",
+     "changed": "회수 차량 한 대에는 한 번에 폐지를 최대 7.5톤까지 실을 수 있습니다.",
+     "codes": ["VALUE_MISMATCH"],
+     "reason": "750kg은 0.75톤인데 적재 가능 무게를 7.5톤으로 열 배 늘렸습니다.",
+     "action": "차량 한 대의 1회 최대 적재 가능 무게를 0.75톤 또는 750kg으로 수정하세요."},
+    {"industry": "식품 보관", "topic": "취급 대상과 제외", "field": "products_services",
+     "context": "검증시험회사는 저온 보관 서비스를 제공하는 가상 기업이다.",
+     "source": "당사의 저온 보관 서비스는 포장식품만 취급하며 의약품은 취급하지 않는다.",
+     "normal": "당사는 의약품을 제외한 포장식품에 한해 저온 보관 서비스를 제공합니다.",
+     "changed": "당사는 포장식품과 의약품에 저온 보관 서비스를 제공합니다.",
+     "codes": ["VALUE_MISMATCH", "CONDITION_LOSS"],
+     "reason": "명시적으로 취급하지 않는 의약품을 서비스 대상으로 추가했습니다.",
+     "action": "대상을 포장식품으로 한정하고 의약품 제외 조건을 복원하세요."},
+    {"industry": "행사 운영", "topic": "병렬 사실과 인과관계", "field": "other_info",
+     "context": "검증시험회사는 행사 운영을 지원하는 가상 기업이다.",
+     "source": "당사는 행사 담당자에게 운영 안내서를 제공한다. 2025년 행사 운영 계약 중 재계약은 4건이다.",
+     "normal": "당사는 행사 담당자에게 운영 안내서를 제공하며, 2025년 행사 운영 계약 중 재계약은 4건입니다.",
+     "changed": "당사가 행사 담당자에게 운영 안내서를 제공한 덕분에 2025년 행사 운영 계약 중 재계약이 4건 이뤄졌습니다.",
+     "codes": ["UNSUPPORTED_CLAIM"],
+     "reason": "안내서 제공과 재계약 4건 사이의 인과관계는 원문에서 확인되지 않습니다.",
+     "action": "인과 표현을 제거해 두 사실을 나란히 소개하거나 인과관계를 입증할 자료를 보완하세요."},
+]
+
+HOLDOUT_REVIEW_CASES = {}
+HOLDOUT_REVIEW_EXPECTATIONS = {}
+for _pair_number, _pair in enumerate(_HOLDOUT_REVIEW_PAIRS, 1):
+    for _suffix, _variant in (("A", "normal"), ("B", "changed")):
+        _case_id = f"H{_pair_number:02d}{_suffix}"
+        HOLDOUT_REVIEW_CASES[_case_id] = {
+            "field": _pair["field"], "source": _pair["source"], "text": _pair[_variant],
+            "fact_value": _pair["source"], "extra_source": None, "context": _pair["context"],
+        }
+        HOLDOUT_REVIEW_EXPECTATIONS[_case_id] = {
+            "industry": _pair["industry"], "topic": _pair["topic"],
+            "codes": list(_pair["codes"]) if _suffix == "B" else [],
+            "block_id": "b_target", "severity": "blocker" if _suffix == "B" else None,
+            "reason": _pair["reason"] if _suffix == "B" else "원문의 의미를 유지한 표현입니다.",
+            "action": _pair["action"] if _suffix == "B" else "해당 표현의 사실 수정은 필요하지 않습니다.",
+            "evaluation_status": "fixed", "exposure": "held_out_from_prompt",
+        }
+
+
+def build_holdout_review_trial_request(case_id):
+    """고정 지침의 새 업종 입력만 만든다. 정답·평가 메타정보·외부 호출은 포함하지 않는다."""
+    return _build_review_trial_request(HOLDOUT_REVIEW_CASES[case_id])
+
+
+def holdout_review_trial_checks(case_id, result):
+    return _review_trial_checks(case_id, result, HOLDOUT_REVIEW_EXPECTATIONS[case_id]) | {
+        "evaluation_status": "fixed", "scored": True, "actual_issue_count": len(result.issues),
+    }
+
+
+def holdout_review_trial_fingerprint():
+    data = {"cases": HOLDOUT_REVIEW_CASES, "expectations": HOLDOUT_REVIEW_EXPECTATIONS}
+    return hashlib.sha256(json.dumps(data, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
+@pytest.mark.parametrize("case_id", HOLDOUT_REVIEW_CASES)
+def test_holdout_review_trial_keeps_entire_rubric_out_of_model(case_id, monkeypatch):
+    # 정답표 전체를 읽을 수 없게 해도 동일한 입력을 만들어야 한다.
+    request = build_holdout_review_trial_request(case_id)
+    before = copy.deepcopy(request)
+    expected = HOLDOUT_REVIEW_EXPECTATIONS[case_id]
+    with monkeypatch.context() as patch:
+        patch.setitem(globals(), "HOLDOUT_REVIEW_EXPECTATIONS", {})
+        assert build_holdout_review_trial_request(case_id) == before
+    captured = []
+    def inspect(instructions, payload, schema, schema_name):
+        encoded = json.dumps(payload, ensure_ascii=False)
+        assert schema_name == "content_review" and instructions == llm._REVIEW_INSTRUCTIONS
+        assert len(encoded) <= 10_000
+        assert all(key not in encoded for key in (
+            "evaluation_status", "exposure", "codes", "industry", "topic", "rubric", "semantic_passed"))
+        assert expected["reason"] not in encoded and expected["action"] not in encoded
+        assert case_id not in encoded and case_id not in instructions
+        case = HOLDOUT_REVIEW_CASES[case_id]
+        assert [unit["text"] for unit in payload["source_units"]] == ["검증시험회사", case["context"], case["source"]]
+        assert payload["facts"][2]["value"] == payload["facts"][2]["evidence_refs"][0]["excerpt"] == case["source"]
+        captured.append(payload)
+        return {"checked_block_ids": payload["changed_block_ids"], "findings": []}
+    result = llm.LlmAgent(inspect, max_input_chars=10_000).validate(request)
+    assert request == before and len(captured) == 1
+    checks = holdout_review_trial_checks(case_id, result)
+    assert checks["rubric_matched"] is (not bool(expected["codes"]))
+    assert checks["missed_expected_issue"] == bool(expected["codes"])
+    assert checks["semantic_passed"] is None and checks["human_review_required"]
+
+
+@pytest.mark.parametrize("pair_number", range(1, 9))
+def test_holdout_review_trial_pairs_change_only_sentence_and_start_fresh(pair_number):
+    first = build_holdout_review_trial_request(f"H{pair_number:02d}A")
+    second = build_holdout_review_trial_request(f"H{pair_number:02d}B")
+    assert first.document.pages[0].blocks[-1].content != second.document.pages[0].blocks[-1].content
+    second.document.pages[0].blocks[-1].content = copy.deepcopy(first.document.pages[0].blocks[-1].content)
+    assert first == second
+    first.sources[0].segments[-1].text = "변경"
+    first.preflight.facts[-1].evidence_refs[0].excerpt = "변경"
+    first.document.pages[0].blocks[-1].content["text"] = "변경"
+    assert build_holdout_review_trial_request(f"H{pair_number:02d}A") == second
+
+
+@pytest.mark.parametrize("case_id,code", [
+    (cid, code) for cid, expected in HOLDOUT_REVIEW_EXPECTATIONS.items() for code in expected["codes"]])
+def test_holdout_review_trial_findings_keep_reason_evidence_and_blocker(case_id, code):
+    expected = HOLDOUT_REVIEW_EXPECTATIONS[case_id]
+    def respond(instructions, payload, schema, schema_name):
+        unit = payload["source_units"][2]
+        return {"checked_block_ids": payload["changed_block_ids"], "findings": [{
+            "kind": code.lower(), "block_ids": ["b_target"], "fact_ids": ["fact_review_3"],
+            "reason": expected["reason"], "action": expected["action"], "evidence": [{
+                "source_id": unit["source_id"], "segment_id": unit["segment_id"], "quote": unit["text"]}]}]}
+    result = llm.LlmAgent(respond).validate(build_holdout_review_trial_request(case_id))
+    checks = holdout_review_trial_checks(case_id, result)
+    assert checks["scored"] and checks["rubric_matched"] and checks["matching_issue_count"] == 1
+    assert checks["semantic_passed"] is None and checks["human_review_required"]
+    issue = result.issues[0]
+    assert expected["reason"] in issue.message and expected["action"] in issue.message
+    assert HOLDOUT_REVIEW_CASES[case_id]["source"] in issue.message
+    assert issue.code == code and issue.severity == "blocker" and issue.status == "open"
+
+
+@pytest.mark.parametrize("mistake", [
+    "missed", "false_alarm", "wrong_code", "wrong_block", "wrong_scope", "warning", "resolved", "duplicate", "extra"])
+def test_holdout_review_trial_checks_reject_bad_results(mistake):
+    issue = Issue(issue_id="fake", scope="content", code="UNSUPPORTED_CLAIM", severity="blocker",
+                  message="가짜 검증 응답", block_ids=["b_target"])
+    if mistake == "wrong_code": issue.code = "VALUE_MISMATCH"
+    elif mistake == "wrong_block": issue.block_ids = ["b_context_1"]
+    elif mistake == "wrong_scope": issue.scope = "source"
+    elif mistake == "warning": issue.severity = "warning"
+    elif mistake == "resolved": issue.status = "resolved"
+    result = ValidateResult([] if mistake == "missed" else [issue])
+    if mistake == "duplicate": result.issues.append(issue.model_copy(update={"issue_id": "duplicate"}))
+    elif mistake == "extra":
+        result.issues.append(issue.model_copy(update={"issue_id": "extra", "block_ids": ["b_context_1"]}))
+    before = copy.deepcopy(result)
+    checks = holdout_review_trial_checks("H01A" if mistake == "false_alarm" else "H01B", result)
+    assert checks["scored"] and not checks["rubric_matched"] and result == before
+    assert checks["semantic_passed"] is None and checks["human_review_required"]
+
+
+def test_holdout_review_trial_freezes_cases_and_preserves_previous_evaluations():
+    assert len(HOLDOUT_REVIEW_CASES) == len(HOLDOUT_REVIEW_EXPECTATIONS) == 16
+    assert holdout_review_trial_fingerprint() == "0830623607a590a702f9f3242a10cd0f4222d0691a0816ed56c2e3960ad3181c"
+    assert paraphrase_trial_fingerprint() == "4e375c2942200a0d622e6aa40dbbb3069d95650ac13f9d3591a236f76a151619"
+    requests = {cid: asdict(build_paraphrase_trial_request(cid)) for cid in PARAPHRASE_TRIAL_CASES}
+    for request in requests.values():
+        assert request.pop("images") == []  # 최신 사진 입력은 비어 있고 기존 텍스트 사례는 그대로다.
+        for source in request["sources"]:
+            assert source.pop("asset_locators") == {}
+    encoded = json.dumps(requests, ensure_ascii=False, sort_keys=True, default=lambda value: value.model_dump())
+    assert hashlib.sha256(encoded.encode()).hexdigest() == "9eebc9a7b398d7cfd49876609f6a73d89bfdd494e04703aae701a8332db8b322"
+    old_cases = [*REVIEW_TRIAL_CASES.values(), *PARAPHRASE_TRIAL_CASES.values()]
+    for case in HOLDOUT_REVIEW_CASES.values():
+        assert case["source"] not in {old["source"] for old in old_cases}
+        assert case["text"] not in {old["text"] for old in old_cases}
+        assert case["source"] not in llm._REVIEW_INSTRUCTIONS and case["text"] not in llm._REVIEW_INSTRUCTIONS
+
+
 def review_request():
     _, request, _ = analyzed()
     facts = {f.field_key: f for f in request.preflight.facts}
