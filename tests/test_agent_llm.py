@@ -1765,7 +1765,7 @@ def test_explicit_review_limit_preserves_large_source_and_other_guards(monkeypat
     assert report["max_calls"] == 8 and report["budget_usd"] == "1"
 
 
-@pytest.mark.parametrize("bad", [0, 120001, True, 1.5, "80000"])
+@pytest.mark.parametrize("bad", [0, 400001, True, 1.5, "80000"])
 def test_review_input_limit_rejects_invalid_configuration(bad):
     with pytest.raises(ValueError):
         llm.TrialLedger(review_input_char_limit=bad)
@@ -1773,8 +1773,8 @@ def test_review_input_limit_rejects_invalid_configuration(bad):
         llm.LlmAgent(ReviewModel(), max_review_input_chars=bad)
 
 
-@pytest.mark.parametrize("value,expected", [(None, 10000), ("", 10000), ("80000", 80000),
-                                          ("120000", 120000), ("120001", None), ("0", None), ("x", None)])
+@pytest.mark.parametrize("value,expected", [(None, 400000), ("", 400000), ("80000", 80000),
+                                          ("120000", 120000), ("400001", None), ("0", None), ("x", None)])
 def test_review_input_limit_environment(monkeypatch, value, expected):
     monkeypatch.setenv("OPENAI_TRIAL_INPUT_CHAR_LIMIT", "10000")
     monkeypatch.delenv("OPENAI_REVIEW_MAX_INPUT_CHARS", raising=False)
@@ -1930,7 +1930,7 @@ def metered_response(*, input_tokens=1000, output_tokens=100, cached=200, writte
 
 @pytest.mark.parametrize("change", [{"OPENAI_MODEL": ""}, {"OPENAI_API_KEY": ""},
     {"OPENAI_TIMEOUT_SECONDS": "nan"}, {"OPENAI_TIMEOUT_SECONDS": "0"}, {"OPENAI_MAX_RETRIES": "-1"},
-    {"OPENAI_MAX_OUTPUT_TOKENS": "bad"}, {"OPENAI_MAX_INPUT_CHARS": "40001"}])
+    {"OPENAI_MAX_OUTPUT_TOKENS": "bad"}, {"OPENAI_MAX_INPUT_CHARS": "200001"}])
 def test_invalid_settings_do_not_call_sdk_or_expose_values(change):
     with pytest.raises(AgentError, match="SERVICE_TEMPORARY_FAILURE") as error:
         llm.LlmOptions.from_env(config_env() | change)
@@ -3480,7 +3480,7 @@ def test_text_proposal_preserves_original_metadata_and_limits_source_context(blo
     (lambda r: setattr(r, "input_revision", 100), "INPUT_REVISION_CONFLICT"),
     (lambda r: setattr(r, "session_id", "another-session"), "INPUT_REVISION_CONFLICT"),
     (lambda r: setattr(r, "instruction", " " * 3), "INVALID_REQUEST"),
-    (lambda r: setattr(r, "instruction", "가" * 2001), "INVALID_REQUEST"),
+    (lambda r: setattr(r, "instruction", "가" * 10001), "INVALID_REQUEST"),
     (lambda r: r.document.pages[0].blocks[-1].evidence_refs.clear(), "UNSUPPORTED_PROPOSAL"),
     (lambda r: r.sources.clear(), "AGENT_OUTPUT_INVALID"),
     (lambda r: setattr(r.sources[0], "source_version", 99), "AGENT_OUTPUT_INVALID"),
@@ -3549,26 +3549,33 @@ def test_text_proposal_requires_opt_in_and_does_not_stop_other_work(monkeypatch)
     assert not calls and not ledger.snapshot()["stopped"] and ledger.snapshot()["calls_started"] == 0
 
 
-def test_text_proposal_sdk_keeps_shared_budget_and_two_call_limit(monkeypatch):
+def test_text_proposal_sdk_allows_repeated_edits_within_shared_budget(monkeypatch):
     calls = fake_sdk(monkeypatch, response=proposal_sdk_response)
     ledger = llm.TrialLedger(allow_proposals=True, allow_review=True)
     agent = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=ledger))
-    assert agent.propose(proposal_request()).changes
-    assert agent.propose(proposal_request()).changes
+    request = proposal_request()
+    original = request.document.model_dump()
+    for _ in range(3):
+        assert agent.propose(request).changes
     report = ledger.snapshot()
     assert report["max_calls"] == 8 and report["budget_usd"] == "1" and report["cost_complete"]
-    assert report["calls_started"] == 2 and not report["stopped"]
+    assert report["calls_started"] == 3 and not report["stopped"]
+    assert request.document.model_dump() == original
+    for _ in range(5):
+        assert agent.propose(request).changes
+    assert ledger.snapshot()["calls_started"] == 8
     before = len(calls)
     with pytest.raises(AgentError):
         agent.propose(proposal_request())
-    assert len(calls) == before and ledger.snapshot()["stop_reason"] == "operation_limit"
+    assert len(calls) == before and ledger.snapshot()["stop_reason"] == "call_limit"
 
 
 def test_text_proposal_is_in_existing_total_call_limit(monkeypatch):
     calls = fake_sdk(monkeypatch, response=lambda **kwargs: metered_response())
     ledger = llm.TrialLedger(max_calls=4, allow_proposals=True, allow_review=True)
     requester = llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=ledger)
-    for name in ("company_info", "draft_sections", "content_review", "text_proposal"):
+    # 세 번 수정한 뒤에도 남은 전체 한도에서 다른 기능을 실행할 수 있다.
+    for name in ("text_proposal", "text_proposal", "text_proposal", "content_review"):
         requester("test", {}, {}, name)
     assert ledger.snapshot()["stop_reason"] == "call_limit"
     before = len(calls)
@@ -3848,7 +3855,7 @@ def test_page_plan_keeps_origin_evidence_and_editable_list_without_extra_call():
     assert all(b.content["caption"] == "AI 생성 시연 부품 · 실제 제품 아님" for p in out.pages for b in p.blocks if b.type == "image")
 
 
-@pytest.mark.parametrize("bad", ["foreign_fact", "excluded_fact", "empty_fact", "duplicate_fact", "foreign_photo", "duplicate_photo", "reused_photo", "too_long", "bad_layout", "empty_pages", "too_many_pages", "cover_with_points"])
+@pytest.mark.parametrize("bad", ["foreign_fact", "excluded_fact", "empty_fact", "duplicate_fact", "foreign_photo", "too_long", "bad_layout", "empty_pages", "too_many_pages", "cover_with_points"])
 def test_page_plan_rejects_invalid_scope_or_unrenderable_structure(bad):
     agent, request, model = page_plan_request()
     if bad == "excluded_fact":
@@ -3860,8 +3867,6 @@ def test_page_plan_rejects_invalid_scope_or_unrenderable_structure(bad):
         elif bad == "empty_fact": p["lead"]["fact_ids"] = []
         elif bad == "duplicate_fact": p["lead"]["fact_ids"] *= 2
         elif bad == "foreign_photo": p["photo_ids"] = ["unapproved"]
-        elif bad == "duplicate_photo": p["photo_ids"] = ["demo_image_a"] * 2
-        elif bad == "reused_photo": result["pages"].append(copy.deepcopy(p))
         elif bad == "too_long": p["lead"]["text"] = "가" * 181
         elif bad == "bad_layout": p["layout"] = "javascript:bad"
         elif bad == "empty_pages": result["pages"] = []
@@ -3870,6 +3875,48 @@ def test_page_plan_rejects_invalid_scope_or_unrenderable_structure(bad):
     model.draft_change = change
     with pytest.raises(AgentError, match="AGENT_OUTPUT_INVALID"):
         agent.draft(request)
+
+
+@pytest.mark.parametrize("scenario", ["duplicate", "reused", "over_limit", "cover_over_limit", "empty_cover"])
+def test_brochure_photo_normalization_keeps_text_and_evidence_without_extra_call(scenario):
+    agent, request, model = page_plan_request()
+    if scenario == "over_limit":
+        request.brief.photo_preference = "balanced"
+    generated = []
+    def change(result):
+        p = result["pages"][0]
+        p["photo_ids"] = ["demo_image_a", "demo_image_b"]
+        if scenario == "duplicate": p["photo_ids"] = ["demo_image_a"] * 3
+        if scenario == "reused": result["pages"].append(copy.deepcopy(p))
+        if scenario in {"cover_over_limit", "empty_cover"}:
+            p["layout"] = "cover_photo"
+            p["points"] = []
+        if scenario == "empty_cover": p["photo_ids"] = []
+        generated.append(copy.deepcopy(result))
+    model.draft_change = change
+    before = copy.deepcopy(request)
+    out = agent.draft(request)
+    assert request == before and len(generated) == 1
+    images = [b.content["asset_id"] for p in out.pages for b in p.blocks if b.type == "image"]
+    assert len(images) == len(set(images))
+    assert images == ([] if scenario == "empty_cover" else ["demo_image_a", "demo_image_b"] if scenario == "reused" else ["demo_image_a"])
+    for page, raw in zip(out.pages, generated[0]["pages"]):
+        text_blocks = [b for b in page.blocks if b.type in {"heading", "paragraph"}]
+        for block, expected in zip(text_blocks, [raw["heading"], raw["lead"]]):
+            assert block.content["text"] in {expected["text"], "[시연] " + expected["text"]}
+            assert block.fact_ids == expected["fact_ids"] and block.evidence_refs
+    if scenario == "reused": assert out.pages[1].layout_key == "text_photo"
+    if scenario == "empty_cover": assert out.pages[0].layout_key == "text_photo"
+
+
+def test_photo_outside_scope_is_rejected_even_after_page_limit(caplog):
+    agent, request, model = page_plan_request()
+    request.brief.photo_preference = "balanced"
+    model.draft_change = lambda result: result["pages"][0].update(photo_ids=["demo_image_a", "unapproved"])
+    with pytest.raises(AgentError) as exc:
+        agent.draft(request)
+    assert "사용할 수 없는 사진" in exc.value.message
+    assert "photo_out_of_scope" in caplog.text
 
 
 def test_page_plan_direction_and_exclusion_reach_model_without_excluded_facts():
@@ -3908,10 +3955,241 @@ def test_preflight_issue_uses_korean_label_and_action_without_weakening_blocker(
     assert "lead_time" not in issue.message and issue.severity == "blocker"
 
 
-def test_brochure_schema_individual_limits_fit_total_budget_with_demo_prefix():
+def test_brochure_schema_allows_complete_points_with_separate_page_budget():
     schema = llm._BrochurePlan.model_json_schema()['$defs']
     heading = schema['_BrochureHeading']['properties']['text']['maxLength']
     lead = schema['_BrochureText']['properties']['text']['maxLength']
     point = schema['_BrochurePoint']['properties']['text']['maxLength']
     count = schema['_BrochurePage']['properties']['points']['maxItems']
-    assert heading + lead + count * point + (count + 1) * len('[시연] ') <= 600
+    assert heading == 40 and lead == 160 and point == 160 and count == 4
+
+
+@pytest.mark.parametrize("bad_text", ["실제 측정이나 전량 합격을 뜻하", "확정 일정은 미정이", "확정 일정은 未"])
+def test_brochure_incomplete_sentence_is_rewritten_once_before_return(bad_text):
+    agent, request, model = page_plan_request()
+    seen = []
+    def change(result):
+        seen.append(True)
+        result["pages"][0]["points"][0]["text"] = bad_text if len(seen) == 1 else "가상 사례이며 실제 측정이나 전량 합격을 뜻하지 않습니다. 확정 일정은 미정입니다."
+    model.draft_change = change
+    out = agent.draft(request)
+    assert len(seen) == 2
+    assert model.calls[-1][1]["revision_request"]["reason"] == "incomplete_sentence"
+    items = next(b.content["items"] for p in out.pages for b in p.blocks if b.type == "list")
+    assert items[0].endswith("미정입니다.") and "뜻하지 않습니다." in items[0]
+
+
+def test_brochure_unfinished_after_one_rewrite_never_returns_draft():
+    agent, request, model = page_plan_request()
+    seen = []
+    def change(result):
+        seen.append(True)
+        result["pages"][0]["points"][0]["text"] = "실제 합격을 뜻하"
+    model.draft_change = change
+    with pytest.raises(AgentError, match="AGENT_OUTPUT_INVALID"):
+        agent.draft(request)
+    assert len(seen) == 2
+
+
+def test_brochure_page_budget_rejects_complete_but_overcrowded_text_without_slicing():
+    agent, request, model = page_plan_request()
+    def change(result):
+        point = copy.deepcopy(result["pages"][0]["points"][0])
+        point["text"] = "가" * 155 + "입니다."
+        result["pages"][0]["points"] = [copy.deepcopy(point) for _ in range(4)]
+    model.draft_change = change
+    with pytest.raises(AgentError, match="AGENT_OUTPUT_INVALID"):
+        agent.draft(request)
+    assert model.calls[-1][1]["revision_request"]["reason"] == "page_text_budget"
+
+
+@pytest.mark.parametrize("status", ["supported", "needs_confirmation", "conflict"])
+def test_company_name_variants_preserve_evidence_and_uncertainty(status, monkeypatch):
+    monkeypatch.delenv("COMPANY_NAME_ALIASES", raising=False)
+    names = ["㈜가상표면기술", "가상표면기술", "EXAMPLE SURFACE"]
+    source = SourceIn("names", 1, "registered", "가짜 회사명 자료", "complete", [
+        SegmentIn("names_segment", {"page": 1}, "회사명: " + " / ".join(names))])
+    def model(instructions, payload, schema, schema_name):
+        # 실제 호출에 수정 지침이 전달되는지 확인하며 모델 의미 판단을 모사하지 않는다.
+        assert "법인 등기 확인" in instructions and "번역 추측" in instructions
+        unit = payload["source_units"][0]
+        info = {k: {"status": "not_found", "facts": []} for k in legacy.COMPANY_INFO_KEYS}
+        info["company_name"] = {"status": status, "facts": [
+            {"text": name, "evidence": [{"source_id": unit["source_id"],
+              "locator": unit["locator"], "quote": unit["text"]}]} for name in names]}
+        return info
+    result = llm.LlmAgent(model).analyze(AnalyzeRequest("names_session", 1, BRIEF, [source]))
+    facts = [f for f in result.facts if f.field_key == "company_name"]
+    ids = {f.fact_id for f in facts}
+    issues = [i for i in result.issues if ids.intersection(i.fact_ids)]
+    assert all(f.status == status and f.evidence_refs for f in facts)
+    assert all(r.source_id == "names" and r.excerpt == source.segments[0].text
+               for f in facts for r in f.evidence_refs)
+    if status == "supported":
+        assert [f.value for f in facts] == names and not issues
+    else:
+        assert issues and all(i.severity == "blocker" for i in issues)
+        if status == "needs_confirmation":
+            assert any("사업장 주소" in i.message for i in issues)
+        else:
+            assert [a["value"] for a in facts[0].alternatives] == names
+
+
+@pytest.mark.parametrize("status", ["needs_confirmation", "conflict"])
+@pytest.mark.parametrize("different_company", [False, True])
+def test_explicit_company_aliases_preserve_refs_and_reject_other_company(monkeypatch, status, different_company):
+    names = ["㈜가상표면기술", "가상표면기술", "EXAMPLE SURFACE"]
+    monkeypatch.setenv("COMPANY_NAME_ALIASES", json.dumps([names]))
+    actual = names + (["다른 테스트 회사"] if different_company else [])
+    source = SourceIn("names", 1, "registered", "가짜 별칭 자료", "complete", [
+        SegmentIn("names_segment", {"page": 1}, "회사명: " + " / ".join(actual))])
+    def model(instructions, payload, schema, schema_name):
+        unit = payload["source_units"][0]
+        info = {k: {"status": "not_found", "facts": []} for k in legacy.COMPANY_INFO_KEYS}
+        info["company_name"] = {"status": status, "facts": [
+            {"text": name, "evidence": [{"source_id": unit["source_id"], "locator": unit["locator"], "quote": unit["text"]}]}
+            for name in actual]}
+        return info
+    result = llm.LlmAgent(model).analyze(AnalyzeRequest("names_session", 1, BRIEF, [source]))
+    facts = [f for f in result.facts if f.field_key == "company_name"]
+    assert all(f.status == (status if different_company else "supported") for f in facts)
+    assert all(r.source_id == "names" and r.excerpt == source.segments[0].text for f in facts for r in f.evidence_refs)
+    if not different_company:
+        assert [f.value for f in facts] == names
+        assert not any(set(i.fact_ids) & {f.fact_id for f in facts} for i in result.issues)
+
+
+def test_review_receives_only_configured_company_aliases(monkeypatch):
+    request = review_request()
+    name = next(f.value for f in request.preflight.facts if f.field_key == "company_name")
+    monkeypatch.setenv("COMPANY_NAME_ALIASES", json.dumps([[name, "EXAMPLE ALIAS"]]))
+    model = ReviewModel()
+    llm.LlmAgent(model).validate(request)
+    payload = model.calls[-1][1]
+    assert payload["confirmed_company_name_aliases"] == [[name, "EXAMPLE ALIAS"]]
+    assert llm._compact_review_payload(payload)["confirmed_company_name_aliases"] == [[name, "EXAMPLE ALIAS"]]
+
+
+def test_runtime_has_no_total_operation_or_cost_caps(monkeypatch):
+    fake_sdk(monkeypatch, response=lambda **kwargs: metered_response(input_tokens=1_000_000))
+    ledger = llm.RuntimeLedger(allow_review=True, allow_proposals=True)
+    requester = llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=ledger)
+    for operation in ("company_info", "draft_sections", "content_review", "text_proposal"):
+        for _ in range(10):
+            assert requester("test", {}, {}, operation) == {"ok": True}
+    report = ledger.snapshot()
+    assert report["calls_started"] == 40 and not report["stopped"]
+    assert report["max_calls"] is None and report["budget_usd"] is None
+    assert Decimal(report["known_estimated_cost_usd"]) > 1 and report["cost_complete"]
+
+
+def test_runtime_concurrent_requests_keep_their_own_usage(monkeypatch):
+    barrier = threading.Barrier(2)
+    def respond(**kwargs):
+        payload = json.loads(kwargs["input"])
+        barrier.wait(timeout=10)
+        return metered_response(output_text=json.dumps(payload), output_tokens=payload["n"], reasoning=0)
+    fake_sdk(monkeypatch, response=respond)
+    ledger = llm.RuntimeLedger()
+    requester = llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=ledger)
+    agent = llm.LlmAgent(requester)
+    def run(n):
+        return agent._run_trial_operation(lambda value: requester("test", {"n": value}, {}, "company_info"), n)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert list(pool.map(run, (10, 20))) == [{"n": 10}, {"n": 20}]
+    report = ledger.snapshot()
+    assert report["calls_started"] == 2 and not report["in_flight"] and not report["operation_in_progress"]
+    assert sorted(r["output_tokens"] for r in report["records"]) == [10, 20]
+    assert len({r["call_number"] for r in report["records"]}) == 2
+
+
+def test_runtime_invalid_result_does_not_poison_next_operation(monkeypatch):
+    count = 0
+    def respond(**kwargs):
+        nonlocal count
+        count += 1
+        return metered_response(output_text="not json" if count == 1 else '{"ok":true}')
+    fake_sdk(monkeypatch, response=respond)
+    ledger = llm.RuntimeLedger()
+    requester = llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=ledger)
+    agent = llm.LlmAgent(requester)
+    call = lambda _: requester("test", {}, {}, "company_info")
+    with pytest.raises(AgentError):
+        agent._run_trial_operation(call, None)
+    assert agent._run_trial_operation(call, None) == {"ok": True}
+    assert not ledger.snapshot()["stopped"] and ledger.snapshot()["calls_started"] == 2
+
+
+def test_runtime_missing_usage_is_unknown_and_manual_stop_still_discards(monkeypatch):
+    fake_sdk(monkeypatch, response=metered_response(usage=None))
+    ledger = llm.RuntimeLedger()
+    requester = llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=ledger)
+    assert requester("test", {}, {}, "company_info") == {"ok": True}
+    assert not ledger.snapshot()["cost_complete"]
+    assert ledger.snapshot()["records"][0]["estimated_cost_usd"] is None
+    ledger.stop()
+    with pytest.raises(AgentError):
+        requester("test", {}, {}, "company_info")
+    assert ledger.snapshot()["calls_started"] == 1
+
+
+def test_runtime_default_factory_ignores_old_trial_caps(monkeypatch):
+    monkeypatch.setenv("OPENAI_ENABLE_CONTENT_REVIEW", "true")
+    monkeypatch.setenv("OPENAI_ENABLE_TEXT_PROPOSALS", "true")
+    monkeypatch.setenv("OPENAI_TRIAL_INPUT_CHAR_LIMIT", "10")
+    monkeypatch.setenv("OPENAI_REVIEW_MAX_INPUT_CHARS", "400000")
+    ledger = llm._runtime_ledger()
+    assert isinstance(ledger, llm.RuntimeLedger)
+    assert all(v is None for v in ledger._operation_limits.values())
+    assert ledger.review_input_char_limit == 400000
+    monkeypatch.setattr(llm, "_trial", ledger)
+    assert llm.OpenAIRequester(llm.LlmOptions.from_env(config_env())).ledger is ledger
+
+
+def test_expanded_input_reaches_legacy_extraction_without_truncation():
+    selected = sources()[:1]
+    selected[0].segments = selected[0].segments[:1]
+    segment = selected[0].segments[0]
+    segment.text += "가" * (200000 - len(segment.text))
+    model = FakeModel()
+    request = AnalyzeRequest("large", 1, BRIEF, selected)
+    assert llm.LlmAgent(model, max_input_chars=200000).analyze(request).facts
+    assert model.calls[0][1]["source_units"][0]["text"] == segment.text
+    segment.text += "가"
+    with pytest.raises(AgentError):
+        llm.LlmAgent(model, max_input_chars=200000).analyze(request)
+    assert len(model.calls) == 1
+
+
+def test_expanded_request_options_and_instruction(monkeypatch):
+    options = llm.LlmOptions.from_env(config_env() | {"OPENAI_TIMEOUT_SECONDS": "300",
+        "OPENAI_MAX_OUTPUT_TOKENS": "64000", "OPENAI_MAX_INPUT_CHARS": "200000", "OPENAI_MAX_RETRIES": "2"})
+    calls = fake_sdk(monkeypatch, response=proposal_sdk_response)
+    agent = llm.LlmAgent(llm.OpenAIRequester(options, ledger=llm.RuntimeLedger(allow_proposals=True)),
+                         max_input_chars=options.max_input_chars)
+    request = proposal_request()
+    request.instruction = "가" * 10000
+    assert agent.propose(request).changes
+    assert calls[0][1]["timeout"] == 300 and calls[0][1]["max_retries"] == 2
+    assert calls[-1][1]["max_output_tokens"] == 64000
+    assert len(json.loads(calls[-1][1]["input"])["instruction"]) == 10000
+    before = len(calls)
+    request.instruction += "가"
+    with pytest.raises(AgentError):
+        agent.propose(request)
+    assert len(calls) == before
+
+
+def test_proposal_receives_per_item_numeric_tokens_and_actionable_rejection():
+    request = proposal_request("list")
+    block = next(b for p in request.document.pages for b in p.blocks if b.block_id == request.target_block_ids[0])
+    block.content = {"items": ["문의일 2026-09-21, 희망일 2026-09-30", "M8 부품 300개, 측정 12.8µm"]}
+    before = request.document.model_dump()
+    model = ProposalModel(lambda result: result["items"].__setitem__(0, "희망일 2026-09-30"))
+    with pytest.raises(AgentError) as caught:
+        llm.LlmAgent(model).propose(request)
+    payload = model.calls[0][1]
+    assert payload["preserve_numeric_tokens"] == [["2026", "09", "21", "2026", "09", "30"], ["8", "300", "12.8"]]
+    assert caught.value.code == "AGENT_OUTPUT_INVALID"
+    assert "숫자·날짜" in caught.value.message and "직접 편집" in caught.value.message
+    assert request.document.model_dump() == before
