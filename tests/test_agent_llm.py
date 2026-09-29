@@ -193,6 +193,17 @@ def extraction(payload):
     return result
 
 
+def extraction_wire_result(result, payload):
+    """테스트 SDK 대역은 실제 호출의 구간 참조 형식으로 응답한다."""
+    result = copy.deepcopy(result)
+    for item in result.values():
+        for fact in item["facts"]:
+            fact["evidence"] = [{"unit_id": next(u["unit_id"] for u in payload["source_units"]
+                if (u["source_id"], u["locator"]) == (ref["source_id"], ref["locator"]))}
+                for ref in fact["evidence"]]
+    return result
+
+
 def draft_response(payload):
     return {"draft_sections": [{"key": s["key"], "title": s["title"], "paragraphs": [
         {"text": f["text"], "fact_ids": [f["fact_id"]]}
@@ -472,10 +483,10 @@ def structured_draft(brief, *, change=None):
 
 @pytest.mark.parametrize("pages", [1, 6])
 @pytest.mark.parametrize("settings,order", [
-    ({}, ["company_summary", "products_services", "technology", "certifications", "processes", "lead_time"]),
+    ({}, ["company_summary", "products_services", "technology", "processes", "certifications", "lead_time"]),
     ({"direction": "quality_process"}, ["company_summary", "technology", "processes", "certifications", "products_services", "lead_time"]),
-    ({"direction": "customer_response"}, ["company_summary", "products_services", "lead_time", "technology", "certifications", "processes"]),
-    ({"purpose": "납기 안내"}, ["company_summary", "lead_time", "products_services", "technology", "certifications", "processes"]),
+    ({"direction": "customer_response"}, ["company_summary", "products_services", "lead_time", "technology", "processes", "certifications"]),
+    ({"purpose": "납기 안내"}, ["company_summary", "lead_time", "products_services", "technology", "processes", "certifications"]),
     ({"emphasis": ["공정"], "purpose": "납기 안내", "direction": "quality_process"},
      ["company_summary", "processes", "lead_time", "technology", "certifications", "products_services"]),
 ])
@@ -632,6 +643,11 @@ def test_legacy_allows_company_name_reference_inside_business_paragraph():
 
 
 @pytest.mark.parametrize("value,excerpt,expected", [
+    ("회사명은 ㈜테스트나무이며, 인증서에는 TEST TREE로 표기되어 있다.",
+     "신청 회사\n㈜테스트나무\nTEST TREE", "㈜테스트나무"),
+    ("회사명은 ㈜테스트나무이며, 인증서에는 TEST TREE로 표기되어 있다.",
+     "㈜테스트나무협력사", "회사명은 ㈜테스트나무이며, 인증서에는 TEST TREE로 표기되어 있다."),
+    ("회사명은 테스트나무입니다.", "사업 개요\n회사명: 테스트나무\n제품: 가상 제품", "테스트나무"),
     ("회사명은 테스트나무입니다.", "회사명: 테스트나무", "테스트나무"),
     ("회사명은 (주)테스트나무입니다.", "회사명：(주)테스트나무", "(주)테스트나무"),
     ("회사명은 테스트나무입니다.", "테스트나무는 가상 기업입니다.", "회사명은 테스트나무입니다."),
@@ -651,6 +667,37 @@ def test_draft_title_uses_exact_source_name_without_changing_fact_or_evidence(va
     assert heading.content["text"] == expected
     assert heading.fact_ids == [company.fact_id] and heading.evidence_refs == company.evidence_refs
     assert request.preflight.model_dump() == before
+
+
+def test_page_composition_balances_text_instead_of_section_count():
+    groups = [[Block(block_id=f"b{i}", type="paragraph", content={"text": str(i) * size})]
+              for i, size in enumerate([900, 100, 100, 100])]
+    result = llm._balanced_page_groups(groups, 2)
+    assert [[b.block_id for g in page for b in g] for page in result] == [["b0"], ["b1", "b2", "b3"]]
+    assert [g for page in result for g in page] == groups
+
+
+def test_unresolved_only_page_is_labeled_as_review_not_company_claims():
+    groups = [[Block(block_id="review_heading", type="heading", content={"text": "고객·시장"}),
+               Block(block_id="review_body", type="paragraph", content={"text": "추가 확인 필요"})]]
+    assert llm._page_topic(groups) == "추가 확인 사항"
+
+
+def test_long_section_splits_at_paragraph_boundaries_and_preserves_evidence():
+    _, request, _ = analyzed()
+    fact = next(f for f in request.preflight.facts if f.field_key == "company_summary")
+    names = [f for f in request.preflight.facts if f.field_key == "company_name"]
+    paragraphs = [{"text": (f"문단{i} " * 130).strip(), "fact_ids": [fact.fact_id]} for i in range(4)]
+    generated = [{"key": "company_summary", "title": legacy.SECTION_TITLES["company_summary"],
+                  "paragraphs": paragraphs}]
+    before = copy.deepcopy(generated)
+    result = llm.LlmAgent._pages(request, generated, {f.fact_id: f for f in [fact, *names]})
+    assert len(result.pages) == 4
+    body = [b for page in result.pages for b in page.blocks if b.type == "paragraph"]
+    assert [b.content["text"] for b in body] == [p["text"] for p in paragraphs]
+    assert all(b.fact_ids == [fact.fact_id] and b.evidence_refs == fact.evidence_refs for b in body)
+    assert all(page.blocks[0].type == "heading" for page in result.pages)
+    assert generated == before
 
 
 @pytest.mark.parametrize("change,code", [
@@ -1558,6 +1605,62 @@ def fake_sdk(monkeypatch, *, response=None, error=None):
     return calls
 
 
+def test_sdk_extraction_selects_references_and_preserves_exact_source_text(monkeypatch):
+    request = AnalyzeRequest("ses_test", 2, BRIEF, sources())
+    request.sources[0].segments[0].text += "\n원문  공백\t유지: 2026\u00a0년 / OCR오타"
+    original = copy.deepcopy(request)
+    def respond(**kwargs):
+        payload = json.loads(kwargs["input"])
+        units = payload["source_units"]
+        evidence_schema = kwargs["text"]["format"]["schema"]["$defs"]["evidence"]
+        assert evidence_schema["properties"] == {"unit_id": {"type": "integer", "enum": [1, 2, 3]}}
+        assert [u["text"] for u in units] == [seg.text for src in request.sources for seg in src.segments]
+        body = extraction_wire_result(extraction(payload), payload)
+        assert all(set(ref) == {"unit_id"} for item in body.values()
+                   for fact in item["facts"] for ref in fact["evidence"])
+        return metered_response(output_text=json.dumps(body, ensure_ascii=False))
+    fake_sdk(monkeypatch, response=respond)
+    result = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()))).analyze(request)
+    company = next(f for f in result.facts if f.field_key == "company_name")
+    assert company.evidence_refs[0].excerpt == request.sources[0].segments[0].text
+    assert company.evidence_refs[0].source_version == 3
+    assert company.evidence_refs[0].locator == {"page": 2, "paragraph": 1}
+    assert validate_analyze(result, request.sources) is None
+    assert request == original
+
+
+@pytest.mark.parametrize("ref", [{"unit_id": 0}, {"unit_id": 999}, {"unit_id": True},
+    {"unit_id": 1.0}, {"unit_id": "1"}, {"unit_id": 1, "quote": "위조 인용"},
+    {"source_id": "other_session", "locator": "secret", "quote": "위조 인용"}])
+def test_sdk_extraction_rejects_unknown_or_forged_references_without_retry(monkeypatch, ref):
+    def respond(**kwargs):
+        payload = json.loads(kwargs["input"])
+        body = extraction_wire_result(extraction(payload), payload)
+        body["company_name"]["facts"][0]["evidence"] = [ref]
+        return metered_response(output_text=json.dumps(body, ensure_ascii=False))
+    calls = fake_sdk(monkeypatch, response=respond)
+    ledger = llm.TrialLedger()
+    agent = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=ledger))
+    request = AnalyzeRequest("ses_test", 2, BRIEF, sources())
+    for _ in range(2):
+        with pytest.raises(AgentError):
+            agent.analyze(request)
+    assert len(calls) == 2 and ledger.snapshot()["calls_started"] == 1
+    assert ledger.snapshot()["stopped"]
+
+
+def test_sdk_extraction_keeps_legacy_status_and_evidence_checks(monkeypatch):
+    def respond(**kwargs):
+        payload = json.loads(kwargs["input"])
+        body = extraction_wire_result(extraction(payload), payload)
+        body["company_name"]["status"] = "not_found"
+        return metered_response(output_text=json.dumps(body, ensure_ascii=False))
+    fake_sdk(monkeypatch, response=respond)
+    agent = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env())))
+    with pytest.raises(AgentError):
+        agent.analyze(AnalyzeRequest("ses_test", 2, BRIEF, sources()))
+
+
 def test_sdk_request_uses_explicit_settings_strict_json_and_no_storage(monkeypatch):
     response = metered_response()
     calls = fake_sdk(monkeypatch, response=response)
@@ -1811,7 +1914,7 @@ def run_d04_offline_case(monkeypatch, case_id, *, wrong_lead_time=False):
         if kwargs["text"]["format"]["name"] == "company_info":
             # 평가용 이름·기대 상태·정답은 실제 Agent 입력에 섞이지 않는다.
             assert set(payload) == {"company_name_hint", "source_units"}
-            body = d04_fake_extraction(case_id, payload)
+            body = extraction_wire_result(d04_fake_extraction(case_id, payload), payload)
         else:
             body = draft_response(payload)
             if wrong_lead_time:
@@ -2349,7 +2452,7 @@ def test_legacy_validation_failure_stops_trial_after_usage_is_recorded(monkeypat
 def test_postprocessing_keeps_guard_and_honors_manual_stop(monkeypatch, phase):
     def respond(**kwargs):
         payload = json.loads(kwargs["input"])
-        body = extraction(payload) if phase == "analyze" else draft_response(payload)
+        body = extraction_wire_result(extraction(payload), payload) if phase == "analyze" else draft_response(payload)
         return metered_response(output_text=json.dumps(body, ensure_ascii=False))
     calls = fake_sdk(monkeypatch, response=respond)
     requester = llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()))
@@ -2383,7 +2486,8 @@ def test_postprocessing_keeps_guard_and_honors_manual_stop(monkeypatch, phase):
 
 def test_last_successful_result_is_returned_after_postprocessing(monkeypatch):
     def respond(**kwargs):
-        return metered_response(output_text=json.dumps(extraction(json.loads(kwargs["input"]))))
+        payload = json.loads(kwargs["input"])
+        return metered_response(output_text=json.dumps(extraction_wire_result(extraction(payload), payload)))
     calls = fake_sdk(monkeypatch, response=respond)
     ledger = llm.TrialLedger(max_calls=1)
     agent = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=ledger))
@@ -2781,6 +2885,7 @@ def test_stopped_trial_preserves_existing_document_through_server(tmp_path, monk
                     facts.append({"text": value, "evidence": [{"source_id": unit["source_id"],
                                   "locator": unit["locator"], "quote": value}]})
                 body[key] = {"status": status, "facts": facts}
+            body = extraction_wire_result(body, payload)
         else:
             body = draft_response(payload)
         return metered_response(output_text=json.dumps(body, ensure_ascii=False))
