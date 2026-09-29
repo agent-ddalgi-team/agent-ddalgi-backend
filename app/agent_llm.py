@@ -97,7 +97,11 @@ def _section_preferences(brief: Brief) -> tuple[str, list[str], set[str]]:
 
 
 def _section_order(fields: set[str], focus: list[str]) -> tuple[str, ...]:
-    return tuple(key for key in dict.fromkeys(["company_summary", *focus, *legacy.SECTION_ORDER]) if key in fields)
+    # 사용자 강조를 먼저 반영하고, 나머지는 사업 → 생산 → 품질 → 이력·거래 정보로 읽히게 한다.
+    editorial_order = ("company_summary", "business_areas", "products_services", "technology", "processes",
+                       "process_count", "capabilities", "strengths", "certifications", "history",
+                       "customers_markets", "lead_time", "other_info")
+    return tuple(key for key in dict.fromkeys(["company_summary", *focus, *editorial_order]) if key in fields)
 
 
 _LEGACY_INPUT_LIMIT = 40_000
@@ -401,6 +405,44 @@ def stop_trial() -> None:
     _trial.stop()
 
 
+def _extraction_wire_request(payload: dict, schema: dict) -> tuple[dict, dict, dict[int, dict]]:
+    """추출 응답은 원문을 다시 쓰지 않고 이 요청의 구간 번호만 선택한다."""
+    wire, wire_schema = copy.deepcopy(payload), copy.deepcopy(schema)
+    references = {}
+    for unit_id, unit in enumerate(wire["source_units"], 1):
+        references[unit_id] = {"source_id": unit["source_id"], "locator": unit["locator"],
+                               "quote": unit["text"]}
+        unit["unit_id"] = unit_id
+    if not references:
+        raise _invalid()
+    wire_schema["$defs"]["evidence"] = {
+        "type": "object", "properties": {"unit_id": {"type": "integer", "enum": list(references)}},
+        "required": ["unit_id"], "additionalProperties": False,
+    }
+    return wire, wire_schema, references
+
+
+def _restore_extraction_evidence(result: dict, references: dict[int, dict]) -> dict:
+    """임의 인용을 보정하지 않는다. 유효한 참조에 원문 구간 전체를 정확히 연결한다."""
+    restored = copy.deepcopy(result)
+    try:
+        for item in restored.values():
+            for fact in item["facts"]:
+                if not isinstance(fact["evidence"], list):
+                    raise _invalid()
+                refs = []
+                for ref in fact["evidence"]:
+                    if (not isinstance(ref, dict) or set(ref) != {"unit_id"}
+                            or type(ref["unit_id"]) is not int or ref["unit_id"] not in references):
+                        raise _invalid()
+                    refs.append(copy.deepcopy(references[ref["unit_id"]]))
+                fact["evidence"] = refs
+    except (KeyError, TypeError, AttributeError):
+        raise _invalid() from None
+    # 14개 항목·상태·사실 개수·선택 자료·원문 일치 검사는 기존 추출 경로에서 계속 수행한다.
+    return restored
+
+
 class OpenAIRequester:
     """Responses API 통신 한 곳. 내용 자동 수정·추가 생성 재시도는 하지 않는다."""
 
@@ -414,6 +456,9 @@ class OpenAIRequester:
         self.ledger._begin(options, schema_name)
         started, response, error, failure_reason = time.monotonic(), None, None, "request_failed"
         try:
+            references = None
+            if schema_name == legacy.MODEL_SCHEMA_NAME and schema == legacy.build_model_output_schema():
+                payload, schema, references = _extraction_wire_request(payload, schema)
             with OpenAI(api_key=options.api_key, timeout=options.timeout_seconds,
                         max_retries=options.max_retries, base_url="https://api.openai.com/v1") as client:
                 response = client.responses.create(
@@ -432,6 +477,8 @@ class OpenAIRequester:
                     reasoning={"effort": "medium"}, truncation="disabled",
                 )
             result = self._decode(response)
+            if references is not None:
+                result = _restore_extraction_evidence(result, references)
         except RateLimitError as exc:
             failure_reason = ("provider_budget" if exc.code in (
                 "organization_spend_limit_exceeded", "project_spend_limit_exceeded", "insufficient_quota",
@@ -534,13 +581,62 @@ def _unique_refs(refs: list[EvidenceRef]) -> list[EvidenceRef]:
 def _company_name_title(fact: Fact) -> str:
     """원문에 명시된 이름과 정확히 일치할 때만 추출 결과의 설명 문구를 벗긴다."""
     value = fact.value or ""
-    match = re.fullmatch(r"회사명은\s+(.+?)입니다\.?", value.strip())
+    match = re.fullmatch(r"회사명은\s+(.+?)(?:입니다\.?|이며[,，\s].*)", value.strip())
     if match:
         name = match.group(1).strip()
-        if any(re.fullmatch(r"\s*회사명\s*[:：]\s*" + re.escape(name) + r"\s*", ref.excerpt)
+        if any(re.search(r"(?m)^\s*회사명\s*[:：]\s*" + re.escape(name) + r"\s*$", ref.excerpt)
                for ref in fact.evidence_refs):
             return name
+        # 설명형 복합 사실의 법인명은 원문에 동일한 독립 문자열이 있는 경우만 사용한다.
+        if "이며" in value and re.match(r"^(?:㈜|\(주\)|주식회사\s)", name):
+            if any(re.search(r"(?<!\w)" + re.escape(name) + r"(?!\w)", ref.excerpt)
+                   for ref in fact.evidence_refs):
+                return name
     return value
+
+
+def _balanced_page_groups(groups: list[list[Block]], count: int) -> list[list[list[Block]]]:
+    """항목 순서를 유지하면서 문단 분량을 기준으로 연속 구간을 나눈다.
+
+    제목과 첫 문단은 함께 두고, 긴 항목은 호출부에서 문단 경계로만 나눈다.
+    실제 인쇄 높이는 별도 배치 검사에서 확인한다.
+    """
+    if not groups:
+        return [[]]
+    count = min(count, len(groups))
+    weights = [sum(90 if b.type == "heading" else max(60, len(str(b.content.get("text", ""))))
+                   for b in group) for group in groups]
+    prefix = [0]
+    for weight in weights:
+        prefix.append(prefix[-1] + weight)
+    target = prefix[-1] / count
+    costs = {(0, 0): (0.0, [])}
+    for page in range(1, count + 1):
+        for end in range(page, len(groups) + 1):
+            choices = []
+            for start in range(page - 1, end):
+                previous = costs.get((page - 1, start))
+                if previous is not None:
+                    score = previous[0] + (prefix[end] - prefix[start] - target) ** 2
+                    choices.append((score, previous[1] + [end]))
+            costs[page, end] = min(choices, key=lambda item: item[0])
+    pages, start = [], 0
+    for end in costs[count, len(groups)][1]:
+        pages.append(groups[start:end])
+        start = end
+    return pages
+
+
+def _page_topic(groups: list[list[Block]]) -> str:
+    if groups and all(not block.fact_ids for group in groups for block in group):
+        return "추가 확인 사항"
+    labels = list(dict.fromkeys(str(g[0].content.get("text", "")) for g in groups if g))
+    if not labels:
+        return "회사 소개"
+    if len(labels) == 1:
+        return labels[0]
+    # 항목 이름을 주제 제목으로 사용한다. 확인되지 않은 강점·성과를 헤드라인으로 만들지 않는다.
+    return " · ".join(labels[:2])
 
 
 class _ReviewEvidence(BaseModel):
@@ -1060,7 +1156,7 @@ class LlmAgent:
         # 생성 문장의 출처는 사전 확인한 Fact의 근거를 이어받는다.
         groups: list[list[Block]] = []
         names = [f for f in facts.values() if f.field_key == "company_name" and f.status == "supported"]
-        title = " · ".join(_company_name_title(f) for f in names) if names else "회사소개서 초안"
+        title = " · ".join(dict.fromkeys(_company_name_title(f) for f in names)) if names else "회사소개서 초안"
 
         def block(kind: str, content: dict, ids: list[str] | None = None) -> Block:
             ids = ids or []
@@ -1075,11 +1171,17 @@ class LlmAgent:
             key = section["key"]
             section_ids = list(dict.fromkeys(fid for paragraph in section["paragraphs"] for fid in paragraph["fact_ids"]))
             group = [block("heading", {"text": legacy.SECTION_TITLES[key], "level": 2}, section_ids)]
+            size = 0
             for paragraph in section["paragraphs"]:
                 ids = paragraph["fact_ids"]
                 if not ids:
                     raise _invalid()
+                if len(group) > 1 and size + len(paragraph["text"]) > 900:
+                    groups.append(group)
+                    group = [block("heading", {"text": legacy.SECTION_TITLES[key] + " (계속)", "level": 2}, section_ids)]
+                    size = 0
                 group.append(block("paragraph", {"text": paragraph["text"]}, ids))
+                size += len(paragraph["text"])
             groups.append(group)
         unresolved = {f.field_key for f in facts.values() if f.status != "supported"} - (excluded or set())
         for key in legacy.COMPANY_INFO_KEYS:
@@ -1088,13 +1190,13 @@ class LlmAgent:
                 label = "회사명" if key == "company_name" else legacy.SECTION_TITLES[key]
                 groups.append([block("heading", {"text": label, "level": 2}),
                                block("paragraph", {"text": "자료에서 확인되지 않음" if missing_only else "추가 확인 필요"})])
-        # 첫 연결에서는 항목을 나누어 배치한다. 빈 쪽이나 가짜 본문으로 분량을 채우지 않는다.
+        # 빈 쪽을 만들지 않고 항목 수 대신 실제 글 분량을 고려해 페이지를 구성한다.
         count = min(request.brief.target_pages, max(1, len(groups)))
         pages = []
-        for i in range(count):
-            start, end = i * len(groups) // count, (i + 1) * len(groups) // count
-            blocks = ([title_block] if i == 0 else []) + [b for group in groups[start:end] for b in group]
-            pages.append(Page(page_id="page_" + uuid.uuid4().hex[:16], title=title if i == 0 else blocks[0].content["text"],
+        for i, page_groups in enumerate(_balanced_page_groups(groups, count)):
+            blocks = ([title_block] if i == 0 else []) + [b for group in page_groups for b in group]
+            page_title = _page_topic(page_groups) if page_groups else title
+            pages.append(Page(page_id="page_" + uuid.uuid4().hex[:16], title=page_title,
                               layout_key="text", blocks=blocks))
         return DraftResult(title=title, pages=pages)
 
