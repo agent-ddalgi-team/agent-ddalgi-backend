@@ -4,10 +4,11 @@
 #       .\scripts\run_llm.ps1 -Demo      (시연 데이터 허용)
 #       .\scripts\run_llm.ps1 -Demo -ContentReview (기존 전체 한도 안에서 내용 검증도 허용)
 #       .\scripts\run_llm.ps1 -Demo -ContentReview -TextProposals (문구 수정안도 허용)
-# 실제 자료 시연: -RequestTimeoutSeconds 120 -MaxInputChars 40000 -MaxOutputTokens 24000 (.env 변경 없음)
+# 실제 자료 시연: -RequestTimeoutSeconds 120 -MaxInputChars 40000 -MaxReviewInputChars 80000 -MaxOutputTokens 24000 (.env 변경 없음)
 param([switch]$Demo, [switch]$ContentReview, [switch]$TextProposals,
       [ValidateRange(1, 120)][int]$RequestTimeoutSeconds = 60,
       [ValidateRange(1, 40000)][int]$MaxInputChars = 10000,
+      [ValidateRange(1, 120000)][int]$MaxReviewInputChars = 10000,
       [ValidateRange(1, 32000)][int]$MaxOutputTokens = 8000)
 Set-Location (Split-Path $PSScriptRoot -Parent)
 $env:AGENT_MODE = 'llm'
@@ -25,5 +26,8 @@ if ($PSBoundParameters.ContainsKey('MaxInputChars')) {
 if ($PSBoundParameters.ContainsKey('MaxOutputTokens')) {
     $env:OPENAI_MAX_OUTPUT_TOKENS = [string]$MaxOutputTokens
     $env:OPENAI_TRIAL_OUTPUT_TOKEN_LIMIT = [string]$MaxOutputTokens
+}
+if ($PSBoundParameters.ContainsKey('MaxReviewInputChars')) {
+    $env:OPENAI_REVIEW_MAX_INPUT_CHARS = [string]$MaxReviewInputChars
 }
 .\.venv\Scripts\python.exe -X utf8 -B -u -c "import logging; logging.basicConfig(level=logging.WARNING); logging.getLogger('app.agent_llm').setLevel(logging.INFO); from app.config import load_settings; from app.agent_bridge import get_bridge; import uvicorn; s=load_settings(); b=get_bridge(s); print('mode='+s.agent_mode+' bridge='+type(b).__name__+' demo='+str(s.demo_mode)+' db='+str(s.db_path), flush=True); uvicorn.run('main:app', host='127.0.0.1', port=8000)"

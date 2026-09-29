@@ -34,7 +34,7 @@ from langsmith import tracing_context
 
 from openai import (APIConnectionError, APIStatusError, APITimeoutError, AuthenticationError,
                     BadRequestError, OpenAI, PermissionDeniedError, RateLimitError)
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
 
 from app import agent_legacy as legacy
 from app.agent_bridge import (AgentError, AnalyzeRequest, AnalyzeResult, DraftRequest, DraftResult,
@@ -105,6 +105,7 @@ def _section_order(fields: set[str], focus: list[str]) -> tuple[str, ...]:
 
 
 _LEGACY_INPUT_LIMIT = 40_000
+_MAX_REVIEW_INPUT_CHARS = 120_000
 _TRIAL_MODEL = "gpt-6-luna"
 # 2026-09-28 D-04: Standard 텍스트 단가. 실제 청구액(세금 포함)과 구분한다.
 # https://developers.openai.com/api/docs/models/gpt-6-luna
@@ -123,6 +124,13 @@ def _call_reserve_usd(output_token_limit: int) -> Decimal:
 def _invalid() -> AgentError:
     # 원문·모델 응답·SDK 예외의 내용을 사용자 오류나 서버 로그로 전달하지 않는다.
     return AgentError("AGENT_OUTPUT_INVALID", "AI 결과의 형식이나 원문 근거가 맞지 않습니다.", False)
+
+
+class ReviewInputLimitError(AgentError):
+    """API 전송 전 검증 입력 크기 거부. 시험 전체를 중단할 모델 결과 오류가 아니다."""
+
+    def __init__(self):
+        super().__init__("INVALID_REQUEST", "검증할 문서와 자료가 내용 검증 입력 한도를 넘었습니다. 검증 입력 설정을 확인해 주세요.", False)
 
 
 def _json_input(payload: dict) -> str:
@@ -187,7 +195,8 @@ class TrialLedger:
 
     def __init__(self, *, max_calls: int = 8, budget_usd: Decimal = Decimal("1"), review_only: bool = False,
                  allow_review: bool = False, allow_proposals: bool = False, timeout_limit_seconds: int = 60,
-                 input_char_limit: int = 10_000, output_token_limit: int = 8000):
+                 input_char_limit: int = 10_000, output_token_limit: int = 8000,
+                 review_input_char_limit: int | None = None):
         if type(max_calls) is not int or not 1 <= max_calls <= 8:
             raise ValueError("시험 호출 한도는 1~8이어야 합니다.")
         if type(review_only) is not bool or (review_only and max_calls > 2):
@@ -204,6 +213,10 @@ class TrialLedger:
         if type(input_char_limit) is not int or not 1 <= input_char_limit <= _LEGACY_INPUT_LIMIT:
             raise ValueError("시험 입력 상한은 1~40,000자의 정수여야 합니다.")
         self._input_char_limit = input_char_limit
+        review_limit = input_char_limit if review_input_char_limit is None else review_input_char_limit
+        if type(review_limit) is not int or not 1 <= review_limit <= _MAX_REVIEW_INPUT_CHARS:
+            raise ValueError("내용 검증 입력 상한은 1~120,000자의 정수여야 합니다.")
+        self.review_input_char_limit = review_limit
         if type(output_token_limit) is not int or not 1 <= output_token_limit <= _MAX_TRIAL_OUTPUT_TOKENS:
             raise ValueError("시험 출력 상한은 1~32,000토큰의 정수여야 합니다.")
         self._output_token_limit = output_token_limit
@@ -253,6 +266,7 @@ class TrialLedger:
                     "max_calls": self._max_calls, "budget_usd": str(self._budget),
                     "timeout_limit_seconds": self._timeout_limit_seconds,
                     "input_char_limit": self._input_char_limit,
+                    "review_input_char_limit": self.review_input_char_limit,
                     "output_token_limit": self._output_token_limit,
                     "known_estimated_cost_usd": str(self._spent),
                     "cost_complete": self._active is None and all(r["estimated_cost_usd"] is not None for r in records),
@@ -392,9 +406,20 @@ def _trial_output_limit() -> int:
         raise RuntimeError("OPENAI_TRIAL_OUTPUT_TOKEN_LIMIT는 1~32000의 정수여야 합니다.") from None
 
 
+def _review_input_limit() -> int:
+    raw = os.environ.get("OPENAI_REVIEW_MAX_INPUT_CHARS", "").strip()
+    try:
+        value = int(raw) if raw else _trial_input_limit()
+        if not 1 <= value <= _MAX_REVIEW_INPUT_CHARS:
+            raise ValueError
+        return value
+    except ValueError:
+        raise RuntimeError("OPENAI_REVIEW_MAX_INPUT_CHARS는 1~120000의 정수여야 합니다.") from None
+
+
 _trial = TrialLedger(allow_review=_content_review_enabled(), allow_proposals=_text_proposals_enabled(),
                      timeout_limit_seconds=_trial_timeout_limit(), input_char_limit=_trial_input_limit(),
-                     output_token_limit=_trial_output_limit())
+                     output_token_limit=_trial_output_limit(), review_input_char_limit=_review_input_limit())
 
 
 def trial_report() -> dict:
@@ -453,6 +478,8 @@ class OpenAIRequester:
     def __call__(self, instructions: str, payload: dict, schema: dict, schema_name: str,
                  *, images: list[ImageIn] | None = None) -> dict:
         options = self.options
+        if schema_name == "content_review" and len(_json_input(payload)) > self.ledger.review_input_char_limit:
+            raise ReviewInputLimitError()
         self.ledger._begin(options, schema_name)
         started, response, error, failure_reason = time.monotonic(), None, None, "request_failed"
         try:
@@ -680,7 +707,8 @@ class _ReviewFinding(BaseModel):
     fact_ids: list[str]
     reason: str
     action: str
-    evidence: list[_ReviewEvidence]
+    # 번호는 요청별 원문 전체로 복원한다. 이전 내부 requester의 인용은 엄격 검사한다.
+    evidence: list[StrictInt | _ReviewEvidence]
 
 
 class _ContentReview(BaseModel):
@@ -693,7 +721,8 @@ class _ImageContentReview(_ContentReview):
     checked_image_ids: list[str]
 
 
-def _review_schema(changed_block_ids: list[str], fact_ids: list[str], image_ids: list[str] | None = None) -> dict:
+def _review_schema(changed_block_ids: list[str], fact_ids: list[str], image_ids: list[str] | None = None,
+                   unit_ids: list[int] | None = None) -> dict:
     """검사 대상 ID와 개수를 생성 시에도 제한한다. 최종 범위·중복 검사는 별도로 유지한다."""
     schema = (_ImageContentReview if image_ids else _ContentReview).model_json_schema()
     if image_ids:
@@ -708,6 +737,13 @@ def _review_schema(changed_block_ids: list[str], fact_ids: list[str], image_ids:
     finding["fact_ids"]["maxItems"] = len(fact_ids)
     if fact_ids:
         finding["fact_ids"]["items"]["enum"] = list(fact_ids)
+    if unit_ids is not None:
+        finding["evidence"]["items"] = {"type": "integer"}
+        if unit_ids:
+            finding["evidence"]["items"]["enum"] = list(unit_ids)
+        else:
+            finding["evidence"]["maxItems"] = 0
+        schema["$defs"].pop("_ReviewEvidence", None)
     return schema
 
 
@@ -780,7 +816,9 @@ checked_block_ids에는 검사한 changed_block_ids를 빠짐없이 한 번씩 �
 reason에는 바뀐 구절과 추가·손실·변경된 의미를 짚고, evidence와 action은 그 차이를 뒷받침하고 바로잡아야 한다.
 원문과 단어가 다르다는 이유만으로 문제를 만들거나 같은 의미 차이를 여러 문제로 중복 반환하지 않는다.
 사용자 확인 클릭만으로 사실 문제를 해결하라고 안내하지 않는다.
-evidence는 실제 source_id·segment_id와 해당 구간에 그대로 있는 짧은 quote를 반환한다.
+evidence는 source_units 또는 sources.segments의 실제 unit_id 정수 목록만 반환한다.
+인용문·자료 ID·구간 ID를 다시 쓰지 않는다. 서버가 선택한 구간의 원문을 그대로 연결한다.
+evidence_index의 e1 같은 근거 참조 ID는 unit_id가 아니다. 의미를 직접 비교한 원문 구간 번호만 쓴다.
 value_mismatch/condition_loss/certification_mismatch는 비교한 원문 근거가 반드시 필요하다.
 근거 자체가 없으면 evidence를 비울 수 있다. fact_ids는 실제 관련 사실만 쓴다.
 사진 ID·파일명으로 사진 내용을 추정하지 않는다. 승인·본문 수정·문제 해결 상태를 반환하지 않는다.
@@ -798,7 +836,7 @@ image_unverifiable로 해당 사진 블록에 차단 문제를 낸다. reason에
 image_mismatch/image_unverifiable에는 텍스트 인용이 없어도 되지만 해당 이미지 블록 ID가 반드시 필요하다.
 문제가 없으면 findings=[]로 반환하되 모든 대상 블록의 검사 목록은 반드시 포함한다.
 정상 블록의 해설·검사 과정·문서 재작성은 출력하지 않는다. reason과 action은 각각 1~2문장으로
-필요한 차이와 조치만 간결하게 쓰고, 관련 사실 ID·필요한 짧은 인용만 포함한다.
+필요한 차이와 조치만 간결하게 쓰고, 관련 사실 ID·필요한 원문 구간 번호만 포함한다.
 같은 블록의 같은 문제·같은 근거를 반복 출력하지 않는다. 서로 다른 오류나 조건은 생략하지 않는다.
 """
 
@@ -910,9 +948,13 @@ class DraftConfirmationGraph:
 
 class LlmAgent:
     def __init__(self, request_json: JsonRequester, *, max_input_chars: int = _LEGACY_INPUT_LIMIT,
-                 settings: Settings | None = None):
+                 settings: Settings | None = None, max_review_input_chars: int | None = None):
         self.request_json = request_json
         self.max_input_chars = max_input_chars
+        if max_review_input_chars is not None and (type(max_review_input_chars) is not int
+                or not 1 <= max_review_input_chars <= _MAX_REVIEW_INPUT_CHARS):
+            raise ValueError("내용 검증 입력 상한은 1~120,000자의 정수여야 합니다.")
+        self.max_review_input_chars = max_input_chars if max_review_input_chars is None else max_review_input_chars
         self.confirmation_graph = DraftConfirmationGraph(settings) if settings is not None else None
 
     def wait_for_confirmation(self, conn, session_id: str, revision: int, preflight_id: str) -> None:
@@ -927,9 +969,14 @@ class LlmAgent:
             return operation(request)
         ledger = self.request_json.ledger
         ledger._enter_operation()
+        calls_before = ledger.snapshot()["calls_started"]
         try:
             result = operation(request)
-        except BaseException:
+        except BaseException as exc:
+            if isinstance(exc, ReviewInputLimitError) and ledger.snapshot()["calls_started"] == calls_before:
+                ledger._end_operation()
+                logger.warning("Content review not sent: input limit; trial remains available")
+                raise
             ledger._stop("invalid_result")
             ledger._end_operation()
             logger.warning("AI trial stopped: %s", json.dumps(ledger.snapshot()))
@@ -1357,6 +1404,10 @@ class LlmAgent:
                 "server_issues": [{"code": i.code, "severity": i.severity, "block_ids": i.block_ids,
                                    "fact_ids": i.fact_ids} for i in request.server_issues],
             }
+            review_units = {}
+            for unit_id, unit in enumerate(payload["source_units"], start=1):
+                unit["unit_id"] = unit_id
+                review_units[unit_id] = unit
             # 원문뿐 아니라 문서·사실·ID를 포함한 실제 전송 문자열 전체를 센다.
             if request.images:
                 payload["images"] = [{"asset_id": a.asset_id, "source_id": a.source_id,
@@ -1364,22 +1415,26 @@ class LlmAgent:
                                       "block_ids": [bid for bid, aid in image_blocks.items() if aid == a.asset_id]}
                                      for a in request.images]
             stage = "input_size"
+            review_limit = self.max_review_input_chars
+            if isinstance(self.request_json, OpenAIRequester):
+                review_limit = min(review_limit, self.request_json.ledger.review_input_char_limit)
             input_chars = len(_json_input(payload))
-            if input_chars > self.max_input_chars:
+            if input_chars > min(self.max_input_chars, review_limit):
                 compact = _compact_review_payload(payload)
                 compact_chars = len(_json_input(compact))
                 if compact_chars < input_chars:
                     logger.info("Content review repeated metadata compacted: original_chars=%s input_chars=%s",
                                 input_chars, compact_chars)
                     payload, input_chars = compact, compact_chars
-            if input_chars > self.max_input_chars:
+            if input_chars > review_limit:
                 logger.warning("Content review input exceeds limit: input_chars=%s max_input_chars=%s",
-                               input_chars, self.max_input_chars)
-                raise AgentError("INVALID_REQUEST", "검증할 문서와 자료가 AI 입력 한도를 넘었습니다. 자료 범위를 줄여 주세요.", False)
+                               input_chars, review_limit)
+                raise ReviewInputLimitError()
             stage = "model_request"
             response = self._request(
                 _REVIEW_INSTRUCTIONS, payload,
-                _review_schema(request.changed_block_ids, list(facts), list(pictures)), "content_review", images=request.images)
+                _review_schema(request.changed_block_ids, list(facts), list(pictures), list(review_units)),
+                "content_review", images=request.images)
             stage = "response_schema"
             review = (_ImageContentReview if pictures else _ContentReview).model_validate(response)
             if pictures and (set(review.checked_image_ids) != pictures.keys() or len(review.checked_image_ids) != len(pictures)):
@@ -1406,8 +1461,18 @@ class LlmAgent:
                 if finding.kind in {"value_mismatch", "condition_loss", "certification_mismatch"} and not finding.evidence:
                     raise _invalid()
                 stage = "finding_evidence_quote"
-                refs = [index.restore({"source_id": e.source_id, "locator": "segment:" + e.segment_id,
-                                       "quote": e.quote}) for e in finding.evidence]
+                refs = []
+                for evidence in finding.evidence:
+                    if isinstance(evidence, int):
+                        unit = review_units.get(evidence)
+                        if unit is None:
+                            raise _invalid()
+                        raw = {"source_id": unit["source_id"], "locator": "segment:" + unit["segment_id"],
+                               "quote": unit["text"]}
+                    else:
+                        raw = {"source_id": evidence.source_id, "locator": "segment:" + evidence.segment_id,
+                               "quote": evidence.quote}
+                    refs.append(index.restore(raw))
                 locations = [f"{r.source_id}/{r.segment_id} {json.dumps(r.locator, ensure_ascii=False)}: {r.excerpt}"
                              for r in _unique_refs(refs)]
                 message = f"{finding.reason.strip()}\n원문: " + ("; ".join(locations) or "대조할 원문 근거 없음")
@@ -1429,4 +1494,5 @@ class LlmAgent:
 
 def create_bridge(settings: Settings) -> LlmAgent:
     options = LlmOptions.from_env(os.environ)
-    return LlmAgent(OpenAIRequester(options), max_input_chars=options.max_input_chars, settings=settings)
+    return LlmAgent(OpenAIRequester(options), max_input_chars=options.max_input_chars, settings=settings,
+                    max_review_input_chars=_review_input_limit())

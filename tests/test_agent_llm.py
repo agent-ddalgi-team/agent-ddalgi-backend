@@ -1399,6 +1399,42 @@ def test_review_clean_response_and_no_changed_blocks():
     assert agent.validate(request).issues == [] and len(model.calls) == 1
 
 
+@pytest.mark.parametrize("compact", [False, True])
+def test_review_unit_numbers_restore_exact_original_with_conditions(compact):
+    request = review_request()
+    unit = request.sources[0].segments[-1]
+    unit.text += "\n  추가 조건: 승인  후에만 적용\n예외는 별도 협의.  "
+    before = copy.deepcopy(request)
+    captured = []
+    def respond(instructions, payload, schema, schema_name):
+        captured.append(copy.deepcopy(payload))
+        units = payload.get("source_units") or [
+            {**source, **segment} for source in payload["sources"] for segment in source["segments"]]
+        selected = next(u for u in units if u["text"] == unit.text)
+        item = {"kind": "condition_loss", "block_ids": [request.changed_block_ids[-1]],
+                "fact_ids": [], "reason": "추가 조건이 누락됐습니다.", "action": "적용 조건을 복원하세요.",
+                "evidence": [selected["unit_id"]]}
+        assert schema["$defs"]["_ReviewFinding"]["properties"]["evidence"]["items"] == {
+            "type": "integer", "enum": [u["unit_id"] for u in units]}
+        assert "_ReviewEvidence" not in schema["$defs"]
+        return {"checked_block_ids": payload["changed_block_ids"], "findings": [item]}
+    result = llm.LlmAgent(respond, max_input_chars=1 if compact else 40000,
+                          max_review_input_chars=40000).validate(request)
+    assert ("sources" in captured[0]) == compact
+    assert unit.text in result.issues[0].message
+    assert result.issues[0].severity == "blocker" and request == before
+
+
+@pytest.mark.parametrize("invalid", [0, -1, 999999, True, 1.0, "1", {"unit_id": 1}])
+def test_review_rejects_invalid_unit_numbers(invalid):
+    def damage(result, payload):
+        item = review_finding(payload, payload["document"]["pages"][0]["blocks"][-1])
+        item["evidence"] = [invalid]
+        result["findings"] = [item]
+    with pytest.raises(AgentError, match="AGENT_OUTPUT_INVALID"):
+        llm.LlmAgent(ReviewModel(damage)).validate(review_request())
+
+
 def test_review_requires_one_block_per_issue_for_partial_revalidation():
     def multiple(result, payload):
         result["findings"] = [review_finding(payload, payload["document"]["pages"][0]["blocks"][-1])]
@@ -1434,6 +1470,64 @@ def test_review_paid_operation_is_not_added_to_approved_trial():
         agent.validate(review_request())
     assert llm.trial_report()["stop_reason"] == "unsupported_operation"
     assert llm.trial_report()["calls_started"] == 0
+
+
+def test_review_input_limit_rejection_does_not_stop_trial_or_consume_call(monkeypatch):
+    request = review_request()
+    calls = fake_sdk(monkeypatch, response=metered_response(output_text=json.dumps({
+        "checked_block_ids": request.changed_block_ids, "findings": []})))
+    ledger = llm.TrialLedger(allow_review=True)
+    requester = llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=ledger)
+    agent = llm.LlmAgent(requester, max_review_input_chars=1)
+    with pytest.raises(AgentError, match="INVALID_REQUEST"):
+        agent.validate(request)
+    report = ledger.snapshot()
+    assert calls == [] and report["calls_started"] == 0 and not report["stopped"]
+    assert not report["operation_in_progress"] and not report["in_flight"]
+    agent.max_review_input_chars = 10000
+    assert agent.validate(request).issues == []
+    assert ledger.snapshot()["calls_started"] == 1
+
+
+def test_explicit_review_limit_preserves_large_source_and_other_guards(monkeypatch):
+    request = review_request()
+    request.sources[0].segments[0].text += "\n미참조 조건과 예외도 전체 검사 대상입니다. " * 1800
+    original = copy.deepcopy(request)
+    calls = fake_sdk(monkeypatch, response=metered_response(output_text=json.dumps({
+        "checked_block_ids": request.changed_block_ids, "findings": []})))
+    ledger = llm.TrialLedger(allow_review=True, review_input_char_limit=80000)
+    requester = llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=ledger)
+    result = llm.LlmAgent(requester, max_input_chars=40000, max_review_input_chars=80000).validate(request)
+    sent = calls[-1][1]["input"]
+    assert 40000 < len(sent) <= 80000 and result.issues == []
+    payload = json.loads(sent)
+    assert payload["sources"][0]["segments"][0]["text"] == request.sources[0].segments[0].text
+    assert request == original
+    report = ledger.snapshot()
+    assert report["input_char_limit"] == 10000 and report["review_input_char_limit"] == 80000
+    assert report["max_calls"] == 8 and report["budget_usd"] == "1"
+
+
+@pytest.mark.parametrize("bad", [0, 120001, True, 1.5, "80000"])
+def test_review_input_limit_rejects_invalid_configuration(bad):
+    with pytest.raises(ValueError):
+        llm.TrialLedger(review_input_char_limit=bad)
+    with pytest.raises(ValueError):
+        llm.LlmAgent(ReviewModel(), max_review_input_chars=bad)
+
+
+@pytest.mark.parametrize("value,expected", [(None, 10000), ("", 10000), ("80000", 80000),
+                                          ("120000", 120000), ("120001", None), ("0", None), ("x", None)])
+def test_review_input_limit_environment(monkeypatch, value, expected):
+    monkeypatch.setenv("OPENAI_TRIAL_INPUT_CHAR_LIMIT", "10000")
+    monkeypatch.delenv("OPENAI_REVIEW_MAX_INPUT_CHARS", raising=False)
+    if value is not None:
+        monkeypatch.setenv("OPENAI_REVIEW_MAX_INPUT_CHARS", value)
+    if expected is None:
+        with pytest.raises(RuntimeError):
+            llm._review_input_limit()
+    else:
+        assert llm._review_input_limit() == expected
 
 
 def test_review_compact_input_preserves_all_evidence_text_and_originals():
