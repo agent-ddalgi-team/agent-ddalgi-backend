@@ -221,6 +221,14 @@ def grouped_editorial_composition(plan):
     return result
 
 
+def indexed_editorial_composition(plan):
+    result = copy.deepcopy(plan)
+    result["fact_notes"] = {s["fact_id"]: (None if s["disposition"] in {"required", "optional"}
+        else {"unused_disposition": s["disposition"], "reason": s["reason"]})
+        for s in result.pop("selections")}
+    return result
+
+
 @pytest.mark.parametrize("status", ["supported", "needs_confirmation", "conflict", "missing"])
 @pytest.mark.parametrize("excluded", [False, True])
 def test_editorial_selection_schema_binds_status_exclusion_and_required(status, excluded):
@@ -269,7 +277,7 @@ def test_editorial_post_validation_still_rejects_disallowed_selection(case, disp
     assert calls == ["draft_sections"]
 
 
-@pytest.mark.parametrize("damage", [None, "required_body_missing", "duplicate", "omitted", "foreign"])
+@pytest.mark.parametrize("damage", [None, "required_body_missing", "bad_note", "omitted", "foreign", "unused_null"])
 def test_editorial_109_facts_sdk_schema_and_coverage(monkeypatch, damage):
     request = build_large_editorial_request()
     before = copy.deepcopy(request)
@@ -280,29 +288,32 @@ def test_editorial_109_facts_sdk_schema_and_coverage(monkeypatch, damage):
         assert kwargs["text"]["format"]["strict"] is True
         assert schema["properties"]["pages"]["minItems"] == schema["properties"]["pages"]["maxItems"] == request.brief.target_pages
         entries = schema["properties"]["fact_notes"]
-        assert entries["minItems"] == 1 and entries["maxItems"] == 109
-        variants = entries["items"]["anyOf"]
-        assert len(variants) == 2  # unused discretionary, explicitly excluded
+        assert entries["type"] == "object" and entries["additionalProperties"] is False
+        assert set(entries["required"]) == set(entries["properties"]) == {f["fact_id"] for f in payload["facts"]}
         for rule in payload["selection_constraints"]:
             assert rule["fact_id"].startswith("F")
-            matches = [v for v in variants if rule["fact_id"] in v["properties"]["fact_ids"]["items"]["enum"]]
-            assert len(matches) == 1
-            ids_schema = matches[0]["properties"]["fact_ids"]
-            assert ids_schema["minItems"] == 1 and ids_schema["maxItems"] == len(ids_schema["items"]["enum"])
+            entry = entries["properties"][rule["fact_id"]]
             allowed = rule["allowed_dispositions"]
-            assert matches[0]["properties"]["unused_disposition"]["enum"] == (
+            if allowed == ["required"]:
+                assert entry == {"type": "null"}
+                continue
+            note = entry if "anyOf" not in entry else entry["anyOf"][1]
+            assert note["properties"]["reason"]["maxLength"] == 160
+            assert note["properties"]["unused_disposition"]["enum"] == (
                 allowed if allowed in [["review"], ["excluded"]] else ["excluded", "review"])
-        response = grouped_editorial_composition(editorial_response(payload))
-        assert len(response["fact_notes"]) < 10
-        assert sum(len(n["fact_ids"]) for n in response["fact_notes"]) == 109
+        response = indexed_editorial_composition(editorial_response(payload))
+        assert len(response["fact_notes"]) == 109
         if damage == "required_body_missing":
             response["pages"][0]["heading"] = {"text": "회사 소개", "fact_ids": []}
-        elif damage == "duplicate":
-            response["fact_notes"][-1] = response["fact_notes"][-2]
+        elif damage == "bad_note":
+            response["fact_notes"][next(iter(response["fact_notes"]))] = "invalid"
         elif damage == "omitted":
-            response["fact_notes"].pop()
+            response["fact_notes"].pop(next(iter(response["fact_notes"])))
         elif damage == "foreign":
-            response["fact_notes"][-1]["fact_ids"][0] = "F999"
+            response["fact_notes"]["F999"] = None
+        elif damage == "unused_null":
+            fid = next(fid for fid, note in response["fact_notes"].items() if note is not None)
+            response["fact_notes"][fid] = None
         return metered_response(output_text=json.dumps(response, ensure_ascii=False))
     calls = fake_sdk(monkeypatch, response=respond)
     agent = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=llm.RuntimeLedger()))
@@ -315,6 +326,49 @@ def test_editorial_109_facts_sdk_schema_and_coverage(monkeypatch, damage):
         assert validate_draft(result, request.sources, {f.fact_id for f in request.preflight.facts}, request.preflight) is None
         assert next(s for s in result.editorial.selections if s.fact_id == "fact_manufacturing_lead_time").disposition == "required"
     assert request == before and len(calls) == 2  # SDK constructor + one request; no retry
+
+
+@pytest.mark.parametrize("case_id", EDITORIAL_CASES)
+def test_indexed_notes_preserve_legacy_body_and_complete_saved_audit(case_id):
+    request = build_editorial_request(case_id)
+    before = copy.deepcopy(request)
+    responses = []
+    def respond(i, p, s, n):
+        result = indexed_editorial_composition(editorial_response(p))
+        responses.append((result, copy.deepcopy(result)))
+        return result
+    result = llm.LlmAgent(respond).draft(request)
+    old = llm.LlmAgent(lambda i,p,s,n: grouped_editorial_composition(editorial_response(p))).draft(request)
+    assert [[b.model_dump(exclude={"block_id"}) for b in p.blocks] for p in result.pages] == [
+        [b.model_dump(exclude={"block_id"}) for b in p.blocks] for p in old.pages]
+    assert result.editorial.selections == old.editorial.selections
+    assert request == before and all(a == b for a,b in responses)
+    assert validate_draft(result, request.sources, {f.fact_id for f in request.preflight.facts}, request.preflight) is None
+
+
+@pytest.mark.parametrize("damage", [None, "unused_null", "review_null", "blank", "long", "extra_key", "wrong_policy"])
+def test_indexed_notes_reject_missing_unused_reason_or_policy_without_repair(damage):
+    request = build_editorial_request("conflict")
+    calls = []
+    def respond(i,p,s,n):
+        calls.append(n)
+        result = indexed_editorial_composition(editorial_response(p))
+        fid = "fact_conflict_cert"
+        if damage == "unused_null":
+            fid = "fact_conflict_lead_time"
+            for page in result["pages"]:
+                page["points"] = [x for x in page["points"] if fid not in x["fact_ids"]]
+        elif damage == "review_null": result["fact_notes"][fid] = None
+        elif damage == "blank": result["fact_notes"][fid]["reason"] = " "
+        elif damage == "long": result["fact_notes"][fid]["reason"] = "가" * 161
+        elif damage == "extra_key": result["fact_notes"][fid]["fact_id"] = fid
+        elif damage == "wrong_policy": result["fact_notes"][fid]["unused_disposition"] = "excluded"
+        return result
+    if damage:
+        with pytest.raises(AgentError): llm.LlmAgent(respond).draft(request)
+    else:
+        assert llm.LlmAgent(respond).draft(request).pages
+    assert calls == ["draft_sections"]
 
 
 @pytest.mark.parametrize("case_id", EDITORIAL_CASES)
@@ -590,21 +644,26 @@ def test_editorial_whole_fact_point_sdk_preserves_compound_certification(monkeyp
         assert cert_id in allowed
         assert next(n for n in payload["body_requirements"] if n["fact_id"] == cert_id)["whole_fact_point_available"]
         assert next(n for n in payload["body_requirements"] if n["fact_id"] == cert_id)["whole_fact_point_required"]
-        # The actual SDK request cannot choose a lossy lead/prose point for this ID.
+        # The lead can cite the certificate it introduces; its whole-fact point
+        # preserves the details without forcing an unrelated lead reference.
         assert cert_id not in schema["$defs"]["_EditorialPoint"]["properties"]["fact_ids"]["items"]["enum"]
         lead = schema["$defs"]["_EditorialCompositionPage"]["properties"]["lead"]
-        assert cert_id not in lead["properties"]["fact_ids"]["items"]["enum"]
+        assert lead == {"$ref": "#/$defs/_EditorialText"}
         assert cert_id in schema["$defs"]["_EditorialText"]["properties"]["fact_ids"]["items"]["enum"]
         response = editorial_composition(editorial_response(payload))
         for page in response["pages"]:
             page["points"] = [{"label": p["label"], "fact_id": cert_id}
                               if p["fact_ids"] == [cert_id] else p for p in page["points"]]
+        page = response["pages"][0]
+        page["points"].insert(0, {"label": "회사 개요", **page["lead"]})
+        page["lead"] = {"text": "인증의 적용 범위와 유지 조건을 소개합니다.", "fact_ids": [cert_id]}
         return metered_response(output_text=json.dumps(response, ensure_ascii=False))
     calls = fake_sdk(monkeypatch, response=respond)
     agent = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=llm.RuntimeLedger()))
     result = agent.draft(request)
     assert len(calls) == 2 and request == before  # Constructor + one paid-call equivalent, no repair call.
-    block = next(b for p in result.pages for b in p.blocks if b.type == "paragraph" and b.fact_ids == [fid])
+    block = next(b for p in result.pages for b in p.blocks if b.type == "paragraph"
+                 and b.fact_ids == [fid] and b.content["text"].endswith(value))
     assert block.content["text"] == ("[시연] " if origin == "demo" else "") + value
     assert block.evidence_refs == next(f for f in request.preflight.facts if f.fact_id == fid).evidence_refs
     assert next(s for s in result.editorial.selections if s.fact_id == fid).disposition == "required"
@@ -681,7 +740,8 @@ def test_compound_certificate_whole_fact_requirement_is_bounded(case, required):
     assert llm._whole_fact_point_required(fact) is required
 
 
-def test_compound_certificate_keeps_optional_exclusion_and_heading_only_rejection():
+@pytest.mark.parametrize("reference_location", ["heading", "lead"])
+def test_compound_certificate_keeps_optional_exclusion_and_incomplete_body_rejection(reference_location):
     value = "인증 번호 12345, 최초 발행 2015-04-11, 만료 2028-09-25이며 사후심사가 조건입니다."
     request, fid = numeric_editorial_request(value, value)
     request.brief.required_fields = []
@@ -692,7 +752,7 @@ def test_compound_certificate_keeps_optional_exclusion_and_heading_only_rejectio
             for page in result["pages"]:
                 page["points"] = [p for p in page["points"] if fid not in p["fact_ids"]]
             if heading_only:
-                result["pages"][0]["heading"] = {"text": "인증 범위", "fact_ids": [fid]}
+                result["pages"][0][reference_location] = {"text": "인증 범위를 소개합니다.", "fact_ids": [fid]}
             return result
         return responder
     result = llm.LlmAgent(respond(heading_only=False)).draft(request)
@@ -807,6 +867,40 @@ def test_editorial_rejects_fewer_than_selected_minimum_without_padding_or_retry(
     assert calls==['draft_sections']
 
 
+@pytest.mark.parametrize("excerpt,field,layout,allowed", [
+    ("2000 | 예시 회사 설립", "history", "timeline", True),
+    (" 2003｜신규 사업 진출", "history", "timeline", True),
+    ("연혁\n2006 | 사업 진출", "history", "timeline", True),
+    ("2000 | 예시 회사 설립", "history", "process_steps", False),
+    ("2000 | 예시 회사 설립", "products_services", "timeline", False),
+    ("제품 2000 | 모델 소개", "history", "timeline", False),
+    ("20001 | 코드 정보", "history", "timeline", False),
+    ("2000 | ", "history", "timeline", False),
+    ("사업 시작", "history", "timeline", False),
+])
+def test_editorial_timeline_accepts_year_column_without_inventing_process_order(excerpt, field, layout, allowed):
+    request, fid = numeric_editorial_request(excerpt, excerpt)
+    next(f for f in request.preflight.facts if f.fact_id == fid).field_key = field
+    request.brief.required_fields = [field]
+    before = copy.deepcopy(request)
+    calls = []
+    def respond(instructions, payload, schema, name):
+        calls.append(name)
+        result = grouped_editorial_composition(editorial_response(payload))
+        result["pages"][0].update(layout=layout, sequence_fact_ids=[fid])
+        return result
+    if allowed:
+        result = llm.LlmAgent(respond).draft(request)
+        assert result.pages[0].layout_key == "timeline"
+        assert any(b.type == "paragraph" and b.content["text"] == excerpt.strip()
+                   and b.fact_ids == [fid] for p in result.pages for b in p.blocks)
+        assert validate_draft(result, request.sources, {f.fact_id for f in request.preflight.facts}, request.preflight) is None
+    else:
+        with pytest.raises(AgentError, match="순서·시점"):
+            llm.LlmAgent(respond).draft(request)
+    assert request == before and calls == ["draft_sections"]
+
+
 @pytest.mark.parametrize("case_id", EDITORIAL_CASES)
 def test_grouped_notes_preserve_every_saved_selection_and_page(case_id):
     request = build_editorial_request(case_id)
@@ -844,7 +938,7 @@ def test_grouped_notes_reject_incomplete_or_invalid_audit_without_retry(damage):
         elif damage == "across_duplicate":
             notes[-1]["fact_ids"].append(notes[0]["fact_ids"][0])
         elif damage == "omitted":
-            notes[0]["fact_ids"].pop()
+            notes[:] = [n for n in notes if "fact_conflict_cert" not in n["fact_ids"]]
         elif damage == "foreign":
             notes[0]["fact_ids"][0] = "outside"
         elif damage == "empty":
@@ -861,6 +955,61 @@ def test_grouped_notes_reject_incomplete_or_invalid_audit_without_retry(damage):
                 "excluded" if damage == "review_policy" else "review")
         elif damage == "invalid_type":
             notes[0]["fact_ids"] = notes[0]["fact_ids"][0]
+        return response
+    with pytest.raises(AgentError):
+        llm.LlmAgent(responder).draft(request)
+    assert calls == ["draft_sections"]
+
+
+@pytest.mark.parametrize("field,whole", [("company_name", False), ("company_summary", False),
+                                        ("capabilities", False), ("capabilities", True)])
+def test_grouped_notes_derive_missing_included_note_without_editing_model_body(field, whole):
+    request = build_editorial_request("manufacturing")
+    fid = f"fact_manufacturing_{field}"
+    responses, calls = [], []
+    def responder(instructions, payload, schema, name):
+        calls.append(name)
+        response = grouped_editorial_composition(editorial_response(payload))
+        if whole:
+            point = next(p for p in response["pages"][0]["points"] if fid in p["fact_ids"])
+            point.pop("text"); point.pop("fact_ids"); point["fact_id"] = fid
+        for note in response["fact_notes"]:
+            note["fact_ids"] = [x for x in note["fact_ids"] if x != fid]
+        response["fact_notes"] = [n for n in response["fact_notes"] if n["fact_ids"]]
+        responses.append((response, copy.deepcopy(response)))
+        return response
+    before = copy.deepcopy(request)
+    result = llm.LlmAgent(responder).draft(request)
+    baseline = llm.LlmAgent(lambda i, p, s, n: grouped_editorial_composition(editorial_response(p))).draft(request)
+    def content(draft):
+        return [[b.model_dump(exclude={"block_id"}) for b in p.blocks] for p in draft.pages]
+    assert content(result) == content(baseline)
+    assert result.editorial.selections == baseline.editorial.selections
+    assert validate_draft(result, request.sources, {f.fact_id for f in request.preflight.facts}, request.preflight) is None
+    assert request == before and all(a == b for a, b in responses)
+    assert calls == ["draft_sections"]
+
+
+@pytest.mark.parametrize("damage", ["unused", "heading_only", "numeric_missing", "flat_legacy"])
+def test_missing_included_note_does_not_relax_unused_body_or_numeric_gates(damage):
+    request = build_editorial_request("manufacturing")
+    fid = "fact_manufacturing_history" if damage == "unused" else "fact_manufacturing_capabilities"
+    calls = []
+    def responder(instructions, payload, schema, name):
+        calls.append(name)
+        response = grouped_editorial_composition(editorial_response(payload))
+        for note in response["fact_notes"]:
+            note["fact_ids"] = [x for x in note["fact_ids"] if x != fid]
+        response["fact_notes"] = [n for n in response["fact_notes"] if n["fact_ids"]]
+        page = response["pages"][0]
+        if damage == "heading_only":
+            page["points"] = [p for p in page["points"] if fid not in p["fact_ids"]]
+            page["heading"]["fact_ids"].append(fid)
+        elif damage == "numeric_missing":
+            next(p for p in page["points"] if fid in p["fact_ids"])["text"] = "알루미늄 시편을 가공합니다."
+        elif damage == "flat_legacy":
+            response["fact_notes"] = [{"fact_id": x, "unused_disposition": n["unused_disposition"], "reason": n["reason"]}
+                                      for n in response["fact_notes"] for x in n["fact_ids"]]
         return response
     with pytest.raises(AgentError):
         llm.LlmAgent(responder).draft(request)

@@ -684,6 +684,9 @@ def _map_editorial_fact_ids(value: Any, mapping: dict[str, str]) -> Any:
                 if not isinstance(item, list):
                     raise _editorial_invalid("fact_reference")
                 result[key] = [one(fid) for fid in item]
+            elif key == "fact_notes" and isinstance(item, dict):
+                result[key] = {one(fid): _map_editorial_fact_ids(note, mapping)
+                               for fid, note in item.items()}
             else:
                 result[key] = _map_editorial_fact_ids(item, mapping)
         return result
@@ -702,6 +705,11 @@ def _editorial_wire_request(payload: dict, schema: dict) -> tuple[dict, dict, di
             for key, value in node.items():
                 if key == "enum" and isinstance(value, list):
                     node[key] = [mapping.get(item, item) if isinstance(item, str) else item for item in value]
+                elif key == "required" and isinstance(value, list):
+                    node[key] = [mapping.get(item, item) for item in value]
+                elif key == "properties" and isinstance(value, dict):
+                    node[key] = {mapping.get(name, name): child for name, child in value.items()}
+                    enums(node[key])
                 else:
                     enums(value)
         elif isinstance(node, list):
@@ -1101,15 +1109,32 @@ def _composition_plan(response: dict, facts: dict[str, Fact], policy: dict[str, 
     """
     if "fact_notes" not in response:
         return _EditorialPlan.model_validate(response)
-    if isinstance(response["fact_notes"], list) and any(
-            isinstance(note, dict) and "fact_ids" in note for note in response["fact_notes"]):
+    indexed_notes = isinstance(response["fact_notes"], dict)
+    if indexed_notes:
+        if set(response["fact_notes"]) != set(facts):
+            raise _editorial_invalid("selection_coverage")
+        notes = []
+        for fid, note in response["fact_notes"].items():
+            if note is None:
+                continue  # Must have allowed body/name-heading coverage below.
+            if not isinstance(note, dict) or set(note) != {"unused_disposition", "reason"}:
+                raise _editorial_invalid("schema")
+            if not isinstance(note["reason"], str) or len(note["reason"]) > 160:
+                raise _editorial_invalid("schema")
+            notes.append({"fact_id": fid, **note})
+        response = {**response, "fact_notes": notes}
+    grouped_notes = not indexed_notes and isinstance(response["fact_notes"], list) and any(
+        isinstance(note, dict) and "fact_ids" in note for note in response["fact_notes"])
+    if grouped_notes:
         grouped = _EditorialGroupedComposition.model_validate(response)
         response = {**grouped.model_dump(exclude={"fact_notes"}), "fact_notes": [
             {"fact_id": fid, "unused_disposition": note.unused_disposition, "reason": note.reason}
             for note in grouped.fact_notes for fid in note.fact_ids]}
     composition = _EditorialComposition.model_validate(response)
     notes = {note.fact_id: note for note in composition.fact_notes}
-    if set(notes) != set(facts) or len(notes) != len(composition.fact_notes):
+    missing_notes = set(facts) - set(notes)
+    if (set(notes) - set(facts) or len(notes) != len(composition.fact_notes)
+            or (missing_notes and not (grouped_notes or indexed_notes))):
         raise _editorial_invalid("selection_coverage")
     pages = []
     for page in composition.pages:
@@ -1132,33 +1157,50 @@ def _composition_plan(response: dict, facts: dict[str, Fact], policy: dict[str, 
     if target_pages is not None and len(pages) < target_pages:
         pages = _expand_editorial_pages(pages, target_pages)
     referenced: dict[str, list[int]] = {}
+    body_referenced: set[str] = set()
     for n, page in enumerate(pages, 1):
+        body_referenced.update(fid for item in [page.lead, *page.points] for fid in item.fact_ids)
+        # Match claim()'s existing company-name heading coverage exception.
+        body_referenced.update(fid for fid in page.heading.fact_ids
+                               if fid in facts and facts[fid].field_key == "company_name")
         for item in [page.heading, page.lead, *page.points]:
             for fid in item.fact_ids:
                 if fid not in facts:
                     raise _editorial_invalid("fact_reference")
                 if n not in referenced.setdefault(fid, []):
                     referenced[fid].append(n)
+    # Included-fact notes are derived metadata, never authority for new prose.
+    # Only an allowed, supported fact explicitly used in the body (or a company
+    # name heading) can omit its redundant note. Unused/review/excluded facts
+    # still need the model's reason;
+    # unknown/duplicate IDs and downstream body/numeric gates remain strict.
+    if any(fid not in body_referenced or facts[fid].status != "supported"
+           or not {"required", "optional"}.intersection(policy.get(fid, ()))
+           for fid in missing_notes):
+        raise _editorial_invalid("selection_coverage")
     decisions = []
     for fid, allowed in policy.items():
-        note = notes[fid]
-        if not note.reason.strip():
+        note = notes.get(fid)
+        if note is not None and not note.reason.strip():
             raise _editorial_invalid("selection_policy")
         if allowed == ("required",):
             disposition = "required"  # Missing required prose is still rejected below.
         elif allowed in {("review",), ("excluded",)}:
             disposition = allowed[0]  # References to prohibited facts are still rejected below.
+            assert note is not None
             if note.unused_disposition != disposition:
                 raise _editorial_invalid("selection_policy")
         elif fid in referenced:
             disposition = "optional"
         else:
+            assert note is not None
             disposition = note.unused_disposition
         if disposition in {"required", "optional"}:
             locations = ", ".join(map(str, referenced.get(fid, [])))
             reason = (f"작성된 {locations}쪽의 설명에 사용했습니다."
                       if locations else "필수 사실이므로 본문 반영 여부를 검사합니다.")
         else:
+            assert note is not None
             reason = note.reason
         decisions.append(FactSelection(fact_id=fid, disposition=disposition, reason=reason))
     return _EditorialPlan(**composition.model_dump(exclude={"fact_notes", "pages"}),
@@ -1166,20 +1208,25 @@ def _composition_plan(response: dict, facts: dict[str, Fact], policy: dict[str, 
 
 
 def _constrain_editorial_notes(schema: dict, policy: dict[str, tuple[str, ...]]) -> None:
-    groups: dict[tuple[str, ...], list[str]] = {}
-    for fid, allowed in policy.items():
-        unused = allowed if allowed in {("review",), ("excluded",)} else ("excluded", "review")
-        groups.setdefault(unused, []).append(fid)
+    # Every ID is a required object key: strict generation cannot accidentally
+    # omit one unused fact or duplicate it across otherwise valid note groups.
+    # Included facts use null; their audit is derived from verified references.
+    properties = {}
     note_schema = schema["$defs"].pop("_EditorialFactNoteGroup")
-    variants = []
-    for allowed, ids in groups.items():
+    note_schema["properties"].pop("fact_ids")
+    note_schema["required"].remove("fact_ids")
+    note_schema["properties"]["reason"]["maxLength"] = 160
+    for fid, allowed in policy.items():
+        if allowed == ("required",):
+            properties[fid] = {"type": "null"}
+            continue
         variant = copy.deepcopy(note_schema)
-        variant["properties"]["fact_ids"]["items"]["enum"] = sorted(ids)
-        variant["properties"]["fact_ids"]["maxItems"] = len(ids)
-        variant["properties"]["unused_disposition"]["enum"] = list(allowed)
-        variants.append(variant)
-    schema["properties"]["fact_notes"].update(minItems=1 if policy else 0, maxItems=len(policy),
-        items={"anyOf": variants} if variants else note_schema)
+        variant["properties"]["unused_disposition"]["enum"] = (
+            list(allowed) if allowed in {("review",), ("excluded",)} else ["excluded", "review"])
+        properties[fid] = (variant if allowed in {("review",), ("excluded",)}
+                           else {"anyOf": [{"type": "null"}, variant]})
+    schema["properties"]["fact_notes"] = {"type": "object", "properties": properties,
+        "required": list(properties), "additionalProperties": False}
 
 
 def _editorial_body_gaps(facts: dict[str, Fact], used: dict[str, list[str]]) -> dict[str, dict]:
@@ -1901,20 +1948,17 @@ class LlmAgent:
             elif "photo_ids" in props:
                 props["photo_ids"]["maxItems"] = 0
         if whole_only_ids:
-            # Headings retain their provenance, but may not satisfy body coverage.
-            # Lead/prose points cannot select a compound certificate; its whole-fact
-            # point is the only generated body form. Existing complete response
-            # replays still go through the ordinary numeric/provenance gates.
+            # A certificate page's lead must be able to cite its actual subject.
+            # Restrict detailed prose points, not the lead's provenance: the
+            # complete certificate point supplies dates/conditions, and the
+            # downstream body gate still rejects an incomplete lead-only claim.
             prose_ids = [fid for fid in usable_ids if fid not in whole_only_ids]
-            lead_schema = copy.deepcopy(schema["$defs"]["_EditorialText"])
-            for definition in (lead_schema, schema["$defs"]["_EditorialPoint"]):
-                refs_schema = definition["properties"]["fact_ids"]
-                if prose_ids:
-                    refs_schema["items"]["enum"] = prose_ids
-                else:
-                    refs_schema["items"].pop("enum", None)
-                    refs_schema["minItems"] = refs_schema["maxItems"] = 0
-            schema["$defs"]["_EditorialCompositionPage"]["properties"]["lead"] = lead_schema
+            refs_schema = schema["$defs"]["_EditorialPoint"]["properties"]["fact_ids"]
+            if prose_ids:
+                refs_schema["items"]["enum"] = prose_ids
+            else:
+                refs_schema["items"].pop("enum", None)
+                refs_schema["minItems"] = refs_schema["maxItems"] = 0
         if whole_fact_ids:
             schema["$defs"]["_EditorialFactPoint"]["properties"]["fact_id"]["enum"] = whole_fact_ids
         else:
@@ -1987,7 +2031,11 @@ class LlmAgent:
                 # Do not manufacture a chronology from a plain process list.
                 sequence = " ".join(r.excerpt for fid in planned.sequence_fact_ids for r in facts[fid].evidence_refs)
                 pattern = r"(?:\d{4}년|\d{4}[-./]\d{1,2})" if planned.layout == "timeline" else r"(?:→|->|\d+[.)]\s|먼저.+다음|후에|이후)"
-                if not planned.sequence_fact_ids or not re.search(pattern, sequence):
+                table_year = planned.layout == "timeline" and any(
+                    facts[fid].field_key == "history"
+                    and re.search(r"(?m)^\s*(?:19|20)\d{2}\s*[|｜]\s*\S", ref.excerpt)
+                    for fid in planned.sequence_fact_ids for ref in facts[fid].evidence_refs)
+                if not planned.sequence_fact_ids or not (re.search(pattern, sequence) or table_year):
                     raise AgentError("AGENT_OUTPUT_INVALID", "순서·시점 근거가 없는 단계/연혁 배치를 거부했습니다.")
             if any(aid not in photos for aid in planned.photo_ids):
                 raise _editorial_invalid("photo_reference")
