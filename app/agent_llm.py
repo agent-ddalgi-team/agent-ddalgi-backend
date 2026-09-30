@@ -993,18 +993,34 @@ class _EditorialFactNote(BaseModel):
     reason: str = Field(min_length=1, max_length=1200)
 
 
+class _EditorialFactPoint(BaseModel):
+    """An explicit model choice to publish the confirmed fact's complete wording."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    label: str = Field(min_length=1, max_length=60)
+    fact_id: str
+
+
+class _EditorialCompositionPage(_EditorialPage):
+    points: list[_EditorialPoint | _EditorialFactPoint] = Field(max_length=12)
+
+
 class _EditorialComposition(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     palette: Literal["neutral", "ocean", "forest", "clay"]
     typography: Literal["editorial", "restrained"]
     page_count_reason: str = Field(min_length=1, max_length=800)
-    pages: list[_EditorialPage] = Field(min_length=1, max_length=10)
+    pages: list[_EditorialCompositionPage] = Field(min_length=1, max_length=10)
     # Inclusion follows the written references; notes only explain unused facts.
     fact_notes: list[_EditorialFactNote]
 
 
+def _whole_fact_point_available(fact: Fact) -> bool:
+    # Separate legacy condition metadata is not materialized by a value-only point.
+    return bool(fact.value and fact.value.strip() and len(fact.value) <= 1200 and not fact.conditions)
+
+
 def _composition_plan(response: dict, facts: dict[str, Fact], policy: dict[str, tuple[str, ...]]) -> _EditorialPlan:
-    """Derive inclusion from actual references; never change prose or relax the body gate.
+    """Resolve explicit whole-fact points, then derive inclusion from actual references.
 
     Previously recorded plans keep their original, strict selection validation.
     New model responses only decide how to explain facts that they did not use.
@@ -1015,8 +1031,26 @@ def _composition_plan(response: dict, facts: dict[str, Fact], policy: dict[str, 
     notes = {note.fact_id: note for note in composition.fact_notes}
     if set(notes) != set(facts) or len(notes) != len(composition.fact_notes):
         raise _editorial_invalid("selection_coverage")
+    pages = []
+    for page in composition.pages:
+        points = []
+        for item in page.points:
+            if isinstance(item, _EditorialFactPoint):
+                fact = facts.get(item.fact_id)
+                allowed = policy.get(item.fact_id, ())
+                if fact is None:
+                    raise _editorial_invalid("fact_reference")
+                if fact.status != "supported" or not {"required", "optional"}.intersection(allowed):
+                    raise _editorial_invalid("excluded_reference")
+                if not _whole_fact_point_available(fact):
+                    raise _editorial_invalid("schema")
+                # No omission-triggered insertion: only IDs explicitly selected by the model.
+                # Use the same per-point size limit and downstream provenance/numeric checks.
+                item = _EditorialPoint(label=item.label, text=fact.value or "", fact_ids=[item.fact_id])
+            points.append(item)
+        pages.append(_EditorialPage(**page.model_dump(exclude={"points"}), points=points))
     referenced: dict[str, list[int]] = {}
-    for n, page in enumerate(composition.pages, 1):
+    for n, page in enumerate(pages, 1):
         for item in [page.heading, page.lead, *page.points]:
             for fid in item.fact_ids:
                 if fid not in facts:
@@ -1045,7 +1079,8 @@ def _composition_plan(response: dict, facts: dict[str, Fact], policy: dict[str, 
         else:
             reason = note.reason
         decisions.append(FactSelection(fact_id=fid, disposition=disposition, reason=reason))
-    return _EditorialPlan(**composition.model_dump(exclude={"fact_notes"}), selections=decisions)
+    return _EditorialPlan(**composition.model_dump(exclude={"fact_notes", "pages"}),
+                          pages=pages, selections=decisions)
 
 
 def _constrain_editorial_notes(schema: dict, policy: dict[str, tuple[str, ...]]) -> None:
@@ -1753,6 +1788,7 @@ class LlmAgent:
                                       for fid, allowed in selection_policy.items()],
             "body_requirements": [{"fact_id": fid,
                 "numeric_tokens": sorted(numeric_evidence_tokens(fact.value or "")),
+                "whole_fact_point_available": _whole_fact_point_available(fact),
                 "heading_can_cover": fact.field_key == "company_name"}
                 for fid, fact in facts.items() if fact.status == "supported" and fact.field_key not in excluded],
             "supplement_requests": missing,
@@ -1764,6 +1800,7 @@ class LlmAgent:
         instructions = legacy.load_draft_prompt(editorial=True)
         schema = _EditorialComposition.model_json_schema()
         usable_ids = sorted(fid for fid, allowed in selection_policy.items() if "optional" in allowed or "required" in allowed)
+        whole_fact_ids = [fid for fid in usable_ids if _whole_fact_point_available(facts[fid])]
         for definition in schema.get("$defs", {}).values():
             props = definition.get("properties", {})
             for key in ("fact_ids", "sequence_fact_ids"):
@@ -1778,6 +1815,13 @@ class LlmAgent:
                 props["photo_ids"]["items"]["enum"] = sorted(photos)
             elif "photo_ids" in props:
                 props["photo_ids"]["maxItems"] = 0
+        if whole_fact_ids:
+            schema["$defs"]["_EditorialFactPoint"]["properties"]["fact_id"]["enum"] = whole_fact_ids
+        else:
+            # Avoid advertising an unusable branch (or emitting an invalid empty enum).
+            schema["$defs"]["_EditorialCompositionPage"]["properties"]["points"]["items"] = {
+                "$ref": "#/$defs/_EditorialPoint"}
+            schema["$defs"].pop("_EditorialFactPoint")
         schema["properties"]["pages"]["maxItems"] = request.brief.target_pages
         _constrain_editorial_notes(schema, selection_policy)
         response = self._request(instructions, payload, schema, "draft_sections")

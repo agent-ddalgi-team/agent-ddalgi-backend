@@ -516,6 +516,104 @@ def test_editorial_body_gaps_reports_every_omission_not_only_first():
     assert gaps["two"] == {"body_missing": True, "missing_numeric_tokens": []}
 
 
+@pytest.mark.parametrize("origin", ["real", "demo"])
+def test_editorial_whole_fact_point_sdk_preserves_compound_certification(monkeypatch, origin):
+    value = ("예시정공의 ISO 9001:2015 인증은 시험 부품 제조와 예시로 214-7 사업장에 적용됩니다. "
+             "인증번호 Q-006781-2, 발행일 2025년 4월 8일, 최초 승인일 2022년 4월 8일, "
+             "만료일 2028년 4월 7일입니다. 정기 사후심사와 인증 기준 준수가 유지 조건입니다.")
+    request, fid = numeric_editorial_request(value, value)
+    request.sources[0].origin_kind = origin
+    request.brief.required_fields = ["certifications"]
+    before = copy.deepcopy(request)
+    def respond(**kwargs):
+        payload = json.loads(kwargs["input"])
+        schema = kwargs["text"]["format"]["schema"]
+        cert_id = next(f["fact_id"] for f in payload["facts"] if f["field_key"] == "certifications")
+        assert cert_id.startswith("F") and fid not in json.dumps(schema)
+        allowed = schema["$defs"]["_EditorialFactPoint"]["properties"]["fact_id"]["enum"]
+        assert cert_id in allowed
+        assert next(n for n in payload["body_requirements"] if n["fact_id"] == cert_id)["whole_fact_point_available"]
+        response = editorial_composition(editorial_response(payload))
+        for page in response["pages"]:
+            page["points"] = [{"label": p["label"], "fact_id": cert_id}
+                              if p["fact_ids"] == [cert_id] else p for p in page["points"]]
+        return metered_response(output_text=json.dumps(response, ensure_ascii=False))
+    calls = fake_sdk(monkeypatch, response=respond)
+    agent = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=llm.RuntimeLedger()))
+    result = agent.draft(request)
+    assert len(calls) == 2 and request == before  # Constructor + one paid-call equivalent, no repair call.
+    block = next(b for p in result.pages for b in p.blocks if b.type == "paragraph" and b.fact_ids == [fid])
+    assert block.content["text"] == ("[시연] " if origin == "demo" else "") + value
+    assert block.evidence_refs == next(f for f in request.preflight.facts if f.fact_id == fid).evidence_refs
+    assert next(s for s in result.editorial.selections if s.fact_id == fid).disposition == "required"
+    assert validate_draft(result, request.sources, {f.fact_id for f in request.preflight.facts}, request.preflight) is None
+    src = request.sources[0]
+    facts = {f.fact_id: f for f in request.preflight.facts}
+    ctx = validation.Context({s.segment_id: s.text for s in src.segments},
+        {s.segment_id: src.source_id for s in src.segments}, {}, set(),
+        refs.SessionRefs({s.segment_id for s in src.segments}, {src.source_id: 1}, set(), set(facts)),
+        facts, [], scope_sources=request.sources, scope_preflight=request.preflight)
+    doc = Document(document_id="doc_whole_fact", session_id=request.session_id, document_revision=1,
+        input_revision=1, title=result.title, target_pages=4, status="draft", pages=result.pages, editorial=result.editorial)
+    checks, _ = validation.server_checks(doc, ctx)
+    assert not [i for i in checks if i.severity == "blocker" and i.code != "DEMO_VALUE"]
+    assert any(i.code == "DEMO_VALUE" for i in checks) is (origin == "demo")
+
+
+@pytest.mark.parametrize("damage", ["foreign", "excluded", "review", "duplicate", "mixed", "label_number",
+                                    "too_long", "conditions", "required_missing"])
+def test_editorial_whole_fact_point_preserves_rejection_gates(damage):
+    request, fid = numeric_editorial_request("유효기간 2025년부터 2027년까지, 정기 사후심사가 조건입니다.",
+                                           "유효기간 2025년부터 2027년까지, 정기 사후심사가 조건입니다.")
+    fact = next(f for f in request.preflight.facts if f.fact_id == fid)
+    if damage == "excluded":
+        request.brief.emphasis = ["인증 제외"]
+    elif damage == "review":
+        fact.status = "needs_confirmation"
+    elif damage == "too_long":
+        fact.value = "가" * 1201
+        fact.evidence_refs[0].excerpt = fact.value
+        next(s for s in request.sources[0].segments if s.segment_id == fact.evidence_refs[0].segment_id).text = fact.value
+    elif damage == "required_missing":
+        request.brief.required_fields = ["certifications"]
+    elif damage == "conditions":
+        fact.conditions = {"scope": "별도 조건"}
+    calls = []
+    def responder(instructions, payload, schema, name):
+        calls.append(name)
+        allowed = schema["$defs"]["_EditorialFactPoint"]["properties"]["fact_id"]["enum"]
+        assert (fid not in allowed) == (damage in {"excluded", "review", "too_long", "conditions"})
+        response = editorial_composition(editorial_response(payload))
+        for page in response["pages"]:
+            page["points"] = [p for p in page["points"] if fid not in p["fact_ids"]]
+        point = {"label": "인증 정보", "fact_id": "fact_outside" if damage == "foreign" else fid}
+        if damage == "mixed":
+            point.update(text="인증 설명", fact_ids=[fid])
+        if damage == "label_number":
+            point["label"] = "인증 99999개"
+        if damage != "required_missing":
+            response["pages"][0]["points"].append(point)
+        if damage == "duplicate":
+            response["pages"][0]["points"].append(copy.deepcopy(point))
+        return response
+    with pytest.raises(AgentError):
+        llm.LlmAgent(responder).draft(request)
+    assert calls == ["draft_sections"]
+
+
+def test_editorial_whole_fact_schema_omits_unusable_branch():
+    request = build_editorial_request("manufacturing")
+    for fact in request.preflight.facts:
+        fact.conditions = {"scope": "별도 조건"}
+    def responder(instructions, payload, schema, name):
+        assert "_EditorialFactPoint" not in schema["$defs"]
+        assert schema["$defs"]["_EditorialCompositionPage"]["properties"]["points"]["items"] == {
+            "$ref": "#/$defs/_EditorialPoint"}
+        assert not any(r["whole_fact_point_available"] for r in payload["body_requirements"])
+        return editorial_composition(editorial_response(payload))
+    assert llm.LlmAgent(responder).draft(request).pages
+
+
 @pytest.mark.parametrize("used", [True, False])
 def test_native_composition_derives_optional_inclusion_from_written_references(used):
     request = build_editorial_request("manufacturing")
