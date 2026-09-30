@@ -35,6 +35,7 @@ BANNED = ("거산", "케미칼", "Geosan")
 
 # 템플릿·폰트·DOCX 배치 상수·PDF 렌더 상수의 sha256(줄바꿈 정규화). 이 중 하나라도 바꾸면 TEMPLATE_VERSION을 올리고 여기 값을 갱신한다.
 TEMPLATE_FINGERPRINTS = {
+    "template_v6": "20677eaf1d7238e726d7a9b13e7648ad79440be189dc17b8203cfa8ad0229950",
     "template_v5": "f8f7d40b6c886b14eb813bbdf561bf1c540d6483c336a78bee377bac46b60fa9",
     "template_v4": "538839538005c76d91e68a091398ce4cd20842499f62d147c52852339d98b237",
     "template_v3": "e0e3f49e66c8564353bc357022845e40c936e273147883ce49dde3cc500a3512",
@@ -187,6 +188,72 @@ def test_editorial_labeled_pdf_preserves_conditions_and_block_order(layout, out_
             assert compact.index("".join(heading.content["text"].split())) < compact.index("".join(body.content["text"].split()))
 
 
+def _editorial_photo_snapshot(layout="text_photo", *, fit="contain", long=False, sparse=False):
+    from app.models import PageDesign
+    blocks = [_blk("photo_title", "heading", text="시연 제조공정", level=1),
+              _blk("photo_lead", "paragraph", text="시험용 부품의 표면 처리와 피막 처리를 소개하며, 공정별 적용 소재와 가능한 용도를 구분해 설명합니다.")]
+    texts = (["시연 회사", "EXAMPLE COMPANY"] if layout == "cover_photo" else [
+        "시연 공정은 시험용 금속 표면에 적용하며, 적용 소재와 처리 조건에 따라 결과를 확인합니다."
+    ] * 4)
+    if sparse:
+        texts = []
+    if long:
+        texts = [LONG_UNIT * 80]
+    for i, text in enumerate(texts):
+        blocks.extend([_blk(f"photo_label_{i}", "heading", text="공정 적용 조건", level=2),
+                       _blk(f"photo_body_{i}", "paragraph", text=text)])
+    blocks.append(_blk("photo", "image", asset_id="PHOTO", fit=fit, alt="시연 사진", caption="[MOCK] 시험용 사진"))
+    doc = _doc([Page(page_id="photo_page", title="시연 사진 배치", layout_key=layout,
+                    design=PageDesign(), blocks=blocks)])
+    return er.snapshot_from_document(doc, {"PHOTO": er.asset_from_bytes("PHOTO", _png(320, 240))}, demo=True)
+
+
+@needs_browser
+@pytest.mark.parametrize("layout", ["cover_photo", "text_photo"])
+def test_editorial_photo_fit_keeps_text_image_and_logical_page(layout, out_dir, settings, monkeypatch):
+    from pypdf import PdfReader
+    snap = _editorial_photo_snapshot(layout)
+    before = [p.model_dump() for p in snap.pages]
+    build = er.build_html
+    with monkeypatch.context() as patch:
+        # Reproduce the old fixed-height behavior with exactly the same content.
+        patch.setattr(er, "build_html", lambda s: build(s).replace("var photoFits = fitPhotos();", "var photoFits = [];"))
+        old = er.render(snap, "pdf", out_dir / "fixed", settings)
+    assert not old.layout_ok and old.actual_pages > 1
+    result = er.render(snap, "pdf", out_dir / "fitted", settings)
+    assert result.layout_ok and result.actual_pages == 1 and not result.findings
+    fits = result.details["measure"]["photo_fits"]
+    assert len(fits) == 1 and fits[0]["block_id"] == "photo"
+    assert 36 * 96 / 25.4 - 0.1 <= fits[0]["height_px"] < fits[0]["original_height_px"]
+    def content(path):
+        text = "".join("".join((p.extract_text() or "").split()) for p in PdfReader(path).pages)
+        return text.replace("".join(er.DEMO_FOOTER_TEXT.split()), "")
+    assert content(old.file_path) == content(result.file_path)
+    reader = PdfReader(result.file_path)
+    assert sum(len(p.images) for p in reader.pages) == 1
+    assert [p.model_dump() for p in snap.pages] == before
+
+
+@needs_browser
+@pytest.mark.parametrize("case", ["text_too_long", "crop", "already_fits"])
+def test_editorial_photo_fit_does_not_mask_overflow_or_change_other_images(case, out_dir, settings):
+    from pypdf import PdfReader
+    snap = _editorial_photo_snapshot(fit="crop" if case == "crop" else "contain",
+                                    long=case == "text_too_long", sparse=case == "already_fits")
+    result = er.render(snap, "pdf", out_dir, settings)
+    fits = result.details["measure"]["photo_fits"]
+    if case == "already_fits":
+        assert result.layout_ok and result.actual_pages == 1 and not fits
+    else:
+        assert not result.layout_ok and any(f.kind == "overflow" for f in result.findings)
+        if case == "crop":
+            assert not fits
+        else:
+            assert fits and abs(fits[0]["height_px"] - 36 * 96 / 25.4) < 0.1
+            text = "".join("".join((p.extract_text() or "").split()) for p in PdfReader(result.file_path).pages)
+            assert ("".join(LONG_UNIT.split()) * 80) in text.replace("".join(er.DEMO_FOOTER_TEXT.split()), "")
+
+
 @needs_browser
 def test_editorial_group_overflow_is_detected_without_hiding_text(out_dir, settings):
     from app.models import PageDesign
@@ -200,7 +267,7 @@ def test_editorial_group_overflow_is_detected_without_hiding_text(out_dir, setti
 
 def test_identity_values_come_from_layout_checks(out_dir):
     r = er.render(_fixture_snapshot("1pages"), "docx", out_dir)
-    assert r.template_version == layout_checks.TEMPLATE_VERSION == "template_v5"
+    assert r.template_version == layout_checks.TEMPLATE_VERSION == "template_v6"
     assert r.render_options_hash == layout_checks.RENDER_OPTIONS_HASH == layout_checks.render_options_hash(layout_checks.DEFAULT_RENDER_OPTIONS)
     assert len(r.render_options_hash) == 16 and int(r.render_options_hash, 16) >= 0
     changed = dict(layout_checks.DEFAULT_RENDER_OPTIONS, margin_mm=20)
