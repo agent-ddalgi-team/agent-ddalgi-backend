@@ -33,7 +33,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, BinaryIO, Literal
 
 from app.db import Connection
 from app.config import Settings
@@ -419,7 +419,10 @@ def build_html(snapshot: RenderSnapshot) -> str:
         content_w_mm=PAGE_W_MM - 2 * margin, content_h_mm=PAGE_H_MM - 2 * margin - (DEMO_FOOTER_MM if snapshot.demo else 0),
         demo=snapshot.demo, demo_footer_text=DEMO_FOOTER_TEXT, demo_footer_mm=DEMO_FOOTER_MM,
         image_max_h_mm=IMAGE_MAX_H_MM, image_crop_h_mm=IMAGE_CROP_H_MM,
-        pages=[{"page_id": p.page_id, "title": _clean_text(p.title), "blocks": _view_blocks(snapshot, p)} for p in snapshot.pages],
+        pages=[{"page_id": p.page_id, "title": _clean_text(p.title),
+                "layout": layout_checks.render_layout(p.layout_key),
+                "photo_count": sum(b.type == "image" for b in p.blocks),
+                "blocks": _view_blocks(snapshot, p)} for p in snapshot.pages],
     )
 
 
@@ -574,8 +577,101 @@ def _kill_tree(proc: subprocess.Popen) -> None:
         pass
 
 
+def _tail(stream: BinaryIO, limit: int) -> bytes:
+    # 자식과 공유하는 파일 offset을 움직이면 Chrome의 쓰기 위치가 바뀔 수 있다.
+    size = os.fstat(stream.fileno()).st_size
+    return os.pread(stream.fileno(), limit, max(0, size - limit))
+
+
+def _pdf_cli_complete(out: BinaryIO, err: BinaryIO, pdf_path: Path) -> bool:
+    """DOM 전체와 Chrome의 PDF 쓰기 완료 메시지를 모두 확인한다. 배치 검사는 이후에 수행한다."""
+    if not _tail(out, 128).rstrip().endswith(b"</html>"):
+        return False
+    # 파일 존재만으로 완료를 판단하지 않는다. Chrome이 쓰기를 마친 뒤 기록한 바이트 수도 대조한다.
+    marker = rb"(?:^|\n)(\d+) bytes written to file " + re.escape(os.fsencode(pdf_path)) + rb"\r?(?:\n|$)"
+    match = re.search(marker, _tail(err, 65536))
+    return bool(match and pdf_path.is_file() and 0 < int(match[1]) == pdf_path.stat().st_size)
+
+
+def _close_pdf_browser(profile_dir: Path, deadline: float) -> None:
+    """이번 출력의 임시 프로필에 속한 loopback CDP 연결로만 정상 종료를 요청한다."""
+    from websockets.sync.client import connect as connect_websocket
+
+    def remaining() -> float:
+        value = deadline - time.monotonic()
+        if value <= 0:
+            raise TimeoutError
+        return value
+
+    lines = (profile_dir / "DevToolsActivePort").read_text(encoding="utf-8").splitlines()
+    if (len(lines) != 2 or not lines[0].isdigit() or not 0 < int(lines[0]) < 65536
+            or not re.fullmatch(r"/devtools/browser/[A-Za-z0-9-]+", lines[1])):
+        raise ValueError("invalid browser control endpoint")
+    endpoint = f"ws://127.0.0.1:{int(lines[0])}{lines[1]}"
+    with connect_websocket(endpoint, proxy=None, open_timeout=min(3, remaining()),
+                           close_timeout=min(1, remaining()), max_size=16384) as connection:
+        connection.send(json.dumps({"id": 1, "method": "Browser.close"}))
+        while True:
+            response = json.loads(connection.recv(timeout=remaining()))
+            if not isinstance(response, dict):
+                raise ValueError("invalid browser close response")
+            if response.get("id") == 1:
+                if "error" in response or response.get("result") != {}:
+                    raise ValueError("browser close rejected")
+                return
+
+
+def _run_mac_pdf(cmd: list[str], timeout: int) -> subprocess.CompletedProcess:
+    """macOS에서는 CLI 출력 완료 뒤 명시적으로 종료하고 실제 종료 코드까지 확인한다."""
+    from websockets.exceptions import WebSocketException
+
+    profile_dir = Path(next(a.split("=", 1)[1] for a in cmd if a.startswith("--user-data-dir=")))
+    pdf_path = Path(next(a.split("=", 1)[1] for a in cmd if a.startswith("--print-to-pdf=")))
+    command = [*cmd[:-1], "--remote-debugging-address=127.0.0.1", "--remote-debugging-port=0", cmd[-1]]
+    deadline = time.monotonic() + timeout
+    proc = None
+    # Chrome helper가 파이프를 물고 남아도 수집이 무한 대기하지 않게 임시 파일을 사용한다.
+    # DOM에는 문서 내용이 들어 있으므로 로그로 내보내지 않고 함수 종료 시 즉시 닫는다.
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        try:
+            proc = subprocess.Popen(command, stdout=out, stderr=err, start_new_session=True)
+            while proc.poll() is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                if _pdf_cli_complete(out, err, pdf_path):
+                    if proc.poll() is None:
+                        try:
+                            _close_pdf_browser(profile_dir, deadline)
+                        except (TimeoutError, OSError, ValueError, WebSocketException):
+                            # CDP 접속과 정상 종료가 경합할 수 있다. 이미 종료됐다면 실제
+                            # returncode를 사용하고, 아직 실행 중인 제어 실패는 그대로 실패한다.
+                            if proc.poll() is None:
+                                raise
+                    proc.wait(timeout=max(0, deadline - time.monotonic()))
+                    break
+                time.sleep(min(0.05, remaining))
+            out.seek(0)
+            err.seek(0)
+            return subprocess.CompletedProcess(command, proc.returncode, out.read(), err.read())
+        except (TimeoutError, subprocess.TimeoutExpired) as exc:
+            raise RenderError("render_timeout", f"브라우저 print-to-pdf 단계가 {timeout}초 안에 끝나지 않았습니다.") from exc
+        except (OSError, ValueError, WebSocketException) as exc:
+            raise RenderError("render_failed", "PDF 브라우저 실행 또는 정상 종료 확인에 실패했습니다.",
+                              {"stage": "browser_control"}) from exc
+        finally:
+            if proc is not None and proc.poll() is None:
+                _kill_tree(proc)
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+
+
 def _run(cmd: list[str], timeout: int, what: str) -> subprocess.CompletedProcess:
     """브라우저를 실행하고 stdout/stderr를 모은다. 시간 초과 시 자식 프로세스까지 종료한다."""
+    if sys.platform == "darwin" and what == "print-to-pdf":
+        return _run_mac_pdf(cmd, timeout)
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 **({} if sys.platform == "win32" else {"start_new_session": True}))

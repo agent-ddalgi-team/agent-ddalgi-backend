@@ -6,6 +6,8 @@ D-01(파일 형식·크기·개수)과 D-02(세션 만료)의 현재 값은 plan
 from __future__ import annotations
 
 import os
+import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -13,6 +15,23 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
+
+
+def company_name_aliases(value: str | None) -> tuple[str, ...]:
+    """운영자가 동일 회사로 확인한 정확한 이름만 연결한다. 실명 목록은 로컬 설정에 둔다."""
+    def normalize(text: str) -> str:
+        return re.sub(r"\s+", "", text).casefold()
+    try:
+        groups = json.loads(os.environ.get("COMPANY_NAME_ALIASES", "[]"))
+    except ValueError:
+        return ()
+    if not isinstance(groups, list) or not value:
+        return ()
+    for group in groups:
+        if (isinstance(group, list) and group and all(isinstance(s, str) and s.strip() for s in group)
+                and normalize(value) in {normalize(s) for s in group}):
+            return tuple(group)
+    return ()
 
 
 def _env_int(name: str, default: int) -> int:

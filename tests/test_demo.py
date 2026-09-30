@@ -295,6 +295,25 @@ def _seed_registered(settings, source_id="DEMO01", *, origin="demo", image=False
     return source_id, data
 
 
+def test_brochure_photo_descriptions_require_current_publication_and_non_mock_origin(app, settings):
+    c = TestClient(app)
+    sid = _create(c)
+    ids = [_seed_registered(settings, name, origin=origin, image=True)[0]
+           for name, origin in (("YES", "demo"), ("NO", "real"), ("UNKNOWN", "real"), ("MOCKPIC", "mock"))]
+    with connect(settings.db_path) as conn:
+        conn.execute("UPDATE assets SET caption_candidate='가상 공정 사진'")
+        conn.execute("UPDATE assets SET approved_for_external_use=0 WHERE source_id='NO'")
+        conn.execute("UPDATE assets SET approved_for_external_use=NULL WHERE source_id='UNKNOWN'")
+    response = c.patch(f"/api/v1/sessions/{sid}/inputs", json={"expected_input_revision": 1, "selected_source_ids": ids})
+    assert response.status_code == 200, response.text
+    with connect(settings.db_path) as conn:
+        selected = preflights.build_sources(conn, sid, ids)
+        descriptions = {aid for source in selected for aid in source.asset_descriptions}
+        assert descriptions == {"asset_YES"}
+        conn.execute("UPDATE assets SET approved_for_external_use=0 WHERE source_id='YES'")
+        assert not any(s.asset_descriptions for s in preflights.build_sources(conn, sid, ids))
+
+
 class DemoFlow(BaseFlow):
     def __init__(self, app, settings, *, origin="demo"):
         self.settings = settings

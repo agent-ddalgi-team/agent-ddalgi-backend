@@ -151,9 +151,20 @@ def sync_invalidations(conn: Connection) -> None:
             "(SELECT confirmation_id FROM approvals WHERE status='invalidated')", (to_iso(now()),))
         conn.execute(
             "UPDATE confirmations SET status='invalidated', invalidated_at=COALESCE(invalidated_at, ?) "
-            "WHERE kind='warning_ack' AND status='active' AND "
+            "WHERE kind IN ('warning_ack', 'impact_keep') AND status='active' AND "
             "(document_revision<>(SELECT current_revision FROM documents WHERE documents.document_id=confirmations.document_id) "
             "OR input_revision<>(SELECT input_revision FROM sessions WHERE sessions.session_id=confirmations.session_id))",
+            (to_iso(now()),))
+        conn.execute(
+            "UPDATE impact_reviews SET status='stale' WHERE status='pending' AND "
+            "(document_revision<>(SELECT current_revision FROM documents WHERE documents.document_id=impact_reviews.document_id) "
+            "OR to_input_revision<>(SELECT input_revision FROM sessions WHERE sessions.session_id=impact_reviews.session_id))")
+        conn.execute(
+            "UPDATE confirmations SET status='invalidated', invalidated_at=COALESCE(invalidated_at, ?) "
+            "WHERE kind='impact_keep' AND status='active' AND impact_review_id IN "
+            "(SELECT review_id FROM impact_reviews r WHERE r.preflight_id IS NOT "
+            "(SELECT p.preflight_id FROM preflights p WHERE p.session_id=r.session_id "
+            "AND p.input_revision=r.to_input_revision ORDER BY p.created_at DESC, p.rowid DESC LIMIT 1))",
             (to_iso(now()),))
 
 

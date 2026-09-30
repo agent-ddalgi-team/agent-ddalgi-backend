@@ -67,6 +67,9 @@ REVISION_REQUESTS = [
     (models.DocumentPatch, {"expected_revision": 1,
                             "operations": [{"op": "delete_block", "block_id": "block_example"}]}),
     (models.RestoreBody, {"expected_revision": 1, "restore_from_revision": 2}),
+    (models.ImpactReviewCreate, {"expected_revision": 1, "input_revision": 2,
+                                 "preflight_id": "pf_example", "confirmed": True}),
+    (models.ImpactApply, {"expected_revision": 1, "input_revision": 2, "keep_reason": "자료 변경 확인"}),
     (models.ProposalCreate, {"expected_revision": 1, "input_revision": 1,
                              "target_block_ids": ["block_example"], "instruction": "정리", "kind": "text"}),
     (models.ApplyBody, {"expected_revision": 1}),
@@ -94,6 +97,7 @@ def test_request_revisions_reject_coercion_and_out_of_range(model, payload):
                              "instruction": "정상 요청", "kind": "text"}, "instruction"),
     (models.Resolution, {"action": "acknowledged", "reason": "정상 이유"}, "reason"),
     (models.OpRenamePage, {"op": "rename_page", "page_id": "p", "title": "정상 제목"}, "title"),
+    (models.ImpactApply, {"expected_revision": 1, "input_revision": 2, "keep_reason": "자료 변경 확인"}, "keep_reason"),
 ])
 def test_required_text_rejects_whitespace_without_rewriting_valid_text(model, payload, field):
     for invalid in ("", " \t\r\n"):
@@ -247,6 +251,68 @@ def test_oversized_restore_revision_returns_client_error_without_sqlite_overflow
     assert _snapshot(settings) == before
 
 
+def test_impact_reference_update_rejects_duplicate_facts_and_blocks():
+    update = {"block_id": "block_example", "fact_ids": ["fact_example"], "evidence_refs": []}
+    body = {"expected_revision": 1, "input_revision": 2, "keep_reason": "새 자료 확인"}
+    parsed = models.ImpactApply.model_validate(body)
+    assert parsed.operations == [] and parsed.reference_updates == []
+    for invalid in (["fact_example", "fact_example"], [""], [" \t"]):
+        with pytest.raises(ValidationError):
+            models.ImpactReferenceUpdate.model_validate({**update, "fact_ids": invalid})
+    for invalid in ("", " \t"):
+        with pytest.raises(ValidationError):
+            models.ImpactReferenceUpdate.model_validate({**update, "block_id": invalid})
+    with pytest.raises(ValidationError):
+        models.ImpactApply.model_validate({**body, "reference_updates": [update, update]})
+
+
+def test_impact_requests_validate_before_writes_and_responses_match_contract(app, settings):
+    ctx = Ctx(app)
+    changed = ctx.c.patch(f"/api/v1/sessions/{ctx.sid}/inputs",
+                          json={"expected_input_revision": ctx.rev_in, "brief": {**BRIEF, "purpose": "계속 편집"}})
+    assert changed.status_code == 200, changed.text
+    ctx.rev_in = changed.json()["input_revision"]
+    ctx.preflight()
+    route = f"/api/v1/sessions/{ctx.sid}/documents/{ctx.did}/impact-reviews"
+    body = {"expected_revision": ctx.rev(), "input_revision": ctx.rev_in,
+            "preflight_id": ctx.pf, "confirmed": True}
+    before = _snapshot(settings)
+    for field, invalid in (("confirmed", "true"), ("confirmed", 1), ("expected_revision", True),
+                           ("input_revision", "3"), ("preflight_id", " \t")):
+        _invalid(ctx.c.post(route, json={**body, field: invalid}), field)
+        assert _snapshot(settings) == before
+    _invalid(ctx.c.post(route, json={**body, "unknown": "PRIVATE_SENTINEL"}))
+    assert _snapshot(settings) == before
+    declined = ctx.c.post(route, json={**body, "confirmed": False})
+    assert declined.status_code == 422 and declined.json()["error"]["code"] == "PREFLIGHT_NOT_CONFIRMED"
+    assert _snapshot(settings) == before
+    created = ctx.c.post(route, json=body)
+    assert created.status_code == 201, created.text
+    review = models.ImpactReviewOut.model_validate(created.json())
+    assert review.status == "pending" and review.preflight_id == ctx.pf
+    assert review.from_input_revision < review.to_input_revision == ctx.rev_in
+    fetched = ctx.c.get(route + "/" + review.review_id)
+    assert fetched.status_code == 200
+    assert models.ImpactReviewOut.model_validate(fetched.json()) == review
+    apply_url = route + "/" + review.review_id + "/apply"
+    apply_body = {"expected_revision": ctx.rev(), "input_revision": ctx.rev_in, "keep_reason": "자료 변경 확인"}
+    before = _snapshot(settings)
+    update = {"block_id": "block_example", "fact_ids": [], "evidence_refs": []}
+    for field, invalid in (("keep_reason", " \t"), ("input_revision", 3.0),
+                           ("reference_updates", [update, update])):
+        _invalid(ctx.c.post(apply_url, json={**apply_body, field: invalid}), field)
+        assert _snapshot(settings) == before
+    _invalid(ctx.c.post(apply_url, json={k: v for k, v in apply_body.items() if k != "keep_reason"}), "keep_reason")
+    assert _snapshot(settings) == before
+    applied = ctx.c.post(apply_url, json=apply_body)
+    assert applied.status_code == 200, applied.text
+    result = models.DocumentChangeOut.model_validate(applied.json())
+    assert result.document_revision == body["expected_revision"] + 1
+    assert result.input_revision == ctx.rev_in and result.validation_job_id
+    completed = models.ImpactReviewOut.model_validate(ctx.c.get(route + "/" + review.review_id).json())
+    assert completed.status == "applied" and completed.completed_at
+
+
 def test_query_revision_bounds_and_registered_kind(client, settings):
     sid = client.post("/api/v1/sessions", json={"brief": BRIEF}).json()["session_id"]
     uploaded = client.post(f"/api/v1/sessions/{sid}/sources",
@@ -297,7 +363,7 @@ def test_openapi_describes_common_errors_export_statuses_and_binary_responses(ap
     schema = app.openapi()
     operations = [operation for path, item in schema["paths"].items() if path.startswith("/api/v1/")
                   for method, operation in item.items() if method in {"get", "post", "patch", "delete"}]
-    assert len(operations) == 27
+    assert len(operations) == 30
     assert "HTTPValidationError" not in schema["components"]["schemas"]
     for operation in operations:
         for status in ("400", "422"):

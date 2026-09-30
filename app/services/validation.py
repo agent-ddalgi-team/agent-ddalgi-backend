@@ -21,6 +21,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.agent_bridge import SourceIn
 from app.db import Connection, Row
 from app.models import (Block, CheckRecord, Document, EvidenceRef, Fact, Issue, IssueOut, PreflightOut,
                         ValidationOut)
@@ -102,6 +103,16 @@ def value_in_text(value: str | None, text: str) -> bool:
     return sum(1 for w in tokens if w in t) / len(tokens) >= 0.6
 
 
+def _required_value_in_text(fact: Fact, text: str) -> bool:
+    if fact.field_key == "company_name":
+        from app.config import company_name_aliases
+        aliases = company_name_aliases(fact.value)
+        if aliases:
+            return any(re.search(r"(?<![\w])" + re.escape(alias) + r"(?![\w])", text, re.IGNORECASE)
+                       for alias in aliases)
+    return value_in_text(fact.value, text)
+
+
 # ---------------- 지문 ----------------
 
 def fingerprint_block(block: Block, seg_texts: dict[str, str]) -> str:
@@ -129,6 +140,9 @@ class Context:
     preflight_issues: list[Issue]
     demo_sources: set[str] = field(default_factory=set)
     demo: bool = False
+    asset_captions: dict[str, str] = field(default_factory=dict)
+    selected_sources: list[SourceIn] | None = None
+    selected_preflight: PreflightOut | None = None
 
 
 def load_context(conn: Connection, session_id: str, preflight: PreflightOut | None) -> Context:
@@ -143,10 +157,42 @@ def load_context(conn: Connection, session_id: str, preflight: PreflightOut | No
         "SELECT asset_id, source_id FROM assets WHERE deleted_at IS NULL AND (session_id=? OR scope='registered')", (session_id,))}
     mock_sources = {r["source_id"] for r in conn.execute("SELECT source_id FROM sources WHERE is_mock=1 OR origin_kind='mock'")}
     demo_sources = {r["source_id"] for r in conn.execute("SELECT source_id FROM sources WHERE origin_kind='demo'")}
-    session = conn.execute("SELECT demo FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+    session = conn.execute("SELECT demo, input_revision, selected_source_ids FROM sessions WHERE session_id=?",
+                           (session_id,)).fetchone()
+    from app.services import preflights
+    sources = preflights.build_sources(conn, session_id, json.loads(session["selected_source_ids"])) if session else []
+    selected_sources = None
+    if (session is not None and conn.execute("PRAGMA user_version").fetchone()[0] >= 11
+            and conn.execute("SELECT 1 FROM impact_reviews WHERE session_id=? "
+                             "AND purged_at IS NULL LIMIT 1", (session_id,)).fetchone() is not None):
+        # C-05 검토를 시작한 뒤에는 과거 점검·선택 해제 자료를 현재 근거로 되살리지 않는다.
+        # 같은 입력 버전의 재점검도 이전 Fact ID를 계속 허용하는 근거가 될 수 없다.
+        latest = conn.execute("SELECT preflight_id FROM preflights WHERE session_id=? AND input_revision=? "
+                              "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                              (session_id, session["input_revision"])).fetchone()
+        preflight = preflights.get(conn, session_id, latest[0]) if latest else None
+        selected_sources = sources
     facts = {f.fact_id: f for f in preflight.facts} if preflight else {}
+    captions = {aid: meta["caption"] for src in sources for aid, meta in src.asset_descriptions.items()}
     return Context(seg_texts, seg_source, asset_source, mock_sources, refs_service.load(conn, session_id), facts,
-                   list(preflight.issues) if preflight else [], demo_sources, bool(session and session["demo"]))
+                   list(preflight.issues) if preflight else [], demo_sources, bool(session and session["demo"]), captions,
+                   selected_sources=selected_sources, selected_preflight=preflight if selected_sources is not None else None)
+
+
+def image_has_descriptive_caption(block: Block, ctx: Context) -> bool:
+    """캡션/alt를 각각 검사한다. 등록 설명은 출처만 제공하며 이미지 의미 검사를 대체하지 않는다."""
+    registered = ctx.asset_captions.get(block.content.get("asset_id"))
+    for text in block_texts(block):
+        # '소개서'의 '개'는 수량 주장이 아니다. 문서 출처 머리말만 분리한다.
+        description = text.removeprefix("소개서의 ")
+        if not text.strip() or is_label(description):
+            continue
+        # 선택·공개 허가가 유효한 사진의 동일 설명에만 길이 제한을 완화한다.
+        # 인증/성능/수치 등 사실 주장은 등록 캡션이라도 텍스트 근거가 필요하다.
+        if (text != registered or len(text) > 160 or _DIGIT.search(text)
+                or any(word in description for word in _CLAIM_KEYWORDS)):
+            return False
+    return True
 
 
 # ---------------- 서버 일반 검사 ----------------
@@ -224,9 +270,30 @@ def _required_present(document: Document, ctx: Context, keys: tuple[str, ...]) -
                 continue
             for fid in block.fact_ids:
                 f = ctx.facts.get(fid)
-                if f and fid in ctx.refs.fact_ids and f.status == "supported" and f.field_key in keys and value_in_text(f.value, text):
+                if f and fid in ctx.refs.fact_ids and f.status == "supported" and f.field_key in keys and _required_value_in_text(f, text):
                     return True
     return False
+
+
+def _required_issue(document: Document, ctx: Context, keys: tuple[str, ...], label: str) -> IssueDraft:
+    """차단 기준은 유지하고, 표기 누락과 근거 미확인을 구분해 관련 블록을 안내한다."""
+    facts = [f for f in ctx.facts.values() if f.field_key in keys]
+    matches = [(block, f) for page in document.pages for block in page.blocks
+               for f in facts if not is_placeholder(" ".join(block_texts(block)))
+               and _required_value_in_text(f, " ".join(block_texts(block)))]
+    if matches:
+        if any(f.status == "supported" and f.fact_id in ctx.refs.fact_ids for _, f in matches):
+            message = (f"{label} 표기는 있지만 해당 문구에 확인된 {label} 근거가 연결되지 않았습니다. "
+                       "관련 문구의 근거를 확인하고, 자료 점검 결과를 반영해 수정한 뒤 다시 검증해 주세요.")
+        else:
+            message = (f"{label} 표기는 있지만 자료 점검에서 사용할 수 있는 확인된 근거가 없습니다. "
+                       "자료 점검의 해당 항목과 원문을 확인하고 다시 점검해 주세요. 문구만 반복해서 고쳐도 해결되지 않습니다.")
+    else:
+        message = (f"문서 전체에서 자료의 {label}과 일치하는 문구를 찾지 못했습니다. "
+                   "자료 점검에서 확인된 내용을 제목 또는 본문에 쓰고 해당 근거를 연결해 주세요.")
+    return IssueDraft("content", "REQUIRED_MISSING", "blocker", message,
+                      block_ids=sorted({block.block_id for block, _ in matches}),
+                      fact_ids=sorted(f.fact_id for f in facts))
 
 
 def preflight_conflicts(ctx: Context) -> list[IssueDraft]:
@@ -256,15 +323,12 @@ def preflight_conflicts(ctx: Context) -> list[IssueDraft]:
 def server_checks(document: Document, ctx: Context) -> tuple[list[IssueDraft], list[CheckRecord]]:
     drafts: list[IssueDraft] = []
     records: list[CheckRecord] = []
-    name_fact_ids = [f.fact_id for f in ctx.facts.values() if f.field_key in REQUIRED_NAME_KEYS]
-    biz_fact_ids = [f.fact_id for f in ctx.facts.values() if f.field_key in REQUIRED_BUSINESS_KEYS]
+    if ctx.selected_preflight is not None:
+        records.append(CheckRecord(check_key=f"preflight:{ctx.selected_preflight.preflight_id}", kind="server", result="ok"))
     if not _required_present(document, ctx, REQUIRED_NAME_KEYS):
-        drafts.append(IssueDraft("content", "REQUIRED_MISSING", "blocker",
-                                 "회사명이 실제 문서 블록에 없습니다(사실 참조만으로는 통과하지 않습니다).",
-                                 fact_ids=sorted(name_fact_ids)))
+        drafts.append(_required_issue(document, ctx, REQUIRED_NAME_KEYS, "회사명"))
     if not _required_present(document, ctx, REQUIRED_BUSINESS_KEYS):
-        drafts.append(IssueDraft("content", "REQUIRED_MISSING", "blocker",
-                                 "주요 사업/공정 설명이 실제 문서 블록에 없습니다.", fact_ids=sorted(biz_fact_ids)))
+        drafts.append(_required_issue(document, ctx, REQUIRED_BUSINESS_KEYS, "주요 사업/공정 설명"))
     records.append(CheckRecord(check_key="required_content", kind="server", result="issue" if drafts else "ok"))
 
     conflicts = preflight_conflicts(ctx)
@@ -278,7 +342,16 @@ def server_checks(document: Document, ctx: Context) -> tuple[list[IssueDraft], l
             texts = block_texts(block)
             joined = " ".join(texts).strip()
             before = len(drafts)
-            if any(fid not in ctx.refs.fact_ids for fid in block.fact_ids):
+            selected_problem = None
+            if ctx.selected_sources is not None:
+                selected_problem = (refs_service.selected_problem(
+                    [page.model_copy(update={"blocks": [block]})], ctx.selected_sources, ctx.selected_preflight)
+                    if ctx.selected_preflight is not None else "현재 입력에 해당하는 사전 점검이 없습니다.")
+            if selected_problem:
+                drafts.append(IssueDraft("content", "EVIDENCE_INVALID", "blocker",
+                                         "현재 선택 자료와 최신 점검에서 사용할 수 없는 참조입니다. " + selected_problem,
+                                         block_ids=[bid]))
+            elif any(fid not in ctx.refs.fact_ids for fid in block.fact_ids):
                 drafts.append(IssueDraft("content", "EVIDENCE_INVALID", "blocker",
                                          "현재 세션에서 근거로 사용할 수 없는 사실 참조입니다.", block_ids=[bid]))
 
@@ -288,7 +361,8 @@ def server_checks(document: Document, ctx: Context) -> tuple[list[IssueDraft], l
                     drafts.append(IssueDraft("content", "UNSUPPORTED_CLAIM", "blocker",
                                              "근거(fact_ids·evidence_refs)가 없는 사실 주장입니다. 주장을 지우거나 근거를 연결한 뒤 다시 검증하세요.",
                                              block_ids=[bid]))
-                elif block.type in ("heading", "image") and joined and not is_label(joined):
+                elif (block.type in ("heading", "image") and joined
+                      and not (image_has_descriptive_caption(block, ctx) if block.type == "image" else is_label(joined))):
                     drafts.append(IssueDraft("content", "UNSUPPORTED_CLAIM", "blocker",
                                              "제목·캡션에 근거 없는 사실 주장이 있습니다.", block_ids=[bid]))
             if block.type == "paragraph" and is_placeholder(joined):
@@ -313,7 +387,7 @@ def server_checks(document: Document, ctx: Context) -> tuple[list[IssueDraft], l
             is_demo, demo_reasons = _block_origin(block, ctx, ctx.demo_sources, "[시연]")
             if is_demo:
                 drafts.append(IssueDraft("content", "DEMO_VALUE", "warning" if ctx.demo else "blocker",
-                                         f"시연용 임시 내용이 포함되어 있습니다({', '.join(demo_reasons)}).",
+                                         "시연용 가상 내용 또는 이미지가 포함되어 있습니다. 실제 회사 실적·제품으로 오해되지 않도록 시연 표시를 확인해 주세요.",
                                          block_ids=[bid]))
             records.append(CheckRecord(check_key=f"block:{bid}", kind="server", block_ids=[bid],
                                        result="issue" if len(drafts) > before else "ok"))
@@ -340,22 +414,45 @@ def validate_agent_issues(issues: list[Issue], document: Document, ctx: Context,
 
 # ---------------- 마지막 유효 검증·변경 범위 ----------------
 
+def current_preflight_key(conn: Connection, document_id: str, input_revision: int) -> str | None:
+    """C-05 이후에는 같은 입력의 재점검도 과거 의미 검증을 재사용할 수 없게 연결한다."""
+    from app.services import db_history
+
+    if not db_history.enabled(conn) or conn.execute(
+            "SELECT 1 FROM impact_reviews WHERE document_id=? AND purged_at IS NULL LIMIT 1",
+            (document_id,)).fetchone() is None:
+        return None
+    row = conn.execute("SELECT p.preflight_id FROM preflights p JOIN documents d ON d.session_id=p.session_id "
+                       "WHERE d.document_id=? AND p.input_revision=? ORDER BY p.created_at DESC, p.rowid DESC LIMIT 1",
+                       (document_id, input_revision)).fetchone()
+    return f"preflight:{row[0]}" if row else "preflight:missing"
+
+
+def _matches_preflight(conn: Connection, document_id: str, input_revision: int, row: Row | None) -> Row | None:
+    if row is None:
+        return None
+    key = current_preflight_key(conn, document_id, input_revision)
+    return row if key is None or any(c.get("check_key") == key for c in json.loads(row["checks_json"])) else None
+
+
 def latest_validation(conn: Connection, document_id: str, document_revision: int,
                       input_revision: int) -> Row | None:
     # created_at은 초 단위라 같은 값이 생긴다. 저장 순서(rowid)로 보조 정렬한다(ID 문자열 정렬 금지).
-    return conn.execute(
+    row = conn.execute(
         "SELECT * FROM validations WHERE document_id=? AND document_revision=? AND input_revision=? "
         "AND status<>'pending' ORDER BY created_at DESC, rowid DESC LIMIT 1",
         (document_id, document_revision, input_revision)).fetchone()
+    return _matches_preflight(conn, document_id, input_revision, row)
 
 
 def base_validation(conn: Connection, document_id: str, document_revision: int,
                     input_revision: int) -> Row | None:
     """재사용 기준: 같은 문서·같은 입력 버전에서 현재보다 낮은 revision의 가장 최근 유효 검증."""
-    return conn.execute(
+    row = conn.execute(
         "SELECT * FROM validations WHERE document_id=? AND input_revision=? AND document_revision<? "
         "AND status<>'pending' ORDER BY document_revision DESC, created_at DESC, rowid DESC LIMIT 1",
         (document_id, input_revision, document_revision)).fetchone()
+    return _matches_preflight(conn, document_id, input_revision, row)
 
 
 def changed_blocks(current: dict[str, str], base: Row | None) -> tuple[set[str], set[str]]:
@@ -454,12 +551,45 @@ def _covered_by_this_validation(row: Row, agent_covered_blocks: set[str], agent_
     return blocks <= agent_covered_blocks
 
 
+def _agent_issue_keys(conn: Connection, document_id: str, drafts: list[IssueDraft]) -> dict[tuple[str, str], str]:
+    """같은 대상의 독립 지적을 구분하고, 내용이 같은 기존 지적의 ID·이력을 유지한다."""
+    incoming: dict[str, set[str]] = {}
+    for draft in drafts:
+        if draft.origin == "agent":
+            incoming.setdefault(draft.identity_key, set()).add(draft.message)
+    if not incoming:
+        return {}
+    existing: dict[str, list[Row]] = {}
+    for row in conn.execute("SELECT * FROM issues WHERE document_id=? AND origin='agent' ORDER BY rowid",
+                            (document_id,)).fetchall():
+        group = IssueDraft(row["scope"], row["code"], row["severity"], row["message"],
+                           json.loads(row["block_ids_json"]), json.loads(row["fact_ids_json"]),
+                           json.loads(row["source_ids_json"]), origin="agent").identity_key
+        existing.setdefault(group, []).append(row)
+    keys = {}
+    for group, messages in incoming.items():
+        old = existing.get(group, [])
+        by_message = {row["message"]: row["identity_key"] for row in old}
+        for message in messages:
+            if message in by_message:
+                key = by_message[message]
+            elif len(messages) == 1 and (not old or (len(old) == 1 and old[0]["identity_key"] == group)):
+                # 기존 단일 지적은 설명이 바뀌어도 ID를 유지한다. anchor 비교가 경고 재확인을 맡는다.
+                key = group
+            else:
+                # 여러 지적의 의미 대응을 추측하지 않는다. 순서 대신 전체 설명으로 새 문제를 식별한다.
+                key = group + "|finding:" + hashlib.sha256(message.encode("utf-8")).hexdigest()
+            keys[group, message] = key
+    return keys
+
+
 def persist_issues(conn: Connection, session_id: str, document: Document, validation_id: str | None,
                    drafts: list[IssueDraft], fps: dict[str, str], ctx: Context, input_revision: int,
                    agent_covered_blocks: set[str], agent_full: bool, *, resolve_missing: bool = True) -> list[str]:
     """이번 검증이 만든 Issue를 기록한다. 현재 Issue ID 목록을 돌려준다.
 
-    - 같은 identity_key(origin 포함)의 기존 행을 갱신한다(새 행 X).
+    - Agent의 같은 대상·코드에 여러 설명이 있으면 각각 기록한다. 같은 설명의 ID·이력을 재사용한다.
+    - 서버·사전 점검·배치 문제는 기존 identity_key(origin 포함)로 갱신한다.
     - resolved/excluded였는데 다시 검출되면 원인이 돌아온 것 → open으로 되돌리고 이전 resolution은 이력으로.
     - acknowledged는 관련 내용·근거·입력(anchor)이 바뀌었을 때만 open으로 재확인.
     - 이번에 검출되지 않은 open Issue는 그 검사가 그 범위를 실제로 다시 봤을 때만 서버가 resolved로 닫는다.
@@ -467,8 +597,9 @@ def persist_issues(conn: Connection, session_id: str, document: Document, valida
     """
     stamp = to_iso(now())
     produced: set[str] = set()
+    agent_keys = _agent_issue_keys(conn, document.document_id, drafts)
     for d in drafts:
-        key = d.identity_key
+        key = agent_keys[d.identity_key, d.message] if d.origin == "agent" else d.identity_key
         anchor = _anchor(d, fps, ctx, input_revision)
         row = conn.execute("SELECT * FROM issues WHERE document_id=? AND identity_key=?", (document.document_id, key)).fetchone()
         if row is None:
@@ -610,5 +741,9 @@ def compute_document_status(conn: Connection, document_id: str, document_revisio
         return "review_required"
     v = latest_validation(conn, document_id, document_revision, input_revision)
     if v is None:
+        if conn.execute("SELECT 1 FROM document_revisions WHERE document_id=? AND revision=? "
+                        "AND input_revision=? AND origin='impact_review'",
+                        (document_id, document_revision, input_revision)).fetchone() is not None:
+            return "review_required"
         return "draft"
     return "ready_for_approval" if v["status"] == "passed" else "review_required"

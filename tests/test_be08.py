@@ -1,6 +1,6 @@
 """BE-08 확인: 배치 검사 Job·미리보기·승인 ⑥ 실체화·불변 artifact·Export·다운로드·공개 허가·Issue 분리·재시작 복구·만료.
 
-모든 자료는 가상(clean TXT·Pillow PNG·가짜 등록 묶음). 실제 AI 호출 없음(mock Agent). PDF 배치 검사는 시스템 Chromium 계열
+모든 자료는 가상(clean TXT·Pillow PNG·가짜 등록 묶음). 실제 AI 호출 없음(mock Agent 또는 LlmAgent의 준비된 모델 응답). PDF 배치 검사는 시스템 Chromium 계열
 브라우저가 있을 때만 실제로 돈다. 없으면 해당 테스트는 skip으로 표시된다(통과가 아니다). DOCX 승인·Export·다운로드는 이 범위에서 차단이 정상.
 """
 from __future__ import annotations
@@ -57,13 +57,14 @@ def app(settings):
 class Flow:
     """세션 + clean TXT/PNG 업로드 + mock 초안 + 검증(passed). 배치 검사·승인·출력 헬퍼."""
 
-    def __init__(self, app, settings, *, upload_png: bool = True, registered_ids: list[str] | None = None):
+    def __init__(self, app, settings, *, upload_png: bool = True, registered_ids: list[str] | None = None,
+                 png_size: tuple[int, int] = (8, 6)):
         self.app, self.settings = app, settings
         self.c = TestClient(app)
         self.sid = self.c.post("/api/v1/sessions", json={"brief": BRIEF}).json()["session_id"]
         files = [("files", ("a.txt", io.BytesIO(CLEAN_TXT)))]
         if upload_png:
-            files.append(("files", ("p.png", io.BytesIO(_png()))))
+            files.append(("files", ("p.png", io.BytesIO(_png(*png_size)))))
         up = self.c.post(f"/api/v1/sessions/{self.sid}/sources", files=files).json()
         selected = (registered_ids or []) + [i["source_id"] for i in up["items"]]
         r = self.c.patch(f"/api/v1/sessions/{self.sid}/inputs", json={"expected_input_revision": 1, "selected_source_ids": selected})
@@ -188,6 +189,170 @@ def _no_paths(obj) -> None:
 # ================= PDF 완주 =================
 
 @needs_browser
+def test_real_http_photo_upload_approve_and_pdf_download():
+    """격리 mock 서버에 실제 HTTP로 사진을 올리고 PDF 승인·재다운로드를 확인한다."""
+    from scripts.check_s01_http import run_check
+
+    result = run_check(timeout_s=120, publication=True, photos=True, export_browser_path=BROWSER)
+    assert result["status"] == "passed" and result["transport"] == "localhost HTTP"
+    assert result["agent_mode"] == "mock"
+    assert {"photo_upload_and_asset_bytes", "photo_owner_isolation", "closed_photo_410"} <= set(result["checks"])
+    counts = result["counts_before_close"]
+    assert all(counts[table] == 2 for table in (
+        "sources", "source_versions", "extraction_runs", "session_source_selections"))
+    assert counts["jobs"] == 3 and counts["documents"] == counts["document_revisions"] == 1
+    publication = result["publication"]
+    assert publication["status"] == "passed" and publication["pdf_images"] == 1
+    assert publication["pdf_pages"] == 4 and publication["pdf_bytes"] > 0
+    assert publication["renderer"].startswith(("chrome/", "edge/", "chromium/"))
+    digest = publication["pdf_sha256"]
+    assert len(digest) == 64 and set(digest) <= set("0123456789abcdef")
+    assert {"photo_preserved_after_edit", "photo_embedded_in_pdf", "pdf_preview_png",
+            "pdf_download_and_reuse", "edit_invalidates_approval", "old_download_409"} <= set(publication["checks"])
+
+
+@needs_browser
+def test_llm_photo_normalization_review_blocker_and_pdf_download(settings, monkeypatch):
+    """실제 Agent·저장·사진 검증 연결·PDF 완주. 모델의 의미 판단만 준비된 응답으로 대체한다."""
+    from dataclasses import replace
+
+    from pypdf import PdfReader
+
+    from app import agent_legacy, agent_llm
+    from app.services import ai_jobs
+
+    settings = replace(settings, agent_mode="llm", cleanup_sweep_interval_s=0)
+    calls, generated_pages, reviewed_images = [], [], []
+    values = {"company_name": "예시 회사", "company_summary":
+              "예시 회사는 가상 부품 표면처리와 검사를 하는 테스트 기업입니다."}
+
+    def requester(instructions, payload, schema, schema_name, *, images=None):
+        calls.append(schema_name)
+        assert instructions and schema["type"] == "object"
+        if schema_name == "company_info":
+            result = {key: {"status": "not_found", "facts": []} for key in agent_legacy.COMPANY_INFO_KEYS}
+            for key, value in values.items():
+                unit = next(u for u in payload["source_units"] if value in u["text"])
+                result[key] = {"status": "supported", "facts": [{"text": value, "evidence": [{
+                    "source_id": unit["source_id"], "locator": unit["locator"], "quote": value}]}]}
+            return result
+        if schema_name == "draft_sections":
+            facts = {f["field"]: f for f in payload["supported_facts"]}
+            photo, = payload["photos"]
+            assert (photo["width"], photo["height"]) == (640, 480)
+            heading = {"text": values["company_name"], "fact_ids": [facts["company_name"]["fact_id"]]}
+            lead = {"text": values["company_summary"], "fact_ids": [facts["company_summary"]["fact_id"]]}
+            pages = [
+                {"heading": heading, "lead": lead, "points": [],
+                 "photo_ids": [photo["asset_id"]] * 3, "layout": "cover_photo"},
+                {"heading": heading, "lead": lead, "points": [],
+                 "photo_ids": [photo["asset_id"]], "layout": "product_grid"},
+            ]
+            generated_pages.extend(json.loads(json.dumps(pages)))
+            return {"pages": pages}
+        assert schema_name == "content_review"
+        picture, = images
+        metadata, = payload["images"]
+        assert picture.data == _png(640, 480)
+        assert picture.content_hash == hashlib.sha256(picture.data).hexdigest()
+        assert picture.mime_type == "image/png" and metadata["asset_id"] == picture.asset_id
+        assert metadata["source_id"] == picture.source_id
+        reviewed_images.append(picture.asset_id)
+        image_block, = [b for page in payload["document"]["pages"] for b in page["blocks"] if b["type"] == "image"]
+        findings = []
+        if image_block["content"]["caption"] == "붉은색 원":
+            findings.append({"kind": "image_mismatch", "block_ids": [image_block["block_id"]], "fact_ids": [],
+                             "reason": "준비된 사진에는 붉은색 원이 없습니다.",
+                             "action": "사진에 맞는 설명으로 수정하세요.", "evidence": []})
+        return {"checked_block_ids": payload["changed_block_ids"],
+                "checked_image_ids": [picture.asset_id], "findings": findings}
+
+    monkeypatch.setattr(ai_jobs, "get_bridge", lambda options: agent_llm.LlmAgent(requester, settings=options))
+    flow = Flow(create_app(settings), settings, png_size=(640, 480))
+    base = f"/api/v1/sessions/{flow.sid}"
+    saved = flow.get()
+    draft = saved["document"]
+    assert draft["document_revision"] == 1 and draft["input_revision"] == flow.rev_in
+    assert saved["validation"] is None and saved["approval"] is None
+    assert calls == ["company_info", "draft_sections"]
+    assert [p["layout_key"] for p in draft["pages"]] == ["cover_photo", "text_photo"]
+    photo, = [b for page in draft["pages"] for b in page["blocks"] if b["type"] == "image"]
+    assert photo["content"]["asset_id"] == generated_pages[0]["photo_ids"][0]
+    assert photo["content"]["caption"] == "자료 사진" and photo["fact_ids"] == []
+    pf = flow.c.get(base + f"/preflights/{flow.pf}").json()
+    assert pf["confirmed_at"] is not None
+    facts = {f["fact_id"]: f for f in pf["facts"]}
+    for page, raw in zip(draft["pages"], generated_pages, strict=True):
+        text_blocks = [b for b in page["blocks"] if b["type"] in {"heading", "paragraph"}]
+        for block, expected in zip(text_blocks, [raw["heading"], raw["lead"]], strict=True):
+            assert block["content"]["text"] == expected["text"] and block["fact_ids"] == expected["fact_ids"]
+            assert block["evidence_refs"] == [ref for fid in expected["fact_ids"] for ref in facts[fid]["evidence_refs"]]
+    with connect(settings.db_path, immediate=True) as conn:
+        row = conn.execute("SELECT content_json FROM document_revisions WHERE document_id=? AND revision=1", (flow.did,)).fetchone()
+        assert json.loads(row["content_json"]) == {"title": draft["title"], "pages": draft["pages"]}
+        with agent_llm.DraftConfirmationGraph(settings)._open(conn, flow.sid, flow.rev_in, create=False) as (graph, config):
+            state = graph.get_state(config)
+            assert state.values["preflight_id"] == flow.pf and state.values["consumed"]
+            assert state.values["job_id"] and not state.next and not state.interrupts
+    with TestClient(create_app(settings)) as reopened:
+        reopened.cookies.update(dict(flow.c.cookies))
+        assert reopened.get(base + f"/documents/{flow.did}").json() == saved
+    assert calls == ["company_info", "draft_sections"]
+
+    # 사진 설명 오류는 실제 검증·승인을 막는다. 직접 편집한 다음 같은 사진을 재검증한다.
+    flow.patch([{"op": "replace_block_content", "block_id": photo["block_id"],
+                 "content": photo["content"] | {"caption": "붉은색 원"}}])
+    failed = flow.validate()
+    assert failed["status"] == "failed" and failed["agent_called"]
+    issue, = flow.open_issues("IMAGE_MISMATCH")
+    assert issue["severity"] == "blocker" and issue["block_ids"] == [photo["block_id"]]
+    denied = flow.approve(failed["validation_id"], "lc_not_checked")
+    assert denied.status_code == 422 and denied.json()["error"]["code"] == "VALIDATION_NOT_PASSED"
+    assert flow.get()["approval"] is None
+    flow.patch([{"op": "replace_block_content", "block_id": photo["block_id"], "content": photo["content"]}])
+    passed = flow.validate()
+    assert passed["status"] == "passed" and passed["agent_called"]
+    assert passed["document_revision"] == flow.rev() == 3 and passed["input_revision"] == flow.rev_in
+    assert not [i for i in flow.open_issues() if i["severity"] == "blocker"]
+    assert next(i for i in flow.issues() if i["issue_id"] == issue["issue_id"])["status"] == "resolved"
+    assert reviewed_images == [photo["content"]["asset_id"]] * 2
+    assert calls == ["company_info", "draft_sections", "content_review", "content_review"]
+
+    flow.layout_check("pdf")
+    lc = flow.get()["layout_checks"]["pdf"]
+    assert lc["status"] == "passed" and lc["layout_ok"] and lc["publication_policy_ok"]
+    assert lc["actual_pages"] == len(draft["pages"]) == 2
+    assert {c["check_key"]: c["result"] for c in lc["checks"]} == {
+        "overflow": "ok", "broken_image": "ok", "placeholder_remaining": "ok"}
+    approved = flow.approve(passed["validation_id"], lc["layout_check_id"])
+    assert approved.status_code == 201, approved.text
+    approval = approved.json()
+    assert approval["validation_id"] == passed["validation_id"] and approval["artifact_id"] == lc["artifact_id"]
+    assert approval["document_revision"] == 3 and approval["input_revision"] == flow.rev_in
+    assert flow.doc()["status"] == "approved"
+
+    # 출력·재다운로드는 승인한 파일을 재사용한다. AI나 브라우저를 다시 호출하면 검사 실패다.
+    def unexpected_call(*args, **kwargs):
+        raise AssertionError("승인 뒤 AI/렌더러 재호출")
+    monkeypatch.setattr(ai_jobs, "get_bridge", unexpected_call)
+    monkeypatch.setattr(export_render, "render", unexpected_call)
+    export = flow.export_ready(approval["approval_id"], key="llm-photo-export")
+    assert export["artifact_id"] == lc["artifact_id"]
+    first = flow.download(export["export_id"])
+    second = flow.download(export["export_id"])
+    assert first.status_code == second.status_code == 200 and first.content == second.content
+    assert first.headers["content-type"] == "application/pdf"
+    reader = PdfReader(io.BytesIO(first.content))
+    assert len(reader.pages) == 2 and "예시 회사" in (reader.pages[0].extract_text() or "")
+    with connect(settings.db_path) as conn:
+        artifact = conn.execute("SELECT sha256, size_bytes FROM artifacts WHERE artifact_id=?", (lc["artifact_id"],)).fetchone()
+        assert hashlib.sha256(first.content).hexdigest() == artifact["sha256"]
+        assert len(first.content) == artifact["size_bytes"]
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert calls == ["company_info", "draft_sections", "content_review", "content_review"]
+
+
+@needs_browser
 def test_pdf_layout_check_approve_export_download(app, settings):
     flow = Flow(app, settings)
     v, lc = flow.ready_pdf()
@@ -257,7 +422,8 @@ def test_stress_document_layout_failed_then_fixed_and_issue_separation(app, sett
     iid = codes["LAYOUT_OVERFLOW"]["issue_id"]
     for action, code in (("resolved", "LAYOUT_RECHECK_REQUIRED"), ("acknowledged", "RESOLUTION_NOT_ALLOWED"), ("excluded", "RESOLUTION_NOT_ALLOWED")):
         r = flow.c.post(f"/api/v1/sessions/{flow.sid}/issues/{iid}/resolve",
-                        json={"expected_revision": flow.rev(), "resolution": {"action": action, "reason": "테스트"}})
+                        json={"expected_revision": flow.rev(), "input_revision": flow.rev_in,
+                              "validation_id": v2["validation_id"], "resolution": {"action": action, "reason": "테스트"}})
         assert r.status_code == 422 and r.json()["error"]["code"] == code, (action, r.text)
     # 승인은 ⑥에서 차단(status_failed)
     r = flow.approve(v2["validation_id"], lc["layout_check_id"])

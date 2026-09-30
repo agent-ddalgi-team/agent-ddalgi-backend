@@ -455,12 +455,53 @@ def test_required_content_needs_real_text_not_only_fact_ids(app, settings):
     assert r.status_code == 422 and r.json()["error"]["code"] == "RESOLUTION_NOT_ALLOWED"
 
 
+@pytest.mark.parametrize("status,linked,available,visible,expected", [
+    ("needs_confirmation", True, True, True, "자료 점검에서"),
+    ("supported", False, True, True, "연결되지 않았습니다"),
+    ("supported", True, False, True, "자료 점검에서"),
+    ("supported", True, True, False, "문서 전체에서"),
+    ("supported", True, True, True, None),
+])
+def test_required_company_diagnostic_locates_text_without_weakening_checks(status, linked, available, visible, expected):
+    from app.models import Document, Fact
+    from app.services.refs import SessionRefs
+    fact = Fact(fact_id="f_name", field_key="company_name", value="예시 회사", status=status)
+    doc = Document(document_id="doc", session_id="sess", document_revision=1, input_revision=1,
+                   title="소개", target_pages=1, status="draft", pages=[{
+                       "page_id": "p1", "title": "소개", "layout_key": "text_photo", "blocks": [{
+                           "block_id": "b1", "type": "heading", "content": {"text": "예시 회사 | 소개" if visible else "소개", "level": 1},
+                           "fact_ids": ["f_name"] if linked else [],
+                       }]}])
+    ctx = validation.Context({}, {}, {}, set(), SessionRefs(set(), {}, set(), {"f_name"} if available else set()),
+                             {fact.fact_id: fact}, [])
+    issues, _ = validation.server_checks(doc, ctx)
+    required = [i for i in issues if i.code == "REQUIRED_MISSING" and i.fact_ids == ["f_name"]]
+    if expected is None:
+        assert required == []
+    else:
+        assert len(required) == 1 and required[0].severity == "blocker"
+        assert expected in required[0].message
+        assert required[0].block_ids == (["b1"] if visible else [])
+
+
 def test_required_business_content_accepts_related_fact_kinds(app, settings):
     """company_summary가 없어도 business_areas 설명이 실제 블록에 있으면 인정."""
     txt = "회사명: 예시 회사\n사업 분야: 가상 부품 표면처리\n".encode()
     ctx = Ctx(app, txt=txt, with_photo=False)
     ctx.make_clean_and_validate(settings)
     assert ctx.open_issues("REQUIRED_MISSING") == []
+
+
+def test_company_alias_match_is_explicit_and_does_not_accept_unrelated_claim(monkeypatch):
+    from app.models import Fact
+    monkeypatch.setenv("COMPANY_NAME_ALIASES", json.dumps([["㈜가상표면기술", "가상표면기술", "EXAMPLE SURFACE"]]))
+    fact = Fact(fact_id="f", field_key="company_name", value="EXAMPLE SURFACE", status="supported")
+    assert validation._required_value_in_text(fact, "가상표면기술 | 소개")
+    assert not validation._required_value_in_text(fact, "다른가상표면기술회사")
+    business = fact.model_copy(update={"field_key": "business_areas"})
+    assert not validation._required_value_in_text(business, "가상표면기술 | 소개")
+    monkeypatch.delenv("COMPANY_NAME_ALIASES")
+    assert not validation._required_value_in_text(fact, "가상표면기술 | 소개")
 
 
 # ================= MOCK_VALUE =================
@@ -988,3 +1029,305 @@ def test_no_real_company_terms_in_new_code():
         src = inspect.getsource(mod)
         for banned in ("거산", "케미칼", "Geosan"):
             assert banned not in src, mod.__name__
+
+@pytest.mark.parametrize("caption,registered,expected", [
+    ("소개서의 생산라인 사진", None, True),
+    ("AI 생성 시연 콘셉트: 어두운 배경의 금속 부품 표지 이미지 · 실제 회사 제품 아님", "AI 생성 시연 콘셉트: 어두운 배경의 금속 부품 표지 이미지 · 실제 회사 제품 아님", True),
+    ("AI 생성 시연 콘셉트: 어두운 배경의 금속 부품 표지 이미지 · 실제 회사 제품 아님", None, False),
+    ("국내 최대 규모 설비 사진", "국내 최대 규모 설비 사진", False),
+    ("ISO 9001 인증 설비", "ISO 9001 인증 설비", False),
+    ("생산 능력 300개", "생산 능력 300개", False),
+])
+def test_photo_description_is_not_doubled_or_promoted_to_factual_evidence(caption, registered, expected):
+    from types import SimpleNamespace
+    from app.models import Block
+    block = Block(block_id="photo", type="image", content={"asset_id": "asset", "caption": caption, "alt": caption})
+    ctx = SimpleNamespace(asset_captions={"asset": registered} if registered else {})
+    assert validation.image_has_descriptive_caption(block, ctx) is expected
+    block.content["alt"] = "실제 회사가 보유한 최대 규모 설비"
+    assert not validation.image_has_descriptive_caption(block, ctx)
+
+
+def test_duplicate_caption_and_alt_do_not_create_server_blocker(app):
+    ctx = Ctx(app)
+    block = next(b for p in ctx.doc()["pages"] for b in p["blocks"] if b["type"] == "image")
+    ctx.patch([{"op": "replace_block_content", "block_id": block["block_id"], "content": {
+        **block["content"], "caption": "소개서의 생산라인 사진", "alt": "소개서의 생산라인 사진"}}])
+    ctx.validated()
+    assert not any(block["block_id"] in i["block_ids"] for i in ctx.open_issues("UNSUPPORTED_CLAIM"))
+
+
+@pytest.fixture
+def c05_ctx(tmp_path):
+    from app.db import init_orm_db
+
+    settings = Settings(private_runs_dir=tmp_path / "runs", db_path=tmp_path / "runs" / "c05.sqlite3",
+                        cleanup_sweep_interval_s=0)
+    init_orm_db(settings.db_path, settings.private_runs_dir)
+    app = create_app(settings)
+    with TestClient(app):
+        ctx = Ctx(app)
+        try:
+            yield ctx, settings
+        finally:
+            ctx.c.close()
+
+
+def _c05_review(ctx, *, selected=None):
+    body = {"expected_input_revision": ctx.rev_in, "brief": {**BRIEF, "purpose": "자료 보완 후 기존 편집 유지"}}
+    if selected is not None:
+        body["selected_source_ids"] = selected
+    response = ctx.c.patch(f"/api/v1/sessions/{ctx.sid}/inputs", json=body)
+    assert response.status_code == 200, response.text
+    ctx.rev_in = response.json()["input_revision"]
+    ctx.preflight()
+    route = f"/api/v1/sessions/{ctx.sid}/documents/{ctx.did}/impact-reviews"
+    response = ctx.c.post(route, json={"expected_revision": ctx.rev(), "input_revision": ctx.rev_in,
+                                     "preflight_id": ctx.pf, "confirmed": True})
+    assert response.status_code == 201, response.text
+    return route + "/" + response.json()["review_id"] + "/apply"
+
+
+def _c05_apply(ctx, route, **extra):
+    response = ctx.c.post(route, json={"expected_revision": ctx.rev(), "input_revision": ctx.rev_in,
+                                     "keep_reason": "선택 자료와 기존 편집의 근거를 대조했습니다.", **extra})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_c05_apply_runs_full_validation_preserves_blockers_and_invalidates_approval(c05_ctx):
+    ctx, settings = c05_ctx
+    checked = ctx.make_clean_and_validate(settings)
+    approval_response = ctx.approve(checked["validation_id"], ctx.layout_row(settings))
+    assert approval_response.status_code == 201, approval_response.text
+    approval_id = approval_response.json()["approval_id"]
+    ctx.patch([{"op": "insert_block", "page_id": "page_02", "after_block_id": None,
+                "block": {"block_id": "c05_existing_claim", "type": "paragraph",
+                          "content": {"text": "추가 근거가 없는 회사의 새로운 사업 설명입니다."}}}])
+    assert ctx.validated()["status"] == "failed"
+    blocker = _first(ctx.open_issues("UNSUPPORTED_CLAIM"), block_ids=["c05_existing_claim"])
+    before = ctx.doc()
+    applied = _c05_apply(ctx, _c05_review(ctx))
+    assert ctx.job(applied["validation_job_id"])["status"] == "succeeded"
+    after = ctx.get()
+    assert after["document"]["pages"] == before["pages"]
+    assert after["validation"]["input_revision"] == ctx.rev_in
+    assert set(after["validation"]["checked_block_ids"]) == {
+        block["block_id"] for page in before["pages"] for block in page["blocks"]}
+    assert after["validation"]["status"] == "failed"
+    assert _first(ctx.issues(), issue_id=blocker["issue_id"])["status"] == "open"
+    assert after["approval"] is None and after["document"]["status"] == "review_required"
+    with connect(settings.db_path) as conn:
+        assert conn.execute("SELECT status FROM approvals WHERE approval_id=?", (approval_id,)).fetchone()[0] == "invalidated"
+
+
+def test_c05_followup_edit_cannot_reintroduce_an_old_preflight_fact(c05_ctx, monkeypatch):
+    ctx, _ = c05_ctx
+    old = next(block for page in ctx.doc()["pages"] for block in page["blocks"]
+               if block["type"] == "paragraph" and block["fact_ids"])
+    original = MockAgent.analyze
+
+    async def new_ids(self, request):
+        result = await original(self, request)
+        for fact in result.facts:
+            fact.fact_id = "c05_latest_" + fact.fact_id
+        for issue in result.issues:
+            issue.fact_ids = ["c05_latest_" + fid for fid in issue.fact_ids]
+        return result
+
+    monkeypatch.setattr(MockAgent, "analyze", new_ids)
+    applied = _c05_apply(ctx, _c05_review(ctx))
+    assert ctx.job(applied["validation_job_id"])["status"] == "succeeded"
+    assert not ctx.open_issues("EVIDENCE_INVALID")
+    ctx.patch([{"op": "insert_block", "page_id": "page_02", "after_block_id": None,
+                "block": {**old, "block_id": "c05_old_fact"}}])
+    assert ctx.validated()["status"] == "failed"
+    assert _first(ctx.open_issues("EVIDENCE_INVALID"), block_ids=["c05_old_fact"])["severity"] == "blocker"
+
+
+def test_c05_followup_edit_cannot_reintroduce_a_deselected_photo(c05_ctx):
+    ctx, settings = c05_ctx
+    old = next(block for page in ctx.doc()["pages"] for block in page["blocks"] if block["type"] == "image")
+    with connect(settings.db_path) as conn:
+        selected = [row[0] for row in conn.execute("SELECT source_id FROM sources WHERE session_id=? AND mime_type='text/plain'",
+                                                 (ctx.sid,))]
+    assert selected
+    applied = _c05_apply(ctx, _c05_review(ctx, selected=selected),
+                         operations=[{"op": "delete_block", "block_id": old["block_id"]}])
+    assert ctx.job(applied["validation_job_id"])["status"] == "succeeded"
+    assert not ctx.open_issues("EVIDENCE_INVALID")
+    ctx.patch([{"op": "insert_block", "page_id": "page_01", "after_block_id": None,
+                "block": {**old, "block_id": "c05_old_photo"}}])
+    assert ctx.validated()["status"] == "failed"
+    assert _first(ctx.open_issues("EVIDENCE_INVALID"), block_ids=["c05_old_photo"])["severity"] == "blocker"
+
+
+@pytest.mark.parametrize("change", ["new_fact_ids", "needs_confirmation"])
+def test_c05_same_input_recheck_uses_latest_fact_ids_and_status(c05_ctx, monkeypatch, change):
+    from app.services import documents, preflights
+
+    ctx, settings = c05_ctx
+    _c05_apply(ctx, _c05_review(ctx))
+    bound_pf = ctx.pf
+    target = next(block for page in ctx.doc()["pages"] for block in page["blocks"]
+                  if block["type"] == "paragraph" and block["fact_ids"])
+    fact_id = target["fact_ids"][0]
+    original = MockAgent.analyze
+
+    async def rechecked(self, request):
+        result = await original(self, request)
+        for fact in result.facts:
+            if change == "new_fact_ids":
+                fact.fact_id = "rechecked_" + fact.fact_id
+            elif fact.fact_id == fact_id:
+                fact.status = "needs_confirmation"
+        if change == "new_fact_ids":
+            for issue in result.issues:
+                issue.fact_ids = ["rechecked_" + fid for fid in issue.fact_ids]
+        return result
+
+    monkeypatch.setattr(MockAgent, "analyze", rechecked)
+    ctx.preflight()
+    assert ctx.pf != bound_pf
+    with connect(settings.db_path) as conn:
+        context = validation.load_context(conn, ctx.sid, preflights.get(conn, ctx.sid, bound_pf))
+        assert context.selected_preflight.preflight_id == ctx.pf
+        drafts, _ = validation.server_checks(documents.get_current(conn, ctx.sid, ctx.did), context)
+        assert any(d.code == "EVIDENCE_INVALID" and d.block_ids == [target["block_id"]] for d in drafts)
+    assert ctx.validated()["status"] == "failed"
+    assert _first(ctx.open_issues("EVIDENCE_INVALID"), block_ids=[target["block_id"]])["severity"] == "blocker"
+
+
+def test_c05_applied_document_stays_review_required_without_completed_validation(c05_ctx, monkeypatch):
+    from app.services import ai_jobs, jobs
+
+    ctx, settings = c05_ctx
+    route = _c05_review(ctx)
+    monkeypatch.setattr(ai_jobs, "run_validate_job", lambda *args: None)
+    applied = _c05_apply(ctx, route)
+    out = ctx.get()
+    assert out["validation"] is None and out["document"]["status"] == "review_required"
+    with connect(settings.db_path) as conn:
+        jobs.fail(conn, applied["validation_job_id"], "SERVICE_TEMPORARY_FAILURE", "가짜 검증 실패", True)
+    out = ctx.get()
+    assert out["validation"] is None and out["document"]["status"] == "review_required"
+
+
+def test_v11_without_applied_impact_review_keeps_legacy_context(c05_ctx):
+    from app.services import preflights
+
+    ctx, settings = c05_ctx
+    with connect(settings.db_path) as conn:
+        context = validation.load_context(conn, ctx.sid, preflights.get(conn, ctx.sid, ctx.pf))
+    assert context.selected_sources is None and context.selected_preflight is None
+
+
+def test_c05_same_input_preflight_invalidates_approval_and_previous_validation(c05_ctx):
+    ctx, settings = c05_ctx
+    applied = _c05_apply(ctx, _c05_review(ctx))
+    assert ctx.job(applied["validation_job_id"])["status"] == "succeeded"
+    checked = ctx.make_clean_and_validate(settings)
+    assert checked["status"] == "passed"
+    layout_id = ctx.layout_row(settings)
+    response = ctx.approve(checked["validation_id"], layout_id)
+    assert response.status_code == 201, response.text
+    approval_id = response.json()["approval_id"]
+    before, previous_pf = ctx.doc(), ctx.pf
+    original_facts = ctx.c.get(f"/api/v1/sessions/{ctx.sid}/preflights/{previous_pf}").json()["facts"]
+
+    ctx.preflight()  # 같은 입력·같은 사실도 새로운 점검 결과다.
+    latest_pf = ctx.c.get(f"/api/v1/sessions/{ctx.sid}/preflights/{ctx.pf}").json()
+    assert ctx.pf != previous_pf and latest_pf["facts"] == original_facts
+    assert latest_pf["input_revision"] == before["input_revision"] and latest_pf["confirmed_at"] is None
+    after = ctx.get()
+    assert after["document"]["pages"] == before["pages"]
+    assert after["document"]["document_revision"] == before["document_revision"]
+    assert after["approval"] is None and after["validation"] is None
+    with connect(settings.db_path) as conn:
+        approval = conn.execute("SELECT status, invalidated_reason FROM approvals WHERE approval_id=?",
+                                (approval_id,)).fetchone()
+        assert tuple(approval) == ("invalidated", "preflight_changed")
+        assert validation.latest_validation(conn, ctx.did, ctx.rev(), ctx.rev_in) is None
+        assert conn.execute("SELECT validation_id FROM validations WHERE validation_id=?",
+                            (checked["validation_id"],)).fetchone() is not None
+    rejected = ctx.approve(checked["validation_id"], layout_id)
+    assert rejected.status_code == 422 and rejected.json()["error"]["code"] == "VALIDATION_NOT_PASSED"
+
+
+def test_c05_same_input_new_preflight_can_be_confirmed_and_rebound_with_full_validation(c05_ctx):
+    ctx, settings = c05_ctx
+    _c05_apply(ctx, _c05_review(ctx))
+    ctx.make_clean_and_validate(settings)
+    previous_pf, unchanged_input = ctx.pf, ctx.rev_in
+    ctx.preflight()
+    assert ctx.pf != previous_pf and ctx.rev_in == unchanged_input
+    # 적용 전에 새 점검으로 검증해도 명시 확인과 적용 후 전체 검증을 대신하지 않는다.
+    prior_check = ctx.validated()
+    assert prior_check["status"] == "passed"
+    denied = ctx.approve(prior_check["validation_id"], ctx.layout_row(settings))
+    assert denied.status_code == 422 and denied.json()["error"]["code"] == "PREFLIGHT_NOT_CONFIRMED"
+    before = ctx.doc()
+    route = f"/api/v1/sessions/{ctx.sid}/documents/{ctx.did}/impact-reviews"
+    response = ctx.c.post(route, json={"expected_revision": ctx.rev(), "input_revision": ctx.rev_in,
+                                      "preflight_id": ctx.pf, "confirmed": True})
+    assert response.status_code == 201, response.text
+    review = response.json()
+    assert review["from_input_revision"] == review["to_input_revision"] == unchanged_input
+    assert review["preflight_id"] == ctx.pf and review["status"] == "pending"
+    assert ctx.doc() == before
+    calls_before_apply = MockAgent.validate_calls
+    applied = _c05_apply(ctx, route + "/" + review["review_id"] + "/apply")
+    assert applied["document_revision"] == before["document_revision"] + 1
+    assert applied["input_revision"] == unchanged_input
+    assert ctx.job(applied["validation_job_id"])["status"] == "succeeded"
+    out = ctx.get()
+    checked = out["validation"]
+    assert out["document"]["pages"] == before["pages"]
+    assert checked["validation_id"] != prior_check["validation_id"]
+    assert checked["agent_called"] and MockAgent.validate_calls == calls_before_apply + 1
+    assert checked["base_validation_id"] is None and checked["reused_block_ids"] == []
+    assert set(checked["checked_block_ids"]) == {block["block_id"] for page in before["pages"] for block in page["blocks"]}
+    with connect(settings.db_path) as conn:
+        bound = conn.execute("SELECT input_revision, preflight_id FROM document_revisions WHERE document_id=? AND revision=?",
+                             (ctx.did, applied["document_revision"])).fetchone()
+        assert tuple(bound) == (unchanged_input, ctx.pf)
+        check_records = json.loads(conn.execute("SELECT checks_json FROM validations WHERE validation_id=?",
+                                               (checked["validation_id"],)).fetchone()[0])
+        assert any(record["check_key"] == "preflight:" + ctx.pf for record in check_records)
+
+
+@pytest.mark.parametrize("previously_applied", [False, True])
+def test_c05_confirming_review_cannot_skip_apply_before_final_approval(c05_ctx, previously_applied):
+    ctx, settings = c05_ctx
+    if previously_applied:
+        _c05_apply(ctx, _c05_review(ctx))
+    assert ctx.make_clean_and_validate(settings)["status"] == "passed"
+    before = ctx.doc()
+    ctx.preflight()  # 입력·사실 ID는 같아도 새 점검의 영향 검토를 적용해야 한다.
+    route = f"/api/v1/sessions/{ctx.sid}/documents/{ctx.did}/impact-reviews"
+    response = ctx.c.post(route, json={"expected_revision": ctx.rev(), "input_revision": ctx.rev_in,
+                                      "preflight_id": ctx.pf, "confirmed": True})
+    assert response.status_code == 201, response.text
+    review = response.json()
+    assert review["status"] == "pending"
+    confirmed = ctx.c.get(f"/api/v1/sessions/{ctx.sid}/preflights/{ctx.pf}").json()
+    assert confirmed["confirmed_at"] is not None
+    checked = ctx.validated()
+    assert checked["status"] == "passed"
+    denied = ctx.approve(checked["validation_id"], ctx.layout_row(settings))
+    assert denied.status_code == 409 and denied.json()["error"]["code"] == "IMPACT_REVIEW_REQUIRED"
+    assert ctx.get()["approval"] is None
+    assert ctx.doc()["document_revision"] == before["document_revision"]
+    assert ctx.doc()["pages"] == before["pages"]
+    with connect(settings.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM confirmations WHERE impact_review_id=?",
+                            (review["review_id"],)).fetchone()[0] == 0
+
+    applied = _c05_apply(ctx, route + "/" + review["review_id"] + "/apply")
+    assert ctx.job(applied["validation_job_id"])["status"] == "succeeded"
+    after = ctx.get()
+    assert after["validation"]["status"] == "passed"
+    assert after["document"]["document_revision"] == before["document_revision"] + 1
+    approved = ctx.approve(after["validation"]["validation_id"], ctx.layout_row(settings))
+    assert approved.status_code == 201, approved.text
+    assert ctx.get()["approval"]["approval_id"] == approved.json()["approval_id"]

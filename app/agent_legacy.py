@@ -19,7 +19,7 @@ EXTRACT_PROMPT_PATH = ROOT / 'prompts' / 'extract.txt'
 SCHEMA_VERSION = '1.0'
 RequestJson = Callable[[str, dict[str, Any], dict[str, Any], str], dict[str, Any]]
 # contract.md 1절의 초기 제안 상한. 넘으면 조용히 자르지 않고 멈춘다.
-MAX_SOURCE_CHARS = 40_000
+MAX_SOURCE_CHARS = 200_000
 SOURCE_UNIT_KEYS = ('source_id', 'locator', 'text')
 
 # 14개 키는 직접 적지 않고 공통 스키마의 company_info.required에서 가져온다.
@@ -262,6 +262,28 @@ def check_company_info(company_info: Any, agent_input: dict[str, Any]) -> None:
                                       quote=_short(evidence['quote']))
 
 
+def _deduplicate_supported_facts(company_info: dict[str, Any]) -> dict[str, Any]:
+    """검사를 통과한 supported의 같은 항목·text·근거 집합만 한 번 남긴다.
+
+    의미가 같은지 추정하거나 문자열을 정규화하지 않는다. 다른 근거와 충돌·미확인
+    후보는 그대로 두며, 첫 사실의 값·근거 순서와 원 응답을 보존한다. ID 부여 전에만 쓴다.
+    """
+    result = copy.deepcopy(company_info)
+    for field in result.values():
+        if field['status'] != 'supported':
+            continue
+        seen = set()
+        distinct = []
+        for fact in field['facts']:
+            evidence = frozenset(tuple(ref[name] for name in EVIDENCE_KEYS) for ref in fact['evidence'])
+            key = (fact['text'], evidence)
+            if key not in seen:
+                seen.add(key)
+                distinct.append(fact)
+        field['facts'] = distinct
+    return result
+
+
 def assign_fact_ids(company_info: dict[str, Any]) -> dict[str, Any]:
     """check_company_info를 통과한 company_info에 F001부터 fact_id를 붙인 새 객체를 돌려준다.
 
@@ -281,7 +303,7 @@ def assign_fact_ids(company_info: dict[str, Any]) -> dict[str, Any]:
 def extract_company_info(agent_input: dict[str, Any], *, request_json: RequestJson) -> dict[str, Any]:
     """허용된 source_units에서 company_info 14개 항목을 추출하고 검사한다.
 
-    호출부는 JSON 객체만 반환한다. 검사를 통과한 뒤 코드가 fact_id를 붙인다.
+    호출부는 JSON 객체만 반환한다. 원 응답 전체 검사 후 supported 완전중복만 줄이고 fact_id를 붙인다.
     실패한 값을 자동 보정하거나 mock으로 대체하지 않으며, 이 모듈은 재시도하지 않는다.
     """
     check_agent_input(agent_input)
@@ -289,7 +311,7 @@ def extract_company_info(agent_input: dict[str, Any], *, request_json: RequestJs
     model_output = _request_checked(request_json, instructions, _source_payload(agent_input),
                                     build_model_output_schema(), MODEL_SCHEMA_NAME)
     check_company_info(model_output, agent_input)
-    return assign_fact_ids(model_output)
+    return assign_fact_ids(_deduplicate_supported_facts(model_output))
 
 
 # --------------------------------------------------------------------------
@@ -391,7 +413,9 @@ def _draft_payload(supported_facts: list[dict[str, Any]], section_keys: tuple[st
     """확인된 사실과 요청 방향을 구분한다. brief는 회사 사실의 근거가 아니다."""
     data: dict[str, Any] = {
         'supported_facts': [{key: fact[key] for key in SUPPORTED_FACT_KEYS} for fact in supported_facts],
-        'sections_to_write': [{'key': key, 'title': SECTION_TITLES[key]} for key in section_keys],
+        'sections_to_write': [{'key': key, 'title': SECTION_TITLES[key],
+                               'fact_ids': [fact['fact_id'] for fact in supported_facts if fact['field'] == key]}
+                              for key in section_keys],
     }
     if brief is not None:
         data['brief'] = copy.deepcopy(brief)
@@ -406,7 +430,7 @@ def check_draft_sections(sections: Any, supported_facts: list[dict[str, Any]],
                          section_keys: tuple[str, ...]) -> None:
     """GPT가 준 draft_sections를 정해진 순서로 검사한다. 첫 실패에서 멈추고 아무것도 고치지 않는다.
 
-    순서: 1 배열·모양 → 2 key 집합 일치 → 3 빈 값·안내 문구 중복 → 4 fact_ids 규칙.
+    순서: 1 배열·모양 → 2 key 집합 일치 → 3 빈 값·안내 문구 중복 → 4 fact_ids → 5 항목·전체 참조 누락.
     문장의 의미가 근거와 맞는지는 검사하지 않는다(사람 검토).
     """
     allowed_ids = {fact['fact_id'] for fact in supported_facts}
@@ -472,6 +496,19 @@ def check_draft_sections(sections: Any, supported_facts: list[dict[str, Any]],
                                      field=key, paragraph_index=j,
                                      unknown=[_short(str(fid)) for fid in unknown])
 
+        # 회사명이나 다른 항목의 ID만 붙여 해당 항목을 작성한 것으로 처리하지 않는다.
+        own_ids = {fact['fact_id'] for fact in supported_facts if fact['field'] == key}
+        used_ids = {fid for paragraph in section['paragraphs'] for fid in paragraph['fact_ids']}
+        if not own_ids.intersection(used_ids):
+            raise _invalid_draft('section_fact_missing', '항목의 사실을 참조한 문단이 없습니다.', field=key)
+
+    # 명시적 제외는 호출 전에 적용된다. 회사명은 제목에 연결하므로 본문 필수 참조에서 제외한다.
+    required_ids = {fact['fact_id'] for fact in supported_facts if fact['field'] != 'company_name'}
+    used_ids = {fid for section in sections for paragraph in section['paragraphs'] for fid in paragraph['fact_ids']}
+    if required_ids - used_ids:
+        raise _invalid_draft('fact_ids_missing', '작성에 전달한 본문 사실의 참조가 빠졌습니다.',
+                             missing_fact_ids=sorted(required_ids - used_ids))
+
 
 def draft_profile(supported_facts: list[dict[str, Any]], *, request_json: RequestJson,
                   brief: dict[str, Any] | None = None,
@@ -483,6 +520,7 @@ def draft_profile(supported_facts: list[dict[str, Any]], *, request_json: Reques
     supported 사실이 있어도 본문 섹션 대상이 없으면(company_name만 있을 때) 빈 목록을 돌려준다.
     section_order는 본문 항목의 순서만 바꾼다. 항목 제외는 호출자가 생성용 사실 목록에서 처리한다.
     실패하면 멈춘다. 입력·출력 검사를 통과하지 못한 값은 자동 수정하지 않는다.
+    검사 후 같은 항목 안의 text·fact_ids 집합이 같은 문단만 첫 한 건으로 유지한다.
     주입한 호출부의 실패도 그대로 전달하며 이 모듈은 재시도하지 않는다.
     근거 ID 검사를 통과해도 문장의 의미가 맞는지는 확인되지 않는다(사람 검토 필요).
     """
@@ -508,14 +546,13 @@ def draft_profile(supported_facts: list[dict[str, Any]], *, request_json: Reques
     sections = model_output.get('draft_sections')
     check_draft_sections(sections, supported_facts, section_keys)
     order = {key: i for i, key in enumerate(section_keys)}
-    return [
-        {
-            'key': section['key'],
-            'title': SECTION_TITLES[section['key']],
-            'paragraphs': [
-                {'text': paragraph['text'], 'fact_ids': list(paragraph['fact_ids'])}
-                for paragraph in section['paragraphs']
-            ],
-        }
-        for section in sorted(sections, key=lambda s: order[s['key']])
-    ]
+    result = []
+    for section in sorted(sections, key=lambda s: order[s['key']]):
+        seen, paragraphs = set(), []
+        for paragraph in section['paragraphs']:
+            key = (paragraph['text'], frozenset(paragraph['fact_ids']))
+            if key not in seen:
+                seen.add(key)
+                paragraphs.append({'text': paragraph['text'], 'fact_ids': list(paragraph['fact_ids'])})
+        result.append({'key': section['key'], 'title': SECTION_TITLES[section['key']], 'paragraphs': paragraphs})
+    return result
