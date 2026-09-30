@@ -323,6 +323,99 @@ def test_editorial_production_path_atomic_claims_selection_and_original_sources(
         assert next(s for s in result.editorial.selections if s.fact_id == "fact_conflict_cert").disposition == "review"
 
 
+@pytest.mark.parametrize("source,claim,allowed", [
+    ("수량 1200개", "수량 1,200개", True),
+    ("수량 1,200개", "수량 1200개", True),
+    ("길이 1,200.5 mm", "길이 1200.5mm", True),
+    ("만료일 2027.02.15", "만료일 2027년 2월 15일", True),
+    ("만료일 2027-02-15", "만료일 2027/2/15", True),
+    ("Issue date: 25 September 2025", "발행일 2025년 9월 25일", True),
+    ("Expiry: September 24, 2028", "만료일 2028.09.24", True),
+    ("Expiry: 24 Sept. 2028", "만료일 2028-09-24", True),
+    ("2020 | 시범 가동", "2020년 시범 가동", True),
+    ("수료일 2021.03.20", "2021년 수료", True),
+    ("2020년 시범 가동", "2020년 시범 가동", True),
+    ("수량 1200개", "수량 1,201개", False),
+    ("길이 200mm", "길이 200cm", False),
+    ("길이 1.200mm", "길이 1200mm", False),
+    ("수량 1200개", "수량 12,00개", False),
+    ("발행일 2025-09-25 만료일 2028-09-24", "만료일 2028년 9월 25일", False),
+    ("만료일 2027.02.15", "만료일 2027년 2월 16일", False),
+    ("시범 가동 2020년", "시범 가동 2020년 12월 28일", False),
+    ("수량 2020개", "2020년 생산", False),
+    ("코드 A2020-12-28", "2020년 12월 28일", False),
+    ("코드 KSPC-2026-0012", "2026년 1월 12일", False),
+    ("코드 2020-12-28X", "2020년 12월 28일", False),
+    ("만료일 2027-02-28", "만료일 2027년 2월 30일", False),
+    ("후보 9행, 월 20영업일", "P01~P09, 월 20영업일", False),
+])
+def test_numeric_evidence_accepts_format_only_and_rejects_changed_values(source, claim, allowed):
+    assert (not (validation.numeric_evidence_tokens(claim) -
+                 validation.numeric_evidence_tokens(source))) is allowed
+
+
+def numeric_editorial_request(source, value):
+    request = build_editorial_request("manufacturing")
+    fact = next(f for f in request.preflight.facts if f.field_key == "certifications")
+    fact.value = value
+    fact.evidence_refs[0].excerpt = source
+    next(s for s in request.sources[0].segments if s.segment_id == fact.evidence_refs[0].segment_id).text = source
+    return request, fact.fact_id
+
+
+@pytest.mark.parametrize("source,value,body", [
+    ("인증 만료일 2027.02.15", "인증 만료일 2027년 2월 15일", "인증 만료일 2027-02-15"),
+    ("Issue date: 25 September 2025", "발행일 2025년 9월 25일", "발행일 2025.09.25"),
+    ("2020 | 시범 검사", "2020년 시범 검사", "2020년 시범 검사"),
+    ("검사 예시 1200개", "검사 예시 1,200개", "검사 예시 1200개"),
+])
+def test_editorial_numeric_format_survives_draft_and_server_checks(source, value, body):
+    request, fid = numeric_editorial_request(source, value)
+    before = copy.deepcopy(request)
+    calls = []
+    def responder(instructions, payload, schema, name):
+        calls.append(name)
+        for definition in schema["$defs"].values():
+            props = definition.get("properties", {})
+            if "fact_ids" in props:
+                assert props["fact_ids"]["minItems"] == 1
+        result = editorial_response(payload)
+        next(p for p in result["pages"][0]["points"] if p["fact_ids"] == [fid])["text"] = body
+        return result
+    result = llm.LlmAgent(responder).draft(request)
+    assert request == before and calls == ["draft_sections"]
+    assert validate_draft(result, request.sources, {f.fact_id for f in request.preflight.facts}, request.preflight) is None
+    doc = Document(document_id="doc_numeric", session_id=request.session_id, document_revision=1,
+        input_revision=1, title=result.title, target_pages=4, status="draft", pages=result.pages, editorial=result.editorial)
+    facts = {f.fact_id: f for f in request.preflight.facts}
+    src = request.sources[0]
+    ctx = validation.Context({s.segment_id: s.text for s in src.segments},
+        {s.segment_id: src.source_id for s in src.segments}, {}, set(),
+        refs.SessionRefs({s.segment_id for s in src.segments}, {src.source_id: 1}, set(), set(facts)),
+        facts, [], scope_sources=request.sources, scope_preflight=request.preflight)
+    checks, _ = validation.server_checks(doc, ctx)
+    assert not [i for i in checks if i.severity == "blocker"]
+    block = next(b for p in doc.pages for b in p.blocks if b.type == "paragraph" and b.fact_ids == [fid])
+    assert block.content["text"] == body and block.evidence_refs[0].excerpt == source
+    block.content["text"] += " 검사 99999cm"
+    checks, _ = validation.server_checks(doc, ctx)
+    assert any(i.code == "VALUE_MISMATCH" and i.severity == "blocker" for i in checks)
+
+
+@pytest.mark.parametrize("body", ["만료일 2027년", "만료일 2027년 2월 16일"])
+def test_editorial_full_date_cannot_be_omitted_or_changed(body):
+    request, fid = numeric_editorial_request("만료일 2027.02.15", "만료일 2027년 2월 15일")
+    calls = []
+    def responder(instructions, payload, schema, name):
+        calls.append(name)
+        result = editorial_response(payload)
+        next(p for p in result["pages"][0]["points"] if p["fact_ids"] == [fid])["text"] = body
+        return result
+    with pytest.raises(AgentError, match="수치·단위"):
+        llm.LlmAgent(responder).draft(request)
+    assert calls == ["draft_sections"]
+
+
 @pytest.mark.parametrize("damage", ["unknown_fact", "missing_selection", "missing_required", "new_number",
                                     "lost_number", "new_unit", "unsupported_sequence", "bad_palette", "unknown_photo", "repeat",
                                     "label_new_number", "label_only_number", "blank_label"])
@@ -964,6 +1057,38 @@ def test_extract_restores_source_version_location_and_keeps_conditions():
     assert all(set(u) == {"source_id", "locator", "text"} for u in sent)
     second = baseline_agent(model).analyze(request)
     assert not ({f.fact_id for f in result.facts} & {f.fact_id for f in second.facts})
+
+
+@pytest.mark.parametrize("source,value,expected_status", [
+    ("예시 수량 1200개", "예시 수량 1,200개", "supported"),
+    ("만료일 2027.02.15", "만료일 2027년 2월 15일", "supported"),
+    ("Issue date: 25 September 2025", "발행일 2025년 9월 25일", "supported"),
+    ("후보 9행, 월 20영업일", "P01~P09, 월 20영업일", "needs_confirmation"),
+    ("길이 200mm", "길이 200cm", "needs_confirmation"),
+    ("만료일 2027.02.15", "만료일 2027년 2월 16일", "needs_confirmation"),
+])
+def test_extraction_numeric_evidence_is_checked_before_draft(source, value, expected_status):
+    selected = [SourceIn("src_numbers", 1, "company", "가상 숫자 자료", "complete", [
+        SegmentIn("seg_numbers", {"paragraph": 1}, source)])]
+    calls = []
+    def responder(instructions, payload, schema, name):
+        calls.append(name)
+        info = {key: {"status": "not_found", "facts": []} for key in legacy.COMPANY_INFO_KEYS}
+        unit = payload["source_units"][0]
+        info["capabilities"] = {"status": "supported", "facts": [{"text": value, "evidence": [{
+            "source_id": unit["source_id"], "locator": unit["locator"], "quote": source}]}]}
+        return info
+    result = llm.LlmAgent(responder).analyze(AnalyzeRequest("ses_numbers", 1, BRIEF, selected))
+    fact = next(f for f in result.facts if f.field_key == "capabilities")
+    assert fact.status == expected_status and fact.value == value
+    assert fact.evidence_refs[0].excerpt == source
+    blockers = [i for i in result.issues if fact.fact_id in i.fact_ids]
+    assert bool(blockers) is (expected_status == "needs_confirmation")
+    if blockers:
+        assert blockers[0].code == "UNSUPPORTED_CLAIM" and blockers[0].severity == "blocker"
+        assert llm._editorial_selection_policy({fact.fact_id: fact}, set(), set())[fact.fact_id] == ("review",)
+    assert validate_analyze(result, selected) is None
+    assert calls == ["company_info"]
 
 
 def test_multiple_facts_conflict_candidates_and_uncertain_text_are_preserved():

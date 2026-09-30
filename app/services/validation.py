@@ -19,6 +19,7 @@ import json
 import re
 import uuid
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 from app.agent_bridge import SourceIn
@@ -98,6 +99,58 @@ def quantity_tokens(text: str) -> set[tuple[str, str]]:
     return {(number.replace(",", ""), unit.lower()) for number, unit in re.findall(
         r"(?<![0-9.])(\d+(?:[.,]\d+)*)\s*(영업일|개월|시간|억원|만원|kg|mm|cm|㎡|m²|%|톤|년|월|일|명|개|대|건|회|원|g|m)(?![A-Za-z])",
         text, re.IGNORECASE)}
+
+
+_MONTHS = {name: n for n, names in enumerate((
+    ("january", "jan"), ("february", "feb"), ("march", "mar"), ("april", "apr"),
+    ("may",), ("june", "jun"), ("july", "jul"), ("august", "aug"),
+    ("september", "sep", "sept"), ("october", "oct"), ("november", "nov"),
+    ("december", "dec")), 1) for name in names}
+_MONTH_PATTERN = "(?:" + "|".join(_MONTHS) + r")\.?"
+_DATE_PATTERNS = (
+    re.compile(r"(?<![\w.-])(?P<y>[12]\d{3})(?P<sep>[-./])(?P<m>\d{1,2})(?P=sep)(?P<d>\d{1,2})(?![\dA-Za-z./-])"),
+    re.compile(r"(?<![\dA-Za-z])(?P<y>[12]\d{3})\s*년\s*(?P<m>\d{1,2})\s*월\s*(?P<d>\d{1,2})\s*일"),
+    re.compile(r"(?<![\w.-])(?P<d>\d{1,2})\s+(?P<m>" + _MONTH_PATTERN + r")\s+(?P<y>[12]\d{3})(?!\d)", re.I),
+    re.compile(r"\b(?P<m>" + _MONTH_PATTERN + r")\s+(?P<d>\d{1,2}),?\s+(?P<y>[12]\d{3})(?!\d)", re.I),
+)
+_CALENDAR_YEAR = re.compile(r"(?<![\dA-Za-z.-])([12]\d{3})(?:\s*년|(?=\s*\|))")
+
+
+def numeric_evidence_tokens(text: str) -> set[tuple[str, str]]:
+    """Compare literal quantities and unambiguous calendar dates, without unit conversion.
+
+    Dates stay atomic: matching year/month/day digits in different dates is not evidence.
+    Their year can support a year-only history statement; a year cannot support a full date.
+    This is a formatting check, not proof of subject, date role, conditions or causality.
+    """
+    tokens: set[tuple[str, str]] = set()
+
+    def calendar(match: re.Match) -> str:
+        month = match["m"].lower().rstrip(".")
+        month = int(month) if month.isdigit() else _MONTHS[month]
+        try:
+            value = date(int(match["y"]), month, int(match["d"]))
+        except ValueError:
+            return match[0]  # Invalid dates are not normalized.
+        tokens.add(("date", value.isoformat()))
+        tokens.add(("year", str(value.year)))
+        return " " * len(match[0])
+
+    for pattern in _DATE_PATTERNS:
+        text = pattern.sub(calendar, text)
+
+    def year(match: re.Match) -> str:
+        tokens.add(("year", match[1]))
+        return " " * len(match[0])
+
+    text = _CALENDAR_YEAR.sub(year, text)
+    for number in re.findall(r"\d+(?:[.,]\d+)*", text):
+        # Only well-formed thousands grouping is presentation, never decimal punctuation.
+        if re.fullmatch(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?", number):
+            number = number.replace(",", "")
+        tokens.add(("number", number))
+    tokens.update(("quantity", number + "|" + unit) for number, unit in quantity_tokens(text))
+    return tokens
 
 
 def value_in_text(value: str | None, text: str) -> bool:
@@ -412,10 +465,8 @@ def server_checks(document: Document, ctx: Context) -> tuple[list[IssueDraft], l
                 if any(ref not in block.evidence_refs for ref in expected_refs):
                     drafts.append(IssueDraft("content", "EVIDENCE_INVALID", "blocker",
                         "주장의 사실 근거 또는 조건 근거가 빠졌습니다.", block_ids=[bid]))
-                numbers = set(re.findall(r"\d+(?:[.,]\d+)*", joined))
-                original_numbers = set(re.findall(r"\d+(?:[.,]\d+)*", " ".join(r.excerpt for r in expected_refs)))
-                if (numbers - original_numbers or quantity_tokens(joined) - quantity_tokens(
-                        " ".join(r.excerpt for r in expected_refs))):
+                if numeric_evidence_tokens(joined) - numeric_evidence_tokens(
+                        " ".join(r.excerpt for r in expected_refs)):
                     drafts.append(IssueDraft("content", "VALUE_MISMATCH", "blocker",
                         "현재 문구의 수치·단위 조합이 연결된 원문에 없습니다.", block_ids=[bid]))
 
