@@ -986,10 +986,6 @@ class _EditorialPlan(BaseModel):
     pages: list[_EditorialPage] = Field(min_length=1, max_length=10)
 
 
-def _number_tokens(text: str) -> set[str]:
-    return set(re.findall(r"\d+(?:[.,]\d+)*", text))
-
-
 def _editorial_required(request: DraftRequest, facts: dict[str, Fact]) -> tuple[set[str], list[str]]:
     required_fields = {"company_name", *request.brief.required_fields}
     supported = [f for f in facts.values() if f.status == "supported"]
@@ -1528,6 +1524,7 @@ class LlmAgent:
     @staticmethod
     def _facts(info: dict, index: SourceIndex) -> list[Fact]:
         from app.config import company_name_aliases
+        from app.services.validation import numeric_evidence_tokens
         prefix = "fact_" + uuid.uuid4().hex[:16]
         result: list[Fact] = []
         for key in legacy.COMPANY_INFO_KEYS:
@@ -1554,9 +1551,15 @@ class LlmAgent:
                                    alternatives=alternatives, evidence_refs=_unique_refs(refs)))
             else:
                 for item in items:
+                    refs = [index.restore(ev) for ev in item["evidence"]]
+                    item_status = status
+                    if status == "supported" and (numeric_evidence_tokens(item["text"]) -
+                            numeric_evidence_tokens(" ".join(ref.excerpt for ref in refs))):
+                        # Preserve the extracted claim and citation, but never present ungrounded numbers as supported.
+                        item_status = "needs_confirmation"
+                        logger.warning("AI extraction needs confirmation: rule=numeric_evidence field=%s", key)
                     result.append(Fact(fact_id=f"{prefix}_{item['fact_id']}", field_key=key,
-                                       value=item["text"], status=status,
-                                       evidence_refs=[index.restore(ev) for ev in item["evidence"]]))
+                                       value=item["text"], status=item_status, evidence_refs=refs))
         return result
 
     @staticmethod
@@ -1643,7 +1646,7 @@ class LlmAgent:
     def _draft_editorial(self, request: DraftRequest, supported: list[dict], facts: dict[str, Fact],
                          excluded: set[str], index: SourceIndex) -> DraftResult:
         """One bounded call: select -> compose -> write atomic claims -> choose safe design tokens."""
-        from app.services.validation import is_label, quantity_tokens
+        from app.services.validation import is_label, numeric_evidence_tokens
         required, missing = _editorial_required(request, facts)
         if any(facts[fid].field_key in excluded for fid in required):
             raise AgentError("INVALID_REQUEST", "필수 내용과 제외 요청이 겹칩니다. 작성 조건을 정리해 주세요.")
@@ -1672,6 +1675,9 @@ class LlmAgent:
             for key in ("fact_ids", "sequence_fact_ids"):
                 if key in props:
                     props[key]["items"]["enum"] = sorted(facts)
+            if "fact_ids" in props:
+                # Generate referenced headings too; keep existing neutral-label validation for older results.
+                props["fact_ids"]["minItems"] = 1
             if "fact_id" in props:
                 props["fact_id"]["enum"] = sorted(facts)
             if "photo_ids" in props and photos:
@@ -1715,9 +1721,9 @@ class LlmAgent:
                 seen_texts.add(normalized)
             evidence = _unique_refs([r for fid in item.fact_ids for r in facts[fid].evidence_refs])
             original = " ".join(r.excerpt for r in evidence)
-            if (_number_tokens(item.text) - _number_tokens(original) or
-                    quantity_tokens(item.text) - quantity_tokens(original)):
-                raise AgentError("AGENT_OUTPUT_INVALID", "생성 문구의 수치·단위가 연결된 원문에 없습니다.")
+            if numeric_evidence_tokens(item.text) - numeric_evidence_tokens(original):
+                logger.warning("Editorial draft rejected: rule=numeric_evidence kind=%s level=%s", kind, level)
+                raise AgentError("AGENT_OUTPUT_INVALID", "생성 문구의 수치·단위·날짜가 연결된 원문에 없습니다.")
             for fid in item.fact_ids:
                 # Titles cannot launder an omitted body fact by attaching all IDs.
                 if kind != "heading" or (level == 1 and facts[fid].field_key == "company_name"):
@@ -1761,8 +1767,7 @@ class LlmAgent:
                 layout_key=layout, blocks=blocks, design=PageDesign(palette=plan.palette,
                     typography=plan.typography, density=planned.density, brand_color=request.brief.brand_color)))
         for fid, texts in used.items():
-            if (not texts or _number_tokens(facts[fid].value or "") - _number_tokens(" ".join(texts)) or
-                    quantity_tokens(facts[fid].value or "") - quantity_tokens(" ".join(texts))):
+            if not texts or numeric_evidence_tokens(facts[fid].value or "") - numeric_evidence_tokens(" ".join(texts)):
                 raise AgentError("AGENT_OUTPUT_INVALID", "포함하기로 한 사실 또는 수치·단위가 본문에서 빠졌습니다.")
         extracted = {r.segment_id for f in facts.values() for r in f.evidence_refs}
         audit = EditorialRecord(prompt_version="editorial_v2", input_revision=request.input_revision, selections=plan.selections,
