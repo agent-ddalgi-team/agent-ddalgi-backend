@@ -155,10 +155,11 @@ DDL과 이력 기록은 하나의 명시적 트랜잭션으로 처리하고 실�
 ### PDF/DOCX 출력 준비 (BE-07, D-03)
 - **DOCX**는 python-docx로 만들며 추가 설치가 없다.
 - **PDF**는 서버에 설치된 Chromium 계열 브라우저(Google Chrome 또는 Microsoft Edge)의 headless 인쇄로 만든다.
-  Python 패키지를 추가로 설치하지 않는다. 브라우저가 없으면 PDF 생성은 `browser_not_found`로 실패한다.
+  필요한 Python 패키지는 `uv sync`에 포함된다. 브라우저가 없으면 PDF 생성은 `browser_not_found`로 실패한다.
   - **실행 조건**: 서버 프로세스를 root로 실행하지 않는다. Chromium은 root에서 샌드박스 때문에 시작을 거부하며, 어댑터는 `--no-sandbox`를 넣지 않는다(컨테이너도 비root 사용자로).
-  - 자동 탐색: Windows는 Chrome(Program Files·LOCALAPPDATA) → Edge, Linux/Mac은 `google-chrome`·`chromium`·`microsoft-edge`.
+  - 자동 탐색: Windows는 Chrome(Program Files·LOCALAPPDATA) → Edge, Linux/Mac은 `google-chrome`·`chromium`·`microsoft-edge` 및 macOS의 `/Applications` Chrome·Edge 실행 파일.
   - 다른 위치면 `.env`에 `EXPORT_BROWSER_PATH=<실행 파일 경로>`를 지정한다. 시간 제한은 `EXPORT_RENDER_TIMEOUT_S`(기본 90초).
+  - macOS에서는 PDF 쓰기 완료·DOM 출력 완료 후 이번 임시 Chrome에 CDP `Browser.close`를 보내 실제 종료 코드까지 확인한다. 연결은 임시 프로필의 `127.0.0.1` 포트만 사용하며 `websockets`는 직접 의존성으로 포함한다. 출력 파일만 생기고 종료가 지연되는 환경을 위한 처리이며, 시간 초과·비정상 종료와 기존 배치 검사 실패는 그대로 실패로 남는다.
 - 한글 서체는 레포에 동봉한 OFL 폰트(Pretendard v1.3.9, `app/templates/fonts/`)를 PDF에 임베드한다.
   DOCX는 글꼴 이름만 지정하므로(이번 구현에서 임베딩 미지원) 받는 사람 환경에 Pretendard가 없으면 다른 글꼴로 대체될 수 있다.
 - 렌더 어댑터는 `app/services/export_render.py`이며 배치 검사·Export·다운로드 API는 BE-08에서 연결했다(아래).
@@ -204,6 +205,12 @@ uv run python scripts/import_registered.py --source-dir private_runs/registered_
 
 `verify_bundle.py`는 기존 fixture 전용이다. 실제 구조 호환성은 `tests/test_registered_import.py`의 가짜 묶음으로 검증한다. 실제 시연 묶음 작성·실자료 로컬 적재·실제 AI 생성 품질은 아직 완료하지 않았다. 회귀 테스트는 `uv run pytest tests/test_demo.py tests/test_registered_import.py`로 실행한다.
 
+## 브로슈어형 문서 배치
+
+설계도의 S01~S03 흐름을 유지하면서 S02 편집 문서와 PDF에 사진 카드·캡션·색상 구성을 적용한다. 기존 `Page.layout_key` 5종(`cover_photo`, `text_photo`, `process_steps`, `product_grid`, `contact_photo`)을 사용하며 알 수 없는 값은 텍스트 배치로 표시한다. 편집 캔버스는 실제 PDF 쪽 나눔의 검사 증거가 아니다. PDF 배치 검사와 승인 절차는 그대로 필요하다.
+
+4쪽 이상이며 사용 가능한 사진이 있으면 실제 LLM은 페이지별 제목·요약·정보 목록·사진 ID를 한 초안 호출에서 구성한다. 지원된 사실 ID와 선택·허용된 사진 설명만 전달하며, 원문의 실제/demo 구분·제외 조건을 보존한다. 사진 없음·1쪽은 기존 글 중심 경로를 유지한다. `process_steps` 목록은 번호 카드, `product_grid` 목록은 비교 카드로 표현하며, 편집 가능한 기존 heading/paragraph/list/image 블록을 사용한다. 등록 사진 공개 허가가 명시적으로 true인 경우만 자동 후보로 제공하며 사진 설명만으로 피사체 검증이 끝났다고 보지 않는다. 템플릿은 `template_v3`이며 이전 검사·승인은 다시 확인해야 한다. DOCX 승인 제한은 유지한다. 로컬 시연 묶음과 회사 사진은 Git에 포함하지 않으며 기존 mock fixture와 내부 demo 출처를 구분한다. 상세 결정은 plan.md 4.37~4.39, 실제 검증은 task_backend.md의 브로슈어 배치 기록을 따른다.
+
 ## 문서
 
 처음에는 다음 순서로 읽는다. 코드 변경 전에는 [AGENTS.md](AGENTS.md)의 작업 규칙을 확인한다.
@@ -220,3 +227,16 @@ uv run python scripts/import_registered.py --source-dir private_runs/registered_
 2026-09-27에는 개발 전 문서를 정리했다. 당시 기존 BE/AG 작업 상태와 테스트 기록을 유지했고 실행 코드·의존성·DB는 바꾸지 않았다. 현재 공통 계약은 1.4, 데이터 schema_version은 1.0이다. 2026-09-28의 계약 1.2는 재점검 충돌로 인한 기존 승인 무효화·승인 재전송 차단을 반영한다. 상세는 [contracts.md](contracts.md), 기존 경로를 유지한 예시는 [API 예시](handoff/api_examples_v1.1.json)를 따른다. 프론트 계약/예시 사본은 로컬에서 문서 v1.9까지 동기화했으며 해당 프론트 구현은 이 백엔드 PR에 포함되지 않는다. 검토 메모의 다른 제안과 미구현 항목은 별도로 유지한다.
 
 Stitch 화면 설계와의 연결 기준은 [prd.md 3~5절](prd.md), 화면 상태별 데이터 연결은 [contracts.md 7.5절](contracts.md)을 따른다. 추가 기능의 채택 여부는 [plan.md 4.1절](plan.md)에서 관리한다. 화면 시연·예시 응답과 실제 기능 완료는 구분한다.
+
+### 로컬 시연: 문구 수정안·내용 검증 함께 켜기
+
+현재 시연 흐름은 `powershell -File scripts/run_llm.ps1 -Demo -ContentReview -TextProposals`로 실행한다. 기본 입력 200,000자·검증 400,000자·출력 64,000토큰·SDK 대기 300초·일시 오류 재시도 최대 2회가 적용된다. 재시도가 발생하면 전체 작업 시간은 300초보다 길어질 수 있다. 수정 요청 문장은 화면/서버 모두 10,000자까지이며 한 번에 블록 하나를 수정한다. 스크립트 기본값으로 저장되어 다음 실행에도 적용되고 기존 .env 비밀값은 수정하지 않는다.
+
+일반 서버는 총 8회/$1·기능별 횟수·동시 AI 작업 1개 제한을 적용하지 않는다. 사용량은 측정만 하며 한 요청의 오류가 다음 요청을 막지 않는다. `-TextProposals`와 `-ContentReview`의 명시 활성화, 수동 중단, 외부 API의 한도, 근거/권한/버전/승인 검사는 유지한다. 과거 `TrialLedger`와 `OPENAI_TRIAL_*`는 명시적으로 사용하는 제한된 평가용이다. 런타임 측정값은 프로세스 메모리 총계와 최근 100회 메타이며 영구 청구 장부가 아니다. 알 수 없는 비용은 미확인으로 표시한다.
+
+미리보기는 첫 heading 블록이 있으면 별도의 페이지 제목을 추가하지 않는다. 저장된 문제도 화면에서 한국어 항목명·권장 조치로 표시하지만 문제 코드와 승인 차단 여부는 바꾸지 않는다. 사진 캡션과 대체 텍스트는 각각 검사하고, 선택·허가된 사진의 등록 설명은 AI 의미 검사에 출처 정보로 전달한다. 등록 설명은 인증·성능·회사 소유의 증빙이 아니다.
+
+
+동일 회사명 표기 확인이 필요한 로컬 운영자는 `.env`의 `COMPANY_NAME_ALIASES`에 확인한 이름 그룹을 JSON으로 설정할 수 있습니다(예: `[["가상 회사", "EXAMPLE COMPANY"]]`). 기본값은 `[]`입니다. 이름에 대한 확인만 적용하며 근거·출처·다른 사실 검증을 생략하지 않습니다. 실제 회사명 설정은 커밋하지 않습니다. 변경 후 서버 재시작 및 자료 재점검이 필요합니다.
+
+브로슈어 생성은 긴 항목에 최대 160자를 배분하고 쪽 전체 분량을 별도로 검사합니다. 알려진 미완결 문장이나 분량 초과를 감지하면 저장 전에 최대 한 번 재작성합니다(추가 API 호출 비용·시간 발생). 실패한 초안을 잘라 저장하지 않습니다.

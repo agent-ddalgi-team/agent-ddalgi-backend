@@ -19,7 +19,7 @@ EXTRACT_PROMPT_PATH = ROOT / 'prompts' / 'extract.txt'
 SCHEMA_VERSION = '1.0'
 RequestJson = Callable[[str, dict[str, Any], dict[str, Any], str], dict[str, Any]]
 # contract.md 1절의 초기 제안 상한. 넘으면 조용히 자르지 않고 멈춘다.
-MAX_SOURCE_CHARS = 40_000
+MAX_SOURCE_CHARS = 200_000
 SOURCE_UNIT_KEYS = ('source_id', 'locator', 'text')
 
 # 14개 키는 직접 적지 않고 공통 스키마의 company_info.required에서 가져온다.
