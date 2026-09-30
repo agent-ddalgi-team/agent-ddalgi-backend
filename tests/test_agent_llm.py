@@ -200,6 +200,15 @@ def build_large_editorial_request():
     return request
 
 
+def editorial_composition(plan):
+    """Explicit fixture conversion, never described as a native model response."""
+    result = copy.deepcopy(plan)
+    result["fact_notes"] = [{"fact_id": s["fact_id"], "unused_disposition":
+        "review" if s["disposition"] == "review" else "excluded", "reason": s["reason"]}
+        for s in result.pop("selections")]
+    return result
+
+
 @pytest.mark.parametrize("status", ["supported", "needs_confirmation", "conflict", "missing"])
 @pytest.mark.parametrize("excluded", [False, True])
 def test_editorial_selection_schema_binds_status_exclusion_and_required(status, excluded):
@@ -248,7 +257,7 @@ def test_editorial_post_validation_still_rejects_disallowed_selection(case, disp
     assert calls == ["draft_sections"]
 
 
-@pytest.mark.parametrize("damage", [None, "required_as_optional", "duplicate", "omitted", "foreign"])
+@pytest.mark.parametrize("damage", [None, "required_body_missing", "duplicate", "omitted", "foreign"])
 def test_editorial_109_facts_sdk_schema_and_coverage(monkeypatch, damage):
     request = build_large_editorial_request()
     before = copy.deepcopy(request)
@@ -257,24 +266,26 @@ def test_editorial_109_facts_sdk_schema_and_coverage(monkeypatch, damage):
         payload = json.loads(kwargs["input"])
         schema = kwargs["text"]["format"]["schema"]
         assert kwargs["text"]["format"]["strict"] is True
-        entries = schema["properties"]["selections"]
+        entries = schema["properties"]["fact_notes"]
         assert entries["minItems"] == entries["maxItems"] == 109
         variants = entries["items"]["anyOf"]
-        assert len(variants) == 3  # required, discretionary, excluded
+        assert len(variants) == 2  # unused discretionary, explicitly excluded
         for rule in payload["selection_constraints"]:
             assert rule["fact_id"].startswith("F")
             matches = [v for v in variants if rule["fact_id"] in v["properties"]["fact_id"]["enum"]]
             assert len(matches) == 1
-            assert matches[0]["properties"]["disposition"]["enum"] == rule["allowed_dispositions"]
-        response = editorial_response(payload)
-        if damage == "required_as_optional":
-            response["selections"][0]["disposition"] = "optional"
+            allowed = rule["allowed_dispositions"]
+            assert matches[0]["properties"]["unused_disposition"]["enum"] == (
+                allowed if allowed in [["review"], ["excluded"]] else ["excluded", "review"])
+        response = editorial_composition(editorial_response(payload))
+        if damage == "required_body_missing":
+            response["pages"][0]["heading"] = {"text": "회사 소개", "fact_ids": []}
         elif damage == "duplicate":
-            response["selections"][-1] = response["selections"][-2]
+            response["fact_notes"][-1] = response["fact_notes"][-2]
         elif damage == "omitted":
-            response["selections"].pop()
+            response["fact_notes"].pop()
         elif damage == "foreign":
-            response["selections"][-1]["fact_id"] = "F999"
+            response["fact_notes"][-1]["fact_id"] = "F999"
         return metered_response(output_text=json.dumps(response, ensure_ascii=False))
     calls = fake_sdk(monkeypatch, response=respond)
     agent = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=llm.RuntimeLedger()))
@@ -412,6 +423,145 @@ def test_editorial_full_date_cannot_be_omitted_or_changed(body):
         next(p for p in result["pages"][0]["points"] if p["fact_ids"] == [fid])["text"] = body
         return result
     with pytest.raises(AgentError, match="수치·단위"):
+        llm.LlmAgent(responder).draft(request)
+    assert calls == ["draft_sections"]
+
+
+def test_editorial_body_requirements_and_final_selections_reach_wire_schema():
+    request = build_editorial_request("manufacturing")
+    request.brief.emphasis = ["연혁 제외"]
+    before = copy.deepcopy(request)
+    captured = []
+    def responder(instructions, payload, schema, name):
+        captured.append(name)
+        assert list(schema["properties"])[-1] == "fact_notes"
+        assert "selections" not in schema["properties"]
+        needs = {r["fact_id"]: r for r in payload["body_requirements"]}
+        for fact in request.preflight.facts:
+            if fact.field_key == "history" or fact.status != "supported":
+                assert fact.fact_id not in needs
+                continue
+            assert needs[fact.fact_id]["numeric_tokens"] == sorted(validation.numeric_evidence_tokens(fact.value))
+            assert needs[fact.fact_id]["heading_can_cover"] is (fact.field_key == "company_name")
+        wire, wire_schema, aliases = llm._editorial_wire_request(payload, schema)
+        assert {r["fact_id"] for r in wire["body_requirements"]} <= aliases.keys()
+        assert list(wire_schema["properties"])[-1] == "fact_notes"
+        assert "body_requirements" in instructions and "fact_notes를 마지막" in instructions
+        return editorial_composition(editorial_response(payload))
+    result = llm.LlmAgent(responder).draft(request)
+    assert result.editorial and request == before and captured == ["draft_sections"]
+
+
+@pytest.mark.parametrize("damage", ["absent", "heading_only", "numeric_omission", "omitted_optional"])
+def test_editorial_body_coverage_logs_safe_positions_without_weakening_gate(damage, caplog):
+    request, fid = numeric_editorial_request("기밀 한도 987654mm", "기밀 한도 987654mm")
+    calls = []
+    def responder(instructions, payload, schema, name):
+        calls.append(name)
+        result = editorial_response(payload)
+        point = next(p for p in result["pages"][0]["points"] if p["fact_ids"] == [fid])
+        if damage == "numeric_omission":
+            point["text"] = "가공 한도를 협의합니다."
+        else:
+            result["pages"][0]["points"].remove(point)
+            if damage == "heading_only":
+                result["pages"].append({"heading": {"text": "기밀 한도 987654mm", "fact_ids": [fid]},
+                    "lead": {"text": "시험용 커버", "fact_ids": ["fact_manufacturing_products_services"]},
+                    "points": [], "photo_ids": [], "sequence_fact_ids": [],
+                    "layout": "fact_sheet", "density": "comfortable"})
+            elif damage == "omitted_optional":
+                next(s for s in result["selections"] if s["fact_id"] == fid)["disposition"] = "optional"
+        return result
+    with pytest.raises(AgentError, match="본문에서 빠졌습니다"):
+        llm.LlmAgent(responder).draft(request)
+    assert calls == ["draft_sections"]
+    assert "rule=body_coverage" in caplog.text and "fact_position=" in caplog.text
+    assert "missing_numeric_count=2" in caplog.text
+    assert "987654" not in caplog.text and "기밀" not in caplog.text and fid not in caplog.text
+
+
+@pytest.mark.parametrize("include_english", [True, False])
+def test_editorial_distinct_required_company_names_need_visible_coverage(include_english):
+    request = build_editorial_request("manufacturing")
+    src = request.sources[0]
+    seg = SegmentIn("seg_english", {"paragraph": 100}, "EXAMPLE MANUFACTURING")
+    src.segments.append(seg)
+    request.preflight.facts.append(Fact(fact_id="fact_english", field_key="company_name", value=seg.text,
+        status="supported", evidence_refs=[EvidenceRef(source_id=src.source_id, source_version=1,
+        segment_id=seg.segment_id, locator=seg.locator, excerpt=seg.text)]))
+    def responder(instructions, payload, schema, name):
+        result = editorial_response(payload)
+        result["pages"][0]["points"] = [p for p in result["pages"][0]["points"] if p["fact_ids"] != ["fact_english"]]
+        if include_english:
+            result["pages"][0]["heading"]["text"] += " · EXAMPLE MANUFACTURING"
+            result["pages"][0]["heading"]["fact_ids"].append("fact_english")
+        return result
+    if include_english:
+        assert "EXAMPLE MANUFACTURING" in llm.LlmAgent(responder).draft(request).pages[0].blocks[0].content["text"]
+    else:
+        with pytest.raises(AgentError, match="본문에서 빠졌습니다"):
+            llm.LlmAgent(responder).draft(request)
+
+
+def test_editorial_body_gaps_reports_every_omission_not_only_first():
+    facts = {
+        "one": Fact(fact_id="one", field_key="lead_time", value="100개 이하 5영업일", status="supported"),
+        "two": Fact(fact_id="two", field_key="company_name", value="가상 제조", status="supported"),
+        "three": Fact(fact_id="three", field_key="certifications", value="만료 2027년 2월 15일", status="supported"),
+    }
+    used = {"one": ["100개 이하"], "two": [], "three": ["만료 2027.02.15"]}
+    gaps = llm._editorial_body_gaps(facts, used)
+    assert set(gaps) == {"one", "two"}
+    assert gaps["one"] == {"body_missing": False, "missing_numeric_tokens": [("number", "5"), ("quantity", "5|영업일")]}
+    assert gaps["two"] == {"body_missing": True, "missing_numeric_tokens": []}
+
+
+@pytest.mark.parametrize("used", [True, False])
+def test_native_composition_derives_optional_inclusion_from_written_references(used):
+    request = build_editorial_request("manufacturing")
+    fid = "fact_manufacturing_capabilities"
+    def responder(instructions, payload, schema, name):
+        response = editorial_composition(editorial_response(payload))
+        note = next(n for n in response["fact_notes"] if n["fact_id"] == fid)
+        note.update(unused_disposition="excluded", reason="사용하지 않았다면 제품 설명과 중복이므로 생략합니다.")
+        if not used:
+            response["pages"][0]["points"] = [p for p in response["pages"][0]["points"] if fid not in p["fact_ids"]]
+        return response
+    result = llm.LlmAgent(responder).draft(request)
+    selection = next(s for s in result.editorial.selections if s.fact_id == fid)
+    assert selection.disposition == ("optional" if used else "excluded")
+    if used:
+        assert "작성된 1쪽" in selection.reason and "중복" not in selection.reason
+    else:
+        assert "중복" in selection.reason
+    assert validate_draft(result, request.sources, {f.fact_id for f in request.preflight.facts}, request.preflight) is None
+
+
+@pytest.mark.parametrize("damage", ["required_missing", "numeric_missing", "heading_only", "excluded_field",
+                                    "review_reference", "duplicate_note", "missing_note", "unknown_reference"])
+def test_native_composition_keeps_all_required_evidence_and_body_gates(damage):
+    request = build_editorial_request("conflict")
+    if damage == "excluded_field":
+        request.brief.emphasis = ["납기 제외"]
+    calls = []
+    def responder(instructions, payload, schema, name):
+        calls.append(name)
+        result = editorial_composition(editorial_response(payload))
+        if damage == "required_missing":
+            result["pages"][0]["heading"] = {"text": "회사 소개", "fact_ids": []}
+        elif damage in {"numeric_missing", "heading_only"}:
+            point = next(p for p in result["pages"][0]["points"] if "200mm" in p["text"])
+            if damage == "heading_only": point["label"] = point["text"][:60]
+            point["text"] = "알루미늄 시편을 가공합니다."
+        elif damage in {"excluded_field", "review_reference", "unknown_reference"}:
+            result["pages"][0]["lead"]["fact_ids"].append({"excluded_field":"fact_conflict_lead_time",
+                "review_reference":"fact_conflict_cert", "unknown_reference":"outside"}[damage])
+        elif damage == "duplicate_note":
+            result["fact_notes"][-1] = result["fact_notes"][-2]
+        elif damage == "missing_note":
+            result["fact_notes"].pop()
+        return result
+    with pytest.raises(AgentError):
         llm.LlmAgent(responder).draft(request)
     assert calls == ["draft_sections"]
 
