@@ -9,8 +9,11 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
+import shutil
 import socket
 import sqlite3
+import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
@@ -6288,6 +6291,63 @@ def test_runtime_missing_usage_is_unknown_and_manual_stop_still_discards(monkeyp
     with pytest.raises(AgentError):
         requester("test", {}, {}, "company_info")
     assert ledger.snapshot()["calls_started"] == 1
+
+
+@pytest.mark.parametrize("overrides,key", [
+    ({"OPENAI_MODEL": "other-model"}, "OPENAI_MODEL"),
+    ({"OPENAI_MAX_RETRIES": "1"}, "OPENAI_MAX_RETRIES"),
+    ({"OPENAI_TIMEOUT_SECONDS": "120"}, "OPENAI_TRIAL_TIMEOUT_LIMIT_SECONDS"),
+    ({"OPENAI_MAX_INPUT_CHARS": "40000"}, "OPENAI_TRIAL_INPUT_CHAR_LIMIT"),
+    ({"OPENAI_MAX_OUTPUT_TOKENS": "32000"}, "OPENAI_TRIAL_OUTPUT_TOKEN_LIMIT"),
+])
+def test_bridge_rejects_limit_mismatch_before_api_or_ledger_mutation(monkeypatch, tmp_path, overrides, key):
+    for name, value in (config_env() | overrides).items():
+        monkeypatch.setenv(name, value)
+    ledger = llm.TrialLedger(interactive=True, budget_usd=Decimal("5"))
+    monkeypatch.setattr(llm, "_trial", ledger)
+    before = ledger.snapshot()
+    settings = Settings(private_runs_dir=tmp_path, db_path=tmp_path / "unused.sqlite3", agent_mode="llm")
+    with pytest.raises(AgentError, match=key) as caught:
+        llm.create_bridge(settings)
+    assert "fake-secret" not in str(caught.value)
+    assert ledger.snapshot() == before and not settings.db_path.exists()
+
+
+@pytest.mark.parametrize("mode,args,success", [
+    ("runtime", [], True),
+    ("interactive", ["-RequestTimeoutSeconds", "120", "-MaxInputChars", "40000",
+                     "-MaxOutputTokens", "32000", "-MaxRetries", "0"], True),
+    ("trial", ["-RequestTimeoutSeconds", "60", "-MaxInputChars", "10000",
+               "-MaxOutputTokens", "8000", "-MaxRetries", "0"], True),
+    ("interactive", ["-RequestTimeoutSeconds", "120", "-MaxInputChars", "40000",
+                     "-MaxOutputTokens", "32000", "-MaxRetries", "1"], False),
+])
+def test_powershell_launcher_check_only_syncs_guards_without_starting_server(mode, args, success):
+    shell = shutil.which("pwsh") or shutil.which("powershell")
+    root = Path(__file__).resolve().parents[1]
+    if os.name != "nt" or not shell or not (root / ".venv/Scripts/python.exe").exists():
+        pytest.skip("Windows launcher requires PowerShell and the existing local venv")
+    env = os.environ | config_env() | {"PYTHON_DOTENV_DISABLED": "1", "OPENAI_EXECUTION_MODE": mode,
+        "OPENAI_RUN_BUDGET_USD": "5", "OPENAI_TRIAL_TIMEOUT_LIMIT_SECONDS": "1",
+        "OPENAI_TRIAL_INPUT_CHAR_LIMIT": "1", "OPENAI_TRIAL_OUTPUT_TOKEN_LIMIT": "1"}
+    result = subprocess.run([shell, "-NoProfile", "-File", str(root / "scripts/run_llm.ps1"),
+        "-Demo", "-ContentReview", "-TextProposals", "-CheckOnly", "-MaxReviewInputChars", "120000", *args],
+        cwd=root, env=env, capture_output=True, encoding="utf-8", timeout=30)
+    assert (result.returncode == 0) is success, result.stderr
+    assert "fake-secret" not in result.stdout + result.stderr
+    if not success:
+        assert "OPENAI_MAX_RETRIES" in result.stderr
+        return
+    report = json.loads(result.stdout.strip())
+    assert report["check_only"] is True and report["demo"] is True
+    assert report["execution_mode"] == mode and report["review"] == 120000
+    if mode == "runtime":
+        assert report["usage"] == "RuntimeLedger" and report["output"] == 64000
+    else:
+        assert report["limits"]["timeout_limit_seconds"] == report["timeout"]
+        assert report["limits"]["input_char_limit"] == report["input"]
+        assert report["limits"]["output_token_limit"] == report["output"]
+        assert report["limits"]["budget_usd"] == ("5" if mode == "interactive" else "1")
 
 
 def test_runtime_default_factory_ignores_old_trial_caps(monkeypatch):

@@ -33,6 +33,16 @@ uv run uvicorn main:app --host 127.0.0.1 --port 8000
 
 API 확인: http://127.0.0.1:8000/docs
 
+Windows의 예산 제한 시연(`interactive`)은 아래처럼 실행한다. `PRIVATE_RUNS_DIR`과 `DB_PATH`는 사용하려는 시연 폴더/DB를 먼저 지정한다. 실제 `.env`는 수정하지 않는다.
+
+```powershell
+$env:OPENAI_EXECUTION_MODE = 'interactive'
+.\scripts\run_llm.ps1 -Demo -ContentReview -TextProposals -RequestTimeoutSeconds 120 -MaxInputChars 40000 -MaxReviewInputChars 120000 -MaxOutputTokens 32000 -MaxRetries 0 -CheckOnly
+# 설정 확인 뒤 같은 명령에서 -CheckOnly를 빼면 서버를 시작한다.
+```
+
+`-CheckOnly`는 API 호출·DB 초기화·서버 시작 없이 유효 설정을 확인한다. 실행 스크립트는 요청 옵션과 `OPENAI_TRIAL_*` 내부 상한을 함께 맞춘다. `trial`/`interactive`는 기존 모델·재시도 0·모드별 범위·예산 검사를 유지하며, 범위를 벗어나면 시작을 거부한다. 일반 `runtime`의 확대 범위는 유지한다. 직접 uvicorn으로 실행할 때는 `.env.example`의 대응 설정을 함께 지정해야 한다.
+
 ### 테스트
 ```bash
 uv run pytest
