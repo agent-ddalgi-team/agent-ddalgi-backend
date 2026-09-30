@@ -41,7 +41,7 @@
 | **F-05** | 내용 검증·경고 확인·승인 | **AG-07** | **BE-06** | 진행중 | BE-06 서버 완료·프론트 경고 확인/승인 연결·실제 LLM 검증 완주 · AG-07 진행중·추가 반복 평가 후순위(2026-09-30)·2/9회 · 기존 결과 2026-09-29 · [백엔드 5절 F-05](task_backend.md#f-05), [Agent 5절 F-05](task_agent.md#f-05) · [Agent 실행 기록](task_agent.md#ag07-review-stability-batch-1) · 2026-09-30 후속 진행중 · [로컬 시연 안정화 기록](task_backend.md#name-and-sentence-20260930) |
 | **F-06** | PDF·DOCX 내려받기 | **AG-04/08** | **BE-07/08** | 진행중 | BE-07 완료·BE-08 PDF 완료/DOCX 미완료 · macOS PDF 보완·가상 사진 포함 통합 확인 완료 · AG-04 진행중·AG-08 대기 · 2026-09-30 · [백엔드 최신 확인](task_backend.md#macos-pdf-photo-workflow-20260930), [백엔드 5절 F-06](task_backend.md#f-06), [Agent 4절](task_agent.md#4-향후-예정-기능) |
 | **F-07** | 세션 보호·종료 정리 | **AG-03** | **BE-02/09** | 진행중 | BE-02/09 서버 범위 완료·Chrome 폴더 정리 재시도 후속 · AG-03 진행중 · 2026-09-29 · [백엔드 5절 F-07](task_backend.md#f-07), [Agent 5절 F-07](task_agent.md#f-07) |
-| **F-08** | 실제 화면 연결·품질 평가 | **AG-08** | **BE-01/10** | 진행중 | BE-01 완료·BE-10 진행중(S01~S03 실제 연결·설계도 적용·실자료 표본 완주) · AG-08 대기 · 2026-09-29 · [백엔드 3절](task_backend.md#3-현재-진행-작업-f-08-실제-화면-연결품질-평가-now), [백엔드 5절 F-08](task_backend.md#f-08), [Agent 5절 F-08](task_agent.md#f-08) |
+| **F-08** | 실제 화면 연결·품질 평가 | **AG-08** | **BE-01/10** | 진행중 | BE-01 완료·BE-10 진행중(S01~S03 실제 연결·설계도 적용·실자료 표본 완주) · AG-08 대기 · 2026-09-29 · [백엔드 3절](task_backend.md#3-현재-진행-작업-f-08-실제-화면-연결품질-평가-now), [백엔드 5절 F-08](task_backend.md#f-08), [Agent 5절 F-08](task_agent.md#f-08) · 2026-09-30 병합 후 회귀 확인 완료 · [백엔드 검증 기록](task_backend.md#merge-verification-20260930) |
 
 ---
 

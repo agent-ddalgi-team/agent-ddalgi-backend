@@ -13,6 +13,7 @@
 - **이전 작업 환경 기록**: 2026-09-29, 로컬 기준. 원격 `develop`은 ca3ecf4(현황판 양식)까지이며 PR #19·#20 병합을 확인했다. 백엔드 로컬에는 `app/agent_llm.py`·`agent_bridge.py`·`agent_mock.py`, `app/services/ai_jobs.py`·`preflights.py`·`proposals.py`·`validation.py`·`export_render.py`, `contracts.md`(문서 v1.11, 계약 1.5 유지), `prompts/extract.txt`, `.env.example`, `plan.md`(4.24~4.30절), `tests/test_agent_llm.py`·`test_be05.py`, 신규 `scripts/run_llm.ps1`의 미커밋 변경이 있다. 프론트 기준 폴더는 `C:\frontend`이며 `D:\frontend`는 9/29 이전 사본이다. 시연 자료는 `private_runs/demo_preview_20260929_131826/app.sqlite3`에만 있고 기본 `private_runs/erd_v2`의 등록 자료는 0개다. 자료 적재는 사용자 요청으로 보류 중이다.
 - **상태 기준**: BE-01~07·BE-09는 기존 범위 완료, BE-08은 PDF 완료·DOCX 미완료, BE-10은 진행중(IN_PROGRESS)이다. 진행률은 기존 BE 업무 10개를 같은 비중으로 계산한 참고값이며 F 기능의 완료율이나 진행 순서를 뜻하지 않는다(완료 1, 부분 완료·진행중 0.5, 대기 0 → 8/10). 화면까지의 완성 여부는 F-08에서 확인한다.
 - **2026-09-30 PDF 후속**: macOS Chrome의 출력 후 종료 지연을 보완했다. BE-07 50건·BE-08 16건을 확인했고, 가상 사진 포함 초안의 저장·검증·승인·다운로드까지 통과했다. 실제 AI 의미 판단·실자료·프론트 재검증은 이번 범위에 포함하지 않았다. [실행 결과](#macos-pdf-photo-workflow-20260930).
+- **2026-09-30 병합 확인**: 현재 작업과 병합 해결을 `84393ef`로 커밋했다. `git fetch origin` 뒤 `origin/develop`은 이미 포함된 상태였고, 병합 코드의 전체 pytest **1,370 passed / 경고 3개**를 확인했다. [병합·검증 기록](#merge-verification-20260930).
 - **기록 운영**: 보고는 **[F 번호 기능명] → 세부 업무**로 시작하며 번호 구분은 [공통 번호 안내](task.md#번호-읽는-기준)를 따른다. [plan.md](plan.md)·[prd.md](prd.md)·[contracts.md](contracts.md)를 기준으로 결과를 이 파일에 기록하고, 상태·선행 조건을 바꾸면 같은 변경에 [task.md](task.md) 2절도 맞춘다. 옛 6.x절 결과는 맨 아래 기능별 이력으로 모았다. 6.32절까지의 종전 상세 기록은 `git show dcc1aaa:task_backend.md`로 볼 수 있다. 6.33~6.44절의 결과는 PR #21에 포함된 이 파일의 5절 요약에서 확인하며, 양식 적용 전 상세 원문 사본은 `C:\Users\이강욱\AppData\Local\Temp\ddalgi-task-local\task_backend.local.md`에 있다(커밋 대상 아님).
 
 ---
@@ -65,7 +66,7 @@
 - **[F-01 자료 선택·파일 읽기] → 근거 원문 확인**: C-01의 원문·추출문 조회 방식과 등록 자료 공유 범위를 정한다. 실제 자료 적재는 요청을 받은 뒤 진행한다.
 - **[F-06 PDF·DOCX 내려받기] → DOCX 승인·다운로드**: BE-08에서 실제 배치 확인 방법과 보장 범위를 먼저 정한다. 현재 DOCX 쪽수·배치 검사가 미완료여서 승인이 차단되고 화면에도 준비 중으로 표시한다.
 - **[F-07 세션 보호·종료 정리] → 실제 AI 종료·복구 검증·정리 재시도**: AG-03과 실제 AI·편집 단계·프로세스 중단 후 늦은 저장 방지를 추가 확인한다. Windows Chrome 프로필 폴더의 OSError 145 정리 재시도도 확인한다.
-- **[F-05 내용 검증·경고 확인·승인] → 테스트 정리**: `tests/test_be08.py` 스트레스 테스트의 D-07 resolve 요청은 2026-09-30 갱신·재검증했다. `test_be05`·`test_be07`의 과거 전체 실행 시 실패는 전체 suite에서 순서 독립성을 확인하는 작업이 남는다.
+- **[F-05 내용 검증·경고 확인·승인] → 테스트 정리**: `tests/test_be08.py` 스트레스 테스트의 D-07 resolve 요청은 2026-09-30 갱신·재검증했다. 같은 날 병합 후 전체 pytest에서도 통과했다. 과거 `test_be05`·`test_be07`의 간헐적 실패는 이번 전체 실행에서 재현되지 않았으며, 원인 수정 완료로 기록하지 않는다. 재발하면 실제 오류와 실행 순서를 기준으로 조사한다.
 - **선행 조건 유지**: BE-01 없음; BE-02는 BE-01; BE-03은 BE-02; BE-04/05는 BE-01/02; BE-06은 BE-05·AG-07; BE-07은 BE-01·AG-04; BE-08은 BE-06/07; BE-09는 BE-02/04/08·AG-03; BE-10은 BE-08/09·AG-08·프론트 FE-08. 기존 완료는 각 당시 검증 범위를 유지한다.
 
 ---
@@ -358,3 +359,12 @@
 - **실제 검사**: `.env` 로딩과 bytecode/cache 생성을 끄고 `.venv/bin/python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_be07.py tests/test_be08.py`를 Chrome 실행이 허용된 환경에서 실행했다. **65 passed / 1 failed / 기존 경고 1개, 207.61초**. BE-07은 신규 종료 처리 12건을 포함한 **50건 모두 통과**했다. 남은 1건은 기존 BE-08 스트레스 테스트가 경고 확인 요청의 `input_revision`·`validation_id`를 빠뜨려 400을 받은 것이다. 현재 계약에 맞춰 요청만 수정하고 같은 nodeid를 재실행해 **1 passed / 경고 1개, 16.05초**를 확인했다. 따라서 이번 BE-07 50건·BE-08 16건은 모두 확인했으며, 최종 66건을 한 명령으로 다시 실행한 결과는 아니다. 전체 저장소 pytest는 실행하지 않았다.
 - **사진 포함 흐름**: 신규 `test_llm_photo_normalization_review_blocker_and_pdf_download`는 가상 텍스트·640×480 PNG와 준비된 모델 응답을 사용한다. 실제 LlmAgent·확인 그래프·서버 API·임시 SQLite·Chrome을 거쳐 점검→명시 확인→중복 사진 정리(2쪽·사진 1장)→본문/근거 보존→DB 저장/새 앱 조회→사진 설명 오류의 blocker/승인 차단→직접 수정/재검증→PDF 배치 통과→승인→동일 해시 다운로드/재다운로드를 확인했다. 승인 후 AI·렌더 재호출은 금지하는 테스트다. 단독 실행도 **1 passed / 경고 1개, 9.92초**였다. 생성된 PDF 2쪽의 기존 PNG 미리보기를 직접 열어 한글·사진·캡션의 잘림/겹침이 없는 것을 확인했다.
 - **상태·다음 작업**: BE-07의 로컬 macOS 보완과 BE-08 가상 사진 포함 PDF 통합 확인은 완료했다. BE-08 PDF 완료/DOCX 미완료, F-06 진행중 및 Agent 상태를 유지한다. 모델의 의미 판단은 대역이므로 실제 AI 품질 확인 결과로 보지 않는다. 실자료의 저장·승인, 실제 프론트 연결, Windows/Linux 재실행은 이번에 하지 않았다. 이후 실자료·실제 모델·프론트 품질 검수와 DOCX 승인 범위는 기존 후속으로 남는다. 기존 병합 변경·실사용 DB·환경 파일을 보존했으며 커밋·push는 하지 않았다.
+
+<a id="merge-verification-20260930"></a>
+
+### [F-06·08 / BE-07·08·10] 현재 작업 커밋·원격 병합·전체 회귀 확인 (2026-09-30)
+
+- **Git 작업**: 사용자 요청에 따라 충돌 해결된 기존 병합과 PDF 보완을 `84393ef`로 커밋했다(부모 `c71e7b4`, `30f6e21`). 이어 `git fetch origin`을 실행했고 `origin/develop`은 `30f6e21`이었다. `git merge --no-edit origin/develop` 결과는 `Already up to date`로 추가 충돌·변경이 없었다. 공유 대상은 현재 `develop`이며 기존 두 계열의 이력을 보존한다.
+- **실제 검증**: `PYTHON_DOTENV_DISABLED=1 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -B -m pytest -q -p no:cacheprovider --tb=short` 전체 실행에서 **1,370 passed / 3 warnings / 433.28초**. 실제 Chrome PDF와 사진 포함 저장·검증·승인·다운로드를 포함하며 skip·실패는 없다. 과거 수정안·DOCX 동시 생성 실패도 이번 실행에서는 재현되지 않았다. 이번 병합 재확인 과정에서 추가 제품 수정은 필요하지 않았다.
+- **추가 확인**: `uv lock --check --offline` 통과, 원격 대비 diff 공백 검사와 충돌 표시·미해결 인덱스 확인 통과. `.env`·`.venv/`·`private_runs/`는 Git 미추적·제외 상태를 유지했다. 전체 테스트 전 작업 트리는 깨끗했고 이후 변경은 이 검증 기록과 공통 연결표뿐이다.
+- **경고·범위**: Starlette의 AnyIO 별칭 사용 중단 예정 경고 1개와 마이그레이션 검사 복사본에서 `sources`·`source_versions`·`extraction_runs` 간 외래키 순환 정렬 경고 2개가 남았다. 관련 검사들은 통과했으며 이 기록으로 경고 해결을 주장하지 않는다. 실제 AI 과금 호출·실회사 자료 수정·프론트 재실행은 하지 않았다. BE-07 완료, BE-08 PDF 완료/DOCX 미완료, BE-10 진행중과 Agent 상태를 유지하며 실자료 품질·프론트·DOCX 후속은 기존대로 남는다.
