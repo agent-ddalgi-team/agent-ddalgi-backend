@@ -4815,15 +4815,16 @@ def test_unapproved_trial_settings_fail_before_sdk_creation(change):
     assert "unapproved-secret-model" not in json.dumps(report)
 
 
-def test_explicit_timeout_extension_keeps_usage_and_call_budget(monkeypatch):
+@pytest.mark.parametrize("timeout", [120, 180])
+def test_explicit_timeout_extension_keeps_usage_and_call_budget(monkeypatch, timeout):
     calls = fake_sdk(monkeypatch, response=metered_response())
-    options = llm.LlmOptions.from_env(config_env() | {"OPENAI_TIMEOUT_SECONDS": "120"})
-    ledger = llm.TrialLedger(max_calls=1, timeout_limit_seconds=120)
+    options = llm.LlmOptions.from_env(config_env() | {"OPENAI_TIMEOUT_SECONDS": str(timeout)})
+    ledger = llm.TrialLedger(max_calls=1, timeout_limit_seconds=timeout)
     requester = llm.OpenAIRequester(options, ledger=ledger)
     requester("", {}, {}, "company_info")
-    assert calls[0][1]["timeout"] == 120 and calls[0][1]["max_retries"] == 0
+    assert calls[0][1]["timeout"] == timeout and calls[0][1]["max_retries"] == 0
     report = ledger.snapshot()
-    assert report["timeout_limit_seconds"] == 120 and report["budget_usd"] == "1"
+    assert report["timeout_limit_seconds"] == timeout and report["budget_usd"] == "1"
     assert report["calls_started"] == 1 and report["stop_reason"] == "call_limit"
     with pytest.raises(AgentError):
         requester("", {}, {}, "company_info")
@@ -4940,17 +4941,18 @@ def test_input_cap_environment_is_explicit_and_bounded(monkeypatch, value, expec
         assert llm._trial_input_limit() == expected
 
 
-@pytest.mark.parametrize("bad", [0, 121, True, 60.5, "120"])
+@pytest.mark.parametrize("bad", [0, 181, True, 60.5, "180"])
 def test_invalid_timeout_cap_is_rejected(bad):
     with pytest.raises(ValueError):
         llm.TrialLedger(timeout_limit_seconds=bad)
 
 
-def test_extended_timeout_cannot_bypass_other_limits(monkeypatch):
+@pytest.mark.parametrize("timeout", [120, 180])
+def test_extended_timeout_cannot_bypass_other_limits(monkeypatch, timeout):
     calls = fake_sdk(monkeypatch, response=metered_response())
-    for change in ({"OPENAI_TIMEOUT_SECONDS": "121"}, {"OPENAI_MAX_INPUT_CHARS": "10001"},
+    for change in ({"OPENAI_TIMEOUT_SECONDS": str(timeout + 1)}, {"OPENAI_MAX_INPUT_CHARS": "10001"},
                    {"OPENAI_MAX_OUTPUT_TOKENS": "8001"}, {"OPENAI_MAX_RETRIES": "1"}):
-        ledger = llm.TrialLedger(timeout_limit_seconds=120)
+        ledger = llm.TrialLedger(timeout_limit_seconds=timeout)
         options = llm.LlmOptions.from_env(config_env() | change)
         with pytest.raises(AgentError):
             llm.OpenAIRequester(options, ledger=ledger)("", {}, {}, "company_info")
@@ -4958,7 +4960,7 @@ def test_extended_timeout_cannot_bypass_other_limits(monkeypatch):
     assert calls == []
 
 
-@pytest.mark.parametrize("value,expected", [(None,60),("60",60),("120",120),("0",None),("121",None),("secret-value",None)])
+@pytest.mark.parametrize("value,expected", [(None,60),("60",60),("120",120),("180",180),("0",None),("181",None),("secret-value",None)])
 def test_timeout_cap_environment_is_explicit_and_bounded(monkeypatch, value, expected):
     monkeypatch.delenv("OPENAI_TRIAL_TIMEOUT_LIMIT_SECONDS", raising=False)
     if value is not None:
@@ -5230,16 +5232,19 @@ def test_interactive_failure_does_not_poison_next_user_request(monkeypatch, fail
         assert not report["cost_complete"]
 
 
-def test_interactive_unknown_usage_still_consumes_budget(monkeypatch):
+@pytest.mark.parametrize("timeout", [60, 180])
+def test_interactive_unknown_usage_still_consumes_budget(monkeypatch, timeout):
     calls = fake_sdk(monkeypatch, error=APITimeoutError(request=httpx2.Request("POST", "https://api.openai.com/v1/responses")))
-    ledger = llm.TrialLedger(interactive=True, budget_usd=Decimal("0.30"))
-    requester = llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=ledger)
+    ledger = llm.TrialLedger(interactive=True, budget_usd=Decimal("0.30"), timeout_limit_seconds=timeout)
+    options = llm.LlmOptions.from_env(config_env() | {"OPENAI_TIMEOUT_SECONDS": str(timeout)})
+    requester = llm.OpenAIRequester(options, ledger=ledger)
     with pytest.raises(AgentError):
         requester("", {}, {}, "company_info")
     assert not ledger.snapshot()["stopped"]
     with pytest.raises(AgentError, match="예산 한도"):
         requester("", {}, {}, "company_info")
     assert len(calls) == 2 and ledger.snapshot()["stop_reason"] == "budget_reserve"
+    assert calls[0][1]["timeout"] == timeout and calls[0][1]["max_retries"] == 0
     assert ledger.snapshot()["known_estimated_cost_usd"] == "0"
     assert Decimal(ledger.snapshot()["unconfirmed_reserved_cost_usd"]) > 0
 
@@ -6776,6 +6781,9 @@ def test_bridge_rejects_limit_mismatch_before_api_or_ledger_mutation(monkeypatch
 
 @pytest.mark.parametrize("mode,args,success", [
     ("runtime", [], True),
+    ("interactive", ["-MaxInputChars", "40000", "-MaxOutputTokens", "32000", "-MaxRetries", "0"], True),
+    ("interactive", ["-RequestTimeoutSeconds", "180", "-MaxInputChars", "40000",
+                     "-MaxOutputTokens", "32000", "-MaxRetries", "0"], True),
     ("interactive", ["-RequestTimeoutSeconds", "120", "-MaxInputChars", "40000",
                      "-MaxOutputTokens", "32000", "-MaxRetries", "0"], True),
     ("trial", ["-RequestTimeoutSeconds", "60", "-MaxInputChars", "10000",
@@ -6802,6 +6810,8 @@ def test_powershell_launcher_check_only_syncs_guards_without_starting_server(mod
     report = json.loads(result.stdout.strip())
     assert report["check_only"] is True and report["demo"] is True
     assert report["execution_mode"] == mode and report["review"] == 120000
+    expected_timeout = float(args[args.index("-RequestTimeoutSeconds") + 1]) if "-RequestTimeoutSeconds" in args else 180
+    assert report["timeout"] == expected_timeout
     if mode == "runtime":
         assert report["usage"] == "RuntimeLedger" and report["output"] == 64000
     else:

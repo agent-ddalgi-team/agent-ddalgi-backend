@@ -4,10 +4,10 @@
 #       .\scripts\run_llm.ps1 -Demo      (시연 데이터 허용)
 #       .\scripts\run_llm.ps1 -Demo -ContentReview (내용 검증 허용)
 #       .\scripts\run_llm.ps1 -Demo -ContentReview -TextProposals (문구 수정안도 허용)
-# runtime 기본값: 입력 20만자/검증 40만자/출력 64000토큰/300초 (.env 변경 없음)
+# runtime 기본값: 입력 20만자/검증 40만자/출력 64000토큰/180초 (.env 변경 없음)
 # trial/interactive는 해당 모드 범위의 옵션과 재시도 0을 명시한다. -CheckOnly는 API/서버 없이 설정만 확인한다.
 param([switch]$Demo, [switch]$ContentReview, [switch]$TextProposals, [switch]$CheckOnly,
-      [ValidateRange(1, 300)][int]$RequestTimeoutSeconds = 300,
+      [ValidateRange(1, 300)][int]$RequestTimeoutSeconds = 180,
       [ValidateRange(1, 200000)][int]$MaxInputChars = 200000,
       [ValidateRange(1, 400000)][int]$MaxReviewInputChars = 400000,
       [ValidateRange(1, 64000)][int]$MaxOutputTokens = 64000,

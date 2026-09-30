@@ -119,6 +119,7 @@ _MODEL_CONTEXT = 1_050_000
 # 다음 1회의 최대 문맥·캐시 쓰기·긴 문맥 출력 비용까지 미리 확보한다.
 # 원문 글자 수로 입력 토큰을 추정하지 않는다. 명시한 출력 상한도 예약액에 반영한다.
 _MAX_TRIAL_OUTPUT_TOKENS = 32_000
+_MAX_TRIAL_TIMEOUT_SECONDS = 180
 
 
 def _call_reserve_usd(output_token_limit: int) -> Decimal:
@@ -238,8 +239,8 @@ class TrialLedger:
         if (not isinstance(budget_usd, Decimal) or not budget_usd.is_finite()
                 or not 0 < budget_usd <= (100 if interactive else 1)):
             raise ValueError("실행 예산 범위가 올바르지 않습니다.")
-        if type(timeout_limit_seconds) is not int or not 1 <= timeout_limit_seconds <= 120:
-            raise ValueError("시험 대기 시간 상한은 1~120초의 정수여야 합니다.")
+        if type(timeout_limit_seconds) is not int or not 1 <= timeout_limit_seconds <= _MAX_TRIAL_TIMEOUT_SECONDS:
+            raise ValueError(f"시험 대기 시간 상한은 1~{_MAX_TRIAL_TIMEOUT_SECONDS}초의 정수여야 합니다.")
         self._timeout_limit_seconds = timeout_limit_seconds
         if type(input_char_limit) is not int or not 1 <= input_char_limit <= _LEGACY_INPUT_LIMIT:
             raise ValueError("시험 입력 상한은 1~40,000자의 정수여야 합니다.")
@@ -451,11 +452,11 @@ def _text_proposals_enabled() -> bool:
 def _trial_timeout_limit() -> int:
     try:
         value = int(os.environ.get("OPENAI_TRIAL_TIMEOUT_LIMIT_SECONDS", "60"))
-        if not 1 <= value <= 120:
+        if not 1 <= value <= _MAX_TRIAL_TIMEOUT_SECONDS:
             raise ValueError
         return value
     except ValueError:
-        raise RuntimeError("OPENAI_TRIAL_TIMEOUT_LIMIT_SECONDS는 1~120의 정수여야 합니다.") from None
+        raise RuntimeError(f"OPENAI_TRIAL_TIMEOUT_LIMIT_SECONDS는 1~{_MAX_TRIAL_TIMEOUT_SECONDS}의 정수여야 합니다.") from None
 
 
 def _trial_input_limit() -> int:
