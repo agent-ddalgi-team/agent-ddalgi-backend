@@ -1,4 +1,4 @@
-"""API 요청·응답 모델. contracts.md 계약 1.3과 OpenAPI의 원본이다.
+"""API 요청·응답 모델. contracts.md 계약 1.7과 OpenAPI의 원본이다.
 
 DB 테이블은 orm_models.py에, 요청 값의 형식 검사는 여기에 둔다.
 소유권·현재 버전·근거의 유효성 같은 업무 검사는 서비스에서 수행한다.
@@ -38,6 +38,30 @@ class Brief(BaseModel):
     direction: Literal["balanced", "quality_process", "customer_response"] = "balanced"
     target_pages: Literal[1, 4, 6, 8, 10] = 4
     photo_preference: Literal["none", "balanced", "many"] = "balanced"
+    audience: str = Field(default="처음 회사를 접하는 고객·협력사", max_length=300)
+    usage_context: str = Field(default="", max_length=500)
+    tone: Literal["plain", "formal", "concise"] = "plain"
+    target_company: str | None = Field(default=None, min_length=1, max_length=200)
+    required_fields: list[str] = Field(default_factory=list, max_length=14)
+    brand_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+
+    def idempotency_payload(self) -> dict:
+        """계약 1.6의 요청 해시를 보존한다. 새 조건을 실제 지정하면 해시도 달라진다."""
+        payload = self.model_dump()
+        for name in ("audience", "usage_context", "tone", "target_company", "required_fields", "brand_color"):
+            if payload[name] == type(self).model_fields[name].get_default(call_default_factory=True):
+                payload.pop(name)
+        return payload
+
+    @field_validator("required_fields")
+    @classmethod
+    def known_required_fields(cls, value):
+        allowed = {"company_name", "company_summary", "business_areas", "products_services", "technology",
+                   "strengths", "customers_markets", "certifications", "history", "processes",
+                   "process_count", "capabilities", "lead_time", "other_info"}
+        if len(set(value)) != len(value) or not set(value) <= allowed:
+            raise ValueError("required_fields must contain unique company fact field keys")
+        return value
 
     @field_validator("target_pages", mode="before")
     @classmethod
@@ -311,12 +335,47 @@ class Block(BaseModel):
     evidence_refs: list[EvidenceRef] = Field(default_factory=list)
 
 
+EditorialLayout = Literal["cover_text", "cover_photo", "text_photo", "product_grid", "process_steps",
+                          "contact_photo", "fact_sheet", "timeline", "certification_summary"]
+
+
+class PageDesign(BaseModel):
+    """Validated tokens only; no model-authored markup, font URLs, or arbitrary CSS."""
+    model_config = ConfigDict(extra="forbid")
+    palette: Literal["neutral", "ocean", "forest", "clay"] = "neutral"
+    density: Literal["comfortable", "compact"] = "comfortable"
+    typography: Literal["editorial", "restrained"] = "editorial"
+    brand_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+
+
+class FactSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    fact_id: NonBlankText
+    disposition: Literal["required", "optional", "excluded", "review"]
+    reason: NonBlankText
+
+
+class EditorialRecord(BaseModel):
+    """Generation audit, not a statement that edited text has passed review."""
+    model_config = ConfigDict(extra="forbid")
+    prompt_version: Literal["editorial_v1"] = "editorial_v1"
+    input_revision: int
+    basis_document_revision: int = 1
+    selections: list[FactSelection]
+    requested_pages: int
+    generated_pages: int
+    page_count_reason: NonBlankText
+    supplement_requests: list[str] = Field(default_factory=list)
+    unextracted_segment_ids: list[str] = Field(default_factory=list)
+
+
 class Page(BaseModel):
     model_config = ConfigDict(extra="forbid")
     page_id: str
     title: str
     layout_key: str
     blocks: list[Block]
+    design: PageDesign | None = None
 
 
 class Document(BaseModel):
@@ -329,6 +388,7 @@ class Document(BaseModel):
     target_pages: Literal[1, 4, 6, 8, 10]
     status: DocumentStatus
     pages: list[Page]
+    editorial: EditorialRecord | None = None
 
 
 # ---------------- 검증·문제·승인 (BE-06) ----------------
@@ -539,7 +599,7 @@ class DraftCreate(BaseModel):
     confirmed: bool = Field(strict=True)
 
 
-# ---------------- 문서 수정 연산 8종 (contracts.md Document절 허용 목록) ----------------
+# ---------------- 문서 수정 연산 9종 (contracts.md Document절 허용 목록) ----------------
 
 class OpReplaceBlockContent(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -597,9 +657,17 @@ class OpDeletePage(BaseModel):
     page_id: str
 
 
+class OpSetPageDesign(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    op: Literal["set_page_design"]
+    page_id: str
+    layout_key: EditorialLayout
+    design: PageDesign
+
+
 Operation = Annotated[
     OpReplaceBlockContent | OpInsertBlock | OpDeleteBlock | OpMoveBlock
-    | OpInsertPage | OpRenamePage | OpMovePage | OpDeletePage,
+    | OpInsertPage | OpRenamePage | OpMovePage | OpDeletePage | OpSetPageDesign,
     Field(discriminator="op"),
 ]
 

@@ -35,6 +35,7 @@ BANNED = ("거산", "케미칼", "Geosan")
 
 # 템플릿·폰트·DOCX 배치 상수·PDF 렌더 상수의 sha256(줄바꿈 정규화). 이 중 하나라도 바꾸면 TEMPLATE_VERSION을 올리고 여기 값을 갱신한다.
 TEMPLATE_FINGERPRINTS = {
+    "template_v4": "538839538005c76d91e68a091398ce4cd20842499f62d147c52852339d98b237",
     "template_v3": "e0e3f49e66c8564353bc357022845e40c936e273147883ce49dde3cc500a3512",
     "template_v2": "f7a692ddd4ee706e3bb93daec8dce2ce07548d608f1c6009962d1ff049905e4a",
     "template_v0": "7b1b3eaabcad9c23078f68a09fd2ccba89a372cbaec9b13643ebfc3abbbe8096",
@@ -165,7 +166,7 @@ class Flow:
 
 def test_identity_values_come_from_layout_checks(out_dir):
     r = er.render(_fixture_snapshot("1pages"), "docx", out_dir)
-    assert r.template_version == layout_checks.TEMPLATE_VERSION == "template_v3"
+    assert r.template_version == layout_checks.TEMPLATE_VERSION == "template_v4"
     assert r.render_options_hash == layout_checks.RENDER_OPTIONS_HASH == layout_checks.render_options_hash(layout_checks.DEFAULT_RENDER_OPTIONS)
     assert len(r.render_options_hash) == 16 and int(r.render_options_hash, 16) >= 0
     changed = dict(layout_checks.DEFAULT_RENDER_OPTIONS, margin_mm=20)

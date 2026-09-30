@@ -748,5 +748,87 @@ try:
 except ImportError:
     render_reportlab = None
 
+def editorial_evaluation(out: Path) -> None:
+    """Offline, fixed-input before/after artifacts; prepared responses are NOT actual LLM evaluation."""
+    import hashlib
+    import importlib.util
+    from dataclasses import asdict
+    import pypdfium2
+    from pypdf import PdfReader
+    from app import agent_llm, agent_legacy
+    from app.services.validation import block_texts
+    from app.services import validation, refs
+
+    spec = importlib.util.spec_from_file_location("editorial_fixtures", ROOT / "tests" / "test_agent_llm.py")
+    fixtures = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixtures)
+    out.mkdir(parents=True, exist_ok=True)
+    report = {"mode": "offline_prepared_responses", "model": None, "llm_calls": 0, "cost_usd": "0",
+              "semantic_review_executed": False, "approval": "not_requested",
+              "template_version": layout_checks.TEMPLATE_VERSION, "template_sha256": er.template_fingerprint(),
+              "prompt_sha256": {kind: hashlib.sha256(agent_legacy.load_draft_prompt(editorial=flag).encode()).hexdigest()
+                                for kind, flag in (("baseline", False), ("editorial_v1", True))}, "cases": []}
+    cases = [(key, "구매 담당자") for key in fixtures.EDITORIAL_CASES] + [("manufacturing", "기술 검토자")]
+    for case_id, audience in cases:
+        key = case_id + ("_technical" if audience == "기술 검토자" else "")
+        request = fixtures.build_editorial_request(case_id, audience=audience)
+        case_dir = out / key
+        case_dir.mkdir(exist_ok=True)
+        (case_dir / "input.json").write_text(json.dumps(asdict(request), ensure_ascii=False, indent=2,
+            default=lambda obj: obj.model_dump()), encoding="utf-8")
+        row = {"case": key, "rubric": {k: v for k, v in fixtures.EDITORIAL_CASES[case_id].items() if k != "facts"},
+               "input_sha256": hashlib.sha256((case_dir / "input.json").read_bytes()).hexdigest(), "outputs": {}}
+        for kind in ("baseline", "editorial"):
+            responder = (lambda i, p, s, n: fixtures.draft_response(p)) if kind == "baseline" else (
+                lambda i, p, s, n: fixtures.editorial_response(p))
+            result = agent_llm.LlmAgent(responder, legacy_draft=kind == "baseline").draft(request)
+            doc = Document(document_id=key + "_" + kind, session_id=request.session_id, document_revision=1,
+                input_revision=1, title=result.title, target_pages=4, status="draft", pages=result.pages, editorial=result.editorial)
+            (case_dir / f"{kind}.json").write_text(doc.model_dump_json(indent=2), encoding="utf-8")
+            rendered = er.render(er.snapshot_from_document(doc, {}), "pdf", case_dir)
+            if kind == "editorial" and not rendered.layout_ok:
+                raise RuntimeError(f"Editorial PDF layout failed: {key}: {rendered.to_dict()}")
+            pdf = pypdfium2.PdfDocument(str(rendered.file_path))
+            for n in range(len(pdf)):
+                page = pdf[n]
+                bitmap = page.render(scale=1.3)
+                bitmap.to_pil().save(case_dir / f"{kind}-page-{n + 1}.png")
+                bitmap.close()
+                page.close()
+            pdf.close()
+            text = " ".join(t for p in result.pages for b in p.blocks for t in block_texts(b))
+            pdf_text = " ".join(p.extract_text() or "" for p in PdfReader(rendered.file_path).pages)
+            kept = all(t in text for t in row["rubric"]["must_keep"])
+            forbidden = [t for t in row["rubric"]["forbidden"] if t in text]
+            claims = [{"block_id": b.block_id, "text": block_texts(b), "fact_ids": b.fact_ids,
+                       "evidence_refs": [r.model_dump() for r in b.evidence_refs]}
+                      for p in result.pages for b in p.blocks if b.fact_ids]
+            context = validation.Context(
+                {s.segment_id: s.text for source in request.sources for s in source.segments},
+                {s.segment_id: source.source_id for source in request.sources for s in source.segments}, {}, set(),
+                refs.SessionRefs({s.segment_id for source in request.sources for s in source.segments},
+                    {source.source_id: source.source_version for source in request.sources}, set(),
+                    {f.fact_id for f in request.preflight.facts}), {f.fact_id: f for f in request.preflight.facts}, [],
+                scope_sources=request.sources, scope_preflight=request.preflight, required_fields=request.brief.required_fields)
+            issues, _ = validation.server_checks(doc, context)
+            row["outputs"][kind] = {"pdf": str(rendered.file_path), "logical_pages": len(doc.pages),
+                "actual_pages": rendered.actual_pages, "layout_ok": rendered.layout_ok,
+                "characters": len(text), "expected_terms_preserved": kept, "forbidden_terms": forbidden,
+                "korean_name_in_pdf": doc.title.replace(" ", "") in pdf_text.replace(" ", ""),
+                "claims": claims, "server_issues": [{"code": i.code, "severity": i.severity} for i in issues],
+                "render": rendered.to_dict()}
+            if kind == "editorial" and (not kept or forbidden):
+                raise RuntimeError(f"Prepared response failed rubric: {key}")
+        report["cases"].append(row)
+    (out / "evaluation.json").write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    print(json.dumps({"report": str(out / "evaluation.json"), "cases": len(report["cases"]), "llm_calls": 0}))
+
+
 if __name__ == "__main__":
-    main()
+    if "--editorial-eval" in sys.argv:
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--editorial-eval", action="store_true")
+        parser.add_argument("--out", type=Path, default=ROOT / "private_runs" / "agent_editorial_eval")
+        editorial_evaluation(parser.parse_args().out)
+    else:
+        main()

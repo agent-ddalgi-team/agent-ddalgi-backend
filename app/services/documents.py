@@ -13,13 +13,14 @@ from dataclasses import asdict
 
 from app.db import Connection, Row
 from app.errors import ApiError
-from app.models import Document, DocumentSummary, Fact, ImpactApply, ImpactItem, ImpactReviewOut, Page
+from app.models import Document, DocumentSummary, EditorialRecord, Fact, ImpactApply, ImpactItem, ImpactReviewOut, Page
 from app.services import db_history
 from app.timeutil import now, to_iso
 
 
 def create_initial(conn: Connection, session_id: str, input_revision: int, title: str,
-                   target_pages: int, pages: list[Page], status: str, *, preflight_id: str | None = None) -> str:
+                   target_pages: int, pages: list[Page], status: str, *, preflight_id: str | None = None,
+                   editorial: EditorialRecord | None = None) -> str:
     document_id = f"doc_{uuid.uuid4().hex[:16]}"
     stamp = to_iso(now())
     conn.execute(
@@ -29,7 +30,8 @@ def create_initial(conn: Connection, session_id: str, input_revision: int, title
         "INSERT INTO document_revisions (document_id, revision, input_revision, status, content_json, origin, source_ref, created_at) "
         "VALUES (?, 1, ?, ?, ?, 'draft', NULL, ?)",
         (document_id, input_revision, status,
-         json.dumps({"title": title, "pages": [p.model_dump() for p in pages]}, ensure_ascii=False), stamp))
+         json.dumps({"title": title, "pages": [p.model_dump() for p in pages],
+                     "editorial": editorial.model_dump() if editorial else None}, ensure_ascii=False), stamp))
     db_history.bind_document(conn, document_id, 1, session_id, preflight_id)
     return document_id
 
@@ -57,7 +59,7 @@ def _to_document(conn: Connection, head: Row, rev: Row, *, computed_status: bool
     return Document(
         document_id=head["document_id"], session_id=head["session_id"], document_revision=rev["revision"],
         input_revision=rev["input_revision"], title=content["title"], target_pages=head["target_pages"],
-        status=status, pages=[Page.model_validate(p) for p in content["pages"]],
+        status=status, pages=[Page.model_validate(p) for p in content["pages"]], editorial=content.get("editorial"),
     )
 
 
@@ -107,6 +109,10 @@ def add_revision(conn: Connection, session_id: str, document_id: str, expected_r
         raise ApiError(409, "DOCUMENT_REVISION_CONFLICT", "문서가 변경되었습니다. 최신 문서에서 다시 요청해 주세요.",
                        details={"expected_revision": expected_revision, "current_revision": head["current_revision"]})
     new_revision = expected_revision + 1
+    # Keep the original generation audit with its basis revision; never present it as a fresh review.
+    previous_content = json.loads(conn.execute(
+        "SELECT content_json FROM document_revisions WHERE document_id=? AND revision=?",
+        (document_id, expected_revision)).fetchone()[0])
     stamp = to_iso(now())
     cur = conn.execute(
         "UPDATE documents SET current_revision=?, title=?, updated_at=? WHERE document_id=? AND current_revision=?",
@@ -118,7 +124,8 @@ def add_revision(conn: Connection, session_id: str, document_id: str, expected_r
         "INSERT INTO document_revisions (document_id, revision, input_revision, status, content_json, origin, source_ref, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (document_id, new_revision, input_revision, status,
-         json.dumps({"title": title, "pages": [p.model_dump() for p in pages]}, ensure_ascii=False),
+         json.dumps({"title": title, "pages": [p.model_dump() for p in pages],
+                     "editorial": previous_content.get("editorial")}, ensure_ascii=False),
          origin, source_ref, stamp))
     # 수동 편집/복원에는 이전 생성의 preflight를 현재 근거처럼 추정해 넣지 않는다.
     db_history.bind_document(conn, document_id, new_revision, session_id)
