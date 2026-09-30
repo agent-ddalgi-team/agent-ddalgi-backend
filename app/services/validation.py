@@ -80,8 +80,10 @@ _SECTION_LABELS = frozenset({"회사명", "회사소개서 초안", "회사 개�
 def is_label(text: str) -> bool:
     """절 번호를 뺀 정확한 항목 제목을 허용한다. 나머지는 숫자·주장 키워드·길이를 검사한다."""
     t = _SECTION_NUMBER.sub("", text.strip()).strip()
+    # '범위' is a scope noun, not the ranking marker '위'. Other claim words and digits still require evidence.
+    claim_text = t.replace("범위", "")
     return t in _SECTION_LABELS or (len(t) <= LABEL_MAX_LEN and not _DIGIT.search(t)
-                                    and not any(k in t for k in _CLAIM_KEYWORDS))
+                                    and not any(k in claim_text for k in _CLAIM_KEYWORDS))
 
 
 def _norm(text: str) -> str:

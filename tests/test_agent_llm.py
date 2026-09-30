@@ -256,6 +256,13 @@ def test_editorial_rejects_invalid_or_ungrounded_plan_without_retry(damage):
     assert calls == ["draft_sections"]
 
 
+@pytest.mark.parametrize("title,allowed", [("가공 범위와 주문 참고사항", True), ("적용 범위", True),
+    ("최대 가공 범위", False), ("납기 보장 범위", False), ("세계 1위 가공 범위", False),
+    ("인증 적용 범위", False), ("업계 우위", False), ("가공 범위 200mm", False)])
+def test_scope_label_does_not_hide_rank_guarantees_or_numbers(title, allowed):
+    assert validation.is_label(title) is allowed
+
+
 def test_editorial_required_history_cannot_be_excluded_by_purpose():
     request = build_editorial_request("manufacturing")
     request.brief.required_fields = ["history"]
@@ -3646,6 +3653,32 @@ def test_sdk_extraction_keeps_legacy_status_and_evidence_checks(monkeypatch):
     agent = baseline_agent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env())))
     with pytest.raises(AgentError):
         agent.analyze(AnalyzeRequest("ses_test", 2, BRIEF, sources()))
+
+
+@pytest.mark.parametrize("forged", [None, "F999", "fact_other_company", True])
+def test_editorial_sdk_short_references_restore_original_ids_and_reject_foreign(monkeypatch, forged):
+    request = build_editorial_request("manufacturing")
+    original = copy.deepcopy(request)
+    def respond(**kwargs):
+        payload = json.loads(kwargs["input"])
+        assert [f["fact_id"] for f in payload["facts"]] == [f"F{n}" for n in range(1, len(payload["facts"]) + 1)]
+        assert payload["source_units"][0]["source_id"] == request.sources[0].source_id
+        assert payload["facts"][0]["evidence_refs"] == request.preflight.facts[0].model_dump()["evidence_refs"]
+        encoded_schema = json.dumps(kwargs["text"]["format"]["schema"])
+        assert request.preflight.facts[0].fact_id not in encoded_schema
+        body = editorial_response(payload)
+        if forged is not None:
+            body["pages"][0]["points"][0]["fact_ids"] = [forged]
+        return metered_response(output_text=json.dumps(body, ensure_ascii=False))
+    calls = fake_sdk(monkeypatch, response=respond)
+    agent = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=llm.RuntimeLedger()))
+    if forged is not None:
+        with pytest.raises(AgentError): agent.draft(request)
+    else:
+        result = agent.draft(request)
+        assert refs.selected_problem(result.pages, request.sources, request.preflight) is None
+        assert {s.fact_id for s in result.editorial.selections} == {f.fact_id for f in request.preflight.facts}
+    assert len(calls) == 2 and request == original
 
 
 def test_sdk_request_uses_explicit_settings_strict_json_and_no_storage(monkeypatch):

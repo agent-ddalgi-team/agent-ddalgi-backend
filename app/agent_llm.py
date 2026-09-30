@@ -576,6 +576,50 @@ def _restore_extraction_evidence(result: dict, references: dict[int, dict]) -> d
     return restored
 
 
+def _map_editorial_fact_ids(value: Any, mapping: dict[str, str]) -> Any:
+    """Translate reference fields only. Never rewrite prose, evidence, or source identifiers."""
+    def one(fid):
+        if type(fid) is not str or fid not in mapping:
+            raise _invalid()
+        return mapping[fid]
+    if isinstance(value, list):
+        return [_map_editorial_fact_ids(item, mapping) for item in value]
+    if isinstance(value, dict):
+        result = {}
+        for key, item in value.items():
+            if key == "fact_id":
+                result[key] = one(item)
+            elif key in {"fact_ids", "required_fact_ids", "sequence_fact_ids"}:
+                if not isinstance(item, list):
+                    raise _invalid()
+                result[key] = [one(fid) for fid in item]
+            else:
+                result[key] = _map_editorial_fact_ids(item, mapping)
+        return result
+    return value
+
+
+def _editorial_wire_request(payload: dict, schema: dict) -> tuple[dict, dict, dict[str, str]]:
+    """Keep long database IDs out of constrained generation; restore them before all existing checks."""
+    ids = [fact["fact_id"] for fact in payload["facts"]]
+    if not ids or len(ids) != len(set(ids)):
+        raise _invalid()
+    mapping = {fid: f"F{n}" for n, fid in enumerate(ids, 1)}
+    wire_schema = copy.deepcopy(schema)
+    def enums(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "enum" and isinstance(value, list):
+                    node[key] = [mapping.get(item, item) if isinstance(item, str) else item for item in value]
+                else:
+                    enums(value)
+        elif isinstance(node, list):
+            for item in node:
+                enums(item)
+    enums(wire_schema)
+    return _map_editorial_fact_ids(payload, mapping), wire_schema, {v: k for k, v in mapping.items()}
+
+
 class OpenAIRequester:
     """Responses API 통신 한 곳. 내용 자동 수정·추가 생성 재시도는 하지 않는다."""
 
@@ -591,9 +635,11 @@ class OpenAIRequester:
         self.ledger._begin(options, schema_name)
         started, response, error, failure_reason = time.monotonic(), None, None, "request_failed"
         try:
-            references = None
+            references, fact_aliases = None, None
             if schema_name == legacy.MODEL_SCHEMA_NAME and schema == legacy.build_model_output_schema():
                 payload, schema, references = _extraction_wire_request(payload, schema)
+            elif schema_name == "draft_sections" and payload.get("prompt_version") == "editorial_v2":
+                payload, schema, fact_aliases = _editorial_wire_request(payload, schema)
             with OpenAI(api_key=options.api_key, timeout=options.timeout_seconds,
                         max_retries=options.max_retries, base_url="https://api.openai.com/v1") as client:
                 response = client.responses.create(
@@ -614,6 +660,8 @@ class OpenAIRequester:
             result = self._decode(response)
             if references is not None:
                 result = _restore_extraction_evidence(result, references)
+            if fact_aliases is not None:
+                result = _map_editorial_fact_ids(result, fact_aliases)
         except RateLimitError as exc:
             failure_reason = ("provider_budget" if exc.code in (
                 "organization_spend_limit_exceeded", "project_spend_limit_exceeded", "insufficient_quota",
