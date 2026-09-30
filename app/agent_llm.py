@@ -321,18 +321,36 @@ class TrialLedger:
                     "stopped": self._stop_reason is not None,
                     "stop_reason": self._stop_reason, "records": records}
 
+    def configuration_mismatches(self, options: LlmOptions) -> list[str]:
+        checks = (
+            (options.model == _TRIAL_MODEL, "OPENAI_MODEL"),
+            (options.max_retries == 0, "OPENAI_MAX_RETRIES"),
+            (0 < options.timeout_seconds <= self._timeout_limit_seconds,
+             "OPENAI_TIMEOUT_SECONDS / OPENAI_TRIAL_TIMEOUT_LIMIT_SECONDS"),
+            (0 < options.max_input_chars <= self._input_char_limit,
+             "OPENAI_MAX_INPUT_CHARS / OPENAI_TRIAL_INPUT_CHAR_LIMIT"),
+            (0 < options.max_output_tokens <= self._output_token_limit,
+             "OPENAI_MAX_OUTPUT_TOKENS / OPENAI_TRIAL_OUTPUT_TOKEN_LIMIT"),
+        )
+        return [name for valid, name in checks if not valid]
+
+    def validate_configuration(self, options: LlmOptions) -> None:
+        """Startup check only: never reserve budget, count a call, or reset ledger state."""
+        mismatches = self.configuration_mismatches(options)
+        if mismatches:
+            raise AgentError("SERVICE_TEMPORARY_FAILURE",
+                "AI 호출 설정과 내부 상한이 맞지 않습니다. 서버 설정을 확인해 주세요. ("
+                + ", ".join(mismatches) + ")")
+
     def _begin(self, options: LlmOptions, schema_name: str) -> None:
         # 한도 확인과 예약을 한 잠금 안에서 수행해 다른 Job의 동시 호출도 막는다.
         with self._lock:
             if (self._stop_reason is not None or self._active is not None
                     or self._operation_owner not in (None, threading.get_ident())):
                 raise self.blocked_error()
-            if (options.model != _TRIAL_MODEL or options.max_retries != 0
-                    or not 0 < options.timeout_seconds <= self._timeout_limit_seconds
-                    or not 0 < options.max_output_tokens <= self._output_token_limit
-                    or not 0 < options.max_input_chars <= self._input_char_limit):
+            if self.configuration_mismatches(options):
                 if self.interactive:
-                    raise AgentError("SERVICE_TEMPORARY_FAILURE", "AI 호출 설정과 내부 상한이 맞지 않습니다. 서버 설정을 확인해 주세요.")
+                    self.validate_configuration(options)
                 self._stop_reason = "settings_outside_trial"
             elif self._max_calls is not None and len(self._records) >= self._max_calls:
                 self._stop_reason = "call_limit"
@@ -2316,5 +2334,8 @@ heading/lead/point 모두 공백이 아닌 text와 중복 없는 허용 fact_ids
 
 def create_bridge(settings: Settings) -> LlmAgent:
     options = LlmOptions.from_env(os.environ)
-    return LlmAgent(OpenAIRequester(options), max_input_chars=options.max_input_chars, settings=settings,
+    requester = OpenAIRequester(options)
+    if isinstance(requester.ledger, TrialLedger):
+        requester.ledger.validate_configuration(options)
+    return LlmAgent(requester, max_input_chars=options.max_input_chars, settings=settings,
                     max_review_input_chars=_review_input_limit())
