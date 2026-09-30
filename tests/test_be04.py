@@ -365,6 +365,72 @@ def test_draft_creates_document_rev1_with_evidence_and_asset(client, settings):
     assert r.status_code == 409 and r.json()["error"]["code"] == "DOCUMENT_EXISTS"
 
 
+@pytest.mark.parametrize("case", ["split", "unavailable", "input_changed", "bad_reference"])
+def test_editorial_draft_layout_preparation_saves_once_and_rechecks_boundaries(client, settings, monkeypatch, case):
+    from app.models import EditorialRecord, FactSelection, PageDesign
+    from app.services import export_render as er
+    sid = _session(client)
+    src = _upload(client, sid, ("a.txt", SOURCE_A), ("photo.png", _png()))
+    rev = _select(client, sid, src)
+    pf = _preflight(client, sid, rev)
+    original_draft = MockAgent.draft
+    calls = []
+    async def editorial(self, request):
+        calls.append("draft")
+        result = await original_draft(self, request)
+        for p in result.pages:
+            p.design = PageDesign()
+        result.editorial = EditorialRecord(input_revision=rev, requested_pages=4, generated_pages=len(result.pages),
+            page_count_reason="시험 구성", selections=[FactSelection(fact_id=f.fact_id,
+                disposition="optional" if f.status == "supported" else "review", reason="시험 근거") for f in request.preflight.facts])
+        return result
+    def paginate(snapshot, out_dir, config):
+        calls.append("paginate")
+        assert out_dir.is_dir() and config.db_path == settings.db_path
+        # Acquiring a second writer also verifies browser work holds no DB write lock.
+        with connect(settings.db_path, immediate=True) as conn:
+            if case == "input_changed":
+                conn.execute("UPDATE sessions SET input_revision=input_revision+1 WHERE session_id=?", (sid,))
+        pages = [p.model_copy(deep=True) for p in snapshot.pages]
+        if case == "split":
+            extra = pages[0].model_copy(deep=True)
+            extra.page_id = "page_continuation"
+            extra.blocks = pages[0].blocks[2:]
+            pages[0].blocks = pages[0].blocks[:2]
+            pages.insert(1, extra)
+        if case == "bad_reference":
+            pages[0].blocks[0].fact_ids = ["nonexistent_fact"]
+        return er.DraftPagination(pages, "unavailable" if case == "unavailable" else "passed", 1)
+    monkeypatch.setattr(MockAgent, "draft", editorial)
+    monkeypatch.setattr(er, "paginate_draft", paginate)
+    payload = {"preflight_id": pf["preflight_id"], "input_revision": rev, "confirmed": True}
+    response = client.post(f"/api/v1/sessions/{sid}/drafts", json=payload)
+    assert response.status_code == 202
+    job = client.get(f"/api/v1/sessions/{sid}/jobs/{response.json()['job_id']}").json()
+    assert calls == ["draft", "paginate"]
+    assert not list((settings.private_runs_dir / sid / "artifacts").glob("tmp_*"))
+    with connect(settings.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM layout_checks").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM approvals").fetchone()[0] == 0
+        if case in {"input_changed", "bad_reference"}:
+            assert job["status"] == "failed"
+            assert conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 0
+            assert job["error"]["code"] == ("INPUT_REVISION_CONFLICT" if case == "input_changed" else "AGENT_OUTPUT_INVALID")
+            return
+    assert job["status"] == "succeeded"
+    document = client.get(f"/api/v1/sessions/{sid}/documents/{job['result_ref']['document_id']}").json()["document"]
+    assert len(document["pages"]) == (5 if case == "split" else 4)
+    assert document["editorial"]["generated_pages"] == len(document["pages"])
+    assert document["target_pages"] == document["editorial"]["requested_pages"] == 4
+    assert document["status"] == "draft"  # Public status comes from validation/approval, not the stored preparation hint.
+    if case == "unavailable":
+        assert "완료하지 못했습니다" in document["editorial"]["page_count_reason"]
+        with connect(settings.db_path) as conn:
+            assert conn.execute("SELECT status FROM document_revisions WHERE document_id=?", (document["document_id"],)).fetchone()[0] == "review_required"
+    assert client.post(f"/api/v1/sessions/{sid}/drafts", json=payload).status_code == 409
+    assert calls == ["draft", "paginate"]
+
+
 def test_draft_with_blocker_is_review_required_and_no_photo_gives_placeholder(client):
     sid = _session(client)
     src = _upload(client, sid, ("a.txt", SOURCE_A), ("b.txt", SOURCE_B))

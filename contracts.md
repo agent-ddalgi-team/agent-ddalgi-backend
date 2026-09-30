@@ -1,11 +1,12 @@
 # 공통 데이터·API 계약
 
-기준일: 2026-09-30 · 문서 v1.19 · contract_version: 1.8 · 데이터 schema_version: 1.0
+기준일: 2026-09-30 · 문서 v1.20 · contract_version: 1.8 · 데이터 schema_version: 1.0
 
 **계약 1.8 — 근거 연결 소제목(2026-09-30):** 기본 작성 계획은 `editorial_v2`다. 기존 `editorial_v1` 문서는 계속 읽으며 `prompt_version` 허용값만 확장한다. 새 point의 소제목을 기존 `heading {text, level:2}` 블록으로 저장하고 바로 뒤에 독립 paragraph를 둔다. 두 블록은 같은 fact_ids/evidence_refs를 가지며 소제목에도 수치·참조 검사와 원문 의미 검증을 적용한다. 소제목 참조로 본문의 사실·수치 누락을 충족시킬 수 없다. 공개 블록 종류·DB v11·데이터 1.0은 유지한다.
 
 - **출력:** template_v6는 v5의 인접 level 2 제목+문단 배치를 유지한다. product_grid의 짧은 두 항목은 나란히, 긴 설명과 홀수로 남은 항목은 전체 너비로 배치한다. fact_sheet/certification_summary는 소제목·본문을 열로 구분한다. PDF에서 Page.design이 있는 페이지가 넘칠 때만 contain 사진 상자의 높이를 남은 공간에 맞춰 줄인다(최소 36mm, 최대 3회 조정). 사진 비율·본문 11pt·캡션·블록 순서를 보존하며 crop·정상 페이지는 변경하지 않는다. 최소 사진 높이로도 맞지 않으면 기존 넘침 검사가 계속 실패한다. 실제 배치 검사는 계속 필요하다.
 - **편집·검증:** 소제목 문구·연결 문단이 바뀌면 해당 쌍의 의미 검증을 다시 수행한다. 색상·간격만 바꾸면 내용 검증은 재사용할 수 있으나 배치·승인은 갱신한다. 이전 템플릿의 승인 artifact를 자동 교체하지 않는다.
+- **초안 분량 사전 확인:** 새 editorial 초안은 최초 저장 전에 실제 PDF 배치를 확인한다. 넘치는 소제목+문단/사진은 다음 페이지로 옮기고 한 페이지보다 긴 문단은 문장·공백 경계에서 나눠 전체 문자·사실·근거를 유지한다. 사용자 확정에 따라 목표 쪽수보다 페이지를 추가할 수 있다. `requested_pages`/`target_pages`는 원래 목표, `generated_pages`는 저장한 실제 논리 쪽수이며 `page_count_reason`에 분할 또는 미완료 사유를 기록한다. 최대 8회 렌더·40쪽·120초로 제한하고 해결되지 않은 경우에도 내용을 지우거나 통과로 처리하지 않는다. 이 사전 확인은 정식 LayoutCheck/내용 검증/승인을 대신하지 않는다. 기존 저장 문서와 이후 직접 편집은 자동 분할 대상이 아니다. 프론트의 생성 사유 표시는 별도 후속이며 사본은 미갱신이다.
 - **프론트 영향:** 기존 heading level 2 표시·편집을 재사용하고 `prompt_version=editorial_v2`를 허용해야 한다. 별도 저장소 사본·타입·화면은 미갱신/미검증이다. 아래 1.7의 추가 UI·접근 제한도 유지한다. 이번 실제 모델 평가는 크레딧 소진으로 추출 1회 실패에서 중단되어 v2의 실제 작성 품질은 미검증이다.
 
 아래 1.7 이하 설명은 도입 당시의 계약 기록이며, 기본 프롬프트·템플릿은 위 1.8로 대체한다.
@@ -161,7 +162,7 @@
 필수: `schema_version`, `document_id`, `session_id`, `document_revision`, `input_revision`, `title`, `target_pages`, `pages`, `status`.
 
 - status: `draft`, `review_required`, `ready_for_approval`, `approved`.
-- `target_pages`는 사용자 목표이며 `pages` 개수와 같음을 보장하지 않는다. 새 editorial 초안은 사실과 조건을 담을 수 있는 목표 이하의 분량으로 구성하고 `editorial.page_count_reason`에 이유를 기록한다. 부족·확인 안내는 본문을 채우는 대신 내부 기록에 남긴다. 실제 PDF/DOCX 출력 배치는 별도 검사한다.
+- `target_pages`는 사용자 목표이며 `pages` 개수와 같음을 보장하지 않는다. 모델은 목표 이하로 구성하고, 저장 전 PDF 분량 사전 확인에서 내용을 보존하기 위해 목표보다 페이지를 추가할 수 있다. `editorial.generated_pages`와 `editorial.page_count_reason`에 최종 분량과 이유를 기록한다. 부족·확인 안내는 본문을 채우는 대신 내부 기록에 남긴다. 실제 PDF/DOCX 출력 배치는 별도 검사한다.
 - 선택 `editorial`은 위 계약 1.7의 생성 감사 기록이다. 과거 문서는 null이며 편집 후 현재 검증 결과로 해석하지 않는다.
 - 서버가 검증 결과와 승인 상태로 status를 계산한다. 클라이언트가 임의로 approved를 설정할 수 없다.
 - Page: `page_id`, `title`, `layout_key`, `blocks`, 선택 `design`(기본 null, 위 계약 1.7의 토큰).

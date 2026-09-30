@@ -265,6 +265,110 @@ def test_editorial_group_overflow_is_detected_without_hiding_text(out_dir, setti
     assert not result.layout_ok and any(f.kind == "overflow" for f in result.findings)
 
 
+@needs_browser
+@pytest.mark.parametrize("case", ["groups", "oversized_paragraph"])
+def test_draft_pagination_preserves_content_and_fits_actual_pdf(case, out_dir, settings):
+    from app.models import EvidenceRef, PageDesign
+    from pypdf import PdfReader
+    blocks = [_blk("title", "heading", text="자동 분량 확인", level=1),
+              _blk("lead", "paragraph", text="가상 제조 공정의 확인 조건을 소개합니다.")]
+    for n in range(10 if case == "groups" else 1):
+        blocks.extend([_blk(f"label_{n}", "heading", text=f"확인 항목 {n + 1}", level=2),
+                       _blk(f"body_{n}", "paragraph", text=LONG_UNIT * (4 if case == "groups" else 90))])
+    blocks.append(_blk("photo", "image", asset_id="PHOTO", fit="contain", caption="가상 사진", alt="가상 사진"))
+    ref = EvidenceRef(source_id="source_test", source_version=1, segment_id="segment_test", locator={"line": 1}, excerpt=LONG_UNIT)
+    for block in blocks:
+        if block.type != "image":
+            block.fact_ids, block.evidence_refs = ["fact_test"], [ref]
+    page = Page(page_id="page_overfull", title="자동 분량 확인", layout_key="text_photo", design=PageDesign(), blocks=blocks)
+    snap = er.snapshot_from_document(_doc([page]), {"PHOTO": er.asset_from_bytes("PHOTO", _png(320, 240))}, demo=True)
+    before = [p.model_dump() for p in snap.pages]
+    prepared = er.paginate_draft(snap, out_dir, settings)
+    assert prepared.outcome == "passed" and 1 < len(prepared.pages) <= 10
+    assert prepared.attempts > 1
+    flattened = [b for p in prepared.pages for b in p.blocks]
+    assert "".join(b.content.get("text", "") for b in flattened) == "".join(b.content.get("text", "") for b in blocks)
+    assert len({b.block_id for b in flattened}) == len(flattened)
+    for block in flattened:
+        if block.type != "image":
+            assert block.fact_ids == ["fact_test"] and block.evidence_refs == [ref]
+    assert [b.model_dump() for b in flattened if b.type == "image"] == [blocks[-1].model_dump()]
+    if case == "groups":
+        assert len(prepared.pages) <= 3  # Refill continuations instead of making sparse pages.
+        assert [b.model_dump() for b in flattened] == [b.model_dump() for b in blocks]
+        for p in prepared.pages:
+            for i, b in enumerate(p.blocks):
+                if b.block_id.startswith("label_"):
+                    assert p.blocks[i + 1].block_id == b.block_id.replace("label_", "body_")
+    else:
+        assert len(flattened) > len(blocks)  # One paragraph really needed splitting.
+    reader = PdfReader(out_dir / f"{snap.document_id}_rev{snap.document_revision}.pdf")
+    assert len(reader.pages) == len(prepared.pages)
+    assert sum(len(p.images) for p in reader.pages) == 1
+    text = ""
+    for n, (pdf_page, logical_page) in enumerate(zip(reader.pages, prepared.pages), 1):
+        content = "".join((pdf_page.extract_text() or "").split())
+        for label in (er.DEMO_FOOTER_TEXT, "COMPANY PROFILE", f"{n} / {logical_page.title}"):
+            content = content.replace("".join(label.split()), "")
+        text += content
+    expected = "".join("".join(b.content.get("text", b.content.get("caption", "")).split()) for b in blocks)
+    assert text == expected  # Includes sentence fragments spanning a page boundary.
+    assert [p.model_dump() for p in snap.pages] == before
+
+
+@needs_browser
+def test_draft_pagination_leaves_a_fitting_document_unchanged(out_dir, settings):
+    snap = _editorial_photo_snapshot(sparse=True)
+    prepared = er.paginate_draft(snap, out_dir, settings)
+    assert prepared.outcome == "passed" and prepared.attempts == 1
+    assert prepared.pages == snap.pages
+
+
+def test_draft_pagination_unavailable_preserves_every_block(out_dir, settings, monkeypatch):
+    snap = _editorial_photo_snapshot(long=True)
+    def unavailable(*args):
+        raise er.RenderError("browser_not_found", "No browser")
+    monkeypatch.setattr(er, "render", unavailable)
+    prepared = er.paginate_draft(snap, out_dir, settings)
+    assert prepared.outcome == "unavailable" and prepared.pages == snap.pages
+
+
+def test_draft_pagination_stops_without_hiding_unresolvable_content(out_dir, settings, monkeypatch):
+    from app.models import PageDesign
+    page = Page(page_id="p", title="긴 제목", layout_key="cover_text", design=PageDesign(),
+                blocks=[_blk("h", "heading", text="가" * 3000, level=1)])
+    snap = er.snapshot_from_document(_doc([page]), {})
+    def overflow(candidate, *args):
+        return er.RenderResult("pdf", out_dir / "unused.pdf", 2,
+            [er.LayoutCheckRecord("overflow", True, "finding")],
+            [er.Finding("overflow", "p", "h", "overflow", {})], False, "v", "r", "a", "test", 0,
+            {"measure": {"fonts_ready": True, "pages": [{"page_id": "p", "overflow": True,
+                "height_px": 2000, "excess_px": 1000, "first_overflow_block_id": "h"}]}})
+    monkeypatch.setattr(er, "render", overflow)
+    prepared = er.paginate_draft(snap, out_dir, settings)
+    assert prepared.outcome == "unresolved" and prepared.pages == snap.pages and prepared.attempts == 1
+
+
+def test_draft_pagination_bounds_repeated_overflow_without_losing_content(out_dir, settings, monkeypatch):
+    from app.models import PageDesign
+    page = Page(page_id="p", title="긴 본문", layout_key="text_photo", design=PageDesign(),
+                blocks=[_blk("b", "paragraph", text=("조건을 모두 유지합니다. " * 10000))])
+    snap = er.snapshot_from_document(_doc([page]), {})
+    calls = []
+    def overflow(candidate, *args):
+        calls.append(len(candidate.pages))
+        return er.RenderResult("pdf", out_dir / "unused.pdf", len(candidate.pages) + 1,
+            [er.LayoutCheckRecord("overflow", True, "finding")],
+            [er.Finding("overflow", p.page_id, p.blocks[0].block_id, "overflow") for p in candidate.pages],
+            False, "v", "r", "a", "test", 0, {"measure": {"fonts_ready": True, "pages": [
+                {"page_id": p.page_id, "overflow": True, "height_px": 2000, "excess_px": 1000,
+                 "first_overflow_block_id": p.blocks[0].block_id} for p in candidate.pages]}})
+    monkeypatch.setattr(er, "render", overflow)
+    prepared = er.paginate_draft(snap, out_dir, settings)
+    assert prepared.outcome == "limit" and len(calls) <= 8 and len(prepared.pages) <= 40
+    assert "".join(b.content["text"] for p in prepared.pages for b in p.blocks) == page.blocks[0].content["text"]
+
+
 def test_identity_values_come_from_layout_checks(out_dir):
     r = er.render(_fixture_snapshot("1pages"), "docx", out_dir)
     assert r.template_version == layout_checks.TEMPLATE_VERSION == "template_v6"
