@@ -193,7 +193,7 @@ def _response_completion(response: Any) -> dict:
 
 
 class TrialLedger:
-    """첫 시험 1회분의 메모리 기록. 원문·키·응답 본문을 기록에 남기지 않는다.
+    """시험 또는 반복 실행의 메모리 기록. 원문·키·응답 본문을 기록에 남기지 않는다.
 
     한 프로세스에서 공유하며 동시 호출은 차단한다. 재시작·다중 worker 간에는
     공유되지 않으므로 실제 시험은 단일 프로세스·reload 없이 진행해야 한다.
@@ -202,7 +202,10 @@ class TrialLedger:
     def __init__(self, *, max_calls: int = 8, budget_usd: Decimal = Decimal("1"), review_only: bool = False,
                  allow_review: bool = False, allow_proposals: bool = False, timeout_limit_seconds: int = 60,
                  input_char_limit: int = 10_000, output_token_limit: int = 8000,
-                 review_input_char_limit: int | None = None):
+                 review_input_char_limit: int | None = None, interactive: bool = False):
+        if type(interactive) is not bool or (interactive and review_only):
+            raise ValueError("반복 실행 모드는 별도 검증 시험과 함께 사용할 수 없습니다.")
+        self.interactive = interactive
         if type(max_calls) is not int or not 1 <= max_calls <= 8:
             raise ValueError("시험 호출 한도는 1~8이어야 합니다.")
         if type(review_only) is not bool or (review_only and max_calls > 2):
@@ -211,8 +214,9 @@ class TrialLedger:
             raise ValueError("통합 내용 검증과 별도 검증 시험은 동시에 설정할 수 없습니다.")
         if type(allow_proposals) is not bool or (review_only and allow_proposals):
             raise ValueError("문구 수정안과 별도 검증 시험은 동시에 설정할 수 없습니다.")
-        if not isinstance(budget_usd, Decimal) or not budget_usd.is_finite() or not 0 < budget_usd <= 1:
-            raise ValueError("시험 예산은 0 초과 1 이하의 Decimal이어야 합니다.")
+        if (not isinstance(budget_usd, Decimal) or not budget_usd.is_finite()
+                or not 0 < budget_usd <= (100 if interactive else 1)):
+            raise ValueError("실행 예산 범위가 올바르지 않습니다.")
         if type(timeout_limit_seconds) is not int or not 1 <= timeout_limit_seconds <= 120:
             raise ValueError("시험 대기 시간 상한은 1~120초의 정수여야 합니다.")
         self._timeout_limit_seconds = timeout_limit_seconds
@@ -227,8 +231,8 @@ class TrialLedger:
             raise ValueError("시험 출력 상한은 1~32,000토큰의 정수여야 합니다.")
         self._output_token_limit = output_token_limit
         self._call_reserve = _call_reserve_usd(output_token_limit)
-        self._max_calls, self._budget = max_calls, budget_usd
-        # 통합 화면의 명시적 실행 옵션. 총 8회/기존 예산과 동시 실행 차단은 같은 기록에서 공유한다.
+        self._max_calls, self._budget = (None if interactive else max_calls), budget_usd
+        # 허용 기능은 두 모드에서 동일하다. 기능별 횟수 제한은 trial에만 적용한다.
         self._operation_limits = {"content_review": 2} if review_only else {"company_info": 4, "draft_sections": 4}
         if allow_review:
             self._operation_limits["content_review"] = 2
@@ -240,7 +244,17 @@ class TrialLedger:
         self._active: dict | None = None
         self._operation_owner: int | None = None
         self._spent = Decimal("0")
+        self._unconfirmed_reserved = Decimal("0")
         self._stop_reason: str | None = None
+
+    def blocked_error(self) -> AgentError:
+        if not self.interactive:
+            return _trial_error()
+        if self._stop_reason in {"budget_reserve", "budget_exceeded"}:
+            return AgentError("AI_RATE_LIMIT", "설정된 서버 AI 예산 한도에 도달했습니다. 사용량과 실행 예산 설정을 확인해 주세요.")
+        if self._stop_reason == "manual_stop":
+            return AgentError("SERVICE_TEMPORARY_FAILURE", "관리자가 AI 실행을 중단했습니다.")
+        return AgentError("SERVICE_TEMPORARY_FAILURE", "다른 AI 요청을 처리 중입니다. 완료 후 다시 요청해 주세요.", True)
 
     def stop(self) -> None:
         """다음 호출을 막고, 이미 전송된 요청의 결과도 문서에 전달하지 않는다."""
@@ -248,6 +262,8 @@ class TrialLedger:
 
     def _stop(self, reason: str) -> None:
         with self._lock:
+            if self.interactive and reason == "invalid_result":
+                return  # 이번 응답은 호출자가 거부한다. 다음 사용자 요청까지 중단하지 않는다.
             if self._stop_reason in (None, "call_limit"):
                 self._stop_reason = reason
 
@@ -255,7 +271,7 @@ class TrialLedger:
         # 통신 뒤 근거 검사·페이지 변환이 끝날 때까지 다른 Job도 시작하지 않는다.
         with self._lock:
             if self._stop_reason is not None or self._active is not None or self._operation_owner is not None:
-                raise _trial_error()
+                raise self.blocked_error()
             self._operation_owner = threading.get_ident()
 
     def _end_operation(self) -> bool:
@@ -268,7 +284,7 @@ class TrialLedger:
         """내용 없는 측정값의 복사본. 이 함수를 부르는 것만으로 API를 호출하지 않는다."""
         with self._lock:
             records = [dict(record) for record in self._records]
-            return {"scope": "single_process_trial", "pricing_date": "2026-09-28",
+            return {"scope": "single_process_interactive" if self.interactive else "single_process_trial", "pricing_date": "2026-09-28",
                     "calls_started": len(records) + int(self._active is not None),
                     "max_calls": self._max_calls, "budget_usd": str(self._budget),
                     "timeout_limit_seconds": self._timeout_limit_seconds,
@@ -276,6 +292,8 @@ class TrialLedger:
                     "review_input_char_limit": self.review_input_char_limit,
                     "output_token_limit": self._output_token_limit,
                     "known_estimated_cost_usd": str(self._spent),
+                    "unconfirmed_reserved_cost_usd": str(self._unconfirmed_reserved),
+                    "accounted_cost_usd": str(self._spent + self._unconfirmed_reserved),
                     "cost_complete": self._active is None and all(r["estimated_cost_usd"] is not None for r in records),
                     "reserved_cost_usd": str(self._call_reserve if self._active else Decimal("0")),
                     "in_flight": self._active is not None, "operation_in_progress": self._operation_owner is not None,
@@ -287,22 +305,26 @@ class TrialLedger:
         with self._lock:
             if (self._stop_reason is not None or self._active is not None
                     or self._operation_owner not in (None, threading.get_ident())):
-                raise _trial_error()
+                raise self.blocked_error()
             if (options.model != _TRIAL_MODEL or options.max_retries != 0
                     or not 0 < options.timeout_seconds <= self._timeout_limit_seconds
                     or not 0 < options.max_output_tokens <= self._output_token_limit
                     or not 0 < options.max_input_chars <= self._input_char_limit):
+                if self.interactive:
+                    raise AgentError("SERVICE_TEMPORARY_FAILURE", "AI 호출 설정과 내부 상한이 맞지 않습니다. 서버 설정을 확인해 주세요.")
                 self._stop_reason = "settings_outside_trial"
-            elif len(self._records) >= self._max_calls:
+            elif self._max_calls is not None and len(self._records) >= self._max_calls:
                 self._stop_reason = "call_limit"
             elif schema_name not in self._operation_limits:
+                if self.interactive:
+                    raise AgentError("SERVICE_TEMPORARY_FAILURE", "현재 서버에서 이 AI 기능이 활성화되지 않았습니다.")
                 self._stop_reason = "unsupported_operation"
-            elif sum(r["operation"] == schema_name for r in self._records) >= self._operation_limits[schema_name]:
+            elif not self.interactive and sum(r["operation"] == schema_name for r in self._records) >= self._operation_limits[schema_name]:
                 self._stop_reason = "operation_limit"
-            elif self._spent + self._call_reserve > self._budget:
+            elif self._spent + self._unconfirmed_reserved + self._call_reserve > self._budget:
                 self._stop_reason = "budget_reserve"
             if self._stop_reason is not None:
-                raise _trial_error()
+                raise self.blocked_error()
             self._active = {"call_number": len(self._records) + 1, "operation": schema_name,
                             "requested_model": _TRIAL_MODEL, "max_output_tokens": options.max_output_tokens}
 
@@ -353,17 +375,21 @@ class TrialLedger:
                 failure_reason = failure_reason if error_code else "usage_unconfirmed"
                 error_code = error_code or "SERVICE_TEMPORARY_FAILURE"
                 record.update(error_code=error_code, outcome="failed")
+                if self.interactive:
+                    # 타임아웃·통신 실패를 무료 호출로 보지 않는다. 최대 예약 비용을 누적한다.
+                    self._unconfirmed_reserved += self._call_reserve
+                    record["unconfirmed_reserved_cost_usd"] = str(self._call_reserve)
             discard = self._stop_reason is not None or error_code is not None
             if self._stop_reason is not None:
                 record["outcome"] = "discarded"
-            if error_code is not None and self._stop_reason is None:
+            if error_code is not None and self._stop_reason is None and not self.interactive:
                 self._stop_reason = failure_reason
             self._records.append(record)
             self._active = None
-            if self._spent > self._budget:
+            if self._spent + self._unconfirmed_reserved > self._budget:
                 self._stop_reason, discard = "budget_exceeded", True
                 record["outcome"] = "discarded"
-            elif len(self._records) >= self._max_calls and self._stop_reason is None:
+            elif self._max_calls is not None and len(self._records) >= self._max_calls and self._stop_reason is None:
                 self._stop_reason = "call_limit"
             return discard
 
@@ -429,8 +455,13 @@ class RuntimeLedger:
 
     동기 Agent 작업별 상태는 thread-local로 격리한다. 오류는 해당 작업만 실패시키며
     명시적 수동 중단만 전체에 적용한다. 최근 100회 메타만 보관하고 총계는 누적한다.
-    TrialLedger는 기존 제한된 평가 스크립트/회귀용이며 일반 서버가 사용하지 않는다.
+    TrialLedger는 명시적인 제한 평가·예산 제한 시연용이며 기본 runtime에서는 사용하지 않는다.
     """
+
+    interactive = True
+
+    def blocked_error(self) -> AgentError:
+        return AgentError("SERVICE_TEMPORARY_FAILURE", "관리자가 AI 실행을 중단했습니다.")
 
     def __init__(self, *, allow_review: bool = False, allow_proposals: bool = False,
                  review_input_char_limit: int = _MAX_REVIEW_INPUT_CHARS):
@@ -461,7 +492,7 @@ class RuntimeLedger:
     def _enter_operation(self) -> None:
         with self._lock:
             if self._manual_stop:
-                raise _trial_error()
+                raise self.blocked_error()
             if getattr(self._local, "operation", False):
                 raise AgentError("SERVICE_TEMPORARY_FAILURE", "같은 작업을 중첩 실행할 수 없습니다.", False)
             self._local.operation, self._local.failed = True, False
@@ -477,7 +508,7 @@ class RuntimeLedger:
     def _begin(self, options: LlmOptions, schema_name: str) -> None:
         with self._lock:
             if self._manual_stop:
-                raise _trial_error()
+                raise self.blocked_error()
             if schema_name not in self._operation_limits:
                 raise AgentError("SERVICE_TEMPORARY_FAILURE", "이 AI 기능이 활성화되지 않았습니다.", False)
             if getattr(self._local, "active", None) is not None:
@@ -527,7 +558,27 @@ def _runtime_ledger() -> RuntimeLedger:
                          review_input_char_limit=_review_input_limit())
 
 
-_trial = _runtime_ledger()
+def _configured_ledger() -> TrialLedger | RuntimeLedger:
+    mode = os.environ.get("OPENAI_EXECUTION_MODE", "runtime").strip().lower()
+    if mode == "runtime":
+        return _runtime_ledger()
+    if mode not in {"trial", "interactive"}:
+        raise RuntimeError("OPENAI_EXECUTION_MODE는 runtime, trial 또는 interactive여야 합니다.")
+    budget = Decimal("1")
+    if mode == "interactive":
+        try:
+            budget = Decimal(os.environ.get("OPENAI_RUN_BUDGET_USD", "5"))
+            if not budget.is_finite() or not 0 < budget <= 100:
+                raise ValueError
+        except (ArithmeticError, ValueError):
+            raise RuntimeError("OPENAI_RUN_BUDGET_USD는 0 초과 100 이하의 금액이어야 합니다.") from None
+    return TrialLedger(allow_review=_content_review_enabled(), allow_proposals=_text_proposals_enabled(),
+                       timeout_limit_seconds=_trial_timeout_limit(), input_char_limit=_trial_input_limit(),
+                       output_token_limit=_trial_output_limit(), review_input_char_limit=_review_input_limit(),
+                       interactive=mode == "interactive", budget_usd=budget)
+
+
+_trial = _configured_ledger()
 
 
 def trial_report() -> dict:
@@ -687,8 +738,22 @@ class OpenAIRequester:
             raise
         discard = self.ledger._finish(response, time.monotonic() - started, error.code if error else None, failure_reason)
         if error is not None:
+            if self.ledger.interactive:
+                # 문서 저장·자동 재호출은 하지 않는다. 사용자 재요청 가능 여부만 안내한다.
+                messages = {
+                    "request_timeout": "AI 응답 대기 시간이 초과되었습니다. 이번 결과는 저장하지 않았습니다. 다시 요청할 수 있습니다.",
+                    "connection_error": "AI 서비스에 연결하지 못했습니다. 연결 상태를 확인한 뒤 다시 요청해 주세요.",
+                    "rate_limit": "AI 서비스가 일시적으로 혼잡합니다. 잠시 후 다시 요청해 주세요.",
+                    "provider_budget": "AI 제공자의 사용량·결제 한도에 도달했습니다. 계정의 사용량·결제 설정을 확인해 주세요.",
+                }
+                if failure_reason in messages:
+                    error = AgentError(error.code, messages[failure_reason], failure_reason != "provider_budget")
             raise error from None
         if discard:
+            if self.ledger.interactive and not self.ledger.snapshot()["stopped"]:
+                raise AgentError("SERVICE_TEMPORARY_FAILURE", "AI 사용량을 확인하지 못해 이번 결과를 저장하지 않았습니다. 다시 요청할 수 있습니다.", True)
+            if self.ledger.interactive:
+                raise self.ledger.blocked_error()
             raise _trial_error()
         return result
 
@@ -1247,10 +1312,10 @@ class LlmAgent:
                 raise
             ledger._stop("invalid_result")
             ledger._end_operation()
-            logger.warning("AI trial stopped: %s", json.dumps(ledger.snapshot()))
+            logger.warning("AI operation failed: %s", json.dumps(ledger.snapshot()))
             raise
         if ledger._end_operation():
-            raise _trial_error()
+            raise ledger.blocked_error()
         logger.info("AI trial completed: %s", json.dumps(ledger.snapshot()))
         return result
 
