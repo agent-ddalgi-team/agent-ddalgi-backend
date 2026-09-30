@@ -390,6 +390,31 @@ def _view_blocks(snapshot: RenderSnapshot, page: Page) -> list[dict[str, Any]]:
                             "data_b64": base64.b64encode(data).decode("ascii")})
         elif block.type == "image_placeholder":
             out.append({"type": "image_placeholder", "block_id": block.block_id, "description": _clean_text(c.get("description"))})
+    if page.design:
+        # Pair existing editable blocks only; never rewrite, reorder, or hide document text.
+        for n, block in enumerate(out[:-1]):
+            following = out[n + 1]
+            if block["type"] == "heading" and block["level"] == 2 and following["type"] == "paragraph":
+                block["group_start"] = True
+                block["wide"] = len(following["text"]) >= 50
+                following["group_end"] = True
+        if layout_checks.render_layout(page.layout_key) == "product_grid":
+            pending = None
+            for n, block in enumerate(out):
+                if not block.get("group_start"):
+                    continue
+                if block["wide"]:
+                    if pending is not None:
+                        out[pending]["wide"] = True
+                    pending = None
+                elif pending is not None and n == pending + 2:
+                    pending = None
+                else:
+                    if pending is not None:
+                        out[pending]["wide"] = True
+                    pending = n
+            if pending is not None:
+                out[pending]["wide"] = True
     return out
 
 

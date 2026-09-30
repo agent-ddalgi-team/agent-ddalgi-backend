@@ -54,7 +54,7 @@ def test_editorial_saved_plan_design_proposal_approval_and_pdf_roundtrip(app, se
     monkeypatch.setattr(ai_jobs, "get_bridge", lambda settings: EditorialBridge())
     flow = Flow(app, settings, upload_png=False)
     original = flow.doc()
-    assert original["editorial"]["prompt_version"] == "editorial_v1"
+    assert original["editorial"]["prompt_version"] == "editorial_v2"
     assert original["pages"][0]["design"]["palette"] == "ocean"
     checked = flow.validate()
     assert checked["status"] == "passed", checked

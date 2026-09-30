@@ -133,6 +133,13 @@ def fingerprint_block(block: Block, seg_texts: dict[str, str]) -> str:
 def fingerprints(document: Document, seg_texts: dict[str, str]) -> dict[str, str]:
     result = {b.block_id: fingerprint_block(b, seg_texts) for p in document.pages for b in p.blocks}
     for page in document.pages:
+        if page.design is not None:
+            for heading, body in zip(page.blocks, page.blocks[1:]):
+                if heading.type == "heading" and heading.content.get("level") == 2 and body.type == "paragraph":
+                    pair = json.dumps([heading.block_id, body.block_id, result[heading.block_id], result[body.block_id]],
+                                      separators=(",", ":"))
+                    for block in (heading, body):
+                        result[block.block_id] = hashlib.sha256((result[block.block_id] + pair).encode()).hexdigest()
         # Ordered visual presentations add meaning. Color/spacing-only edits can reuse content checks.
         if page.design is not None and page.layout_key in {"process_steps", "timeline"}:
             sequence = json.dumps([page.layout_key, [b.block_id for b in page.blocks]], separators=(",", ":"))

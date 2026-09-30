@@ -156,18 +156,22 @@ def editorial_response(payload):
             included.append(fact)
     def item(f):
         return {"text": f["value"], "fact_ids": [f["fact_id"]]}
+    def point(f):
+        labels = {"products_services": "제품·서비스", "processes": "보유 공정", "capabilities": "적용 범위",
+                  "certifications": "인증 범위·기간", "lead_time": "일정·협의 조건", "history": "시작 이력"}
+        return {**item(f), "label": labels.get(f["field_key"], "세부 정보")}
     name = next(f for f in included if f["field_key"] == "company_name")
     opening = next(f for f in included if f["field_key"] == "company_summary")
     details = [f for f in included if f not in [name, opening]]
     if payload["brief"]["audience"] == "기술 검토자":
         details.sort(key=lambda f: f["field_key"] not in {"capabilities", "processes"})
-    pages = [{"heading": item(name), "lead": item(opening), "points": list(map(item, details)),
+    pages = [{"heading": item(name), "lead": item(opening), "points": list(map(point, details)),
               "photo_ids": [], "layout": "product_grid" if len(details) > 2 else "cover_text",
               "density": "comfortable", "sequence_fact_ids": []}]
     if sum(len(f["value"]) for f in included) > 1200 and len(details) > 4 and payload["maximum_pages"] > 1:
-        pages[0]["points"] = list(map(item, details[:2]))
+        pages[0]["points"] = list(map(point, details[:2]))
         pages.append({"heading": {"text": "적용 조건과 근거", "fact_ids": []}, "lead": item(details[2]),
-                      "points": list(map(item, details[3:])), "photo_ids": [], "layout": "fact_sheet",
+                      "points": list(map(point, details[3:])), "photo_ids": [], "layout": "fact_sheet",
                       "density": "comfortable", "sequence_fact_ids": []})
     return {"selections": selections, "palette": "ocean", "typography": "editorial",
             "page_count_reason": "중복과 빈 페이지 없이 선택한 사실과 조건을 담는 분량입니다.", "pages": pages}
@@ -187,6 +191,7 @@ def test_editorial_production_path_atomic_claims_selection_and_original_sources(
     result = llm.LlmAgent(responder).draft(request)
     assert request == before and len(captured) == 1
     assert result.editorial.generated_pages == len(result.pages) <= pages
+    assert result.editorial.prompt_version == "editorial_v2"
     assert result.editorial.unextracted_segment_ids == [f"seg_{case_id}_unextracted"]
     assert refs.selected_problem(result.pages, request.sources, request.preflight) is None
     text = " ".join(t for p in result.pages for b in p.blocks for t in validation.block_texts(b))
@@ -194,16 +199,21 @@ def test_editorial_production_path_atomic_claims_selection_and_original_sources(
     assert not any(s in text for s in EDITORIAL_CASES[case_id]["forbidden"])
     for page in result.pages:
         assert page.design.brand_color == "#246A73"
-        for block in page.blocks:
+        for n, block in enumerate(page.blocks):
             if block.type == "paragraph":
                 assert len(block.fact_ids) == 1 and block.evidence_refs
+            if block.type == "heading" and block.content["level"] == 2:
+                assert page.blocks[n + 1].type == "paragraph"
+                assert block.fact_ids == page.blocks[n + 1].fact_ids
+                assert block.evidence_refs == page.blocks[n + 1].evidence_refs
     assert all(s.reason for s in result.editorial.selections)
     if case_id == "conflict":
         assert next(s for s in result.editorial.selections if s.fact_id == "fact_conflict_cert").disposition == "review"
 
 
 @pytest.mark.parametrize("damage", ["unknown_fact", "missing_selection", "missing_required", "new_number",
-                                    "lost_number", "new_unit", "unsupported_sequence", "bad_palette", "unknown_photo", "repeat"])
+                                    "lost_number", "new_unit", "unsupported_sequence", "bad_palette", "unknown_photo", "repeat",
+                                    "label_new_number", "label_only_number", "blank_label"])
 def test_editorial_rejects_invalid_or_ungrounded_plan_without_retry(damage):
     request = build_editorial_request("manufacturing")
     calls = []
@@ -232,11 +242,27 @@ def test_editorial_rejects_invalid_or_ungrounded_plan_without_retry(damage):
         elif damage == "unknown_photo":
             result["pages"][0]["photo_ids"] = ["asset_other_company"]
         elif damage == "repeat":
-            result["pages"][0]["points"].append(result["pages"][0]["lead"])
+            result["pages"][0]["points"].append({**result["pages"][0]["lead"], "label": "사업 소개"})
+        elif damage == "label_new_number":
+            result["pages"][0]["points"][0]["label"] = "매출 999억원"
+        elif damage == "label_only_number":
+            point = next(t for t in result["pages"][0]["points"] if "200mm" in t["text"])
+            point["label"], point["text"] = "가공 길이 200mm", "알루미늄 시편을 가공합니다."
+        elif damage == "blank_label":
+            result["pages"][0]["points"][0]["label"] = "   "
         return result
     with pytest.raises(AgentError):
         llm.LlmAgent(responder).draft(request)
     assert calls == ["draft_sections"]
+
+
+def test_editorial_required_history_cannot_be_excluded_by_purpose():
+    request = build_editorial_request("manufacturing")
+    request.brief.required_fields = ["history"]
+    result = llm.LlmAgent(lambda i, p, s, n: editorial_response(p)).draft(request)
+    history = next(s for s in result.editorial.selections if s.fact_id.endswith("_history"))
+    assert history.disposition == "required"
+    assert any(b.type == "paragraph" and "2024년 시범 생산" in b.content["text"] for p in result.pages for b in p.blocks)
 
 
 def test_editorial_missing_required_is_internal_supplement_not_invented_body():
@@ -315,6 +341,23 @@ def test_editorial_sequence_reordering_invalidates_content_review(layout):
     assert before.keys() == after.keys() and all(before[bid] != after[bid] for bid in before)
     doc.pages[0].design.density = "compact"
     assert validation.fingerprints(doc, {}) == after
+
+
+def test_editorial_subheading_context_edit_rechecks_body_but_density_can_reuse():
+    request = build_editorial_request("manufacturing")
+    draft = llm.LlmAgent(lambda i, p, s, n: editorial_response(p)).draft(request)
+    doc = Document(document_id="doc_labels", session_id=request.session_id, document_revision=1,
+        input_revision=1, title=draft.title, target_pages=4, status="draft", pages=draft.pages, editorial=draft.editorial)
+    heading, body = doc.pages[0].blocks[2:4]
+    initial = validation.fingerprints(doc, {})
+    heading.content["text"] = "근거 없는 성능 보장"
+    changed = validation.fingerprints(doc, {})
+    assert changed[heading.block_id] != initial[heading.block_id]
+    assert changed[body.block_id] != initial[body.block_id]
+    doc.pages[0].design.density = "compact"
+    assert changed == validation.fingerprints(doc, {})
+    doc.pages[0].blocks[3], doc.pages[0].blocks[5] = doc.pages[0].blocks[5], doc.pages[0].blocks[3]
+    assert changed[body.block_id] != validation.fingerprints(doc, {})[body.block_id]
 
 
 def test_editorial_server_required_missing_and_cross_company_references_block_approval_checks():

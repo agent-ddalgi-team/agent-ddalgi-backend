@@ -767,7 +767,7 @@ def editorial_evaluation(out: Path) -> None:
               "semantic_review_executed": False, "approval": "not_requested",
               "template_version": layout_checks.TEMPLATE_VERSION, "template_sha256": er.template_fingerprint(),
               "prompt_sha256": {kind: hashlib.sha256(agent_legacy.load_draft_prompt(editorial=flag).encode()).hexdigest()
-                                for kind, flag in (("baseline", False), ("editorial_v1", True))}, "cases": []}
+                                for kind, flag in (("baseline", False), ("editorial_v2", True))}, "cases": []}
     cases = [(key, "구매 담당자") for key in fixtures.EDITORIAL_CASES] + [("manufacturing", "기술 검토자")]
     for case_id, audience in cases:
         key = case_id + ("_technical" if audience == "기술 검토자" else "")

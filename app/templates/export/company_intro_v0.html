@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-{#- 회사소개서 템플릿 v4 (기존 파일 경로 유지). 이 파일을 바꾸면 app/services/layout_checks.py의 TEMPLATE_VERSION을 올린다.
+{#- 회사소개서 템플릿 v5 (기존 파일 경로 유지). 이 파일을 바꾸면 app/services/layout_checks.py의 TEMPLATE_VERSION을 올린다.
     모든 문서 값은 Jinja2 autoescape로 이스케이프된다. 외부 리소스 없음(CSP default-src 'none'), 폰트·이미지는 data URI. -#}
 <html lang="ko">
 <head>
@@ -84,15 +84,15 @@ figcaption { font-size: 9pt; color: #555; margin-top: 1.5mm; word-break: keep-al
 .editorial h1 { color: var(--ink); font-size: 29pt; margin: 3mm 0 5mm; }
 .editorial h2 { color: var(--ink); border-color: var(--brand, var(--accent)); }
 .editorial p { color: #293640; font-size: 11pt; line-height: 1.7; margin: 0 0 3mm; }
-.editorial p:first-of-type { font-size: 14pt; line-height: 1.65; padding: 0 0 4mm; }
+.editorial .page-body > p:first-of-type { font-size: 14pt; line-height: 1.65; padding: 0 0 4mm; }
 .editorial .page-body { gap: 4mm 5mm; }
 .editorial figure, .editorial ul { background: var(--tint); }
 .editorial.layout-cover_text .page-body { border-top: 2mm solid var(--brand, var(--accent)); padding-top: 8mm; }
 .editorial.layout-cover_text h1 { font-size: 34pt; max-width: 155mm; }
-.editorial.layout-product_grid p:nth-of-type(n+2) { grid-column: auto; background: var(--tint); padding: 5mm; border-top: 0.7mm solid var(--brand, var(--accent)); }
-.editorial.layout-fact_sheet p:nth-of-type(n+2), .editorial.layout-certification_summary p:nth-of-type(n+2) {
+.editorial.layout-product_grid .page-body > p:nth-of-type(n+2) { grid-column: auto; background: var(--tint); padding: 5mm; border-top: 0.7mm solid var(--brand, var(--accent)); }
+.editorial.layout-fact_sheet .page-body > p:nth-of-type(n+2), .editorial.layout-certification_summary .page-body > p:nth-of-type(n+2) {
   padding: 4mm 5mm; background: var(--tint); border-left: 1mm solid var(--brand, var(--accent)); }
-.editorial.layout-timeline p:nth-of-type(n+2), .editorial.layout-process_steps p:nth-of-type(n+2) {
+.editorial.layout-timeline .page-body > p:nth-of-type(n+2), .editorial.layout-process_steps .page-body > p:nth-of-type(n+2) {
   padding: 3mm 5mm; border-left: 1mm solid var(--brand, var(--accent)); background: var(--tint); }
 .editorial.layout-cover_photo .page-body { background: var(--ink); }
 .editorial.layout-cover_photo h1, .editorial.layout-cover_photo p { color: #fff; }
@@ -103,6 +103,17 @@ figcaption { font-size: 9pt; color: #555; margin-top: 1.5mm; word-break: keep-al
 .editorial.density-compact p:nth-of-type(n+2) { padding-top: 3mm; padding-bottom: 3mm; }
 .editorial.type-restrained h1 { font-size: 25pt; letter-spacing: 0; }
 .editorial .blk { break-inside: avoid; page-break-inside: avoid; }
+/* Keep each subheading with its evidence-linked paragraph. Long conditions get the full width. */
+.editorial .entry { grid-column: 1 / -1; min-width: 0; padding: 4mm 5mm;
+  background: var(--tint); border-top: 0.6mm solid var(--brand, var(--accent)); break-inside: avoid; }
+.editorial .entry h2 { font-size: 12pt; line-height: 1.4; padding: 0; border: 0; margin: 0 0 2mm; color: var(--ink); }
+.editorial .entry p { font-size: 11pt; line-height: 1.7; margin: 0; padding: 0; color: #293640; }
+.editorial.layout-product_grid .entry:not(.wide) { grid-column: auto; }
+.editorial.layout-fact_sheet .entry, .editorial.layout-certification_summary .entry,
+.editorial.layout-product_grid .entry.wide { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 3fr);
+  gap: 4mm; background: none; border-top-width: 0.3mm; }
+.editorial .entry .blk { grid-column: auto; }
+.editorial.density-compact .entry { padding: 3mm 4mm; }
 </style>
 </head>
 <body>
@@ -111,6 +122,7 @@ figcaption { font-size: 9pt; color: #555; margin-top: 1.5mm; word-break: keep-al
   <div class="page-label">{% if page.layout != 'text' %}<span class="series">COMPANY PROFILE</span>{% endif %}<span>{{ loop.index }} / {{ page.title }}</span></div>
 <div class="page-body">
 {%- for b in page.blocks %}
+{% if b.group_start %}<div class="entry{% if b.wide %} wide{% endif %}">{% endif %}
 {%- if b.type == "heading" %}
   <h{{ b.level }} class="blk" data-block-id="{{ b.block_id }}">{{ b.text }}</h{{ b.level }}>
 {%- elif b.type == "paragraph" %}
@@ -124,6 +136,7 @@ figcaption { font-size: 9pt; color: #555; margin-top: 1.5mm; word-break: keep-al
 {%- elif b.type == "image_placeholder" %}
   <div class="blk box placeholder" data-block-id="{{ b.block_id }}"><span class="box-title">[사진 자리]</span>{{ b.description }}</div>
 {%- endif %}
+{% if b.group_end %}</div>{% endif %}
 {%- endfor %}
 </div>
 </section>

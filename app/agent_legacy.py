@@ -347,7 +347,7 @@ def load_draft_prompt(*, editorial: bool = False) -> str:
     if not DRAFT_PROMPT_PATH.is_file():
         raise FileNotFoundError('본문 프롬프트 파일이 없습니다: prompts/draft.txt')
     prompt = DRAFT_PROMPT_PATH.read_text(encoding='utf-8').strip()
-    parts = prompt.split('[editorial_v1]', 1)
+    parts = prompt.split('[editorial_v2]', 1)
     prompt = parts[1].strip() if editorial and len(parts) == 2 else parts[0].strip()
     if not prompt:
         raise ValueError('본문 프롬프트 파일이 비어 있습니다: prompts/draft.txt')

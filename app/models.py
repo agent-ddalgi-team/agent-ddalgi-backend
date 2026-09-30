@@ -358,7 +358,7 @@ class FactSelection(BaseModel):
 class EditorialRecord(BaseModel):
     """Generation audit, not a statement that edited text has passed review."""
     model_config = ConfigDict(extra="forbid")
-    prompt_version: Literal["editorial_v1"] = "editorial_v1"
+    prompt_version: Literal["editorial_v1", "editorial_v2"] = "editorial_v1"
     input_revision: int
     basis_document_revision: int = 1
     selections: list[FactSelection]

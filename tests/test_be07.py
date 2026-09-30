@@ -35,6 +35,7 @@ BANNED = ("거산", "케미칼", "Geosan")
 
 # 템플릿·폰트·DOCX 배치 상수·PDF 렌더 상수의 sha256(줄바꿈 정규화). 이 중 하나라도 바꾸면 TEMPLATE_VERSION을 올리고 여기 값을 갱신한다.
 TEMPLATE_FINGERPRINTS = {
+    "template_v5": "f8f7d40b6c886b14eb813bbdf561bf1c540d6483c336a78bee377bac46b60fa9",
     "template_v4": "538839538005c76d91e68a091398ce4cd20842499f62d147c52852339d98b237",
     "template_v3": "e0e3f49e66c8564353bc357022845e40c936e273147883ce49dde3cc500a3512",
     "template_v2": "f7a692ddd4ee706e3bb93daec8dce2ce07548d608f1c6009962d1ff049905e4a",
@@ -164,9 +165,42 @@ class Flow:
 
 # ================= 출력 식별값 공유(㉖) =================
 
+@needs_browser
+@pytest.mark.parametrize("layout", ["product_grid", "fact_sheet", "certification_summary"])
+def test_editorial_labeled_pdf_preserves_conditions_and_block_order(layout, out_dir, settings):
+    from app import agent_llm
+    from test_agent_llm import build_editorial_request, editorial_response, EDITORIAL_CASES
+    from pypdf import PdfReader
+    request = build_editorial_request("manufacturing")
+    draft = agent_llm.LlmAgent(lambda i, p, s, n: editorial_response(p)).draft(request)
+    draft.pages[0].layout_key = layout
+    document = _doc(draft.pages)
+    before = document.model_copy(deep=True)
+    result = er.render(er.snapshot_from_document(document, {}), "pdf", out_dir, settings)
+    assert result.layout_ok and result.actual_pages == 1
+    assert document == before
+    text = "".join(p.extract_text() or "" for p in PdfReader(result.file_path).pages)
+    compact = "".join(text.split())
+    assert all("".join(term.split()) in compact for term in EDITORIAL_CASES["manufacturing"]["must_keep"])
+    for heading, body in zip(document.pages[0].blocks, document.pages[0].blocks[1:]):
+        if heading.type == "heading" and heading.content.get("level") == 2:
+            assert compact.index("".join(heading.content["text"].split())) < compact.index("".join(body.content["text"].split()))
+
+
+@needs_browser
+def test_editorial_group_overflow_is_detected_without_hiding_text(out_dir, settings):
+    from app.models import PageDesign
+    doc = _doc([Page(page_id="p_labeled", title="긴 조건", layout_key="fact_sheet", design=PageDesign(), blocks=[
+        _blk("label", "heading", level=2, text="적용 조건"),
+        _blk("body", "paragraph", text=LONG_UNIT * 180),
+    ])])
+    result = er.render(er.snapshot_from_document(doc, {}), "pdf", out_dir, settings)
+    assert not result.layout_ok and any(f.kind == "overflow" for f in result.findings)
+
+
 def test_identity_values_come_from_layout_checks(out_dir):
     r = er.render(_fixture_snapshot("1pages"), "docx", out_dir)
-    assert r.template_version == layout_checks.TEMPLATE_VERSION == "template_v4"
+    assert r.template_version == layout_checks.TEMPLATE_VERSION == "template_v5"
     assert r.render_options_hash == layout_checks.RENDER_OPTIONS_HASH == layout_checks.render_options_hash(layout_checks.DEFAULT_RENDER_OPTIONS)
     assert len(r.render_options_hash) == 16 and int(r.render_options_hash, 16) >= 0
     changed = dict(layout_checks.DEFAULT_RENDER_OPTIONS, margin_mm=20)

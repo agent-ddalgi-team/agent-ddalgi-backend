@@ -809,11 +809,15 @@ class _EditorialText(BaseModel):
     fact_ids: list[str] = Field(max_length=12)
 
 
+class _EditorialPoint(_EditorialText):
+    label: str = Field(min_length=1, max_length=60)
+
+
 class _EditorialPage(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     heading: _EditorialText
     lead: _EditorialText
-    points: list[_EditorialText] = Field(max_length=12)
+    points: list[_EditorialPoint] = Field(max_length=12)
     photo_ids: list[str] = Field(max_length=2)
     layout: EditorialLayout
     density: Literal["comfortable", "compact"]
@@ -1463,7 +1467,7 @@ class LlmAgent:
             raise AgentError("INVALID_REQUEST", "대상 회사명과 확인된 회사명 근거가 일치하지 않습니다. 자료를 보완해 주세요.")
         photos = self._brochure_photos(request, excluded)
         payload = {
-            "prompt_version": "editorial_v1", "brief": request.brief.model_dump(),
+            "prompt_version": "editorial_v2", "brief": request.brief.model_dump(),
             "facts": [f.model_dump() for f in facts.values()],
             "required_fact_ids": sorted(required), "excluded_fields": sorted(excluded),
             "supplement_requests": missing,
@@ -1504,7 +1508,7 @@ class LlmAgent:
         seen_texts, used_photos, pages = set(), set(), []
         origins = {s.source_id: s.origin_kind for s in request.sources}
 
-        def claim(item: _EditorialText, kind: str) -> Block:
+        def claim(item: _EditorialText, kind: str, *, level: int = 1) -> Block:
             if not item.text.strip() or len(item.fact_ids) != len(set(item.fact_ids)):
                 raise _invalid()
             if not set(item.fact_ids) <= included or (not item.fact_ids and (kind != "heading" or not is_label(item.text))):
@@ -1521,12 +1525,12 @@ class LlmAgent:
                 raise AgentError("AGENT_OUTPUT_INVALID", "생성 문구의 수치·단위가 연결된 원문에 없습니다.")
             for fid in item.fact_ids:
                 # Titles cannot launder an omitted body fact by attaching all IDs.
-                if kind != "heading" or facts[fid].field_key == "company_name":
+                if kind != "heading" or (level == 1 and facts[fid].field_key == "company_name"):
                     used[fid].append(item.text)
             text = item.text.strip()
             if any(origins[r.source_id] == "demo" for r in evidence) and not any(w in text for w in ("시연", "가상")):
                 text = "[시연] " + text
-            content = {"text": text, "level": 1} if kind == "heading" else {"text": text}
+            content = {"text": text, "level": level} if kind == "heading" else {"text": text}
             return Block(block_id="block_" + uuid.uuid4().hex[:16], type=kind, content=content,
                          fact_ids=item.fact_ids, evidence_refs=evidence)
 
@@ -1550,7 +1554,9 @@ class LlmAgent:
                 layout = "cover_text"
             # The lead and every point are independent editable/provenance units.
             blocks = [claim(planned.heading, "heading"), claim(planned.lead, "paragraph")]
-            blocks.extend(claim(item, "paragraph") for item in planned.points)
+            for item in planned.points:
+                blocks.append(claim(_EditorialText(text=item.label, fact_ids=item.fact_ids), "heading", level=2))
+                blocks.append(claim(item, "paragraph"))
             for aid in chosen:
                 # A label is not evidence of ownership/capacity; descriptions remain internal inputs for review.
                 blocks.append(Block(block_id="block_" + uuid.uuid4().hex[:16], type="image",
@@ -1564,7 +1570,7 @@ class LlmAgent:
                     quantity_tokens(facts[fid].value or "") - quantity_tokens(" ".join(texts))):
                 raise AgentError("AGENT_OUTPUT_INVALID", "포함하기로 한 사실 또는 수치·단위가 본문에서 빠졌습니다.")
         extracted = {r.segment_id for f in facts.values() for r in f.evidence_refs}
-        audit = EditorialRecord(input_revision=request.input_revision, selections=plan.selections,
+        audit = EditorialRecord(prompt_version="editorial_v2", input_revision=request.input_revision, selections=plan.selections,
             requested_pages=request.brief.target_pages, generated_pages=len(pages),
             page_count_reason=plan.page_count_reason,
             supplement_requests=[f"{key}: 선택 자료에서 확인 가능한 근거를 보완해 주세요." for key in missing],
