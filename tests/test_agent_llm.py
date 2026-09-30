@@ -877,8 +877,19 @@ def test_editorial_rejects_fewer_than_selected_minimum_without_padding_or_retry(
     ("20001 | 코드 정보", "history", "timeline", False),
     ("2000 | ", "history", "timeline", False),
     ("사업 시작", "history", "timeline", False),
+    ("[시연] 거래 1단계 — 입고 대조\n[시연] 거래 2단계 — 상태 기록", "processes", "process_steps", True),
+    ("제1단계: 입고 확인\n제 2 단계：검사 기록", "processes", "process_steps", True),
+    ("1단계 - 입고\n2단계 – 검사\n3단계 — 출고", "processes", "process_steps", True),
+    ("1단계 — 입고\n2단계 — 검사", "processes", "timeline", False),
+    ("1단계 — 상품 A\n2단계 — 상품 B", "products_services", "process_steps", False),
+    ("가상 업무는 입고, 검사, 출고의 3단계다.", "processes", "process_steps", False),
+    ("1단계 — 입고 확인", "processes", "process_steps", False),
+    ("2단계 — 검사\n1단계 — 입고", "processes", "process_steps", False),
+    ("1단계 — 입고\n1단계 — 검사", "processes", "process_steps", False),
+    ("1단계 — \n2단계 — ", "processes", "process_steps", False),
+    ("제품A1단계 — 설명\n제품B2단계 — 설명", "processes", "process_steps", False),
 ])
-def test_editorial_timeline_accepts_year_column_without_inventing_process_order(excerpt, field, layout, allowed):
+def test_editorial_sequence_accepts_source_headings_without_inventing_order(excerpt, field, layout, allowed):
     request, fid = numeric_editorial_request(excerpt, excerpt)
     next(f for f in request.preflight.facts if f.fact_id == fid).field_key = field
     request.brief.required_fields = [field]
@@ -891,7 +902,7 @@ def test_editorial_timeline_accepts_year_column_without_inventing_process_order(
         return result
     if allowed:
         result = llm.LlmAgent(respond).draft(request)
-        assert result.pages[0].layout_key == "timeline"
+        assert result.pages[0].layout_key == layout
         assert any(b.type == "paragraph" and b.content["text"] == excerpt.strip()
                    and b.fact_ids == [fid] for p in result.pages for b in p.blocks)
         assert validate_draft(result, request.sources, {f.fact_id for f in request.preflight.facts}, request.preflight) is None

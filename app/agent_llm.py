@@ -2035,7 +2035,19 @@ class LlmAgent:
                     facts[fid].field_key == "history"
                     and re.search(r"(?m)^\s*(?:19|20)\d{2}\s*[|｜]\s*\S", ref.excerpt)
                     for fid in planned.sequence_fact_ids for ref in facts[fid].evidence_refs)
-                if not planned.sequence_fact_ids or not (re.search(pattern, sequence) or table_year):
+                numbered_steps = False
+                if planned.layout == "process_steps":
+                    for fid in planned.sequence_fact_ids:
+                        fact = facts[fid]
+                        if fact.field_key != "processes":
+                            continue
+                        # Korean source headings express order too. Require
+                        # multiple increasing steps with actual labels, not a
+                        # step count, product code, or unordered process list.
+                        steps = [int(m) for ref in fact.evidence_refs for m in re.findall(
+                            r"(?<!\w)(?:제[^\S\r\n]*)?([1-9]\d{0,2})[^\S\r\n]*단계[^\S\r\n]*[:：—–-][^\S\r\n]*\S", ref.excerpt)]
+                        numbered_steps |= len(steps) >= 2 and all(a < b for a, b in zip(steps, steps[1:]))
+                if not planned.sequence_fact_ids or not (re.search(pattern, sequence) or table_year or numbered_steps):
                     raise AgentError("AGENT_OUTPUT_INVALID", "순서·시점 근거가 없는 단계/연혁 배치를 거부했습니다.")
             if any(aid not in photos for aid in planned.photo_ids):
                 raise _editorial_invalid("photo_reference")
