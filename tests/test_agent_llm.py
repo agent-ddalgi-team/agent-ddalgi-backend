@@ -427,6 +427,44 @@ def test_editorial_full_date_cannot_be_omitted_or_changed(body):
     assert calls == ["draft_sections"]
 
 
+@pytest.mark.parametrize("case", ["full", "partial", "conflict", "same_text_other_source"])
+def test_editorial_wire_source_references_are_lossless_and_isolated(case):
+    request = build_editorial_request("conflict" if case == "conflict" else "manufacturing")
+    fact = request.preflight.facts[0]
+    if case == "partial":
+        fact.evidence_refs[0].excerpt = fact.evidence_refs[0].excerpt[:3]
+    if case == "same_text_other_source":
+        other = copy.deepcopy(request.sources[0])
+        other.source_id = "other_source"
+        other.segments[0].segment_id = "other_segment"
+        other.segments = other.segments[:1]
+        request.sources.append(other)
+        ref = fact.evidence_refs[0].model_copy(deep=True, update={
+            "source_id": other.source_id, "segment_id": other.segments[0].segment_id})
+        fact.evidence_refs.append(ref)
+    payload = {"facts": [f.model_dump() for f in request.preflight.facts],
+               "source_units": llm.SourceIndex(request.sources).units}
+    before = copy.deepcopy(payload)
+    wire, _, aliases = llm._editorial_wire_request(payload, {})
+    units = {u["unit_id"]: u for u in wire["source_units"]}
+    restored = llm._map_editorial_fact_ids(wire, aliases)
+    for item in [*restored["facts"], *(a for f in restored["facts"] for a in f.get("alternatives") or [])]:
+        for ref in item["evidence_refs"]:
+            unit = units[ref.pop("unit_id")]
+            ref["source_id"] = unit["source_id"]
+            ref["segment_id"] = unit["locator"].removeprefix("segment:")
+            ref.setdefault("excerpt", unit["text"])
+    for unit in restored["source_units"]:
+        unit.pop("unit_id")
+    assert restored == before and payload == before
+    if case == "full":
+        assert all("excerpt" not in r for f in wire["facts"] for r in f["evidence_refs"])
+    if case == "partial":
+        assert wire["facts"][0]["evidence_refs"][0]["excerpt"] == fact.evidence_refs[0].excerpt
+    if case == "same_text_other_source":
+        assert len({r["unit_id"] for r in wire["facts"][0]["evidence_refs"]}) == 2
+
+
 def test_editorial_body_requirements_and_final_selections_reach_wire_schema():
     request = build_editorial_request("manufacturing")
     request.brief.emphasis = ["연혁 제외"]
@@ -533,6 +571,12 @@ def test_editorial_whole_fact_point_sdk_preserves_compound_certification(monkeyp
         allowed = schema["$defs"]["_EditorialFactPoint"]["properties"]["fact_id"]["enum"]
         assert cert_id in allowed
         assert next(n for n in payload["body_requirements"] if n["fact_id"] == cert_id)["whole_fact_point_available"]
+        assert next(n for n in payload["body_requirements"] if n["fact_id"] == cert_id)["whole_fact_point_required"]
+        # The actual SDK request cannot choose a lossy lead/prose point for this ID.
+        assert cert_id not in schema["$defs"]["_EditorialPoint"]["properties"]["fact_ids"]["items"]["enum"]
+        lead = schema["$defs"]["_EditorialCompositionPage"]["properties"]["lead"]
+        assert cert_id not in lead["properties"]["fact_ids"]["items"]["enum"]
+        assert cert_id in schema["$defs"]["_EditorialText"]["properties"]["fact_ids"]["items"]["enum"]
         response = editorial_composition(editorial_response(payload))
         for page in response["pages"]:
             page["points"] = [{"label": p["label"], "fact_id": cert_id}
@@ -599,6 +643,44 @@ def test_editorial_whole_fact_point_preserves_rejection_gates(damage):
     with pytest.raises(AgentError):
         llm.LlmAgent(responder).draft(request)
     assert calls == ["draft_sections"]
+
+
+@pytest.mark.parametrize("case,required", [("compound", True), ("simple", False), ("other_field", False),
+    ("unconfirmed", False), ("conditions", False), ("too_long", False)])
+def test_compound_certificate_whole_fact_requirement_is_bounded(case, required):
+    fact = Fact(fact_id="cert", field_key="certifications", status="supported",
+                value="인증 번호 12345, 최초 발행 2015-04-11, 만료 2028-09-25이며 사후심사가 조건입니다.")
+    if case == "simple":
+        fact.value = "인증 원문에 적용 범위가 기록되어 있습니다."
+    elif case == "other_field":
+        fact.field_key = "history"
+    elif case == "unconfirmed":
+        fact.status = "needs_confirmation"
+    elif case == "conditions":
+        fact.conditions = {"scope": "별도 적용 범위"}
+    elif case == "too_long":
+        fact.value += "가" * 1201
+    assert llm._whole_fact_point_required(fact) is required
+
+
+def test_compound_certificate_keeps_optional_exclusion_and_heading_only_rejection():
+    value = "인증 번호 12345, 최초 발행 2015-04-11, 만료 2028-09-25이며 사후심사가 조건입니다."
+    request, fid = numeric_editorial_request(value, value)
+    request.brief.required_fields = []
+    def respond(*, heading_only):
+        def responder(instructions, payload, schema, name):
+            assert next(r for r in payload["body_requirements"] if r["fact_id"] == fid)["whole_fact_point_required"]
+            result = editorial_composition(editorial_response(payload))
+            for page in result["pages"]:
+                page["points"] = [p for p in page["points"] if fid not in p["fact_ids"]]
+            if heading_only:
+                result["pages"][0]["heading"] = {"text": "인증 범위", "fact_ids": [fid]}
+            return result
+        return responder
+    result = llm.LlmAgent(respond(heading_only=False)).draft(request)
+    assert next(s for s in result.editorial.selections if s.fact_id == fid).disposition == "excluded"
+    with pytest.raises(AgentError, match="본문에서 빠졌습니다"):
+        llm.LlmAgent(respond(heading_only=True)).draft(request)
 
 
 def test_editorial_whole_fact_schema_omits_unusable_branch():
@@ -4225,7 +4307,13 @@ def test_editorial_sdk_short_references_restore_original_ids_and_reject_foreign(
         payload = json.loads(kwargs["input"])
         assert [f["fact_id"] for f in payload["facts"]] == [f"F{n}" for n in range(1, len(payload["facts"]) + 1)]
         assert payload["source_units"][0]["source_id"] == request.sources[0].source_id
-        assert payload["facts"][0]["evidence_refs"] == request.preflight.facts[0].model_dump()["evidence_refs"]
+        refs = copy.deepcopy(payload["facts"][0]["evidence_refs"])
+        for ref in refs:
+            unit_id = ref.pop("unit_id")
+            unit = next(u for u in payload["source_units"] if u["unit_id"] == unit_id)
+            ref.update(source_id=unit["source_id"], segment_id=unit["locator"].removeprefix("segment:"))
+            ref.setdefault("excerpt", unit["text"])
+        assert refs == request.preflight.facts[0].model_dump()["evidence_refs"]
         encoded_schema = json.dumps(kwargs["text"]["format"]["schema"])
         assert request.preflight.facts[0].fact_id not in encoded_schema
         body = editorial_response(payload)

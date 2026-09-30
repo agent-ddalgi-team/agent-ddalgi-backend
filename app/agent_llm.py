@@ -707,7 +707,27 @@ def _editorial_wire_request(payload: dict, schema: dict) -> tuple[dict, dict, di
             for item in node:
                 enums(item)
     enums(wire_schema)
-    return _map_editorial_fact_ids(payload, mapping), wire_schema, {v: k for k, v in mapping.items()}
+    wire = _map_editorial_fact_ids(payload, mapping)
+    units = {}
+    for unit_id, unit in enumerate(wire["source_units"], 1):
+        unit["unit_id"] = unit_id
+        units[(unit["source_id"], unit["locator"])] = unit
+    # SourceIndex already checked every reference. Keep partial excerpts verbatim;
+    # only an exact full-segment copy may be represented by the original unit.
+    # Version and actual page/slide locator stay on each reference, including
+    # alternatives. Neither stored facts nor response validation are changed.
+    items = [*wire["facts"], *(alt for fact in wire["facts"] for alt in fact.get("alternatives") or [])]
+    for item in items:
+        for ref in item.get("evidence_refs", []):
+            unit = units.get((ref["source_id"], "segment:" + ref["segment_id"]))
+            if unit is None:
+                continue
+            ref["unit_id"] = unit["unit_id"]
+            ref.pop("source_id")
+            ref.pop("segment_id")
+            if ref.get("excerpt") == unit["text"]:
+                ref.pop("excerpt")
+    return wire, wire_schema, {v: k for k, v in mapping.items()}
 
 
 class OpenAIRequester:
@@ -1017,6 +1037,14 @@ class _EditorialComposition(BaseModel):
 def _whole_fact_point_available(fact: Fact) -> bool:
     # Separate legacy condition metadata is not materialized by a value-only point.
     return bool(fact.value and fact.value.strip() and len(fact.value) <= 1200 and not fact.conditions)
+
+
+def _whole_fact_point_required(fact: Fact) -> bool:
+    """Compound certificate identifiers/dates must not take the lossy prose path."""
+    from app.services.validation import numeric_evidence_tokens
+    return (fact.status == "supported" and fact.field_key == "certifications"
+            and _whole_fact_point_available(fact)
+            and len(numeric_evidence_tokens(fact.value or "")) >= 4)
 
 
 def _composition_plan(response: dict, facts: dict[str, Fact], policy: dict[str, tuple[str, ...]]) -> _EditorialPlan:
@@ -1789,6 +1817,7 @@ class LlmAgent:
             "body_requirements": [{"fact_id": fid,
                 "numeric_tokens": sorted(numeric_evidence_tokens(fact.value or "")),
                 "whole_fact_point_available": _whole_fact_point_available(fact),
+                "whole_fact_point_required": _whole_fact_point_required(fact),
                 "heading_can_cover": fact.field_key == "company_name"}
                 for fid, fact in facts.items() if fact.status == "supported" and fact.field_key not in excluded],
             "supplement_requests": missing,
@@ -1801,6 +1830,7 @@ class LlmAgent:
         schema = _EditorialComposition.model_json_schema()
         usable_ids = sorted(fid for fid, allowed in selection_policy.items() if "optional" in allowed or "required" in allowed)
         whole_fact_ids = [fid for fid in usable_ids if _whole_fact_point_available(facts[fid])]
+        whole_only_ids = {fid for fid in usable_ids if _whole_fact_point_required(facts[fid])}
         for definition in schema.get("$defs", {}).values():
             props = definition.get("properties", {})
             for key in ("fact_ids", "sequence_fact_ids"):
@@ -1815,6 +1845,21 @@ class LlmAgent:
                 props["photo_ids"]["items"]["enum"] = sorted(photos)
             elif "photo_ids" in props:
                 props["photo_ids"]["maxItems"] = 0
+        if whole_only_ids:
+            # Headings retain their provenance, but may not satisfy body coverage.
+            # Lead/prose points cannot select a compound certificate; its whole-fact
+            # point is the only generated body form. Existing complete response
+            # replays still go through the ordinary numeric/provenance gates.
+            prose_ids = [fid for fid in usable_ids if fid not in whole_only_ids]
+            lead_schema = copy.deepcopy(schema["$defs"]["_EditorialText"])
+            for definition in (lead_schema, schema["$defs"]["_EditorialPoint"]):
+                refs_schema = definition["properties"]["fact_ids"]
+                if prose_ids:
+                    refs_schema["items"]["enum"] = prose_ids
+                else:
+                    refs_schema["items"].pop("enum", None)
+                    refs_schema["minItems"] = refs_schema["maxItems"] = 0
+            schema["$defs"]["_EditorialCompositionPage"]["properties"]["lead"] = lead_schema
         if whole_fact_ids:
             schema["$defs"]["_EditorialFactPoint"]["properties"]["fact_id"]["enum"] = whole_fact_ids
         else:
