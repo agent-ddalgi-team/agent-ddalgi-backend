@@ -170,6 +170,9 @@ def run_preflight_job(settings: Settings, session_id: str, job_id: str, input_re
                 if validation.record_preflight_conflicts(conn, session_id, document, saved_preflight):
                     approvals.invalidate_for_document(conn, document.document_id, "preflight_conflict")
                     documents.refresh_status_cache(conn, session_id, document.document_id)
+                elif validation.current_preflight_key(conn, document.document_id, input_revision) is not None:
+                    approvals.invalidate_for_document(conn, document.document_id, "preflight_changed")
+                    documents.refresh_status_cache(conn, session_id, document.document_id)
             if (wait_for_confirmation := getattr(bridge, "wait_for_confirmation", None)) is not None:
                 wait_for_confirmation(conn, session_id, input_revision, preflight_id)
             jobs.succeed(conn, job_id, {"type": "preflight", "preflight_id": preflight_id})
@@ -323,6 +326,10 @@ def run_validate_job(settings: Settings, session_id: str, job_id: str, input_rev
             ctx = validation.load_context(conn, session_id, preflight)
             fps = validation.fingerprints(document, ctx.seg_texts)
             base = validation.base_validation(conn, document_id, document_revision, input_revision)
+            origin = conn.execute("SELECT origin FROM document_revisions WHERE document_id=? AND revision=?",
+                                  (document_id, document_revision)).fetchone()
+            if origin and origin[0] == "impact_review":
+                base = None  # 같은 입력을 재점검한 뒤 복귀해도 전체 의미 검증을 다시 실행한다.
             changed, unchanged = validation.changed_blocks(fps, base)
             images = []
             if settings.agent_mode == "llm":

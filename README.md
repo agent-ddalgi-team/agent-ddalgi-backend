@@ -40,17 +40,28 @@ uv run pytest
 
 백엔드 통합 검사는 mock(가짜 응답)으로 실행한다. 실제 LLM 분석·초안과 AG-07 원문 의미 검증의 구현/별도 시험 기록은 `task_agent.md`를 따른다. 기본 유료 호출 한도에는 content_review가 포함되지 않으므로 의미 검증 구현과 일반 서버의 호출 허용을 구분한다. 이번 PR 정리에서는 실제 AI를 호출하지 않았다.
 
-### API 요청·응답 형식 (Pydantic, 계약 1.4)
+### API 요청·응답 형식 (Pydantic, 계약 1.6)
 
 Pydantic 모델은 **화면이 보내는 값과 서버가 돌려주는 값의 형식**을 검사한다. `app/models.py`에 선언하며, DB 테이블을 정의하는 `app/orm_models.py`와 역할이 다르다. 예를 들어 입력 버전은 숫자 `2`이고 문자열 `"2"`가 아니며, 사용자 확인은 `true`이고 문자열 `"true"`가 아니다. 형식이 맞아도 세션 소유자·최신 버전·근거·승인 조건 검사는 별도로 통과해야 한다.
 
 - 버전은 1 이상의 정수, 목표 쪽수는 1/4/6/8/10, 필수 문장은 공백만 입력할 수 없다. 선택 자료·대상 블록 ID는 중복 없이 보낸다.
 - 작성 조건/선택 변경은 `expected_input_revision`과 함께 `brief` 또는 `selected_source_ids`를 보낸다. 빈 목록 `[]`은 전체 선택 해제이고, 변경할 필드가 없는 요청은 거부한다.
 - 형식 오류는 `400 INVALID_REQUEST`, 최신 버전 불일치는 `409`, 명시적 확인 누락 등 업무 조건 실패는 `422`다. 모두 `{error:{code,message,retryable,details,request_id}}`이며 입력 원문을 오류 본문에 돌려주지 않는다.
-- `/docs`와 `/openapi.json`에 27개 API의 모델·오류·파일 응답을 표시한다. 구조가 있는 JSON 응답 25개와 이미지/출력 파일 응답 2개가 있다. Export는 새 작업 202와 준비된 결과 재사용 200을 구분한다.
+- `/docs`와 `/openapi.json`에 30개 API의 모델·오류·파일 응답을 표시한다. 구조가 있는 JSON 응답 28개와 이미지/출력 파일 응답 2개가 있다. Export는 새 작업 202와 준비된 결과 재사용 200을 구분한다.
 - 긴 작업은 접수 후 Job을 조회한다. `result_ref`는 작업 종류별 결과 ID이며 Preflight·Document·Proposal 등 결과를 별도 GET으로 읽는다. `succeeded`인 검사 Job도 검사 결과 자체는 failed일 수 있다.
 
-현재 형식과 예시는 [contracts.md](contracts.md), [API 예시](handoff/api_examples_v1.1.json)를 따른다. 예시 파일명은 기존 참조를 위해 유지하고 내부 계약 버전은 1.4이다. 프론트는 S01 세션·자료·점검부터 S02 직접 편집/수정안 비교와 S03 검증·PDF 승인/다운로드까지 기존 API에 연결했다. 실제 AI 수정안·사진 검증, 경고 확인 강제, 자료 변경 후 복귀, DOCX 승인·출력은 후속이다.
+현재 형식과 예시는 [contracts.md](contracts.md), [API 예시](handoff/api_examples_v1.1.json)를 따른다. 예시 파일명은 기존 참조를 위해 유지하고 내부 계약 버전은 1.6이다. 기존 프론트 S01~S03 연결 기록은 [백엔드 작업표](task_backend.md)를 따른다. 새 C-05 API의 프론트 계약 사본·타입·화면 연결과 실제 모델 검증, DOCX 승인·출력은 후속이다.
+
+### 자료 변경 후 기존 편집으로 복귀 (C-05)
+
+선택 자료·작성 조건을 바꾸면 기존 문서의 편집을 보존하고 다음 순서로 복귀한다. 경로 앞에는 `/api/v1/sessions/{sid}`를 붙인다.
+
+1. `POST /preflights`로 최신 입력을 점검하고 결과를 조회한다.
+2. 결과를 확인한 사용자가 `POST /documents/{did}/impact-reviews`에 현재 문서·입력 버전, `preflight_id`, `confirmed: true`를 보낸다. 응답의 영향 목록은 `GET /documents/{did}/impact-reviews/{rid}`로 다시 조회할 수 있다.
+3. 변경할 편집 연산 `operations`, 필요한 `reference_updates`, 필수 유지 사유 `keep_reason`을 `POST /documents/{did}/impact-reviews/{rid}/apply`로 보낸다. 정확히 같은 supported 사실·근거는 최신 Fact ID로 연결하고, 제외되거나 달라진 근거는 명시적으로 수정하거나 해당 블록을 삭제해야 한다.
+4. 응답의 `validation_job_id`로 전체 내용 검증 결과를 조회한 뒤 편집을 계속한다. 승인·PDF 배치는 새 문서 기준으로 다시 확인한다.
+
+DB v11의 기존 `impact_reviews`·`confirmations`를 사용한다. v9 DB는 자동 이전하지 않으며 C-05 요청에 `409 IMPACT_HISTORY_UNAVAILABLE`를 반환한다. 프론트 복귀 화면과 실제 모델을 사용한 변경 자료 검증은 아직 연결·확인하지 않았다. 상세 규칙은 [공통 계약](contracts.md), 결과는 [C-05 작업 기록](task_backend.md#c05-edit-return-20260930)을 따른다.
 
 실제 사용 DB에 자료를 넣지 않고, 임시 DB와 mock 자료로 형식·S01 흐름을 확인하려면 다음 검사를 실행한다.
 
@@ -91,7 +102,15 @@ uv run pytest -q tests/test_orm_workflow.py tests/test_be04.py
 .\.venv\Scripts\python.exe -X utf8 -B scripts/check_s01_http.py --publication --frontend D:\frontend --timeout 120
 ```
 
-`--publication`은 설치된 Chrome/Edge를 PDF 렌더러로 사용한다. 별도 위치는 `--browser-path`로 지정한다. 실제 PDF 바이트·반복 다운로드·수정 후 승인 무효화와 편집/AI 제안 비교·적용·거절을 임시 자료로 확인한다. 미리보기는 `dist/publication-check.png`, 편집 화면은 `dist/s02-publication-check.png`에 저장한다. AI는 계속 mock이며 실제 AI 품질이나 DOCX 승인·출력 확인을 뜻하지 않는다.
+`--publication`은 설치된 Chrome/Edge를 PDF 렌더러로 사용한다. macOS의 `/Applications` Chrome·Edge도 자동 탐색하며 별도 위치는 `--browser-path`로 지정한다. 실제 HTTP로 PDF 바이트·반복 다운로드·수정 후 승인 무효화를 확인한다. `--frontend`를 함께 쓰면 편집/AI 제안 비교·적용·거절을 화면에서 확인하고, 미리보기는 `dist/publication-check.png`, 편집 화면은 `dist/s02-publication-check.png`에 저장한다. AI는 계속 mock이며 실제 AI 품질이나 DOCX 승인·출력 확인을 뜻하지 않는다.
+
+사진 포함 HTTP 검사는 다음처럼 실행한다(Mac/Linux; Windows에서는 위 Python 실행 경로 사용).
+
+```bash
+.venv/bin/python -B scripts/check_s01_http.py --publication --photos --timeout 120
+```
+
+`--photos`는 가상 PNG 1장을 텍스트와 함께 업로드해 사진 원본 바이트·소유자별 접근 차단·편집 후 사진 보존·실제 PDF 이미지의 픽셀 일치·각 쪽 PNG 미리보기를 확인한다. 검사·승인·출력의 파일 ID와 저장 해시, 동일 바이트 재다운로드, 세션 종료 후 사진 접근 차단과 임시 자료 정리도 검사한다. 이 옵션은 HTTP 검사에 적용되며 프론트의 사진 UI를 검증했다는 뜻은 아니다. `--publication`과 함께 사용한다.
 
 화면 사용 순서는 **초안 편집 → 변경 내용 저장 → 내용 검증하기 → PDF 배치 확인 → 미리보기/동의 → PDF 최종 승인 → PDF 파일 준비 → PDF 다운로드**다. 저장되지 않은 내용이 있으면 검증·승인·다운로드를 막는다. 다른 탭에서 문서가 바뀌면 작성 중인 내용은 보존하며 필요한 문장을 복사한 뒤 최신 저장본에서 다시 편집한다. 새로고침으로 저장하지 않은 내용은 복원되지 않는다. 현재 화면은 경고 없는 `passed` 검증만 승인한다. D-07 서버 강제는 구현했으며 개별 경고 확인 UI·계약 1.5 연결은 후속이다.
 
@@ -105,7 +124,7 @@ uv run pytest -q tests/test_orm_workflow.py tests/test_be04.py
 - `app/orm_models.py`는 ERD v2의 **25개 테이블을 Python 클래스로 표현한 ORM 모델**이다. `app/models.py`는 화면과 주고받는 API 형식을 검사하는 Pydantic 모델이다. 역할이 달라 두 파일을 구분한다.
 - `app/db.py`의 `init_orm_db()`는 Alembic으로 빈 DB를 생성하고 변경 이력을 적용한다. 현재 구조는 v11 / `20260929_01`이며 v10 기준 이력 `20260928_01`은 변경하지 않는다. 미관리 v10은 고정 기준 구조와 일치할 때만 이력 관리에 연결하고 기존 v9는 덮어쓰지 않는다. 서버의 `init_db()`는 v11 구조를 검사하며, v10이면 `alembic upgrade head`를 먼저 실행하도록 안내한다. 기존 v1~9 호환 초기화는 유지한다.
 - 새 쿼리는 `with orm_session(settings.db_path) as db:` 안에서 `db.add(...)`, `db.scalars(select(Source))` 같은 ORM 방식으로 작성할 수 있다. 여러 행이 함께 저장되어야 하면 같은 세션을 사용한다. 기존 서비스 SQL은 Core 호환 연결을 계속 사용한다. LangGraph 체크포인트 연결도 유지한다.
-- 새 DB는 원본 버전·읽기 실행·입력 변경·선택 자료·최종 동의를 기록한다. 이미 선택한 읽기 실행은 재읽기로 덮어쓰지 않으며, 세션 종료/만료 시 이력의 비공개 내용도 함께 비운다. 영향 검토와 개별 경고 확인은 저장 테이블만 준비했으며 해당 화면/API는 후속 작업이다.
+- 새 DB는 원본 버전·읽기 실행·입력 변경·선택 자료·최종 동의를 기록한다. 이미 선택한 읽기 실행은 재읽기로 덮어쓰지 않으며, 세션 종료/만료 시 이력의 비공개 내용도 함께 비운다. 개별 경고 확인 API는 계약 1.5, 자료 변경 영향 검토·편집 복귀 API는 계약 1.6에서 기존 테이블에 연결했다. C-05 프론트 화면은 후속 작업이다.
 
 #### DB 구조 생성과 변경 이력 (자료 적재와 별개)
 
@@ -125,7 +144,7 @@ uv run alembic -x db_path=private_runs/schema_test/app.sqlite3 upgrade head
 
 자료·원본 버전·읽기 실행은 서로 연결되어 있어 `check`/자동 생성 시 순환 외래 키의 정렬 경고가 발생할 수 있다. 이 검사는 모든 제약의 보존을 보장하지 않으므로 새 변경 파일에서 아래 검토·시험 절차를 따른다.
 
-v11은 ERD에 FK로 표시되었지만 DB 제약이 없던 16개 관계를 추가한다. 입력/문서 버전은 세션·문서 식별자를 묶어 확인하고, 검증/승인/산출물/다운로드와 운영 기록은 대상의 존재를 확인한다. 미리보기는 배치 결과보다 먼저 저장되므로 해당 FK만 트랜잭션 종료 시 검사한다. 승인 대상의 문서·입력·형식 일치와 JSON 내부 근거는 계속 서버에서도 검사한다. 기존 자료는 자동 보정하거나 지우지 않으며 새 관계에 맞지 않는 데이터가 있으면 업그레이드가 실패하고 원래 상태로 돌아간다. 자료 적재와 영향 검토는 별도 작업이다. D-07 경고 확인은 기존 v11 confirmations를 사용하며 아래 계약 1.5 규칙을 따른다.
+v11은 ERD에 FK로 표시되었지만 DB 제약이 없던 16개 관계를 추가한다. 입력/문서 버전은 세션·문서 식별자를 묶어 확인하고, 검증/승인/산출물/다운로드와 운영 기록은 대상의 존재를 확인한다. 미리보기는 배치 결과보다 먼저 저장되므로 해당 FK만 트랜잭션 종료 시 검사한다. 승인 대상의 문서·입력·형식 일치와 JSON 내부 근거는 계속 서버에서도 검사한다. 기존 자료는 자동 보정하거나 지우지 않으며 새 관계에 맞지 않는 데이터가 있으면 업그레이드가 실패하고 원래 상태로 돌아간다. 자료 적재는 별도 작업이다. D-07 경고 확인과 C-05 영향 검토는 기존 v11 테이블을 사용하며 이번 C-05에 DB 구조 변경은 없다.
 
 이후 구조를 바꾸는 순서:
 
@@ -224,7 +243,7 @@ uv run python scripts/import_registered.py --source-dir private_runs/registered_
 | 5 | [백엔드 작업](task_backend.md) 또는 [Agent 작업](task_agent.md) · [Agent 설계](agent.md) | 내 담당 작업·코드 위치·남은 연결·검증할 내용 |
 | 6 | [공통 연결표](task.md) | 담당자 간 연결 지점과 결과 기록 위치 |
 
-2026-09-27에는 개발 전 문서를 정리했다. 당시 기존 BE/AG 작업 상태와 테스트 기록을 유지했고 실행 코드·의존성·DB는 바꾸지 않았다. 현재 공통 계약은 1.4, 데이터 schema_version은 1.0이다. 2026-09-28의 계약 1.2는 재점검 충돌로 인한 기존 승인 무효화·승인 재전송 차단을 반영한다. 상세는 [contracts.md](contracts.md), 기존 경로를 유지한 예시는 [API 예시](handoff/api_examples_v1.1.json)를 따른다. 프론트 계약/예시 사본은 로컬에서 문서 v1.9까지 동기화했으며 해당 프론트 구현은 이 백엔드 PR에 포함되지 않는다. 검토 메모의 다른 제안과 미구현 항목은 별도로 유지한다.
+2026-09-27에는 개발 전 문서를 정리했다. 당시 기존 BE/AG 작업 상태와 테스트 기록을 유지했고 실행 코드·의존성·DB는 바꾸지 않았다. 현재 공통 계약은 1.6, 데이터 schema_version은 1.0이다. 2026-09-28의 계약 1.2는 재점검 충돌로 인한 기존 승인 무효화·승인 재전송 차단을 반영한다. 상세는 [contracts.md](contracts.md), 기존 경로를 유지한 예시는 [API 예시](handoff/api_examples_v1.1.json)를 따른다. 프론트 계약/예시 사본은 문서 v1.9까지의 동기화 기록이 있으며, 이번 계약 1.6의 사본·프론트 구현은 갱신하지 않았다. 검토 메모의 다른 제안과 미구현 항목은 별도로 유지한다.
 
 Stitch 화면 설계와의 연결 기준은 [prd.md 3~5절](prd.md), 화면 상태별 데이터 연결은 [contracts.md 7.5절](contracts.md)을 따른다. 추가 기능의 채택 여부는 [plan.md 4.1절](plan.md)에서 관리한다. 화면 시연·예시 응답과 실제 기능 완료는 구분한다.
 

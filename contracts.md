@@ -1,6 +1,8 @@
 # 공통 데이터·API 계약
 
-기준일: 2026-09-30 · 문서 v1.15 · contract_version: 1.5 · 데이터 schema_version: 1.0
+기준일: 2026-09-30 · 문서 v1.16 · contract_version: 1.6 · 데이터 schema_version: 1.0
+
+**계약 1.6 — 자료 변경 후 편집 복귀(C-05, 2026-09-30):** 기존 문서의 재점검 확인·영향 조회·선택 적용 API 3개를 추가한다. 적용 전 편집 내용을 보존하고, 명시적 적용 시 새 문서 버전과 현재 입력/점검을 연결하며 전체 내용 검증을 예약한다. 같은 입력의 과거 버전만 바로 복원할 수 있다. DB v11의 기존 영향/확인 테이블을 사용하며 스키마 변경은 없다. 프론트 계약 사본·타입·자료 변경 배너와 확인/적용 화면은 별도 갱신이 필요하다.
 
 **초안의 사실 참조·구성 보완(2026-09-30, 문서 v1.15):** 내부 작성 입력 `sections_to_write`에 항목별 `fact_ids`를 함께 전달한다. 각 항목은 자기 항목의 사실을 하나 이상 참조해야 하며, 작성에 전달한 회사명 외 모든 supported ID가 본문에서 사용되어야 한다. 명시적 항목 제외는 전달 전에 적용한다. 누락은 기존 `AGENT_OUTPUT_INVALID`로 거부하고 자동 재호출하지 않는다. 이는 ID 누락 검사이며 실제 문장의 의미·조건 보존을 보장하지 않는다. 원 응답 전체 검사 후 같은 항목의 text·fact_ids 집합이 모두 같은 문단만 첫 한 건으로 유지한다. 부족·확인 안내는 기존 제목과 정확한 안내 문구·빈 근거를 유지한 채 본문 뒤 한 묶음으로 구성한다. 공개 필드·상태·API·DB와 계약/데이터 버전은 유지한다. 프론트에서 목표 쪽수와 실제 `pages` 개수를 구분해 표시하는지 확인이 필요하며, 프론트 코드·계약 사본은 이번에 갱신하지 않았다.
 
@@ -227,6 +229,22 @@ after 값이 null이면 맨 앞이다. 존재하지 않는 대상, 자신 뒤로
 - 현재 확인 허용 코드는 서버의 `PLACEHOLDER_TEXT`(선택 항목 안내 문구), Agent의 `REPETITION`/`PHOTO_SHORTAGE`다. 명시적 시연 세션에서 서버가 만든 `DEMO_VALUE` warning에도 개별 확인을 요구한다. 일반 세션의 DEMO_VALUE, MOCK_VALUE, 근거·사실 오류, 미지원 코드와 모든 blocker/배치 문제는 확인으로 넘길 수 없다. 필수 내용·깨진 이미지·남은 이미지 자리는 별도 blocker로 유지된다. 시연 자료의 실자료 사용을 허용하지 않는다.
 - 해결 여부는 서버가 조치와 현재 내용의 일치를 확인해 기록한다. AI가 자체 승인하지 않는다.
 
+### ImpactReview — 자료 변경 영향 확인
+
+DB v11에서 제공한다. v9 요청은 `409 IMPACT_HISTORY_UNAVAILABLE`로 거부하며 기존 DB를 자동 변경하지 않는다.
+
+- 생성 요청: `{expected_revision, input_revision, preflight_id, confirmed: true}`. 현재 문서가 이전 입력 또는 이전 점검에 연결되어 있어야 한다. 최신 입력의 가장 최근 점검만 허용하며 같은 입력의 점검 Job이 진행 중이면 기다린다. 확인 시각과 검토 결과를 저장하며 문서는 변경하지 않는다.
+- 응답: `review_id`, `document_id`, `document_revision`(검토 기준), `from_input_revision`, `to_input_revision`, `preflight_id`, `status`, `items`, `fact_rebindings`, `created_at`, nullable `completed_at`.
+- 상태: `pending`(적용 대기), `applied`(적용 이력), `stale`(자료·문서·점검 또는 선택 자료의 내용/허용 범위가 달라져 재검토 필요). 적용 이력은 후속 편집 후에도 `applied`로 남지만 당시 확인의 현재 유효성은 별도다.
+- 항목: `{block_id: string|null, code, message, requires_change}`. 코드는 전체 입력 변경 `INPUT_CHANGED`, 안전한 사실 ID 연결 `FACT_REBOUND`, 사실 변경/모호함 `FACT_REVIEW_REQUIRED`, 근거 제외 `EVIDENCE_REMOVED`, 사진 제외 `PHOTO_REMOVED`다. 목록은 ID·사실·근거·사진 범위 검사이며 문장 의미 검증 결과가 아니다.
+- `fact_rebindings`는 이전 ID→현재 ID 대응이다. 이전/신규 모두 supported이고 항목·값·조건·근거 집합의 자료/버전/구간/위치/인용이 같으며 후보가 유일할 때만 제공한다. 같은 ID나 같은 값만으로 연결하지 않는다.
+- 적용 요청: `{expected_revision, input_revision, keep_reason, operations?: Operation[], reference_updates?: [{block_id, fact_ids, evidence_refs}]}`. `keep_reason`은 비어 있지 않은 유지 사유다. 두 배열의 기본값은 빈 배열이며 참조 수정 블록 ID·각 fact_id는 중복할 수 없다. 자동 사실 ID 연결 → 선택한 연산 → 명시적 참조 수정 순서로 사본에 적용한다. 일반 `replace_block_content`는 계속 참조를 보존한다.
+- 연결되지 않은 이전 사실이 있는 블록은 삭제하거나 `reference_updates`로 명시적으로 검토해야 한다. 남은 참조는 현재 선택 자료 및 최신 점검의 supported 사실만 허용한다. 인용문·구간 소속·위치도 검사한다. 근거 없는 문구를 남기려고 참조를 비워도 내용 검증과 필수 blocker가 유지된다. 유지 사유는 근거/승인 확인을 대신하지 않는다.
+- 성공은 `200 DocumentChangeOut`이며 `validation_job_id`가 있다. 문서 버전을 정확히 1회 증가시키고 현재 입력·확인한 점검에 연결한다. 페이지/블록 ID·본문·사진·순서는 명시적으로 수정한 부분 외에는 유지한다. 영향 확인, 새 문서, 확인 이력, 검증 Job은 한 트랜잭션으로 저장한다. 검증 전에는 `review_required`이며 실제 검증 결과는 Job과 문서 조회로 확인한다.
+- 같은 Idempotency-Key/본문은 최초 응답을 반환하며 문서·Job을 중복 생성하지 않는다. 먼저 소유자·세션·문서 접근을 검사한다. 다른 키로 이미 적용한 검토를 재적용하거나 변경된 기준으로 적용하면 409다. 입력·문서·최신 점검 및 선택 자료 스냅샷을 적용 직전에 다시 확인한다. 생성 응답 재전송은 당시 결과이므로 현재 상태는 GET으로 조회한다.
+- 적용 후 전체 재검증과 형식별 배치·최종 승인이 다시 필요하다. 이전 승인·경고 확인을 복원하지 않으며 미해결 문제는 실제 재검증으로 해결될 때까지 유지한다. 검증 실패 시 기존 validate API로 재시도하며 초안을 다시 생성하지 않는다. 적용 이후의 검증에도 현재 선택 범위·최신 supported 사실 검사를 유지한다.
+- C-05 검토 시작 이후에는 같은 입력을 다시 점검해도 기존 승인과 영향 확인의 유효성을 해제한다. 첫 검토 생성 때도 기존 승인을 무효화한다. 검증 기록은 `checks[].check_key=preflight:<id>`로 사용한 점검에 연결하며 다른 점검의 결과는 현재 검증이나 부분 재사용 기준으로 반환하지 않는다. 최신 점검을 위 API에서 확인·적용한 뒤 전체 검증한다. 확인만 하고 적용하지 않은 문서는 `409 IMPACT_REVIEW_REQUIRED`로 승인을 차단한다. 충돌 없는 재점검의 승인 무효화 사유는 `preflight_changed`다.
+
 ### Proposal — AI 편집안
 
 필수: `proposal_id`, `document_id`, `base_document_revision`, `base_input_revision`, `target_block_ids`, `kind`, `changes`, `status`.
@@ -313,11 +331,14 @@ HTTP 필드·상태·DB 스키마는 그대로여서 contract_version 1.5/schema
 | POST /sessions/{sid}/drafts | preflight_id, input_revision, confirmed: true | 최신 사전 확인 기록, 초안 생성 Job |
 | GET /sessions/{sid}/documents/{did} | 없음 | Document, 검사/승인 상태 |
 | PATCH /sessions/{sid}/documents/{did} | expected_revision, operations | DocumentChangeOut; 전체 문서는 별도 GET |
+| POST /sessions/{sid}/documents/{did}/impact-reviews | expected_revision, input_revision, preflight_id, confirmed: true | 201 ImpactReview; 문서 불변 |
+| GET /sessions/{sid}/documents/{did}/impact-reviews/{rid} | 없음 | ImpactReview와 현재 적용 가능 상태 |
+| POST /sessions/{sid}/documents/{did}/impact-reviews/{rid}/apply | expected_revision, input_revision, keep_reason, operations?, reference_updates? | DocumentChangeOut; 새 버전·전체 검증 Job |
 | POST /sessions/{sid}/documents/{did}/proposals | expected_revision, input_revision, target_block_ids, instruction, kind | Proposal 생성 Job |
 | GET /sessions/{sid}/proposals/{pid} | 없음 | Proposal·후보·현재 상태 |
 | POST /sessions/{sid}/proposals/{pid}/apply | expected_revision, selected_candidate_id 필요 시 | DocumentChangeOut; 전체 문서는 별도 GET |
 | POST /sessions/{sid}/proposals/{pid}/reject | 없음 | rejected; 문서 변화 없음 |
-| POST /sessions/{sid}/documents/{did}/restore | expected_revision, restore_from_revision | DocumentChangeOut; 이전 내용을 새 버전으로 저장 |
+| POST /sessions/{sid}/documents/{did}/restore | expected_revision, restore_from_revision | DocumentChangeOut; 현재 입력과 같은 입력의 이전 내용을 새 버전으로 저장 |
 | GET /sessions/{sid}/documents/{did}/issues | 없음 | `{document_id, document_revision, validation_id, issues}` |
 | POST /sessions/{sid}/issues/{iid}/resolve | expected_revision, resolution, evidence_refs?, input_revision?, validation_id? (acknowledged는 뒤 두 필드 필수) | `{issue, validation, document_status}` |
 | POST /sessions/{sid}/documents/{did}/validate | expected_revision, input_revision | Validation Job |
@@ -330,7 +351,7 @@ HTTP 필드·상태·DB 스키마는 그대로여서 contract_version 1.5/schema
 
 source 업로드만으로 자동 선택하지 않는 UI를 택하면 사용자가 선택할 때 input_revision을 갱신한다. 단, 선택된 기존 원자료를 수정·삭제하거나 문서가 참조하는 자산을 바꾸면 즉시 영향 상태를 갱신한다.
 
-`DocumentChangeOut`은 `{document_id, document_revision, input_revision, status, validation_job_id}`이며 전체 문서 본문이 아니다. `validation_job_id`는 현재 직접 수정/적용/복원에서 null이고 필요하면 validate API를 호출한다. 문서 GET은 `{demo, document, validation, approval, layout_checks}`이며 `layout_checks`는 `{pdf: LayoutCheck|null, docx: LayoutCheck|null}`다. `document_summary.status`, 문서 변경의 `status`, `document_status`는 Document의 4종 상태를 공유한다. 다운로드 성공은 PDF 또는 DOCX 바이트이며 JSON 오류는 아래 공통 봉투다.
+`DocumentChangeOut`은 `{document_id, document_revision, input_revision, status, validation_job_id}`이며 전체 문서 본문이 아니다. `validation_job_id`는 C-05 영향 적용에서 예약한 전체 검증 Job ID다. 일반 직접 수정/Proposal 적용/복원에서는 null이며 필요하면 validate API를 호출한다. 문서 GET은 `{demo, document, validation, approval, layout_checks}`이며 `layout_checks`는 `{pdf: LayoutCheck|null, docx: LayoutCheck|null}`다. `document_summary.status`, 문서 변경의 `status`, `document_status`는 Document의 4종 상태를 공유한다. 다운로드 성공은 PDF 또는 DOCX 바이트이며 JSON 오류는 아래 공통 봉투다.
 
 ### Job — 진행 상태와 결과 조회
 
@@ -385,9 +406,13 @@ Job 조회는 `job_id`, `kind`, `status`, `progress`, `result_ref`, `error`, `cr
 | 404 | RESOURCE_NOT_FOUND | 접근 가능한 범위에서 자원 없음 |
 | 405 | METHOD_NOT_ALLOWED | 요청 메서드 확인. 허용 메서드는 Allow 헤더에 유지 |
 | 409 | DOCUMENT_REVISION_CONFLICT / INPUT_REVISION_CONFLICT / PROPOSAL_STALE | 최신 상태 조회 후 재요청 |
+| 409 | PREFLIGHT_STALE / IMPACT_REVIEW_STALE | 최신 점검 완료 후 결과 확인·영향 검토부터 다시 진행 |
+| 409 | IMPACT_REVIEW_REQUIRED | 최신 점검의 영향 검토를 명시적으로 적용한 뒤 다시 검증·승인 |
+| 409 | IMPACT_HISTORY_UNAVAILABLE | DB v11의 이력 저장이 필요; 기존 DB 이전 절차 확인 |
 | 410 | SESSION_EXPIRED / ARTIFACT_EXPIRED | 만료 안내; 기존 요청을 자동 복원하지 않음 |
 | 413/415 | FILE_TOO_LARGE / UNSUPPORTED_FILE_TYPE | 업로드 전후 제한 안내 |
 | 422 | NO_USABLE_TEXT / PREFLIGHT_NOT_CONFIRMED / UNRESOLVED_REQUIRED / LAYOUT_NOT_READY | 보완할 위치와 행동 표시 |
+| 422 | IMPACT_REFERENCE_INVALID | 선택한 자료·최신 사실에 맞게 참조/사진 수정 또는 블록 삭제; 유지 사유만으로 통과 불가 |
 | 429/503 | AI_RATE_LIMIT / SERVICE_TEMPORARY_FAILURE | 제한된 재시도·대기 안내 |
 | 500 | EXPORT_FAILED / INTERNAL_ERROR | 기존 문서 보존; 안전한 오류 메시지 |
 
@@ -440,14 +465,14 @@ HTTP 오류의 `request_id`는 필수 문자열이고 `X-Request-Id` 헤더와 �
 
 | ID | 우선순위 | 현재 상태 | 합의·구현할 것 |
 |---|---|---|---|
-| C-05 | P0 | 기존 문서의 입력이 오래되면 편집·제안 요청을 409로 차단. 문서가 있으면 초안 재생성은 `DOCUMENT_EXISTS`. 편집 보존 원칙은 3절에 있음 | 기존 문서용 재점검 확인 → 영향 확인 → 수정안 적용 또는 현 내용 유지 근거 → 최신 입력 연결 → 재검증의 API·중간 상태·문서 버전 증가·재시도 규칙 |
+| C-05 | P0 | 계약 1.6: DB v11에서 재점검 확인·영향 조회·선택 수정/유지 사유·최신 입력 연결·전체 재검증 API 구현. 다른 입력 복원 우회 차단 | 프론트 계약 사본/타입/화면 연결, 실제 모델의 변경 자료 의미 검증과 사용자 통합 확인. 자동 의미 수정안 생성은 별도 |
 | C-06 | P0 | 서버 시작·최종 저장 가드 유지. 최초 초안의 LangGraph 대기·재개도 세션·입력 버전·현재 preflight·DB의 사용자 확인을 검사하고 소비한 확인의 중복 호출을 거부함. 세션 폴더 체크포인트 삭제 연결 검사 완료(task_agent.md 6.22절) | 실제 모델을 붙인 그래프·편집 단계·프로세스 장애 복구 확인. 별도 SQLite 커밋 사이 장애는 재점검 필요(plan.md 4.7절) |
 | C-08 | P1 | 계약 1.5에서 D-07 서버 확인 기록·최신 검증/버전 검사·승인/출력 차단 구현. 기존 정확성 blocker 유지 | 프론트 확인 UI·계약 사본 연결, 실제 Agent/화면 통합 검증은 후속. 시연 warning도 명시 확인하며 일반 문서의 정확성 기준은 완화하지 않음 |
 | C-09 | P1 | PDF 배치·미리보기·승인·Export·다운로드와 형식·버전 일치 검사 구현. DOCX 파일 생성과 PDF 기준 미리보기는 있으나 DOCX의 `actual_pages=null`·`overflow=not_checked`로 승인·Export·다운로드는 차단됨 | DOCX 배치 검증 방법과 승인 보장 범위를 별도 합의한 뒤 후속 구현. 기존 PDF 검사·미리보기·승인/출력 규격은 프론트와 맞추며 PDF 검사만으로 DOCX 검증 완료로 표시하지 않음 |
 | C-10 | P1 | 보완 메모가 근거·수명 정책에 등장하지만 전용 API/모델은 없음 | 지원 여부부터 결정. 지원하면 원자료 버전·근거 위치·수명 연결, 미지원이면 텍스트 파일 첨부로 안내 |
 | C-11 | P1 | 직접 삽입 ID는 클라이언트가 전달하고 서버가 중복 검사. 초안 ID는 Agent 결과에 포함. 페이지 구조 제안의 범위가 불명확함 | ID 발급 책임과 블록/페이지 구조 편집 범위. 빈 페이지·페이지 단독 요청 표현도 합의 후 모델·검사와 맞춤 |
 
-C-05는 기존 문서를 새 초안으로 덮어쓰는 기능이 아니다. 사용자 흐름은 [prd.md BR-05](prd.md), Agent 내부 연결의 현황과 미합의 부분은 [agent.md](agent.md)를 따른다. 현재 되돌리기는 참조 존재를 확인한 뒤 과거 내용을 최신 입력 버전에 연결하므로, 복원만으로 새 자료의 영향 검사가 완료되었다고 판단하지 않도록 C-05와 함께 정리한다.
+C-05의 사용자 흐름은 [prd.md BR-05](prd.md)를 따른다. 현재 서버의 영향 목록은 참조 변화의 검사이며 문장 의미 판정은 적용 후 기존 내용 검증에서 수행한다. 다른 입력 기준의 과거 내용은 복원으로 현재 입력에 연결할 수 없다. Agent의 자동 의미 수정안·편집 그래프는 별도 후속이다.
 
 ### 7.3 오류·예시·표시에서 확인할 차이
 
@@ -477,7 +502,7 @@ C-05는 기존 문서를 새 초안으로 덮어쓰는 기능이 아니다. 사�
 | E02 일부만 읽음 | `Source.parse_status=partial`, `warnings[].locator/code/message/action`, `usable_segment_ids` | 읽지 못한 위치·보완 방법을 표시한다. `partial`만으로 생성 여부를 정하지 않고 최신 Preflight를 따른다. 스캔 이미지는 `IMAGE_ONLY` 경고와 함께 표시한다(C-04). |
 | E03 사진 후보 선택·부족 | `Source.asset_ids`, `Proposal.candidates`, `selected_candidate_id`; `CANDIDATE_REQUIRED`, `NO_IMAGE_CANDIDATES` | 실제 있는 후보만 표시하며 3개를 보장하지 않는다. 후보가 없으면 첨부 또는 글 중심 구성을 안내한다. 사용자 선택·적용과 빈 후보·오류 표현은 C-01/C-02/C-07에서 맞춘다. |
 | E04 AI 수정안 대기·확인 | `Job.status/progress/result_ref`, Proposal 조회 및 `changes/rationale/candidates` | AI 제안은 적용 전 문서를 자동 변경하지 않는다. 사용자가 직접 편집하면 오래된 제안은 E06으로 처리한다. 현재 진행 정보는 stage/message이며 백분율은 없다. 결과 조회·적용·취소·재요청은 C-02/C-03을 따른다. |
-| E05 편집 중 자료 추가 | 선택 변경 시 `input_revision` 증가; 현재 입력이 오래된 문서는 편집 차단 | 업로드와 자료 선택을 구분한다. 편집 보존·재점검·사용자 확인·문장/사진/근거 영향 확인·선택 적용 또는 유지·최신 입력 연결은 C-05의 후속 구현이다. 배너만으로 완료 처리하지 않는다. |
+| E05 편집 중 자료 추가 | 선택 변경 시 `input_revision` 증가; 현재 입력이 오래된 문서는 편집 차단 | 업로드와 자료 선택을 구분한다. 계약 1.6의 재점검 확인→영향 조회→선택 수정/유지 사유→적용→검증 Job 조회에 프론트를 연결한다. 화면 연결은 미완료다. |
 | E06 수정안 기준 버전 충돌 | `Proposal.status=stale`, `base_document_revision`, `base_input_revision`; `PROPOSAL_STALE` 등 | 오래된 제안의 적용을 막고 최신 문서에서 재요청하도록 안내한다. 현재 stale 기록을 실제 삭제로 해석하지 않는다. 늦은 결과·만료는 C-06, 오류 구분은 C-07에 연결한다. |
 | E07 필수 문제 미해결 | `Issue.severity/status/resolution`, Validation·LayoutCheck·Approval, 3절 승인 조건 | D-07 서버는 미확인/무효 경고 확인을 차단한다. 허용 경고 확인 후에도 필수 문제·배치·최종 동의를 별도로 검사한다. 프론트 연결은 후속이다. |
 | E08 출력 실패 | `Export.status/error`, 승인 스냅샷·형식·버전·재사용 규칙 | PDF는 유효한 승인·세션을 확인하고 출력만 재시도하는 경로까지 구현되어 있다. AI 초안을 다시 생성하지 않는다. 가짜 자료 실서버 검증 범위이며 DOCX 승인·Export·다운로드는 C-09 후속 작업이다. |

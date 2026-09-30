@@ -189,6 +189,29 @@ def _no_paths(obj) -> None:
 # ================= PDF 완주 =================
 
 @needs_browser
+def test_real_http_photo_upload_approve_and_pdf_download():
+    """격리 mock 서버에 실제 HTTP로 사진을 올리고 PDF 승인·재다운로드를 확인한다."""
+    from scripts.check_s01_http import run_check
+
+    result = run_check(timeout_s=120, publication=True, photos=True, export_browser_path=BROWSER)
+    assert result["status"] == "passed" and result["transport"] == "localhost HTTP"
+    assert result["agent_mode"] == "mock"
+    assert {"photo_upload_and_asset_bytes", "photo_owner_isolation", "closed_photo_410"} <= set(result["checks"])
+    counts = result["counts_before_close"]
+    assert all(counts[table] == 2 for table in (
+        "sources", "source_versions", "extraction_runs", "session_source_selections"))
+    assert counts["jobs"] == 3 and counts["documents"] == counts["document_revisions"] == 1
+    publication = result["publication"]
+    assert publication["status"] == "passed" and publication["pdf_images"] == 1
+    assert publication["pdf_pages"] == 4 and publication["pdf_bytes"] > 0
+    assert publication["renderer"].startswith(("chrome/", "edge/", "chromium/"))
+    digest = publication["pdf_sha256"]
+    assert len(digest) == 64 and set(digest) <= set("0123456789abcdef")
+    assert {"photo_preserved_after_edit", "photo_embedded_in_pdf", "pdf_preview_png",
+            "pdf_download_and_reuse", "edit_invalidates_approval", "old_download_409"} <= set(publication["checks"])
+
+
+@needs_browser
 def test_llm_photo_normalization_review_blocker_and_pdf_download(settings, monkeypatch):
     """실제 Agent·저장·사진 검증 연결·PDF 완주. 모델의 의미 판단만 준비된 응답으로 대체한다."""
     from dataclasses import replace

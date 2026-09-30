@@ -16,7 +16,7 @@ from app import create_app
 from app.agent_bridge import AgentError
 from app.agent_mock import MockAgent
 from app.config import Settings
-from app.db import connect, init_db
+from app.db import connect, init_db, init_orm_db
 
 BRIEF = {"purpose": "테스트", "emphasis": [], "direction": "balanced", "target_pages": 4, "photo_preference": "balanced"}
 SOURCE_A = "회사명: 예시 회사\n회사 개요: 예시용 기업입니다.\n사업 분야: 예시 사업 A\n".encode()
@@ -497,6 +497,474 @@ def test_proposal_made_while_document_changed_is_saved_stale(client, monkeypatch
     job = ctx.propose([para["block_id"]], expected=1)
     assert job["status"] == "succeeded" and job["result_ref"]["status"] == "stale"
     assert ctx.proposal(job["result_ref"]["proposal_id"])["status"] == "stale"
+
+
+# ================= C-05 자료 변경 후 편집 복귀 =================
+
+@pytest.fixture
+def impact_ctx(tmp_path):
+    settings = Settings(private_runs_dir=tmp_path / "runs", db_path=tmp_path / "runs" / "impact.sqlite3",
+                        cleanup_sweep_interval_s=0)
+    init_orm_db(settings.db_path, settings.private_runs_dir)
+    with TestClient(create_app(settings)) as client:
+        yield Ctx(client), settings
+
+
+def _impact_preflight(ctx, *, selected=None, change_input=True):
+    if change_input:
+        payload = {"expected_input_revision": ctx.rev_in, "brief": {**BRIEF, "purpose": "보완 자료로 편집 계속"}}
+        if selected is not None:
+            payload["selected_source_ids"] = selected
+        response = ctx.c.patch(f"/api/v1/sessions/{ctx.sid}/inputs", json=payload)
+        assert response.status_code == 200, response.text
+        ctx.rev_in = response.json()["input_revision"]
+    response = ctx.c.post(f"/api/v1/sessions/{ctx.sid}/preflights",
+                          json={"expected_input_revision": ctx.rev_in})
+    assert response.status_code == 202, response.text
+    job = ctx.c.get(f"/api/v1/sessions/{ctx.sid}/jobs/{response.json()['job_id']}").json()
+    assert job["status"] == "succeeded", job
+    return ctx.c.get(f"/api/v1/sessions/{ctx.sid}/preflights/{job['result_ref']['preflight_id']}").json()
+
+
+def _impact_route(ctx):
+    return f"/api/v1/sessions/{ctx.sid}/documents/{ctx.did}/impact-reviews"
+
+
+def _impact_create(ctx, pf, *, headers=None):
+    body = {"expected_revision": ctx.doc()["document_revision"], "input_revision": ctx.rev_in,
+            "preflight_id": pf["preflight_id"], "confirmed": True}
+    response = ctx.c.post(_impact_route(ctx), json=body, headers=headers or {})
+    assert response.status_code == 201, response.text
+    return response.json(), body
+
+
+def _impact_body(ctx, **extra):
+    return {"expected_revision": ctx.doc()["document_revision"], "input_revision": ctx.rev_in,
+            "keep_reason": "변경 자료와 기존 편집을 대조해 유지할 내용을 확인했습니다.", **extra}
+
+
+def _impact_state(settings):
+    """세션 접근 시각을 제외하고 원자성이 필요한 행을 비교한다."""
+    with connect(settings.db_path) as conn:
+        return {table: [tuple(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY rowid")]
+                for table in ("documents", "document_revisions", "impact_reviews", "confirmations", "jobs",
+                              "idempotency_keys")}
+
+
+def test_impact_review_preserves_edits_photos_and_rebinds_exact_facts(impact_ctx, monkeypatch):
+    ctx, settings = impact_ctx
+    para = next(b for b in _blocks(ctx.doc()) if b["type"] == "paragraph" and b["fact_ids"])
+    assert ctx.patch([{"op": "replace_block_content", "block_id": para["block_id"],
+                       "content": {"text": "사용자가 직접 다듬은 회사 소개입니다."}},
+                      {"op": "move_page", "page_id": "page_04", "after_page_id": None}]).status_code == 200
+    before = ctx.doc()
+    original_analyze = MockAgent.analyze
+
+    async def new_fact_ids(self, request):
+        result = await original_analyze(self, request)
+        for fact in result.facts:
+            fact.fact_id = "latest_" + fact.fact_id
+        for issue in result.issues:
+            issue.fact_ids = ["latest_" + fid for fid in issue.fact_ids]
+        return result
+
+    monkeypatch.setattr(MockAgent, "analyze", new_fact_ids)
+    monkeypatch.setattr(MockAgent, "draft", lambda *a: pytest.fail("기존 문서를 초안으로 덮어쓰면 안 됩니다."))
+    pf = _impact_preflight(ctx)
+    preserved = ctx.doc()
+    review, _ = _impact_create(ctx, pf)
+    assert ctx.doc() == preserved
+    assert review["status"] == "pending" and review["completed_at"] is None
+    assert review["document_revision"] == before["document_revision"]
+    assert review["from_input_revision"] == before["input_revision"]
+    assert review["to_input_revision"] == ctx.rev_in and review["preflight_id"] == pf["preflight_id"]
+    assert ctx.c.get(_impact_route(ctx) + "/" + review["review_id"]).json() == review
+    expected_ids = {fid for p in before["pages"] for b in p["blocks"] for fid in b["fact_ids"]}
+    assert all(review["fact_rebindings"][fid] == "latest_" + fid for fid in expected_ids)
+    response = ctx.c.post(_impact_route(ctx) + f"/{review['review_id']}/apply", json=_impact_body(ctx))
+    assert response.status_code == 200, response.text
+    result = response.json()
+    after = ctx.doc()
+    assert after["document_revision"] == before["document_revision"] + 1
+    assert after["input_revision"] == ctx.rev_in
+    expected_pages = json.loads(json.dumps(before["pages"]))
+    for page in expected_pages:
+        for block in page["blocks"]:
+            block["fact_ids"] = ["latest_" + fid for fid in block["fact_ids"]]
+    assert after["pages"] == expected_pages and after["title"] == before["title"]
+    assert result["validation_job_id"]
+    job = ctx.c.get(f"/api/v1/sessions/{ctx.sid}/jobs/{result['validation_job_id']}").json()
+    assert job["status"] == "succeeded", job
+    completed = ctx.c.get(_impact_route(ctx) + "/" + review["review_id"]).json()
+    assert completed["status"] == "applied" and completed["completed_at"]
+    with connect(settings.db_path) as conn:
+        row = conn.execute("SELECT input_revision, preflight_id FROM document_revisions WHERE document_id=? AND revision=?",
+                           (ctx.did, after["document_revision"])).fetchone()
+        assert tuple(row) == (ctx.rev_in, pf["preflight_id"])
+        assert conn.execute("SELECT COUNT(*) FROM confirmations WHERE kind='impact_keep' AND document_id=?",
+                            (ctx.did,)).fetchone()[0] == 1
+    assert ctx.patch([{"op": "rename_page", "page_id": "page_02", "title": "복귀 후 편집"}]).status_code == 200
+
+
+def test_impact_replaced_source_requires_explicit_current_references(impact_ctx):
+    ctx, settings = impact_ctx
+    before = ctx.doc()
+    upload = ctx.c.post(f"/api/v1/sessions/{ctx.sid}/sources",
+                        files=[("files", ("replacement.txt", SOURCE_A))])
+    assert upload.status_code == 202, upload.text
+    new_source = upload.json()["items"][0]["source_id"]
+    pf = _impact_preflight(ctx, selected=[new_source, ctx.src[1]])
+    review, _ = _impact_create(ctx, pf)
+    route = _impact_route(ctx) + f"/{review['review_id']}/apply"
+    saved = _impact_state(settings)
+    refused = ctx.c.post(route, json=_impact_body(ctx))
+    assert refused.status_code == 422 and refused.json()["error"]["code"] == "IMPACT_REFERENCE_INVALID"
+    assert _impact_state(settings) == saved
+    facts = {f["fact_id"]: f for f in pf["facts"] if f["status"] == "supported"}
+    updates = []
+    for page in before["pages"]:
+        for block in page["blocks"]:
+            if block["fact_ids"]:
+                updates.append({"block_id": block["block_id"], "fact_ids": block["fact_ids"],
+                                "evidence_refs": [ref for fid in block["fact_ids"] for ref in facts[fid]["evidence_refs"]]})
+    response = ctx.c.post(route, json=_impact_body(ctx, reference_updates=updates))
+    assert response.status_code == 200, response.text
+    after = ctx.doc()
+    assert [[b["content"] for b in p["blocks"]] for p in after["pages"]] == [
+        [b["content"] for b in p["blocks"]] for p in before["pages"]]
+    assert all(ref["source_id"] == new_source for p in after["pages"] for b in p["blocks"] for ref in b["evidence_refs"])
+
+
+def test_impact_excluded_photo_requires_selected_change_and_failure_is_atomic(impact_ctx):
+    ctx, settings = impact_ctx
+    before = ctx.doc()
+    image = _find(before, "image")
+    pf = _impact_preflight(ctx, selected=[ctx.src[0]])
+    review, _ = _impact_create(ctx, pf)
+    assert any(item["block_id"] == image["block_id"] and item["requires_change"] for item in review["items"])
+    route = _impact_route(ctx) + f"/{review['review_id']}/apply"
+    saved = _impact_state(settings)
+    refused = ctx.c.post(route, json=_impact_body(ctx, operations=[
+        {"op": "rename_page", "page_id": "page_01", "title": "실패하면 저장하지 않을 제목"}]))
+    assert refused.status_code == 422 and refused.json()["error"]["code"] == "IMPACT_REFERENCE_INVALID"
+    assert _impact_state(settings) == saved
+    response = ctx.c.post(route, json=_impact_body(ctx, operations=[{"op": "delete_block", "block_id": image["block_id"]}]))
+    assert response.status_code == 200, response.text
+    expected = json.loads(json.dumps(before["pages"]))
+    for page in expected:
+        page["blocks"] = [b for b in page["blocks"] if b["block_id"] != image["block_id"]]
+    assert ctx.doc()["pages"] == expected
+
+
+@pytest.mark.parametrize("bad", ["unknown_fact", "unselected_evidence", "unsupported_fact"])
+def test_impact_reference_updates_must_use_latest_supported_selected_facts(impact_ctx, bad):
+    ctx, settings = impact_ctx
+    extra = ctx.c.post(f"/api/v1/sessions/{ctx.sid}/sources", files=[("files", ("unselected.txt", SOURCE_A))]).json()
+    unselected_id = extra["items"][0]["source_id"]
+    pf = _impact_preflight(ctx)
+    review, _ = _impact_create(ctx, pf)
+    block = next(b for p in ctx.doc()["pages"] for b in p["blocks"] if b["fact_ids"])
+    update = {"block_id": block["block_id"], "fact_ids": block["fact_ids"], "evidence_refs": block["evidence_refs"]}
+    if bad == "unknown_fact":
+        update["fact_ids"] = ["fact_not_returned_by_latest_preflight"]
+    elif bad == "unsupported_fact":
+        update["fact_ids"] = [next(f["fact_id"] for f in pf["facts"] if f["status"] == "missing")]
+    else:
+        with connect(settings.db_path) as conn:
+            segment = conn.execute("SELECT segment_id FROM segments WHERE source_id=? LIMIT 1", (unselected_id,)).fetchone()[0]
+        update["evidence_refs"] = [{**block["evidence_refs"][0], "source_id": unselected_id,
+                                    "source_version": 1, "segment_id": segment}]
+    saved = _impact_state(settings)
+    response = ctx.c.post(_impact_route(ctx) + f"/{review['review_id']}/apply",
+                          json=_impact_body(ctx, reference_updates=[update]))
+    assert response.status_code == 422 and response.json()["error"]["code"] == "IMPACT_REFERENCE_INVALID"
+    assert _impact_state(settings) == saved
+
+
+@pytest.mark.parametrize("field,value,code", [
+    ("confirmed", False, "PREFLIGHT_NOT_CONFIRMED"),
+    ("expected_revision", 99, "DOCUMENT_REVISION_CONFLICT"),
+    ("input_revision", 1, "INPUT_REVISION_CONFLICT"),
+])
+def test_impact_create_requires_explicit_confirmation_and_current_versions(impact_ctx, field, value, code):
+    ctx, settings = impact_ctx
+    pf = _impact_preflight(ctx)
+    body = {"expected_revision": ctx.doc()["document_revision"], "input_revision": ctx.rev_in,
+            "preflight_id": pf["preflight_id"], "confirmed": True, field: value}
+    saved = _impact_state(settings)
+    response = ctx.c.post(_impact_route(ctx), json=body)
+    assert response.status_code == (422 if field == "confirmed" else 409)
+    assert response.json()["error"]["code"] == code
+    assert _impact_state(settings) == saved
+
+
+def test_impact_old_preflight_cannot_confirm_new_input_or_superseded_preflight(impact_ctx):
+    ctx, _ = impact_ctx
+    original_pf = ctx.pf
+    pf = _impact_preflight(ctx)
+    body = {"expected_revision": ctx.doc()["document_revision"], "input_revision": ctx.rev_in,
+            "preflight_id": original_pf, "confirmed": True}
+    response = ctx.c.post(_impact_route(ctx), json=body)
+    assert response.status_code == 409 and response.json()["error"]["code"] == "INPUT_REVISION_CONFLICT"
+    _impact_preflight(ctx, change_input=False)
+    response = ctx.c.post(_impact_route(ctx), json={**body, "preflight_id": pf["preflight_id"]})
+    assert response.status_code == 409 and response.json()["error"]["code"] == "PREFLIGHT_STALE"
+
+
+@pytest.mark.parametrize("changed", ["input", "preflight"])
+def test_impact_apply_rejects_changes_after_review(impact_ctx, changed):
+    ctx, settings = impact_ctx
+    pf = _impact_preflight(ctx)
+    review, _ = _impact_create(ctx, pf)
+    body = _impact_body(ctx)
+    _impact_preflight(ctx, change_input=changed == "input")
+    before = ctx.doc()
+    response = ctx.c.post(_impact_route(ctx) + f"/{review['review_id']}/apply", json=body)
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] in {"INPUT_REVISION_CONFLICT", "IMPACT_REVIEW_STALE"}
+    assert ctx.doc() == before
+    with connect(settings.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM confirmations WHERE kind='impact_keep'").fetchone()[0] == 0
+
+
+def test_impact_create_and_apply_replay_do_not_duplicate_revision_or_validation(impact_ctx):
+    ctx, settings = impact_ctx
+    pf = _impact_preflight(ctx)
+    review, create_body = _impact_create(ctx, pf, headers={"Idempotency-Key": "impact-create"})
+    replay = ctx.c.post(_impact_route(ctx), json=create_body, headers={"Idempotency-Key": "impact-create"})
+    assert replay.status_code == 201 and replay.json() == review
+    route = _impact_route(ctx) + f"/{review['review_id']}/apply"
+    body = _impact_body(ctx)
+    response = ctx.c.post(route, json=body, headers={"Idempotency-Key": "impact-apply"})
+    assert response.status_code == 200, response.text
+    saved = _impact_state(settings)
+    replay = ctx.c.post(route, json=body, headers={"Idempotency-Key": "impact-apply"})
+    assert replay.status_code == 200 and replay.json() == response.json()
+    assert _impact_state(settings) == saved
+    conflict = ctx.c.post(route, json={**body, "keep_reason": "다른 확인 사유"}, headers={"Idempotency-Key": "impact-apply"})
+    assert conflict.status_code == 409 and conflict.json()["error"]["code"] == "IDEMPOTENCY_KEY_CONFLICT"
+
+
+def test_impact_access_checked_before_replay_and_foreign_review_rejected(impact_ctx):
+    ctx, settings = impact_ctx
+    pf = _impact_preflight(ctx)
+    review, body = _impact_create(ctx, pf, headers={"Idempotency-Key": "impact-owner"})
+    item_url = _impact_route(ctx) + "/" + review["review_id"]
+    with TestClient(create_app(settings)) as other:
+        foreign = Ctx(other)
+        assert other.get(item_url).status_code == 404
+        assert other.post(_impact_route(ctx), json=body, headers={"Idempotency-Key": "impact-owner"}).status_code == 404
+        assert other.post(item_url + "/apply", json=_impact_body(ctx)).status_code == 404
+        assert other.get(_impact_route(foreign) + "/" + review["review_id"]).status_code == 404
+    with connect(settings.db_path) as conn:
+        conn.execute("UPDATE sessions SET status='expired' WHERE session_id=?", (ctx.sid,))
+    for response in (ctx.c.get(item_url),
+                     ctx.c.post(_impact_route(ctx), json=body, headers={"Idempotency-Key": "impact-owner"}),
+                     ctx.c.post(item_url + "/apply", json={"expected_revision": 1, "input_revision": ctx.rev_in,
+                                                           "keep_reason": "확인"})):
+        assert response.status_code == 410 and response.json()["error"]["code"] == "SESSION_EXPIRED"
+
+
+def test_impact_restore_cannot_bypass_review_or_reintroduce_old_input(impact_ctx):
+    ctx, _ = impact_ctx
+    assert ctx.patch([{"op": "rename_page", "page_id": "page_02", "title": "보존할 편집"}]).status_code == 200
+    pf = _impact_preflight(ctx)
+    before = ctx.doc()
+    route = f"/api/v1/sessions/{ctx.sid}/documents/{ctx.did}/restore"
+    response = ctx.c.post(route, json={"expected_revision": 2, "restore_from_revision": 1})
+    assert response.status_code == 409 and response.json()["error"]["code"] == "INPUT_REVISION_CONFLICT"
+    assert ctx.doc() == before
+    review, _ = _impact_create(ctx, pf)
+    applied = ctx.c.post(_impact_route(ctx) + f"/{review['review_id']}/apply", json=_impact_body(ctx))
+    assert applied.status_code == 200, applied.text
+    response = ctx.c.post(route, json={"expected_revision": 3, "restore_from_revision": 1})
+    assert response.status_code == 409 and response.json()["error"]["code"] == "INPUT_REVISION_CONFLICT"
+    assert ctx.doc()["document_revision"] == 3
+
+
+def test_impact_concurrent_apply_commits_one_revision(impact_ctx):
+    ctx, settings = impact_ctx
+    review, _ = _impact_create(ctx, _impact_preflight(ctx))
+    body = _impact_body(ctx)
+    route = _impact_route(ctx) + f"/{review['review_id']}/apply"
+    barrier = threading.Barrier(2)
+    responses, errors = [], []
+
+    def apply():
+        try:
+            with TestClient(ctx.c.app) as client:
+                client.cookies = ctx.c.cookies
+                barrier.wait(timeout=10)
+                responses.append(client.post(route, json=body))
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=apply) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert not any(thread.is_alive() for thread in threads) and errors == []
+    assert sorted(response.status_code for response in responses) == [200, 409]
+    assert ctx.doc()["document_revision"] == body["expected_revision"] + 1
+    with connect(settings.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM confirmations WHERE kind='impact_keep'").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("failure_at", ["confirmation", "validation_job"])
+def test_impact_apply_rolls_back_late_write_failure_and_can_retry(impact_ctx, monkeypatch, failure_at):
+    from app.db import DatabaseConnection
+    from app.services import jobs
+
+    ctx, settings = impact_ctx
+    review, _ = _impact_create(ctx, _impact_preflight(ctx))
+    route = _impact_route(ctx) + f"/{review['review_id']}/apply"
+    body, headers = _impact_body(ctx), {"Idempotency-Key": "impact-late-write"}
+    before = _impact_state(settings)
+    reached = []
+    original_execute, original_create = DatabaseConnection.execute, jobs.create
+
+    def written_before_failure(conn):
+        revision = original_execute(conn, "SELECT current_revision FROM documents WHERE document_id=?",
+                                    (ctx.did,)).fetchone()[0]
+        status = original_execute(conn, "SELECT status FROM impact_reviews WHERE review_id=?",
+                                  (review["review_id"],)).fetchone()[0]
+        count = original_execute(conn, "SELECT COUNT(*) FROM confirmations WHERE impact_review_id=?",
+                                 (review["review_id"],)).fetchone()[0]
+        reached.append((revision, status, count))
+        raise RuntimeError("injected impact write failure")
+
+    def failing_confirmation(conn, statement, parameters=()):
+        result = original_execute(conn, statement, parameters)
+        if (isinstance(statement, str) and statement.startswith("INSERT INTO confirmations ")
+                and "'impact_keep'" in statement):
+            written_before_failure(conn)
+        return result
+
+    def failing_job(conn, *args, **kwargs):
+        result = original_create(conn, *args, **kwargs)
+        if result.kind == "validate":
+            written_before_failure(conn)
+        return result
+
+    with monkeypatch.context() as fail:
+        if failure_at == "confirmation":
+            fail.setattr(DatabaseConnection, "execute", failing_confirmation)
+        else:
+            fail.setattr(jobs, "create", failing_job)
+        with pytest.raises(RuntimeError, match="injected impact write failure"):
+            ctx.c.post(route, json=body, headers=headers)
+    assert reached == [(body["expected_revision"] + 1, "applied", 1)]
+    assert _impact_state(settings) == before
+    response = ctx.c.post(route, json=body, headers=headers)
+    assert response.status_code == 200, response.text
+    assert ctx.doc()["document_revision"] == body["expected_revision"] + 1
+    with connect(settings.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM confirmations WHERE impact_review_id=?",
+                            (review["review_id"],)).fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("changed", ["segment_text", "photo_permission", "selected_read_run"])
+def test_impact_snapshot_changes_without_new_input_make_review_stale(impact_ctx, changed):
+    ctx, settings = impact_ctx
+    if changed == "photo_permission":
+        # 격리 DB의 가짜 사진을 공개 허가가 필요한 등록 자료로 만든다.
+        with connect(settings.db_path) as conn:
+            conn.execute("UPDATE sources SET scope='registered', session_id=NULL, use_as_company_evidence=1 "
+                         "WHERE source_id=?", (ctx.src[1],))
+            conn.execute("UPDATE assets SET scope='registered', session_id=NULL, approved_for_external_use=1 "
+                         "WHERE source_id=?", (ctx.src[1],))
+    review, _ = _impact_create(ctx, _impact_preflight(ctx))
+    body = _impact_body(ctx)
+    with connect(settings.db_path) as conn:
+        if changed == "segment_text":
+            conn.execute("UPDATE segments SET text=text || ' 변경된 원문 조건' WHERE source_id=?", (ctx.src[0],))
+        elif changed == "photo_permission":
+            conn.execute("UPDATE assets SET approved_for_external_use=0 WHERE source_id=?", (ctx.src[1],))
+        else:
+            conn.execute("UPDATE session_source_selections SET run_id=NULL "
+                         "WHERE session_id=? AND input_revision=? AND source_id=?",
+                         (ctx.sid, ctx.rev_in, ctx.src[0]))
+    saved = _impact_state(settings)
+    url = _impact_route(ctx) + "/" + review["review_id"]
+    assert ctx.c.get(url).json()["status"] == "stale"
+    response = ctx.c.post(url + "/apply", json=body)
+    assert response.status_code == 409 and response.json()["error"]["code"] == "IMPACT_REVIEW_STALE"
+    assert _impact_state(settings) == saved
+
+
+@pytest.mark.parametrize("changed", ["conditions", "evidence", "source_version"])
+def test_impact_same_fact_id_with_changed_meaning_or_evidence_is_not_rebound(impact_ctx, changed):
+    ctx, settings = impact_ctx
+    old_block = next(block for block in _blocks(ctx.doc()) if block["fact_ids"])
+    fact_id = old_block["fact_ids"][0]
+    pf = _impact_preflight(ctx)
+    fact = next(fact for fact in pf["facts"] if fact["fact_id"] == fact_id)
+    if changed == "conditions":
+        fact["conditions"] = {"scope": "별도 확인이 필요한 적용 범위"}
+    elif changed == "evidence":
+        assert len(fact["evidence_refs"][0]["excerpt"]) > 1
+        fact["evidence_refs"][0]["excerpt"] = fact["evidence_refs"][0]["excerpt"][1:]
+    else:
+        fact["evidence_refs"][0]["source_version"] += 1
+    with connect(settings.db_path) as conn:
+        conn.execute("UPDATE preflights SET facts_json=? WHERE preflight_id=?",
+                     (json.dumps(pf["facts"], ensure_ascii=False), pf["preflight_id"]))
+    review, _ = _impact_create(ctx, pf)
+    assert fact_id not in review["fact_rebindings"]
+    assert any(item["code"] == "FACT_REVIEW_REQUIRED" and item["requires_change"]
+               and item["block_id"] == old_block["block_id"] for item in review["items"])
+    saved = _impact_state(settings)
+    response = ctx.c.post(_impact_route(ctx) + f"/{review['review_id']}/apply", json=_impact_body(ctx))
+    assert response.status_code == 422 and response.json()["error"]["code"] == "IMPACT_REFERENCE_INVALID"
+    assert _impact_state(settings) == saved
+
+
+def test_impact_two_identical_candidates_require_explicit_reference_choice(impact_ctx):
+    ctx, settings = impact_ctx
+    old_block = next(block for block in _blocks(ctx.doc()) if block["fact_ids"])
+    fact_id = old_block["fact_ids"][0]
+    pf = _impact_preflight(ctx)
+    candidate = next(fact for fact in pf["facts"] if fact["fact_id"] == fact_id)
+    pf["facts"].append({**candidate, "fact_id": "second_candidate_same_evidence"})
+    with connect(settings.db_path) as conn:
+        conn.execute("UPDATE preflights SET facts_json=? WHERE preflight_id=?",
+                     (json.dumps(pf["facts"], ensure_ascii=False), pf["preflight_id"]))
+    review, _ = _impact_create(ctx, pf)
+    assert fact_id not in review["fact_rebindings"]
+    assert any(item["code"] == "FACT_REVIEW_REQUIRED" and item["block_id"] == old_block["block_id"]
+               for item in review["items"])
+    saved = _impact_state(settings)
+    response = ctx.c.post(_impact_route(ctx) + f"/{review['review_id']}/apply", json=_impact_body(ctx))
+    assert response.status_code == 422 and response.json()["error"]["code"] == "IMPACT_REFERENCE_INVALID"
+    assert _impact_state(settings) == saved
+
+
+@pytest.mark.parametrize("phase", ["create", "apply"])
+def test_impact_waits_for_active_preflight_before_create_or_apply(impact_ctx, phase):
+    from app.services import jobs
+
+    ctx, settings = impact_ctx
+    pf = _impact_preflight(ctx)
+    if phase == "apply":
+        review, _ = _impact_create(ctx, pf)
+        route, body = _impact_route(ctx) + f"/{review['review_id']}/apply", _impact_body(ctx)
+    else:
+        route = _impact_route(ctx)
+        body = {"expected_revision": ctx.doc()["document_revision"], "input_revision": ctx.rev_in,
+                "preflight_id": pf["preflight_id"], "confirmed": True}
+    with connect(settings.db_path) as conn:
+        pending = jobs.create(conn, ctx.sid, "preflight", "가짜 점검 대기", input_revision=ctx.rev_in)
+    saved = _impact_state(settings)
+    response = ctx.c.post(route, json=body)
+    expected = "PREFLIGHT_STALE" if phase == "create" else "IMPACT_REVIEW_STALE"
+    assert response.status_code == 409 and response.json()["error"]["code"] == expected
+    assert _impact_state(settings) == saved
+    with connect(settings.db_path) as conn:
+        assert jobs.get(conn, ctx.sid, pending.job_id).status == "queued"
+        if phase == "create":
+            assert conn.execute("SELECT confirmed_at FROM preflights WHERE preflight_id=?",
+                                (pf["preflight_id"],)).fetchone()[0] is None
 
 
 # ================= restore =================

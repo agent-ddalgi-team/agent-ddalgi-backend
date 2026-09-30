@@ -137,6 +137,13 @@ def check_conditions(conn: Connection, session_row: Row, document: Document, bod
     from app.services import preflights as pf_service
     pf = pf_service.get(conn, session_row["session_id"], preflight_row["preflight_id"]) if preflight_row else None
     ctx = validation.load_context(conn, session_row["session_id"], pf)
+    if ctx.selected_sources is not None and (ctx.selected_preflight is None or ctx.selected_preflight.confirmed_at is None):
+        raise ApiError(422, "PREFLIGHT_NOT_CONFIRMED", "최신 사전 점검 결과를 영향 검토에서 확인해 주세요.")
+    if ctx.selected_preflight is not None:
+        from app.services import documents
+
+        if documents.bound_preflight_id(conn, document) != ctx.selected_preflight.preflight_id:
+            raise ApiError(409, "IMPACT_REVIEW_REQUIRED", "최신 점검의 영향 검토를 적용한 뒤 문서를 다시 검증해 주세요.")
     # 같은 입력 버전의 재점검 또는 수정 전 검증에는 문서 Issue로 전달되지 않은 충돌이 있을 수 있다.
     if validation.preflight_conflicts(ctx):
         raise ApiError(422, "VALIDATION_NOT_PASSED", "최신 사전 점검에 미해결 충돌이 있습니다. 자료를 확인하고 문서를 재검증해 주세요.",

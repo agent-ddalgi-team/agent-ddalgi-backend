@@ -21,6 +21,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.agent_bridge import SourceIn
 from app.db import Connection, Row
 from app.models import (Block, CheckRecord, Document, EvidenceRef, Fact, Issue, IssueOut, PreflightOut,
                         ValidationOut)
@@ -140,6 +141,8 @@ class Context:
     demo_sources: set[str] = field(default_factory=set)
     demo: bool = False
     asset_captions: dict[str, str] = field(default_factory=dict)
+    selected_sources: list[SourceIn] | None = None
+    selected_preflight: PreflightOut | None = None
 
 
 def load_context(conn: Connection, session_id: str, preflight: PreflightOut | None) -> Context:
@@ -154,14 +157,26 @@ def load_context(conn: Connection, session_id: str, preflight: PreflightOut | No
         "SELECT asset_id, source_id FROM assets WHERE deleted_at IS NULL AND (session_id=? OR scope='registered')", (session_id,))}
     mock_sources = {r["source_id"] for r in conn.execute("SELECT source_id FROM sources WHERE is_mock=1 OR origin_kind='mock'")}
     demo_sources = {r["source_id"] for r in conn.execute("SELECT source_id FROM sources WHERE origin_kind='demo'")}
-    session = conn.execute("SELECT demo FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+    session = conn.execute("SELECT demo, input_revision, selected_source_ids FROM sessions WHERE session_id=?",
+                           (session_id,)).fetchone()
+    from app.services import preflights
+    sources = preflights.build_sources(conn, session_id, json.loads(session["selected_source_ids"])) if session else []
+    selected_sources = None
+    if (session is not None and conn.execute("PRAGMA user_version").fetchone()[0] >= 11
+            and conn.execute("SELECT 1 FROM impact_reviews WHERE session_id=? "
+                             "AND purged_at IS NULL LIMIT 1", (session_id,)).fetchone() is not None):
+        # C-05 검토를 시작한 뒤에는 과거 점검·선택 해제 자료를 현재 근거로 되살리지 않는다.
+        # 같은 입력 버전의 재점검도 이전 Fact ID를 계속 허용하는 근거가 될 수 없다.
+        latest = conn.execute("SELECT preflight_id FROM preflights WHERE session_id=? AND input_revision=? "
+                              "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                              (session_id, session["input_revision"])).fetchone()
+        preflight = preflights.get(conn, session_id, latest[0]) if latest else None
+        selected_sources = sources
     facts = {f.fact_id: f for f in preflight.facts} if preflight else {}
-    from app.services.preflights import build_sources
-    selected = conn.execute("SELECT selected_source_ids FROM sessions WHERE session_id=?", (session_id,)).fetchone()
-    sources = build_sources(conn, session_id, json.loads(selected[0])) if selected else []
     captions = {aid: meta["caption"] for src in sources for aid, meta in src.asset_descriptions.items()}
     return Context(seg_texts, seg_source, asset_source, mock_sources, refs_service.load(conn, session_id), facts,
-                   list(preflight.issues) if preflight else [], demo_sources, bool(session and session["demo"]), captions)
+                   list(preflight.issues) if preflight else [], demo_sources, bool(session and session["demo"]), captions,
+                   selected_sources=selected_sources, selected_preflight=preflight if selected_sources is not None else None)
 
 
 def image_has_descriptive_caption(block: Block, ctx: Context) -> bool:
@@ -308,6 +323,8 @@ def preflight_conflicts(ctx: Context) -> list[IssueDraft]:
 def server_checks(document: Document, ctx: Context) -> tuple[list[IssueDraft], list[CheckRecord]]:
     drafts: list[IssueDraft] = []
     records: list[CheckRecord] = []
+    if ctx.selected_preflight is not None:
+        records.append(CheckRecord(check_key=f"preflight:{ctx.selected_preflight.preflight_id}", kind="server", result="ok"))
     if not _required_present(document, ctx, REQUIRED_NAME_KEYS):
         drafts.append(_required_issue(document, ctx, REQUIRED_NAME_KEYS, "회사명"))
     if not _required_present(document, ctx, REQUIRED_BUSINESS_KEYS):
@@ -325,7 +342,16 @@ def server_checks(document: Document, ctx: Context) -> tuple[list[IssueDraft], l
             texts = block_texts(block)
             joined = " ".join(texts).strip()
             before = len(drafts)
-            if any(fid not in ctx.refs.fact_ids for fid in block.fact_ids):
+            selected_problem = None
+            if ctx.selected_sources is not None:
+                selected_problem = (refs_service.selected_problem(
+                    [page.model_copy(update={"blocks": [block]})], ctx.selected_sources, ctx.selected_preflight)
+                    if ctx.selected_preflight is not None else "현재 입력에 해당하는 사전 점검이 없습니다.")
+            if selected_problem:
+                drafts.append(IssueDraft("content", "EVIDENCE_INVALID", "blocker",
+                                         "현재 선택 자료와 최신 점검에서 사용할 수 없는 참조입니다. " + selected_problem,
+                                         block_ids=[bid]))
+            elif any(fid not in ctx.refs.fact_ids for fid in block.fact_ids):
                 drafts.append(IssueDraft("content", "EVIDENCE_INVALID", "blocker",
                                          "현재 세션에서 근거로 사용할 수 없는 사실 참조입니다.", block_ids=[bid]))
 
@@ -388,22 +414,45 @@ def validate_agent_issues(issues: list[Issue], document: Document, ctx: Context,
 
 # ---------------- 마지막 유효 검증·변경 범위 ----------------
 
+def current_preflight_key(conn: Connection, document_id: str, input_revision: int) -> str | None:
+    """C-05 이후에는 같은 입력의 재점검도 과거 의미 검증을 재사용할 수 없게 연결한다."""
+    from app.services import db_history
+
+    if not db_history.enabled(conn) or conn.execute(
+            "SELECT 1 FROM impact_reviews WHERE document_id=? AND purged_at IS NULL LIMIT 1",
+            (document_id,)).fetchone() is None:
+        return None
+    row = conn.execute("SELECT p.preflight_id FROM preflights p JOIN documents d ON d.session_id=p.session_id "
+                       "WHERE d.document_id=? AND p.input_revision=? ORDER BY p.created_at DESC, p.rowid DESC LIMIT 1",
+                       (document_id, input_revision)).fetchone()
+    return f"preflight:{row[0]}" if row else "preflight:missing"
+
+
+def _matches_preflight(conn: Connection, document_id: str, input_revision: int, row: Row | None) -> Row | None:
+    if row is None:
+        return None
+    key = current_preflight_key(conn, document_id, input_revision)
+    return row if key is None or any(c.get("check_key") == key for c in json.loads(row["checks_json"])) else None
+
+
 def latest_validation(conn: Connection, document_id: str, document_revision: int,
                       input_revision: int) -> Row | None:
     # created_at은 초 단위라 같은 값이 생긴다. 저장 순서(rowid)로 보조 정렬한다(ID 문자열 정렬 금지).
-    return conn.execute(
+    row = conn.execute(
         "SELECT * FROM validations WHERE document_id=? AND document_revision=? AND input_revision=? "
         "AND status<>'pending' ORDER BY created_at DESC, rowid DESC LIMIT 1",
         (document_id, document_revision, input_revision)).fetchone()
+    return _matches_preflight(conn, document_id, input_revision, row)
 
 
 def base_validation(conn: Connection, document_id: str, document_revision: int,
                     input_revision: int) -> Row | None:
     """재사용 기준: 같은 문서·같은 입력 버전에서 현재보다 낮은 revision의 가장 최근 유효 검증."""
-    return conn.execute(
+    row = conn.execute(
         "SELECT * FROM validations WHERE document_id=? AND input_revision=? AND document_revision<? "
         "AND status<>'pending' ORDER BY document_revision DESC, created_at DESC, rowid DESC LIMIT 1",
         (document_id, input_revision, document_revision)).fetchone()
+    return _matches_preflight(conn, document_id, input_revision, row)
 
 
 def changed_blocks(current: dict[str, str], base: Row | None) -> tuple[set[str], set[str]]:
@@ -692,5 +741,9 @@ def compute_document_status(conn: Connection, document_id: str, document_revisio
         return "review_required"
     v = latest_validation(conn, document_id, document_revision, input_revision)
     if v is None:
+        if conn.execute("SELECT 1 FROM document_revisions WHERE document_id=? AND revision=? "
+                        "AND input_revision=? AND origin='impact_review'",
+                        (document_id, document_revision, input_revision)).fetchone() is not None:
+            return "review_required"
         return "draft"
     return "ready_for_approval" if v["status"] == "passed" else "review_required"

@@ -615,13 +615,72 @@ class DocumentChangeOut(BaseModel):
     document_revision: int
     input_revision: int
     status: DocumentStatus
-    validation_job_id: str | None = None   # BE-06에서 채운다
+    validation_job_id: str | None = None   # C-05 영향 적용은 전체 내용 검증을 예약한다.
 
 
 class RestoreBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_revision: RequestRevision
     restore_from_revision: RequestRevision
+
+
+class ImpactReviewCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: RequestRevision
+    input_revision: RequestRevision
+    preflight_id: NonBlankText
+    confirmed: bool = Field(strict=True)
+
+
+class ImpactItem(BaseModel):
+    block_id: str | None = None
+    code: Literal["INPUT_CHANGED", "FACT_REBOUND", "FACT_REVIEW_REQUIRED", "EVIDENCE_REMOVED", "PHOTO_REMOVED"]
+    message: str
+    requires_change: bool = False
+
+
+class ImpactReviewOut(BaseModel):
+    review_id: str
+    document_id: str
+    document_revision: int
+    from_input_revision: int
+    to_input_revision: int
+    preflight_id: str
+    status: Literal["pending", "applied", "stale"]
+    items: list[ImpactItem]
+    fact_rebindings: dict[str, str]
+    created_at: str
+    completed_at: str | None = None
+
+
+class ImpactReferenceUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    block_id: NonBlankText
+    fact_ids: list[NonBlankText]
+    evidence_refs: list[EvidenceRef]
+
+    @field_validator("fact_ids")
+    @classmethod
+    def unique_facts(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("fact_ids must not contain duplicates")
+        return value
+
+
+class ImpactApply(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: RequestRevision
+    input_revision: RequestRevision
+    keep_reason: NonBlankText
+    operations: list[Operation] = Field(default_factory=list)
+    reference_updates: list[ImpactReferenceUpdate] = Field(default_factory=list)
+
+    @field_validator("reference_updates")
+    @classmethod
+    def unique_blocks(cls, value):
+        if len({item.block_id for item in value}) != len(value):
+            raise ValueError("reference_updates must not contain duplicate block_ids")
+        return value
 
 
 # ---------------- Proposal (contracts.md Proposal절 + 계약 확인 ⑰ rationale·candidates) ----------------
