@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-{#- 회사소개서 템플릿 v5 (기존 파일 경로 유지). 이 파일을 바꾸면 app/services/layout_checks.py의 TEMPLATE_VERSION을 올린다.
+{#- 회사소개서 템플릿 v6 (기존 파일 경로 유지). 이 파일을 바꾸면 app/services/layout_checks.py의 TEMPLATE_VERSION을 올린다.
     모든 문서 값은 Jinja2 autoescape로 이스케이프된다. 외부 리소스 없음(CSP default-src 'none'), 폰트·이미지는 data URI. -#}
 <html lang="ko">
 <head>
@@ -147,9 +147,48 @@ figcaption { font-size: 9pt; color: #555; margin-top: 1.5mm; word-break: keep-al
   // 결과 JSON을 body 끝에 붙여 --dump-dom으로 회수한다(--virtual-time-budget이 이 시점까지 기다리게 한다).
   var PX_PER_MM = 96 / 25.4;
   var limit = {{ content_h_mm }} * PX_PER_MM;
+  function fitPhotos() {
+    // Only reduce contain photo boxes on overflowing editorial pages. Text, captions,
+    // image aspect ratios and block order stay intact. Small or text-heavy pages
+    // still fail the ordinary measurement; never hide content or shrink fonts.
+    var fits = [];
+    var minimum = 36 * PX_PER_MM;
+    var pages = document.querySelectorAll("section.page.editorial");
+    for (var i = 0; i < pages.length; i++) {
+      var pg = pages[i];
+      var photos = pg.querySelectorAll("figure.blk img.contain");
+      var originals = [];
+      for (var j = 0; j < photos.length; j++) originals.push(photos[j].getBoundingClientRect().height);
+      // Bounded passes handle side-by-side photos sharing a grid row.
+      for (var pass = 0; pass < 3; pass++) {
+        var changed = false;
+        for (var j = 0; j < photos.length; j++) {
+          var excess = pg.getBoundingClientRect().height - limit;
+          if (excess <= 0.5) break;
+          var img = photos[j];
+          var height = img.getBoundingClientRect().height;
+          if (!img.complete || !img.naturalWidth || height <= minimum) continue;
+          var next = Math.max(minimum, height - excess - PX_PER_MM);
+          img.style.height = next + "px";
+          changed = true;
+        }
+        if (!changed) break;
+      }
+      for (var j = 0; j < photos.length; j++) {
+        var height = photos[j].getBoundingClientRect().height;
+        if (height < originals[j] - 0.5) fits.push({
+          page_id: pg.getAttribute("data-page-id"),
+          block_id: photos[j].parentElement.getAttribute("data-block-id"),
+          original_height_px: originals[j], height_px: height
+        });
+      }
+    }
+    return fits;
+  }
   function measure() {
+    var photoFits = fitPhotos();
     var out = { limit_px: limit, fonts_ready: document.fonts.check('{{ base_font_pt }}pt "{{ font_family }}"') && document.fonts.check('bold {{ base_font_pt }}pt "{{ font_family }}"'),
-                fonts_status: document.fonts.status, pages: [] };
+                fonts_status: document.fonts.status, pages: [], photo_fits: photoFits };
     var pages = document.querySelectorAll("section.page");
     for (var i = 0; i < pages.length; i++) {
       var pg = pages[i];

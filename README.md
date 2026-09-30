@@ -37,7 +37,7 @@ Windows의 예산 제한 시연(`interactive`)은 아래처럼 실행한다. `PR
 
 ```powershell
 $env:OPENAI_EXECUTION_MODE = 'interactive'
-.\scripts\run_llm.ps1 -Demo -ContentReview -TextProposals -RequestTimeoutSeconds 120 -MaxInputChars 40000 -MaxReviewInputChars 120000 -MaxOutputTokens 32000 -MaxRetries 0 -CheckOnly
+.\scripts\run_llm.ps1 -Demo -ContentReview -TextProposals -RequestTimeoutSeconds 180 -MaxInputChars 40000 -MaxReviewInputChars 400000 -MaxOutputTokens 32000 -MaxRetries 0 -CheckOnly
 # 설정 확인 뒤 같은 명령에서 -CheckOnly를 빼면 서버를 시작한다.
 ```
 

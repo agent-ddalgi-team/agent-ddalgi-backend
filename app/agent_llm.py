@@ -119,6 +119,7 @@ _MODEL_CONTEXT = 1_050_000
 # 다음 1회의 최대 문맥·캐시 쓰기·긴 문맥 출력 비용까지 미리 확보한다.
 # 원문 글자 수로 입력 토큰을 추정하지 않는다. 명시한 출력 상한도 예약액에 반영한다.
 _MAX_TRIAL_OUTPUT_TOKENS = 32_000
+_MAX_TRIAL_TIMEOUT_SECONDS = 180
 
 
 def _call_reserve_usd(output_token_limit: int) -> Decimal:
@@ -238,8 +239,8 @@ class TrialLedger:
         if (not isinstance(budget_usd, Decimal) or not budget_usd.is_finite()
                 or not 0 < budget_usd <= (100 if interactive else 1)):
             raise ValueError("실행 예산 범위가 올바르지 않습니다.")
-        if type(timeout_limit_seconds) is not int or not 1 <= timeout_limit_seconds <= 120:
-            raise ValueError("시험 대기 시간 상한은 1~120초의 정수여야 합니다.")
+        if type(timeout_limit_seconds) is not int or not 1 <= timeout_limit_seconds <= _MAX_TRIAL_TIMEOUT_SECONDS:
+            raise ValueError(f"시험 대기 시간 상한은 1~{_MAX_TRIAL_TIMEOUT_SECONDS}초의 정수여야 합니다.")
         self._timeout_limit_seconds = timeout_limit_seconds
         if type(input_char_limit) is not int or not 1 <= input_char_limit <= _LEGACY_INPUT_LIMIT:
             raise ValueError("시험 입력 상한은 1~40,000자의 정수여야 합니다.")
@@ -451,11 +452,11 @@ def _text_proposals_enabled() -> bool:
 def _trial_timeout_limit() -> int:
     try:
         value = int(os.environ.get("OPENAI_TRIAL_TIMEOUT_LIMIT_SECONDS", "60"))
-        if not 1 <= value <= 120:
+        if not 1 <= value <= _MAX_TRIAL_TIMEOUT_SECONDS:
             raise ValueError
         return value
     except ValueError:
-        raise RuntimeError("OPENAI_TRIAL_TIMEOUT_LIMIT_SECONDS는 1~120의 정수여야 합니다.") from None
+        raise RuntimeError(f"OPENAI_TRIAL_TIMEOUT_LIMIT_SECONDS는 1~{_MAX_TRIAL_TIMEOUT_SECONDS}의 정수여야 합니다.") from None
 
 
 def _trial_input_limit() -> int:
@@ -683,6 +684,9 @@ def _map_editorial_fact_ids(value: Any, mapping: dict[str, str]) -> Any:
                 if not isinstance(item, list):
                     raise _editorial_invalid("fact_reference")
                 result[key] = [one(fid) for fid in item]
+            elif key == "fact_notes" and isinstance(item, dict):
+                result[key] = {one(fid): _map_editorial_fact_ids(note, mapping)
+                               for fid, note in item.items()}
             else:
                 result[key] = _map_editorial_fact_ids(item, mapping)
         return result
@@ -701,13 +705,38 @@ def _editorial_wire_request(payload: dict, schema: dict) -> tuple[dict, dict, di
             for key, value in node.items():
                 if key == "enum" and isinstance(value, list):
                     node[key] = [mapping.get(item, item) if isinstance(item, str) else item for item in value]
+                elif key == "required" and isinstance(value, list):
+                    node[key] = [mapping.get(item, item) for item in value]
+                elif key == "properties" and isinstance(value, dict):
+                    node[key] = {mapping.get(name, name): child for name, child in value.items()}
+                    enums(node[key])
                 else:
                     enums(value)
         elif isinstance(node, list):
             for item in node:
                 enums(item)
     enums(wire_schema)
-    return _map_editorial_fact_ids(payload, mapping), wire_schema, {v: k for k, v in mapping.items()}
+    wire = _map_editorial_fact_ids(payload, mapping)
+    units = {}
+    for unit_id, unit in enumerate(wire["source_units"], 1):
+        unit["unit_id"] = unit_id
+        units[(unit["source_id"], unit["locator"])] = unit
+    # SourceIndex already checked every reference. Keep partial excerpts verbatim;
+    # only an exact full-segment copy may be represented by the original unit.
+    # Version and actual page/slide locator stay on each reference, including
+    # alternatives. Neither stored facts nor response validation are changed.
+    items = [*wire["facts"], *(alt for fact in wire["facts"] for alt in fact.get("alternatives") or [])]
+    for item in items:
+        for ref in item.get("evidence_refs", []):
+            unit = units.get((ref["source_id"], "segment:" + ref["segment_id"]))
+            if unit is None:
+                continue
+            ref["unit_id"] = unit["unit_id"]
+            ref.pop("source_id")
+            ref.pop("segment_id")
+            if ref.get("excerpt") == unit["text"]:
+                ref.pop("excerpt")
+    return wire, wire_schema, {v: k for k, v in mapping.items()}
 
 
 class OpenAIRequester:
@@ -993,75 +1022,211 @@ class _EditorialFactNote(BaseModel):
     reason: str = Field(min_length=1, max_length=1200)
 
 
+class _EditorialFactNoteGroup(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    fact_ids: list[str] = Field(min_length=1)
+    unused_disposition: Literal["excluded", "review"]
+    reason: str = Field(min_length=1, max_length=1200)
+
+
+class _EditorialFactPoint(BaseModel):
+    """An explicit model choice to publish the confirmed fact's complete wording."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    label: str = Field(min_length=1, max_length=60)
+    fact_id: str
+
+
+class _EditorialCompositionPage(_EditorialPage):
+    points: list[_EditorialPoint | _EditorialFactPoint] = Field(max_length=12)
+
+
 class _EditorialComposition(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     palette: Literal["neutral", "ocean", "forest", "clay"]
     typography: Literal["editorial", "restrained"]
     page_count_reason: str = Field(min_length=1, max_length=800)
-    pages: list[_EditorialPage] = Field(min_length=1, max_length=10)
+    pages: list[_EditorialCompositionPage] = Field(min_length=1, max_length=10)
     # Inclusion follows the written references; notes only explain unused facts.
     fact_notes: list[_EditorialFactNote]
 
 
-def _composition_plan(response: dict, facts: dict[str, Fact], policy: dict[str, tuple[str, ...]]) -> _EditorialPlan:
-    """Derive inclusion from actual references; never change prose or relax the body gate.
+class _EditorialGroupedComposition(_EditorialComposition):
+    # Share identical unused-fact explanations on the wire, not in the saved audit.
+    fact_notes: list[_EditorialFactNoteGroup]
+
+
+def _whole_fact_point_available(fact: Fact) -> bool:
+    # Separate legacy condition metadata is not materialized by a value-only point.
+    return bool(fact.value and fact.value.strip() and len(fact.value) <= 1200 and not fact.conditions)
+
+
+def _whole_fact_point_required(fact: Fact) -> bool:
+    """Compound certificate identifiers/dates must not take the lossy prose path."""
+    from app.services.validation import numeric_evidence_tokens
+    return (fact.status == "supported" and fact.field_key == "certifications"
+            and _whole_fact_point_available(fact)
+            and len(numeric_evidence_tokens(fact.value or "")) >= 4)
+
+
+def _expand_editorial_pages(pages: list[_EditorialPage], target: int) -> list[_EditorialPage]:
+    """Reach the requested count by splitting existing independent points only.
+
+    Keep two body units on each side, all wording/order, and the photos after
+    their original text. Ordered sequences stay intact. Never pad sparse input.
+    """
+    result = [page.model_copy(deep=True) for page in pages]
+    while len(result) < target:
+        candidates = [(sum(len(item.text) for item in [page.lead, *page.points]), n)
+                      for n, page in enumerate(result) if len(page.points) >= 3
+                      and not page.sequence_fact_ids and page.layout not in {"timeline", "process_steps"}]
+        if not candidates:
+            break
+        _, index = max(candidates)
+        page = result[index]
+        weights = [len(page.lead.text), *(len(p.text) + len(p.label) for p in page.points)]
+        cut = min(range(1, len(page.points) - 1),
+                  key=lambda n: abs(sum(weights[:n + 1]) - sum(weights[n + 1:])))
+        opening = page.points[cut]
+        first = page.model_copy(deep=True)
+        first.points, first.photo_ids = first.points[:cut], []
+        if first.layout == "cover_photo":
+            first.layout = "cover_text"
+        continuation = page.model_copy(deep=True)
+        continuation.heading = _EditorialText(text=opening.label, fact_ids=list(opening.fact_ids))
+        continuation.lead = _EditorialText(text=opening.text, fact_ids=list(opening.fact_ids))
+        continuation.points = continuation.points[cut + 1:]
+        continuation.layout = "text_photo" if continuation.photo_ids else "fact_sheet"
+        result[index:index + 1] = [first, continuation]
+    return result
+
+
+def _composition_plan(response: dict, facts: dict[str, Fact], policy: dict[str, tuple[str, ...]],
+                      *, target_pages: int | None = None) -> _EditorialPlan:
+    """Resolve explicit whole-fact points, then derive inclusion from actual references.
 
     Previously recorded plans keep their original, strict selection validation.
     New model responses only decide how to explain facts that they did not use.
     """
     if "fact_notes" not in response:
         return _EditorialPlan.model_validate(response)
+    indexed_notes = isinstance(response["fact_notes"], dict)
+    if indexed_notes:
+        if set(response["fact_notes"]) != set(facts):
+            raise _editorial_invalid("selection_coverage")
+        notes = []
+        for fid, note in response["fact_notes"].items():
+            if note is None:
+                continue  # Must have allowed body/name-heading coverage below.
+            if not isinstance(note, dict) or set(note) != {"unused_disposition", "reason"}:
+                raise _editorial_invalid("schema")
+            if not isinstance(note["reason"], str) or len(note["reason"]) > 160:
+                raise _editorial_invalid("schema")
+            notes.append({"fact_id": fid, **note})
+        response = {**response, "fact_notes": notes}
+    grouped_notes = not indexed_notes and isinstance(response["fact_notes"], list) and any(
+        isinstance(note, dict) and "fact_ids" in note for note in response["fact_notes"])
+    if grouped_notes:
+        grouped = _EditorialGroupedComposition.model_validate(response)
+        response = {**grouped.model_dump(exclude={"fact_notes"}), "fact_notes": [
+            {"fact_id": fid, "unused_disposition": note.unused_disposition, "reason": note.reason}
+            for note in grouped.fact_notes for fid in note.fact_ids]}
     composition = _EditorialComposition.model_validate(response)
     notes = {note.fact_id: note for note in composition.fact_notes}
-    if set(notes) != set(facts) or len(notes) != len(composition.fact_notes):
+    missing_notes = set(facts) - set(notes)
+    if (set(notes) - set(facts) or len(notes) != len(composition.fact_notes)
+            or (missing_notes and not (grouped_notes or indexed_notes))):
         raise _editorial_invalid("selection_coverage")
+    pages = []
+    for page in composition.pages:
+        points = []
+        for item in page.points:
+            if isinstance(item, _EditorialFactPoint):
+                fact = facts.get(item.fact_id)
+                allowed = policy.get(item.fact_id, ())
+                if fact is None:
+                    raise _editorial_invalid("fact_reference")
+                if fact.status != "supported" or not {"required", "optional"}.intersection(allowed):
+                    raise _editorial_invalid("excluded_reference")
+                if not _whole_fact_point_available(fact):
+                    raise _editorial_invalid("schema")
+                # No omission-triggered insertion: only IDs explicitly selected by the model.
+                # Use the same per-point size limit and downstream provenance/numeric checks.
+                item = _EditorialPoint(label=item.label, text=fact.value or "", fact_ids=[item.fact_id])
+            points.append(item)
+        pages.append(_EditorialPage(**page.model_dump(exclude={"points"}), points=points))
+    if target_pages is not None and len(pages) < target_pages:
+        pages = _expand_editorial_pages(pages, target_pages)
     referenced: dict[str, list[int]] = {}
-    for n, page in enumerate(composition.pages, 1):
+    body_referenced: set[str] = set()
+    for n, page in enumerate(pages, 1):
+        body_referenced.update(fid for item in [page.lead, *page.points] for fid in item.fact_ids)
+        # Match claim()'s existing company-name heading coverage exception.
+        body_referenced.update(fid for fid in page.heading.fact_ids
+                               if fid in facts and facts[fid].field_key == "company_name")
         for item in [page.heading, page.lead, *page.points]:
             for fid in item.fact_ids:
                 if fid not in facts:
                     raise _editorial_invalid("fact_reference")
                 if n not in referenced.setdefault(fid, []):
                     referenced[fid].append(n)
+    # Included-fact notes are derived metadata, never authority for new prose.
+    # Only an allowed, supported fact explicitly used in the body (or a company
+    # name heading) can omit its redundant note. Unused/review/excluded facts
+    # still need the model's reason;
+    # unknown/duplicate IDs and downstream body/numeric gates remain strict.
+    if any(fid not in body_referenced or facts[fid].status != "supported"
+           or not {"required", "optional"}.intersection(policy.get(fid, ()))
+           for fid in missing_notes):
+        raise _editorial_invalid("selection_coverage")
     decisions = []
     for fid, allowed in policy.items():
-        note = notes[fid]
-        if not note.reason.strip():
+        note = notes.get(fid)
+        if note is not None and not note.reason.strip():
             raise _editorial_invalid("selection_policy")
         if allowed == ("required",):
             disposition = "required"  # Missing required prose is still rejected below.
         elif allowed in {("review",), ("excluded",)}:
             disposition = allowed[0]  # References to prohibited facts are still rejected below.
+            assert note is not None
             if note.unused_disposition != disposition:
                 raise _editorial_invalid("selection_policy")
         elif fid in referenced:
             disposition = "optional"
         else:
+            assert note is not None
             disposition = note.unused_disposition
         if disposition in {"required", "optional"}:
             locations = ", ".join(map(str, referenced.get(fid, [])))
             reason = (f"작성된 {locations}쪽의 설명에 사용했습니다."
                       if locations else "필수 사실이므로 본문 반영 여부를 검사합니다.")
         else:
+            assert note is not None
             reason = note.reason
         decisions.append(FactSelection(fact_id=fid, disposition=disposition, reason=reason))
-    return _EditorialPlan(**composition.model_dump(exclude={"fact_notes"}), selections=decisions)
+    return _EditorialPlan(**composition.model_dump(exclude={"fact_notes", "pages"}),
+                          pages=pages, selections=decisions)
 
 
 def _constrain_editorial_notes(schema: dict, policy: dict[str, tuple[str, ...]]) -> None:
-    groups: dict[tuple[str, ...], list[str]] = {}
+    # Every ID is a required object key: strict generation cannot accidentally
+    # omit one unused fact or duplicate it across otherwise valid note groups.
+    # Included facts use null; their audit is derived from verified references.
+    properties = {}
+    note_schema = schema["$defs"].pop("_EditorialFactNoteGroup")
+    note_schema["properties"].pop("fact_ids")
+    note_schema["required"].remove("fact_ids")
+    note_schema["properties"]["reason"]["maxLength"] = 160
     for fid, allowed in policy.items():
-        unused = allowed if allowed in {("review",), ("excluded",)} else ("excluded", "review")
-        groups.setdefault(unused, []).append(fid)
-    note_schema = schema["$defs"].pop("_EditorialFactNote")
-    variants = []
-    for allowed, ids in groups.items():
+        if allowed == ("required",):
+            properties[fid] = {"type": "null"}
+            continue
         variant = copy.deepcopy(note_schema)
-        variant["properties"]["fact_id"]["enum"] = sorted(ids)
-        variant["properties"]["unused_disposition"]["enum"] = list(allowed)
-        variants.append(variant)
-    schema["properties"]["fact_notes"].update(minItems=len(policy), maxItems=len(policy),
-        items={"anyOf": variants} if variants else note_schema)
+        variant["properties"]["unused_disposition"]["enum"] = (
+            list(allowed) if allowed in {("review",), ("excluded",)} else ["excluded", "review"])
+        properties[fid] = (variant if allowed in {("review",), ("excluded",)}
+                           else {"anyOf": [{"type": "null"}, variant]})
+    schema["properties"]["fact_notes"] = {"type": "object", "properties": properties,
+        "required": list(properties), "additionalProperties": False}
 
 
 def _editorial_body_gaps(facts: dict[str, Fact], used: dict[str, list[str]]) -> dict[str, dict]:
@@ -1753,6 +1918,8 @@ class LlmAgent:
                                       for fid, allowed in selection_policy.items()],
             "body_requirements": [{"fact_id": fid,
                 "numeric_tokens": sorted(numeric_evidence_tokens(fact.value or "")),
+                "whole_fact_point_available": _whole_fact_point_available(fact),
+                "whole_fact_point_required": _whole_fact_point_required(fact),
                 "heading_can_cover": fact.field_key == "company_name"}
                 for fid, fact in facts.items() if fact.status == "supported" and fact.field_key not in excluded],
             "supplement_requests": missing,
@@ -1762,8 +1929,10 @@ class LlmAgent:
             "maximum_pages": request.brief.target_pages,
         }
         instructions = legacy.load_draft_prompt(editorial=True)
-        schema = _EditorialComposition.model_json_schema()
+        schema = _EditorialGroupedComposition.model_json_schema()
         usable_ids = sorted(fid for fid, allowed in selection_policy.items() if "optional" in allowed or "required" in allowed)
+        whole_fact_ids = [fid for fid in usable_ids if _whole_fact_point_available(facts[fid])]
+        whole_only_ids = {fid for fid in usable_ids if _whole_fact_point_required(facts[fid])}
         for definition in schema.get("$defs", {}).values():
             props = definition.get("properties", {})
             for key in ("fact_ids", "sequence_fact_ids"):
@@ -1778,11 +1947,31 @@ class LlmAgent:
                 props["photo_ids"]["items"]["enum"] = sorted(photos)
             elif "photo_ids" in props:
                 props["photo_ids"]["maxItems"] = 0
-        schema["properties"]["pages"]["maxItems"] = request.brief.target_pages
+        if whole_only_ids:
+            # A certificate page's lead must be able to cite its actual subject.
+            # Restrict detailed prose points, not the lead's provenance: the
+            # complete certificate point supplies dates/conditions, and the
+            # downstream body gate still rejects an incomplete lead-only claim.
+            prose_ids = [fid for fid in usable_ids if fid not in whole_only_ids]
+            refs_schema = schema["$defs"]["_EditorialPoint"]["properties"]["fact_ids"]
+            if prose_ids:
+                refs_schema["items"]["enum"] = prose_ids
+            else:
+                refs_schema["items"].pop("enum", None)
+                refs_schema["minItems"] = refs_schema["maxItems"] = 0
+        if whole_fact_ids:
+            schema["$defs"]["_EditorialFactPoint"]["properties"]["fact_id"]["enum"] = whole_fact_ids
+        else:
+            # Avoid advertising an unusable branch (or emitting an invalid empty enum).
+            schema["$defs"]["_EditorialCompositionPage"]["properties"]["points"]["items"] = {
+                "$ref": "#/$defs/_EditorialPoint"}
+            schema["$defs"].pop("_EditorialFactPoint")
+        schema["properties"]["pages"].update(minItems=request.brief.target_pages,
+                                             maxItems=request.brief.target_pages)
         _constrain_editorial_notes(schema, selection_policy)
         response = self._request(instructions, payload, schema, "draft_sections")
         try:
-            plan = _composition_plan(response, facts, selection_policy)
+            plan = _composition_plan(response, facts, selection_policy, target_pages=request.brief.target_pages)
         except ValidationError:
             # Pydantic exceptions include response values; do not log or return the raw exception.
             raise _editorial_invalid("schema") from None
@@ -1793,6 +1982,12 @@ class LlmAgent:
             if not decision.reason.strip() or decision.disposition not in selection_policy[fid]:
                 raise _editorial_invalid("selection_policy")
         included = {fid for fid, d in selections.items() if d.disposition in {"required", "optional"}}
+        if "fact_notes" in response and len(plan.pages) < request.brief.target_pages:
+            logger.warning("Editorial draft rejected: rule=minimum_page_count requested=%s actual=%s",
+                           request.brief.target_pages, len(plan.pages))
+            raise AgentError("AGENT_OUTPUT_INVALID",
+                f"AI 초안이 선택한 최소 {request.brief.target_pages}쪽을 충족하지 못했습니다. "
+                "내용을 임의로 늘리지 않고 저장을 중단했습니다. 자료와 작성 조건을 확인해 주세요.")
         if not included or not 1 <= len(plan.pages) <= request.brief.target_pages:
             raise _editorial_invalid("page_count")
         used: dict[str, list[str]] = {fid: [] for fid in included}
@@ -1836,7 +2031,23 @@ class LlmAgent:
                 # Do not manufacture a chronology from a plain process list.
                 sequence = " ".join(r.excerpt for fid in planned.sequence_fact_ids for r in facts[fid].evidence_refs)
                 pattern = r"(?:\d{4}년|\d{4}[-./]\d{1,2})" if planned.layout == "timeline" else r"(?:→|->|\d+[.)]\s|먼저.+다음|후에|이후)"
-                if not planned.sequence_fact_ids or not re.search(pattern, sequence):
+                table_year = planned.layout == "timeline" and any(
+                    facts[fid].field_key == "history"
+                    and re.search(r"(?m)^\s*(?:19|20)\d{2}\s*[|｜]\s*\S", ref.excerpt)
+                    for fid in planned.sequence_fact_ids for ref in facts[fid].evidence_refs)
+                numbered_steps = False
+                if planned.layout == "process_steps":
+                    for fid in planned.sequence_fact_ids:
+                        fact = facts[fid]
+                        if fact.field_key != "processes":
+                            continue
+                        # Korean source headings express order too. Require
+                        # multiple increasing steps with actual labels, not a
+                        # step count, product code, or unordered process list.
+                        steps = [int(m) for ref in fact.evidence_refs for m in re.findall(
+                            r"(?<!\w)(?:제[^\S\r\n]*)?([1-9]\d{0,2})[^\S\r\n]*단계[^\S\r\n]*[:：—–-][^\S\r\n]*\S", ref.excerpt)]
+                        numbered_steps |= len(steps) >= 2 and all(a < b for a, b in zip(steps, steps[1:]))
+                if not planned.sequence_fact_ids or not (re.search(pattern, sequence) or table_year or numbered_steps):
                     raise AgentError("AGENT_OUTPUT_INVALID", "순서·시점 근거가 없는 단계/연혁 배치를 거부했습니다.")
             if any(aid not in photos for aid in planned.photo_ids):
                 raise _editorial_invalid("photo_reference")
@@ -1871,9 +2082,14 @@ class LlmAgent:
                     gap["body_missing"], len(gap["missing_numeric_tokens"]))
             raise AgentError("AGENT_OUTPUT_INVALID", "포함하기로 한 사실 또는 수치·단위가 본문에서 빠졌습니다.")
         extracted = {r.segment_id for f in facts.values() for r in f.evidence_refs}
+        count_reason = plan.page_count_reason
+        original_count = len(response["pages"])
+        if len(pages) != original_count:
+            count_reason += (f" 선택한 {request.brief.target_pages}쪽에 맞추기 위해 기존 {original_count}쪽의 독립 본문을 "
+                             f"문구·순서·근거를 보존하며 {len(pages)}쪽으로 나눴습니다.")
         audit = EditorialRecord(prompt_version="editorial_v2", input_revision=request.input_revision, selections=plan.selections,
             requested_pages=request.brief.target_pages, generated_pages=len(pages),
-            page_count_reason=plan.page_count_reason,
+            page_count_reason=count_reason,
             supplement_requests=[f"{key}: 선택 자료에서 확인 가능한 근거를 보완해 주세요." for key in missing],
             unextracted_segment_ids=[seg.segment_id for src in request.sources for seg in src.segments
                                      if seg.text.strip() and seg.segment_id not in extracted])

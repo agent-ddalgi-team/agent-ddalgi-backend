@@ -31,13 +31,13 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, BinaryIO, Literal
 
 from app.db import Connection
 from app.config import Settings
-from app.models import Document, Page
+from app.models import Block, Document, Page
 from app.services import layout_checks
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -1025,6 +1025,125 @@ def _module_version(name: str) -> str:
 
 
 # ---------------- 공개 함수 ----------------
+
+@dataclass
+class DraftPagination:
+    """Initial draft preparation only; never an approval or a saved LayoutCheck."""
+    pages: list[Page]
+    outcome: Literal["passed", "unresolved", "unavailable", "limit"]
+    attempts: int
+
+
+def _split_draft_page(page: Page, first_block_id: str | None) -> list[Page] | None:
+    # A heading travels with its following paragraph. Existing blocks retain IDs,
+    # text, references and order; only an individually oversized paragraph is split.
+    groups: list[list[Block]] = []
+    for block in page.blocks:
+        if groups and groups[-1][-1].type == "heading":
+            groups[-1].append(block)
+        else:
+            groups.append([block])
+    if not groups:
+        return None
+    index = next((i for i, group in enumerate(groups) if any(b.block_id == first_block_id for b in group)),
+                 len(groups) - 1)
+    if index > 0:
+        left = [b for group in groups[:index] for b in group]
+        right = [b for group in groups[index:] for b in group]
+    else:
+        group = groups[0]
+        block = group[-1]
+        value = block.content.get("text")
+        if block.type != "paragraph" or not isinstance(value, str) or len(value) < 80:
+            return None
+        # Prefer a sentence boundary near the middle; fall back to whitespace.
+        # Never cut a number/token or rewrite a condition to make it fit.
+        lo, hi = len(value) // 3, len(value) * 2 // 3
+        boundaries = [m.end() for m in re.finditer(r"[.!?。]\s+", value) if lo <= m.end() <= hi]
+        if not boundaries:
+            boundaries = [m.end() for m in re.finditer(r"\s+", value) if lo <= m.end() <= hi]
+        if not boundaries:
+            return None
+        cut = min(boundaries, key=lambda n: abs(n - len(value) / 2))
+        head = block.model_copy(deep=True)
+        tail = block.model_copy(deep=True)
+        head.content["text"], tail.content["text"] = value[:cut], value[cut:]
+        tail.block_id = "block_" + secrets.token_hex(8)
+        left = group[:-1] + [head]
+        right = [tail] + [b for rest in groups[1:] for b in rest]
+    continuation = page.model_copy(deep=True)
+    continuation.page_id = "page_" + secrets.token_hex(8)
+    continuation.title = page.title if page.title.endswith(" (계속)") else page.title + " (계속)"
+    if continuation.layout_key in {"cover_photo", "cover_text"}:
+        continuation.layout_key = "text_photo"
+    continuation.blocks = right
+    first = page.model_copy(deep=True)
+    first.blocks = left
+    return [first, continuation]
+
+
+def paginate_draft(snapshot: RenderSnapshot, out_dir: Path, settings: Settings) -> DraftPagination:
+    """Measure a new draft before saving and move overflowing groups to new pages.
+
+    No AI, DB writes, saved-document edits or approval artifacts. Preserve all
+    content; bounded work (8 renders, 40 pages, 120 seconds) leaves unresolved
+    cases for the existing layout gate instead of claiming success.
+    """
+    pages = _copy_pages(snapshot.pages)
+    origins = {page.page_id: page.page_id for page in pages}
+    deadline = time.monotonic() + 120
+    for attempt in range(1, 9):
+        remaining = int(deadline - time.monotonic())
+        if remaining < 1 or len(pages) > 40:
+            return DraftPagination(pages, "limit", attempt - 1)
+        candidate = replace(snapshot, pages=pages, content_hash=_document_content_hash(snapshot.title, pages, snapshot.demo))
+        bounded = replace(settings, export_render_timeout_s=min(settings.export_render_timeout_s, remaining))
+        try:
+            result = render(candidate, "pdf", out_dir, bounded)
+        except RenderError:
+            return DraftPagination(pages, "unavailable", attempt)
+        if result.layout_ok:
+            return DraftPagination(pages, "passed", attempt)
+        measure = result.details.get("measure")
+        if (not _valid_measure(measure, candidate) or result.not_checked
+                or any(f.kind != "overflow" for f in result.findings)):
+            return DraftPagination(pages, "unresolved", attempt)
+        if attempt == 8:
+            return DraftPagination(pages, "limit", attempt)
+        measured = {p["page_id"]: p for p in measure["pages"]}
+        next_pages, changed = [], False
+        carry: Page | None = None
+        for i, page in enumerate(pages):
+            if carry is not None:
+                # Refill a continuation of the same original page before adding
+                # another sparse page. Re-measure this combined content next pass.
+                combined = page.model_copy(deep=True)
+                combined.blocks = carry.blocks + combined.blocks
+                next_pages.append(combined)
+                carry = None
+                continue
+            item = measured[page.page_id]
+            split = None
+            if (page.design and item["overflow"] and not item.get("horizontal_overflow")
+                    and not item.get("overlapping_blocks")):
+                split = _split_draft_page(page, item.get("first_overflow_block_id"))
+            if split:
+                origins[split[1].page_id] = origins[page.page_id]
+                next_pages.append(split[0])
+                if i + 1 < len(pages) and origins[pages[i + 1].page_id] == origins[page.page_id]:
+                    carry = split[1]
+                else:
+                    next_pages.append(split[1])
+            else:
+                next_pages.append(page)
+            changed = changed or split is not None
+        if not changed:
+            return DraftPagination(pages, "unresolved", attempt)
+        if len(next_pages) > 40:
+            return DraftPagination(pages, "limit", attempt)
+        pages = next_pages
+    raise AssertionError("bounded pagination exhausted")
+
 
 def render(snapshot: RenderSnapshot, fmt: str, out_dir: Path, settings: Settings | None = None) -> RenderResult:
     """스냅샷을 out_dir 아래 실제 파일로 만든다. 실패 시 RenderError(성공 값을 임의로 만들지 않는다).

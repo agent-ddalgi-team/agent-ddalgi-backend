@@ -22,7 +22,7 @@ from app.agent_bridge import (AgentError, AgentUnavailable, AnalyzeRequest, Anal
 from app.config import Settings
 from app.db import connect
 from app.models import Brief, CheckRecord, Document, Issue, Operation, Page
-from app.services import approvals, documents, jobs, preflights, proposals, refs, validation, sessions
+from app.services import approvals, artifacts, documents, export_render, jobs, preflights, proposals, refs, validation, sessions
 from app.services.doc_ops import OpError, apply_operations, touched_block_ids
 from app.timeutil import from_iso, now
 
@@ -444,6 +444,41 @@ def run_validate_job(settings: Settings, session_id: str, job_id: str, input_rev
             jobs.fail(conn, job_id, "INTERNAL_ERROR", "검증 작업이 실패했습니다.", True)
 
 
+def _prepare_draft_layout(settings: Settings, request: DraftRequest, job_id: str,
+                          result: DraftResult) -> tuple[DraftResult, bool] | None:
+    """Prepare only a new editorial draft; a saved document is never reflowed here."""
+    if result.editorial is None or not all(page.design for page in result.pages):
+        return result, False
+    with connect(settings.db_path, immediate=True) as conn:
+        if _policy_failure(conn, settings, request.session_id, job_id):
+            return None
+        _, err = _load_session_for_job(conn, request.session_id, request.input_revision, settings)
+        if err:
+            jobs.fail(conn, job_id, *err)
+            return None
+        jobs.set_progress(conn, job_id, "drafting", "초안의 PDF 분량을 확인하고 페이지를 나누는 중")
+        draft = Document(document_id="draft_" + job_id, session_id=request.session_id, document_revision=1,
+            input_revision=request.input_revision, title=result.title, target_pages=request.brief.target_pages,
+            status="draft", pages=result.pages, editorial=result.editorial)
+        snapshot = export_render.build_snapshot(conn, settings, request.session_id, draft)
+        work_dir = artifacts.temp_dir(settings, request.session_id, job_id)
+    # Browser work must not hold a DB write lock. The final save rechecks session,
+    # input revision and Job ownership after this potentially long operation.
+    try:
+        prepared = export_render.paginate_draft(snapshot, work_dir, settings)
+    finally:
+        artifacts.discard_temp(work_dir)
+    audit = result.editorial.model_copy(deep=True)
+    audit.generated_pages = len(prepared.pages)
+    if len(prepared.pages) != len(result.pages):
+        audit.page_count_reason += (f" PDF 분량 사전 확인에서 내용을 보존하며 {len(result.pages)}쪽을 "
+                                    f"{len(prepared.pages)}쪽으로 나눴습니다(목표 {request.brief.target_pages}쪽).")
+    if prepared.outcome != "passed":
+        audit.page_count_reason += " PDF 분량 사전 확인을 완료하지 못했습니다. 배치 검사에서 남은 문제를 확인해 주세요."
+    logger.info("Draft pagination: outcome=%s pages=%s attempts=%s", prepared.outcome, len(prepared.pages), prepared.attempts)
+    return DraftResult(result.title, prepared.pages, audit), prepared.outcome != "passed"
+
+
 def run_draft_job(settings: Settings, session_id: str, job_id: str, input_revision: int, preflight_id: str) -> None:
     resumed = False
     try:
@@ -481,6 +516,13 @@ def run_draft_job(settings: Settings, session_id: str, job_id: str, input_revisi
                 _fail_agent(conn, job_id, exc, requires_reanalysis=resumed)
             return
         problem = validate_draft(result, sources, {f.fact_id for f in preflight.facts}, preflight)
+        layout_review_required = False
+        if not problem:
+            prepared = _prepare_draft_layout(settings, request, job_id, result)
+            if prepared is None:
+                return
+            result, layout_review_required = prepared
+            problem = validate_draft(result, sources, {f.fact_id for f in preflight.facts}, preflight)
         with connect(settings.db_path, immediate=True) as conn:   # 세션 확인과 저장을 한 잠금 안에서(BE-09)
             if _policy_failure(conn, settings, session_id, job_id):
                 return
@@ -499,7 +541,8 @@ def run_draft_job(settings: Settings, session_id: str, job_id: str, input_revisi
                 jobs.fail(conn, job_id, "DOCUMENT_EXISTS", "이미 초안이 있습니다. 편집 화면에서 이어가 주세요.", False)
                 return
             # 미해결 blocker가 있으면 검토 필요. 검증(BE-06) 전까지는 사전 점검의 문제로만 판단한다.
-            status = "review_required" if any(i.severity == "blocker" and i.status == "open" for i in preflight.issues) else "draft"
+            status = "review_required" if (layout_review_required or any(
+                i.severity == "blocker" and i.status == "open" for i in preflight.issues)) else "draft"
             document_id = documents.create_initial(conn, session_id, input_revision, result.title,
                                                    brief.target_pages, result.pages, status, preflight_id=preflight_id,
                                                    editorial=result.editorial)
