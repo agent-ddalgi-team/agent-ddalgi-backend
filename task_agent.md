@@ -1155,6 +1155,8 @@ DQ03에서는 본문에서 쓰지 않은 공정 수 충돌이 서버 일반 검�
 
 - **develop 통합 후 확인(2026-09-30)**: 원격 1a6e63b의 RuntimeLedger·확대 입력·브로슈어 재작성·C-05 변경을 보존했다. 통합 Agent 회귀 790 passed / 1 warning, 기본 runtime 유지/설정 검사 8 passed. 기존 시연 DB로 interactive/$5/120초/입력40000/출력32000/검증120000/SDK 재시도0 설정으로 재시작했고 프론트·백엔드 HTTP 200, 등록 자료 21개·이미지 21개를 확인했다. 기본 runtime은 예산 차단이 없고, 제한된 브로슈어 재작성은 예산 제한 모드에서도 최대 1회 유지된다.
 
+- **통합 전체 회귀**: 외부 AI 호출 없이 전체 pytest 결과 **1400 passed / 1 failed / 32 skipped / 3 warnings**(271.97초). 실패는 `tests/test_be07.py::test_docx_concurrent_renders_of_same_revision_do_not_collide`의 Windows 동시 DOCX 저장 `save_failed`이며 단독 재실행은 **1 passed**였다. 해당 테스트와 `app/services/export_render.py`는 origin/develop과 동일하다. 간헐 실패의 근본 원인은 미확인으로 남기며 전체 무실패로 표현하지 않는다. 브라우저를 비활성화한 실행의 skip은 PDF 실검증 통과가 아니다.
+
 - [x] **2026-09-28, AG-03**: LangGraph로 사용자 확인 대기·초안 재개를 연결했다. 작업 재개 기록에는 원문 대신 세션·입력·점검 ID를 저장한다.
 - [x] 옛 확인·중복 재개를 거부하고 종료·만료 시 세션 폴더의 기록을 함께 정리했다. 당시 관련 검사 200개 통과.
 - **핵심 결정사항/메모**: 서버가 현재 세션·입력·사용자 확인을 다시 검사한다. 구현 범위는 최초 초안이다. 편집 그래프·실제 모델의 중단 복구·서로 다른 DB 저장 사이 장애는 후속이다.
