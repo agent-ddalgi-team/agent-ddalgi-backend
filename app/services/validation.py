@@ -18,7 +18,7 @@ import hashlib
 import json
 import re
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from app.agent_bridge import SourceIn
@@ -143,6 +143,7 @@ class Context:
     asset_captions: dict[str, str] = field(default_factory=dict)
     selected_sources: list[SourceIn] | None = None
     selected_preflight: PreflightOut | None = None
+    asset_locators: dict[str, dict[str, int]] = field(default_factory=dict)
 
 
 def load_context(conn: Connection, session_id: str, preflight: PreflightOut | None) -> Context:
@@ -174,9 +175,31 @@ def load_context(conn: Connection, session_id: str, preflight: PreflightOut | No
         selected_sources = sources
     facts = {f.fact_id: f for f in preflight.facts} if preflight else {}
     captions = {aid: meta["caption"] for src in sources for aid, meta in src.asset_descriptions.items()}
+    locators = {aid: locator for src in sources for aid, locator in src.asset_locators.items()}
     return Context(seg_texts, seg_source, asset_source, mock_sources, refs_service.load(conn, session_id), facts,
                    list(preflight.issues) if preflight else [], demo_sources, bool(session and session["demo"]), captions,
-                   selected_sources=selected_sources, selected_preflight=preflight if selected_sources is not None else None)
+                   selected_sources=selected_sources, selected_preflight=preflight if selected_sources is not None else None,
+                   asset_locators=locators)
+
+
+_PHOTO_SOURCE_PAGE = re.compile(r"소개서\s+([1-9][0-9]*)쪽")
+# 등록 설명의 시각적 묘사에 한정한다. 일반 본문·제목의 주장 검사는 완화하지 않는다.
+_PHOTO_DESCRIPTIVE_WORDS = ("소개서", "덮개", "개별", "공정명", "회사명")
+_PHOTO_WINDOW_COUNT = re.compile(r"관찰창\s+(?:한|두|세|네)\s+개")
+
+
+def _registered_photo_description(text: str, locator: dict[str, int]) -> str:
+    """실제 사진 위치와 일치하는 출처 쪽수만 수치 주장 검사에서 분리한다."""
+    def source_page(match: re.Match) -> str:
+        page = int(match.group(1))
+        return "소개서" if any(type(locator.get(key)) is int and locator[key] == page
+                              for key in ("slide", "page")) else match.group(0)
+
+    description = _PHOTO_SOURCE_PAGE.sub(source_page, text)
+    description = _PHOTO_WINDOW_COUNT.sub("관찰창", description)
+    for word in _PHOTO_DESCRIPTIVE_WORDS:
+        description = description.replace(word, "")
+    return description
 
 
 def image_has_descriptive_caption(block: Block, ctx: Context) -> bool:
@@ -189,7 +212,11 @@ def image_has_descriptive_caption(block: Block, ctx: Context) -> bool:
             continue
         # 선택·공개 허가가 유효한 사진의 동일 설명에만 길이 제한을 완화한다.
         # 인증/성능/수치 등 사실 주장은 등록 캡션이라도 텍스트 근거가 필요하다.
-        if (text != registered or len(text) > 160 or _DIGIT.search(text)
+        if text != registered or len(text) > 160:
+            return False
+        description = _registered_photo_description(
+            text, ctx.asset_locators.get(block.content.get("asset_id"), {}))
+        if (_DIGIT.search(description)
                 or any(word in description for word in _CLAIM_KEYWORDS)):
             return False
     return True
@@ -320,6 +347,18 @@ def preflight_conflicts(ctx: Context) -> list[IssueDraft]:
     return conflicts
 
 
+_PHOTO_CONTENT_CODES = {"UNSUPPORTED_CLAIM", "IMAGE_MISMATCH", "IMAGE_UNVERIFIABLE",
+                        "UNVERIFIED_SUPERLATIVE", "VALUE_MISMATCH", "CONDITION_LOSS", "CERTIFICATION_MISMATCH"}
+
+
+def photo_content_warnings(document: Document, drafts: list[IssueDraft]) -> list[IssueDraft]:
+    """사진만 대상으로 한 의미 지적은 사용자 확인 대상으로 둔다. 접근·출력 검사는 유지한다."""
+    photos = {b.block_id for p in document.pages for b in p.blocks if b.type == "image"}
+    return [replace(d, code="PHOTO_CONTENT_REVIEW", severity="warning")
+            if (d.scope == "content" and d.origin in {"server", "agent"} and d.code in _PHOTO_CONTENT_CODES
+                and d.block_ids and set(d.block_ids) <= photos) else d for d in drafts]
+
+
 def server_checks(document: Document, ctx: Context) -> tuple[list[IssueDraft], list[CheckRecord]]:
     drafts: list[IssueDraft] = []
     records: list[CheckRecord] = []
@@ -391,12 +430,14 @@ def server_checks(document: Document, ctx: Context) -> tuple[list[IssueDraft], l
                                          block_ids=[bid]))
             records.append(CheckRecord(check_key=f"block:{bid}", kind="server", block_ids=[bid],
                                        result="issue" if len(drafts) > before else "ok"))
-    return drafts, records
+    return photo_content_warnings(document, drafts), records
 
 
 def validate_agent_issues(issues: list[Issue], document: Document, ctx: Context, changed: set[str]) -> str | None:
     blocks = {b.block_id for p in document.pages for b in p.blocks}
     for iss in issues:
+        if iss.code == "PHOTO_CONTENT_REVIEW":
+            return "사진 확인 경고 분류는 서버만 결정할 수 있습니다."
         if iss.scope != "content":
             return f"agent issue scope는 content만: {iss.issue_id}"
         if any(b not in blocks for b in iss.block_ids):
@@ -485,6 +526,8 @@ def acknowledgeable(issue: Row, *, demo: bool) -> bool:
     """검증기가 warning으로 보냈다는 이유만으로 정확성 문제를 승인 가능한 문제로 바꾸지 않는다."""
     if issue["severity"] != "warning" or issue["scope"] == "layout":
         return False
+    if issue["code"] == "PHOTO_CONTENT_REVIEW":
+        return issue["scope"] == "content" and issue["origin"] in {"server", "agent"}
     if issue["origin"] == "server":
         return issue["code"] == "PLACEHOLDER_TEXT" or (issue["code"] == "DEMO_VALUE" and demo)
     return issue["origin"] == "agent" and issue["code"] in {"REPETITION", "PHOTO_SHORTAGE"}
@@ -597,6 +640,7 @@ def persist_issues(conn: Connection, session_id: str, document: Document, valida
     """
     stamp = to_iso(now())
     produced: set[str] = set()
+    drafts = photo_content_warnings(document, drafts)
     agent_keys = _agent_issue_keys(conn, document.document_id, drafts)
     for d in drafts:
         key = agent_keys[d.identity_key, d.message] if d.origin == "agent" else d.identity_key

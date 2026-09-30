@@ -397,7 +397,53 @@ def test_caption_claim_is_checked(app, settings):
     ctx.patch([{"op": "replace_block_content", "block_id": img["block_id"],
                 "content": {**img["content"], "caption": "국내 최대 규모 설비 사진"}}])
     ctx.validated()
-    assert any(img["block_id"] in i["block_ids"] for i in ctx.open_issues("UNSUPPORTED_CLAIM"))
+    warning = _first(ctx.open_issues("PHOTO_CONTENT_REVIEW"), block_ids=[img["block_id"]])
+    assert warning["severity"] == "warning"
+    assert ctx.resolve(warning["issue_id"], "acknowledged", reason="사진과 설명을 검토함").status_code == 200
+
+
+@pytest.mark.parametrize("code", ["IMAGE_MISMATCH", "IMAGE_UNVERIFIABLE", "UNSUPPORTED_CLAIM"])
+def test_photo_semantic_issue_can_be_acknowledged_but_reopens_after_edit(app, monkeypatch, code):
+    from app.agent_bridge import ValidateResult
+    from app.models import Issue
+
+    ctx = Ctx(app)
+    photo = next(b for p in ctx.doc()["pages"] for b in p["blocks"] if b["type"] == "image")
+
+    def review(self, request):
+        return ValidateResult(issues=[Issue(issue_id="photo_review", scope="content", code=code,
+            severity="blocker", message="공정명을 사진만으로 확인하기 어렵습니다.", block_ids=[photo["block_id"]])])
+
+    monkeypatch.setattr(MockAgent, "validate", review)
+    ctx.validated()
+    warning = _first(ctx.open_issues("PHOTO_CONTENT_REVIEW"), block_ids=[photo["block_id"]])
+    assert warning["origin"] == "agent" and warning["severity"] == "warning"
+    assert ctx.resolve(warning["issue_id"], "acknowledged", reason="사진 사용 여부를 검토함").status_code == 200
+    ctx.patch([{"op": "replace_block_content", "block_id": photo["block_id"],
+                "content": {**photo["content"], "caption": "작업장 전경", "alt": "작업장 전경"}}])
+    ctx.validated()
+    assert ctx.open_issues("PHOTO_CONTENT_REVIEW")
+
+
+@pytest.mark.parametrize("code,scope,origin,targets", [
+    ("UNSUPPORTED_CLAIM", "content", "agent", ["text"]),
+    ("IMAGE_MISMATCH", "content", "agent", ["photo", "text"]),
+    ("IMAGE_UNVERIFIABLE", "content", "agent", []),
+    ("EVIDENCE_INVALID", "content", "server", ["photo"]),
+    ("MOCK_VALUE", "content", "server", ["photo"]),
+    ("VALUE_CONFLICT", "content", "preflight", ["photo"]),
+    ("BROKEN_IMAGE", "layout", "layout", ["photo"]),
+    ("IMAGE_PUBLICATION_UNCONFIRMED", "layout", "layout", ["photo"]),
+])
+def test_photo_warning_policy_preserves_other_blockers(code, scope, origin, targets):
+    from types import SimpleNamespace
+    from app.models import Block
+    document = SimpleNamespace(pages=[SimpleNamespace(blocks=[
+        Block(block_id="photo", type="image", content={"asset_id": "asset"}),
+        Block(block_id="text", type="paragraph", content={"text": "주장"})])])
+    issue = validation.IssueDraft(scope, code, "blocker", "문제", block_ids=targets, origin=origin)
+    assert validation.photo_content_warnings(document, [issue]) == [issue]
+    assert issue.severity == "blocker"
 
 
 @pytest.mark.parametrize("kind", ["heading", "paragraph", "list"])
@@ -1042,9 +1088,42 @@ def test_photo_description_is_not_doubled_or_promoted_to_factual_evidence(captio
     from types import SimpleNamespace
     from app.models import Block
     block = Block(block_id="photo", type="image", content={"asset_id": "asset", "caption": caption, "alt": caption})
-    ctx = SimpleNamespace(asset_captions={"asset": registered} if registered else {})
+    ctx = SimpleNamespace(asset_captions={"asset": registered} if registered else {}, asset_locators={})
     assert validation.image_has_descriptive_caption(block, ctx) is expected
     block.content["alt"] = "실제 회사가 보유한 최대 규모 설비"
+    assert not validation.image_has_descriptive_caption(block, ctx)
+
+
+@pytest.mark.parametrize("caption,locator,expected", [
+    ("회사 건물 외관과 인사말을 합친 이미지 — 간판과 대표 인사말 문구가 함께 포함됨(소개서 3쪽).", {"slide": 3}, True),
+    ("아연도금 생산라인 — 처리조와 회색 배기 덕트가 보이는 설비(소개서 11쪽).", {"slide": 11}, True),
+    ("아노다이징 생산라인 — 현장 표지 아래 처리조와 상부 배기 덕트가 배치된 설비(소개서 11쪽).", {"page": 11}, True),
+    ("소개서의 염수분무 시험기 — 덮개에 원형 관찰창 두 개가 있고 우측에 조작반이 있는 시험장비(소개서 17쪽 표기·사진 대조).", {"slide": 17}, True),
+    ("흰색 처리조와 녹색 덮개, 상부 배기 덕트가 있는 작업장 전경 — 소개서 11쪽 여러 공정 칸에 반복 사용된 사진으로, 개별 공정명은 확인 필요.", {"slide": 11}, True),
+    ("공정 설비 사진(소개서 11쪽)", {"slide": 12}, False),
+    ("공정 설비 사진(소개서 11쪽)", {}, False),
+    ("공정 설비 사진(소개서 1쪽)", {"slide": True}, False),
+    ("생산 능력 300개(소개서 11쪽)", {"slide": 11}, False),
+    ("ISO 인증 설비(소개서 11쪽)", {"slide": 11}, False),
+    ("국내 최대 규모 설비(소개서 11쪽)", {"slide": 11}, False),
+    ("납기 보장 설비(소개서 11쪽)", {"slide": 11}, False),
+    ("정밀 가공 설비(소개서 11쪽)", {"slide": 11}, False),
+    ("직원 두 명이 운영하는 생산라인(소개서 11쪽)", {"slide": 11}, False),
+    ("생산량 두 개(소개서 11쪽)", {"slide": 11}, False),
+    ("설비 사진(소개서 11쪽 생산능력 300개)", {"slide": 11}, False),
+])
+def test_registered_photo_source_page_is_not_a_performance_claim(caption, locator, expected):
+    from types import SimpleNamespace
+    from app.models import Block
+
+    block = Block(block_id="photo", type="image", content={"asset_id": "asset", "caption": caption, "alt": caption})
+    ctx = SimpleNamespace(asset_captions={"asset": caption}, asset_locators={"asset": locator})
+    assert validation.image_has_descriptive_caption(block, ctx) is expected
+    # 원본 위치만 있어도 새로 지어낸 설명이나 미선택 사진 설명을 허용하지 않는다.
+    ctx.asset_captions = {}
+    assert not validation.image_has_descriptive_caption(block, ctx)
+    ctx.asset_captions = {"asset": caption}
+    block.content["alt"] = "생산 능력 300개"
     assert not validation.image_has_descriptive_caption(block, ctx)
 
 
