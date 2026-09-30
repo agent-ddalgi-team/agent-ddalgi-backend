@@ -105,7 +105,7 @@ EDITORIAL_CASES = {
 }
 
 
-def build_editorial_request(case_id, *, audience="구매 담당자", pages=4):
+def build_editorial_request(case_id, *, audience="구매 담당자", pages=1):
     case = EDITORIAL_CASES[case_id]
     sid, source_id = f"ses_editorial_{case_id}", f"src_editorial_{case_id}"
     segments, facts = [], []
@@ -278,6 +278,7 @@ def test_editorial_109_facts_sdk_schema_and_coverage(monkeypatch, damage):
         payload = json.loads(kwargs["input"])
         schema = kwargs["text"]["format"]["schema"]
         assert kwargs["text"]["format"]["strict"] is True
+        assert schema["properties"]["pages"]["minItems"] == schema["properties"]["pages"]["maxItems"] == request.brief.target_pages
         entries = schema["properties"]["fact_notes"]
         assert entries["minItems"] == 1 and entries["maxItems"] == 109
         variants = entries["items"]["anyOf"]
@@ -509,6 +510,7 @@ def test_editorial_body_requirements_and_final_selections_reach_wire_schema():
 @pytest.mark.parametrize("damage", ["absent", "heading_only", "numeric_omission", "omitted_optional"])
 def test_editorial_body_coverage_logs_safe_positions_without_weakening_gate(damage, caplog):
     request, fid = numeric_editorial_request("기밀 한도 987654mm", "기밀 한도 987654mm")
+    request.brief.target_pages = 4  # The heading-only fixture intentionally adds a second page.
     calls = []
     def responder(instructions, payload, schema, name):
         calls.append(name)
@@ -714,7 +716,7 @@ def test_editorial_whole_fact_schema_omits_unusable_branch():
 
 @pytest.mark.parametrize("used", [True, False])
 def test_native_composition_derives_optional_inclusion_from_written_references(used):
-    request = build_editorial_request("manufacturing")
+    request = build_editorial_request("manufacturing", pages=1)
     fid = "fact_manufacturing_capabilities"
     def responder(instructions, payload, schema, name):
         response = editorial_composition(editorial_response(payload))
@@ -731,6 +733,78 @@ def test_native_composition_derives_optional_inclusion_from_written_references(u
     else:
         assert "중복" in selection.reason
     assert validate_draft(result, request.sources, {f.fact_id for f in request.preflight.facts}, request.preflight) is None
+
+
+@pytest.mark.parametrize("target", [1, 4, 6, 8, 10])
+def test_editorial_requested_pages_split_existing_content_without_loss(target):
+    pages = [llm._EditorialPage(heading={"text": f"주제 {n}", "fact_ids": [f"f{n}"]},
+        lead={"text": f"도입 내용 {n}", "fact_ids": [f"f{n}"]},
+        points=[{"label": f"항목 {n}.{i}", "text": f"독립 본문 {n}.{i} " * 20, "fact_ids": [f"f{n}_{i}"]}
+                for i in range(count)], photo_ids=[f"photo{n}"], layout="cover_photo" if n==0 else "text_photo",
+        density="comfortable", sequence_fact_ids=[])
+        for n,count in enumerate([3,3,3,4,3,3])]
+    before = copy.deepcopy(pages)
+    result = llm._expand_editorial_pages(pages, target)
+    # This helper never shrinks a model plan. Generation already enforces the upper bound.
+    assert len(result) == max(6, target)
+    def flattened(items):
+        output = []
+        for p in items:
+            output.extend([(p.heading.text,p.heading.fact_ids),(p.lead.text,p.lead.fact_ids)])
+            for point in p.points:
+                output.extend([(point.label,point.fact_ids),(point.text,point.fact_ids)])
+            output.extend((aid,[]) for aid in p.photo_ids)
+        return output
+    assert flattened(result) == flattened(before) and pages == before
+    assert all(len(p.points)>=1 for p in result)
+    assert all(p.layout not in {"cover_text","cover_photo"} for p in result[1:])
+
+
+@pytest.mark.parametrize("layout,sequence", [("timeline",[]),("process_steps",[]),("fact_sheet",["f"])])
+def test_editorial_requested_pages_keep_ordered_sequences_intact(layout, sequence):
+    page=llm._EditorialPage(heading={"text":"순서","fact_ids":["f"]},lead={"text":"도입","fact_ids":["f"]},
+        points=[{"label":"단계","text":f"단계 {i}","fact_ids":["f"]} for i in range(6)],
+        photo_ids=[],layout=layout,density="comfortable",sequence_fact_ids=sequence)
+    assert llm._expand_editorial_pages([page],8)==[page]
+
+
+def test_editorial_requested_page_audit_retains_long_reason_and_actual_fact_locations():
+    request=build_editorial_request("manufacturing",pages=4)
+    src=request.sources[0]
+    for n in range(4):
+        segment=SegmentIn(f"extra_{n}",{"page":100+n},f"추가 시험 항목 {n+1}번의 조건입니다.")
+        src.segments.append(segment)
+        request.preflight.facts.append(Fact(fact_id=f"extra_fact_{n}",field_key="strengths",status="supported",
+            value=segment.text,evidence_refs=[EvidenceRef(source_id=src.source_id,source_version=1,
+                segment_id=segment.segment_id,locator=segment.locator,excerpt=segment.text)]))
+    def responder(i,p,s,n):
+        response=grouped_editorial_composition(editorial_response(p))
+        response['page_count_reason']='가' * 800
+        return response
+    result=llm.LlmAgent(responder).draft(request)
+    assert len(result.pages) == 4
+    assert result.editorial.page_count_reason.startswith('가' * 800)
+    assert '선택한 4쪽에 맞추기 위해' in result.editorial.page_count_reason
+    assert result.editorial.generated_pages==len(result.pages)
+    for selection in result.editorial.selections:
+        if selection.disposition in {'required','optional'}:
+            locations=[str(n) for n,page in enumerate(result.pages,1)
+                       if any(selection.fact_id in b.fact_ids for b in page.blocks)]
+            assert selection.reason==f"작성된 {', '.join(locations)}쪽의 설명에 사용했습니다."
+    assert validate_draft(result,request.sources,{f.fact_id for f in request.preflight.facts},request.preflight) is None
+
+
+@pytest.mark.parametrize("target", [4,6,8,10])
+def test_editorial_rejects_fewer_than_selected_minimum_without_padding_or_retry(target):
+    request=build_editorial_request("manufacturing",pages=target)
+    calls=[]
+    def responder(i,p,s,n):
+        calls.append(n)
+        assert s['properties']['pages']['minItems']==s['properties']['pages']['maxItems']==target
+        return grouped_editorial_composition(editorial_response(p))
+    with pytest.raises(AgentError,match=f"선택한 최소 {target}쪽"):
+        llm.LlmAgent(responder).draft(request)
+    assert calls==['draft_sections']
 
 
 @pytest.mark.parametrize("case_id", EDITORIAL_CASES)
@@ -878,7 +952,7 @@ def test_scope_label_does_not_hide_rank_guarantees_or_numbers(title, allowed):
 @pytest.mark.parametrize("title", ["회사 소개", "기업 소개", "제품 소개", "서비스 소개", "사업 소개",
                                   "사업 개요", "기업 개요", "제품 설명"])
 def test_editorial_neutral_section_titles_do_not_require_claim_evidence(title):
-    request = build_editorial_request("manufacturing")
+    request = build_editorial_request("manufacturing", pages=4)
     captured = []
     def responder(instructions, payload, schema, name):
         captured.append(name)
@@ -913,7 +987,7 @@ def test_neutral_title_allowlist_does_not_admit_added_claims(title):
     ("cover_position", "첫 페이지 이외"),
 ])
 def test_editorial_rejection_identifies_rule_without_exposing_response(rule, message, caplog):
-    request = build_editorial_request("manufacturing")
+    request = build_editorial_request("manufacturing", pages=4)
     calls = []
     def responder(instructions, payload, schema, name):
         calls.append(name)

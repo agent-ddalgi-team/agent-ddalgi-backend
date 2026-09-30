@@ -1060,7 +1060,40 @@ def _whole_fact_point_required(fact: Fact) -> bool:
             and len(numeric_evidence_tokens(fact.value or "")) >= 4)
 
 
-def _composition_plan(response: dict, facts: dict[str, Fact], policy: dict[str, tuple[str, ...]]) -> _EditorialPlan:
+def _expand_editorial_pages(pages: list[_EditorialPage], target: int) -> list[_EditorialPage]:
+    """Reach the requested count by splitting existing independent points only.
+
+    Keep two body units on each side, all wording/order, and the photos after
+    their original text. Ordered sequences stay intact. Never pad sparse input.
+    """
+    result = [page.model_copy(deep=True) for page in pages]
+    while len(result) < target:
+        candidates = [(sum(len(item.text) for item in [page.lead, *page.points]), n)
+                      for n, page in enumerate(result) if len(page.points) >= 3
+                      and not page.sequence_fact_ids and page.layout not in {"timeline", "process_steps"}]
+        if not candidates:
+            break
+        _, index = max(candidates)
+        page = result[index]
+        weights = [len(page.lead.text), *(len(p.text) + len(p.label) for p in page.points)]
+        cut = min(range(1, len(page.points) - 1),
+                  key=lambda n: abs(sum(weights[:n + 1]) - sum(weights[n + 1:])))
+        opening = page.points[cut]
+        first = page.model_copy(deep=True)
+        first.points, first.photo_ids = first.points[:cut], []
+        if first.layout == "cover_photo":
+            first.layout = "cover_text"
+        continuation = page.model_copy(deep=True)
+        continuation.heading = _EditorialText(text=opening.label, fact_ids=list(opening.fact_ids))
+        continuation.lead = _EditorialText(text=opening.text, fact_ids=list(opening.fact_ids))
+        continuation.points = continuation.points[cut + 1:]
+        continuation.layout = "text_photo" if continuation.photo_ids else "fact_sheet"
+        result[index:index + 1] = [first, continuation]
+    return result
+
+
+def _composition_plan(response: dict, facts: dict[str, Fact], policy: dict[str, tuple[str, ...]],
+                      *, target_pages: int | None = None) -> _EditorialPlan:
     """Resolve explicit whole-fact points, then derive inclusion from actual references.
 
     Previously recorded plans keep their original, strict selection validation.
@@ -1096,6 +1129,8 @@ def _composition_plan(response: dict, facts: dict[str, Fact], policy: dict[str, 
                 item = _EditorialPoint(label=item.label, text=fact.value or "", fact_ids=[item.fact_id])
             points.append(item)
         pages.append(_EditorialPage(**page.model_dump(exclude={"points"}), points=points))
+    if target_pages is not None and len(pages) < target_pages:
+        pages = _expand_editorial_pages(pages, target_pages)
     referenced: dict[str, list[int]] = {}
     for n, page in enumerate(pages, 1):
         for item in [page.heading, page.lead, *page.points]:
@@ -1887,11 +1922,12 @@ class LlmAgent:
             schema["$defs"]["_EditorialCompositionPage"]["properties"]["points"]["items"] = {
                 "$ref": "#/$defs/_EditorialPoint"}
             schema["$defs"].pop("_EditorialFactPoint")
-        schema["properties"]["pages"]["maxItems"] = request.brief.target_pages
+        schema["properties"]["pages"].update(minItems=request.brief.target_pages,
+                                             maxItems=request.brief.target_pages)
         _constrain_editorial_notes(schema, selection_policy)
         response = self._request(instructions, payload, schema, "draft_sections")
         try:
-            plan = _composition_plan(response, facts, selection_policy)
+            plan = _composition_plan(response, facts, selection_policy, target_pages=request.brief.target_pages)
         except ValidationError:
             # Pydantic exceptions include response values; do not log or return the raw exception.
             raise _editorial_invalid("schema") from None
@@ -1902,6 +1938,12 @@ class LlmAgent:
             if not decision.reason.strip() or decision.disposition not in selection_policy[fid]:
                 raise _editorial_invalid("selection_policy")
         included = {fid for fid, d in selections.items() if d.disposition in {"required", "optional"}}
+        if "fact_notes" in response and len(plan.pages) < request.brief.target_pages:
+            logger.warning("Editorial draft rejected: rule=minimum_page_count requested=%s actual=%s",
+                           request.brief.target_pages, len(plan.pages))
+            raise AgentError("AGENT_OUTPUT_INVALID",
+                f"AI 초안이 선택한 최소 {request.brief.target_pages}쪽을 충족하지 못했습니다. "
+                "내용을 임의로 늘리지 않고 저장을 중단했습니다. 자료와 작성 조건을 확인해 주세요.")
         if not included or not 1 <= len(plan.pages) <= request.brief.target_pages:
             raise _editorial_invalid("page_count")
         used: dict[str, list[str]] = {fid: [] for fid in included}
@@ -1980,9 +2022,14 @@ class LlmAgent:
                     gap["body_missing"], len(gap["missing_numeric_tokens"]))
             raise AgentError("AGENT_OUTPUT_INVALID", "포함하기로 한 사실 또는 수치·단위가 본문에서 빠졌습니다.")
         extracted = {r.segment_id for f in facts.values() for r in f.evidence_refs}
+        count_reason = plan.page_count_reason
+        original_count = len(response["pages"])
+        if len(pages) != original_count:
+            count_reason += (f" 선택한 {request.brief.target_pages}쪽에 맞추기 위해 기존 {original_count}쪽의 독립 본문을 "
+                             f"문구·순서·근거를 보존하며 {len(pages)}쪽으로 나눴습니다.")
         audit = EditorialRecord(prompt_version="editorial_v2", input_revision=request.input_revision, selections=plan.selections,
             requested_pages=request.brief.target_pages, generated_pages=len(pages),
-            page_count_reason=plan.page_count_reason,
+            page_count_reason=count_reason,
             supplement_requests=[f"{key}: 선택 자료에서 확인 가능한 근거를 보완해 주세요." for key in missing],
             unextracted_segment_ids=[seg.segment_id for src in request.sources for seg in src.segments
                                      if seg.text.strip() and seg.segment_id not in extracted])
