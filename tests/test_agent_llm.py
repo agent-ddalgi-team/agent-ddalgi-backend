@@ -4128,6 +4128,118 @@ def test_last_successful_result_is_returned_after_postprocessing(monkeypatch):
     assert len(calls) == 2
 
 
+def test_interactive_repeated_calls_pass_trial_and_operation_caps(monkeypatch):
+    calls = fake_sdk(monkeypatch, response=metered_response())
+    ledger = llm.TrialLedger(interactive=True, allow_review=True, allow_proposals=True, budget_usd=Decimal("5"))
+    options = llm.LlmOptions.from_env(config_env())
+    for operation in ["company_info", "draft_sections", "content_review", "text_proposal"] * 6:
+        # 실제 서버처럼 requester가 새로 만들어져도 기록과 예산은 공유한다.
+        assert llm.OpenAIRequester(options, ledger=ledger)("", {}, {}, operation) == {"ok": True}
+    report = ledger.snapshot()
+    assert len(calls) == 48 and report["calls_started"] == 24
+    assert report["max_calls"] is None and not report["stopped"]
+    assert Decimal(report["known_estimated_cost_usd"]) > 0
+
+
+@pytest.mark.parametrize("failure", ["timeout", "connection", "rate_limit", "output_limit", "invalid_json", "usage_missing", "forged_evidence", "input_limit"])
+def test_interactive_failure_does_not_poison_next_user_request(monkeypatch, failure):
+    ledger = llm.TrialLedger(interactive=True, budget_usd=Decimal("5"))
+    agent = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=ledger), max_input_chars=10000)
+    attempts = []
+    def respond(**kwargs):
+        attempts.append(True)
+        if len(attempts) == 1 and failure != "input_limit":
+            request = httpx2.Request("POST", "https://api.openai.com/v1/responses")
+            if failure == "timeout":
+                raise APITimeoutError(request=request)
+            if failure == "connection":
+                raise APIConnectionError(request=request)
+            if failure == "rate_limit":
+                raise RateLimitError("private error", response=httpx2.Response(429, request=request), body=None)
+            if failure == "output_limit":
+                return metered_response(status="incomplete", incomplete_details=SimpleNamespace(reason="max_output_tokens"))
+            if failure == "invalid_json":
+                return metered_response(output_text="broken JSON")
+            if failure == "usage_missing":
+                return metered_response(usage=None)
+        payload = json.loads(kwargs["input"])
+        result = extraction_wire_result(extraction(payload), payload)
+        if failure == "forged_evidence" and len(attempts) == 1:
+            next(f for item in result.values() for f in item["facts"])["evidence"] = [{"unit_id": 99999}]
+        return metered_response(output_text=json.dumps(result))
+    fake_sdk(monkeypatch, response=respond)
+    request = AnalyzeRequest("ses_test", 2, BRIEF, sources())
+    if failure == "input_limit":
+        bad = copy.deepcopy(request)
+        bad.sources[0].segments[0].text = "x" * 10001
+    else:
+        bad = request
+    with pytest.raises(AgentError):
+        agent.analyze(bad)
+    assert len(attempts) == (0 if failure == "input_limit" else 1)  # 자동 재시도 없음
+    assert not ledger.snapshot()["stopped"] and not ledger.snapshot()["operation_in_progress"]
+    result = agent.analyze(request)
+    assert any(f.field_key == "company_name" and f.value == TEXTS["company_name"] for f in result.facts)
+    assert len(attempts) == (1 if failure == "input_limit" else 2)
+    report = ledger.snapshot()
+    if failure in {"timeout", "connection", "rate_limit", "usage_missing"}:
+        assert Decimal(report["unconfirmed_reserved_cost_usd"]) == ledger._call_reserve
+        assert not report["cost_complete"]
+
+
+def test_interactive_unknown_usage_still_consumes_budget(monkeypatch):
+    calls = fake_sdk(monkeypatch, error=APITimeoutError(request=httpx2.Request("POST", "https://api.openai.com/v1/responses")))
+    ledger = llm.TrialLedger(interactive=True, budget_usd=Decimal("0.30"))
+    requester = llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=ledger)
+    with pytest.raises(AgentError):
+        requester("", {}, {}, "company_info")
+    assert not ledger.snapshot()["stopped"]
+    with pytest.raises(AgentError, match="예산 한도"):
+        requester("", {}, {}, "company_info")
+    assert len(calls) == 2 and ledger.snapshot()["stop_reason"] == "budget_reserve"
+    assert ledger.snapshot()["known_estimated_cost_usd"] == "0"
+    assert Decimal(ledger.snapshot()["unconfirmed_reserved_cost_usd"]) > 0
+
+
+def test_interactive_busy_request_and_manual_stop_keep_guard(monkeypatch):
+    ledger = llm.TrialLedger(interactive=True)
+    requester = llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=ledger)
+    entered, release = threading.Event(), threading.Event()
+    def respond(**kwargs):
+        entered.set()
+        assert release.wait(timeout=5)
+        return metered_response()
+    calls = fake_sdk(monkeypatch, response=respond)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(requester, "", {}, {}, "company_info")
+        try:
+            assert entered.wait(timeout=5)
+            with pytest.raises(AgentError, match="처리 중"):
+                requester("", {}, {}, "company_info")
+            assert not ledger.snapshot()["stopped"]
+            ledger.stop()
+        finally:
+            release.set()
+        with pytest.raises(AgentError, match="관리자"):
+            future.result(timeout=5)
+    assert len(calls) == 2 and ledger.snapshot()["stop_reason"] == "manual_stop"
+
+
+@pytest.mark.parametrize("mode,budget,valid", [("trial", "5", True), ("interactive", "5", True),
+    ("interactive", "NaN", False), ("interactive", "0", False), ("interactive", "101", False),
+    ("interactive", "bad", False), ("unknown", "5", False)])
+def test_execution_mode_configuration(monkeypatch, mode, budget, valid):
+    monkeypatch.setenv("OPENAI_EXECUTION_MODE", mode)
+    monkeypatch.setenv("OPENAI_RUN_BUDGET_USD", budget)
+    if not valid:
+        with pytest.raises(RuntimeError):
+            llm._configured_ledger()
+        return
+    ledger = llm._configured_ledger()
+    assert ledger.interactive == (mode == "interactive")
+    assert ledger.snapshot()["budget_usd"] == ("5" if mode == "interactive" else "1")
+
+
 @pytest.fixture
 def graph_flow(tmp_path, monkeypatch, request):
     settings = Settings(private_runs_dir=tmp_path / "runs", db_path=tmp_path / "app.sqlite3",
@@ -4164,6 +4276,41 @@ def graph_request(flow, conn, *, confirm=True):
 
 def graph_job(flow, accepted):
     return flow.client.get(flow.base + "/jobs/" + accepted.json()["job_id"]).json()
+
+
+def test_interactive_failed_draft_recovers_after_fresh_confirmation(graph_flow, monkeypatch):
+    flow = graph_flow
+    ledger = llm.TrialLedger(interactive=True, budget_usd=Decimal("5"))
+    attempts = []
+    def respond(**kwargs):
+        attempts.append(kwargs["text"]["format"]["name"])
+        if len(attempts) == 1:
+            return metered_response(output_text=json.dumps({"draft_sections": []}))
+        payload = json.loads(kwargs["input"])
+        result = (extraction_wire_result(extraction(payload), payload)
+                  if attempts[-1] == "company_info" else draft_response(payload))
+        return metered_response(output_text=json.dumps(result))
+    fake_sdk(monkeypatch, response=respond)
+    monkeypatch.setattr(ai_jobs, "get_bridge", lambda settings: llm.LlmAgent(
+        llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=ledger), settings=settings))
+    headers = {"Idempotency-Key": "interactive-failed-draft"}
+    accepted = flow.client.post(flow.base + "/drafts", json=flow.body, headers=headers)
+    failed = graph_job(flow, accepted)
+    assert failed["status"] == "failed" and failed["error"]["code"] == "AGENT_OUTPUT_INVALID"
+    assert flow.client.get(flow.base).json()["document_summary"] is None
+    assert not ledger.snapshot()["stopped"]
+    assert flow.client.post(flow.base + "/drafts", json=flow.body, headers=headers).json() == accepted.json()
+    assert attempts == ["draft_sections"]  # 같은 전송 키는 재생성하지 않는다.
+    old = graph_job(flow, flow.client.post(flow.base + "/drafts", json=flow.body))
+    assert old["status"] == "failed" and old["error"]["code"] == "PREFLIGHT_NOT_CONFIRMED"
+    fresh = graph_job(flow, flow.client.post(flow.base + "/preflights", json={"expected_input_revision": flow.rev}))
+    assert fresh["status"] == "succeeded", fresh
+    body = flow.body | {"preflight_id": fresh["result_ref"]["preflight_id"]}
+    created = graph_job(flow, flow.client.post(flow.base + "/drafts", json=body))
+    assert created["status"] == "succeeded", created
+    assert flow.client.get(flow.base).json()["document_summary"] is not None
+    assert attempts == ["draft_sections", "company_info", "draft_sections"]
+    assert not ledger.snapshot()["stopped"]
 
 
 @pytest.fixture
@@ -5499,11 +5646,13 @@ def test_runtime_missing_usage_is_unknown_and_manual_stop_still_discards(monkeyp
 
 
 def test_runtime_default_factory_ignores_old_trial_caps(monkeypatch):
+    monkeypatch.delenv("OPENAI_EXECUTION_MODE", raising=False)
     monkeypatch.setenv("OPENAI_ENABLE_CONTENT_REVIEW", "true")
     monkeypatch.setenv("OPENAI_ENABLE_TEXT_PROPOSALS", "true")
     monkeypatch.setenv("OPENAI_TRIAL_INPUT_CHAR_LIMIT", "10")
     monkeypatch.setenv("OPENAI_REVIEW_MAX_INPUT_CHARS", "400000")
     ledger = llm._runtime_ledger()
+    assert isinstance(llm._configured_ledger(), llm.RuntimeLedger)
     assert isinstance(ledger, llm.RuntimeLedger)
     assert all(v is None for v in ledger._operation_limits.values())
     assert ledger.review_input_char_limit == 400000
