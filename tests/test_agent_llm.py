@@ -177,6 +177,115 @@ def editorial_response(payload):
             "page_count_reason": "중복과 빈 페이지 없이 선택한 사실과 조건을 담는 분량입니다.", "pages": pages}
 
 
+def build_large_editorial_request():
+    """Synthetic 16-source/109-supported-fact input, not the user's unavailable materials."""
+    request = build_editorial_request("manufacturing")
+    request.brief.emphasis = ["연혁 제외"]
+    request.brief.required_fields = ["lead_time"]
+    for n in range(1, 16):
+        request.sources.append(SourceIn(f"src_policy_{n}", 1, "company", "가상 이력 자료", "complete", [],
+                                        origin_kind="real"))
+    for n in range(101):
+        source = request.sources[n % 16]
+        value = f"2024년 시범 생산의 내부 기록 {n + 1}번입니다."
+        seg = SegmentIn(f"seg_policy_{n}", {"paragraph": n + 1}, value)
+        source.segments.append(seg)
+        request.preflight.facts.append(Fact(fact_id=f"fact_policy_{n}", field_key="history", value=value,
+            status="supported", evidence_refs=[EvidenceRef(source_id=source.source_id, source_version=1,
+                segment_id=seg.segment_id, locator=seg.locator, excerpt=value)]))
+    request.preflight.usable_source_ids = [s.source_id for s in request.sources]
+    return request
+
+
+@pytest.mark.parametrize("status", ["supported", "needs_confirmation", "conflict", "missing"])
+@pytest.mark.parametrize("excluded", [False, True])
+def test_editorial_selection_schema_binds_status_exclusion_and_required(status, excluded):
+    facts = {
+        "required": Fact(fact_id="required", field_key="company_name", value="가상 회사", status="supported"),
+        "tested": Fact(fact_id="tested", field_key="history", value=None, status=status),
+    }
+    allowed = ("review",) if status != "supported" else (
+        ("excluded",) if excluded else ("required", "optional", "excluded", "review"))
+    schema = llm._EditorialPlan.model_json_schema()
+    policy = llm._editorial_selection_policy(facts, {"required"}, {"history"} if excluded else set())
+    llm._constrain_editorial_selections(schema, policy)
+    entries = schema["properties"]["selections"]
+    assert entries["minItems"] == entries["maxItems"] == 2
+    assert "FactSelection" not in schema["$defs"]
+    by_id = {}
+    for variant in entries["items"]["anyOf"]:
+        assert variant["additionalProperties"] is False
+        assert set(variant["required"]) == {"fact_id", "disposition", "reason"}
+        for fid in variant["properties"]["fact_id"]["enum"]:
+            assert fid not in by_id
+            by_id[fid] = tuple(variant["properties"]["disposition"]["enum"])
+    assert by_id == {"required": ("required",), "tested": allowed}
+    # Per-request restrictions never alter the reusable Pydantic definition.
+    assert "enum" not in llm._EditorialPlan.model_json_schema()["$defs"]["FactSelection"]["properties"]["fact_id"]
+
+
+@pytest.mark.parametrize("disposition", ["required", "optional", "excluded", "review"])
+@pytest.mark.parametrize("case", ["required", "excluded", "review"])
+def test_editorial_post_validation_still_rejects_disallowed_selection(case, disposition):
+    request = build_editorial_request("conflict")
+    request.brief.emphasis = ["인증 제외", "납기 제외"]
+    fid = {"required": "fact_conflict_company_name", "excluded": "fact_conflict_lead_time",
+           "review": "fact_conflict_cert"}[case]
+    calls = []
+    def responder(instructions, payload, schema, name):
+        calls.append(name)
+        response = editorial_response(payload)
+        next(s for s in response["selections"] if s["fact_id"] == fid)["disposition"] = disposition
+        return response
+    if disposition == case:
+        llm.LlmAgent(responder).draft(request)
+    else:
+        with pytest.raises(AgentError, match="사실 분류"):
+            llm.LlmAgent(responder).draft(request)
+    assert calls == ["draft_sections"]
+
+
+@pytest.mark.parametrize("damage", [None, "required_as_optional", "duplicate", "omitted", "foreign"])
+def test_editorial_109_facts_sdk_schema_and_coverage(monkeypatch, damage):
+    request = build_large_editorial_request()
+    before = copy.deepcopy(request)
+    assert len(request.sources) == 16 and len(request.preflight.facts) == 109
+    def respond(**kwargs):
+        payload = json.loads(kwargs["input"])
+        schema = kwargs["text"]["format"]["schema"]
+        assert kwargs["text"]["format"]["strict"] is True
+        entries = schema["properties"]["selections"]
+        assert entries["minItems"] == entries["maxItems"] == 109
+        variants = entries["items"]["anyOf"]
+        assert len(variants) == 3  # required, discretionary, excluded
+        for rule in payload["selection_constraints"]:
+            assert rule["fact_id"].startswith("F")
+            matches = [v for v in variants if rule["fact_id"] in v["properties"]["fact_id"]["enum"]]
+            assert len(matches) == 1
+            assert matches[0]["properties"]["disposition"]["enum"] == rule["allowed_dispositions"]
+        response = editorial_response(payload)
+        if damage == "required_as_optional":
+            response["selections"][0]["disposition"] = "optional"
+        elif damage == "duplicate":
+            response["selections"][-1] = response["selections"][-2]
+        elif damage == "omitted":
+            response["selections"].pop()
+        elif damage == "foreign":
+            response["selections"][-1]["fact_id"] = "F999"
+        return metered_response(output_text=json.dumps(response, ensure_ascii=False))
+    calls = fake_sdk(monkeypatch, response=respond)
+    agent = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=llm.RuntimeLedger()))
+    if damage:
+        with pytest.raises(AgentError):
+            agent.draft(request)
+    else:
+        result = agent.draft(request)
+        assert len(result.editorial.selections) == 109
+        assert validate_draft(result, request.sources, {f.fact_id for f in request.preflight.facts}, request.preflight) is None
+        assert next(s for s in result.editorial.selections if s.fact_id == "fact_manufacturing_lead_time").disposition == "required"
+    assert request == before and len(calls) == 2  # SDK constructor + one request; no retry
+
+
 @pytest.mark.parametrize("case_id", EDITORIAL_CASES)
 @pytest.mark.parametrize("pages", [1, 4])
 def test_editorial_production_path_atomic_claims_selection_and_original_sources(case_id, pages):
@@ -4817,6 +4926,35 @@ def test_editorial_heading_fix_and_rejection_reach_job_api(graph_flow, monkeypat
         assert doc["editorial"]["prompt_version"] == "editorial_v2"
     assert flow.client.post(flow.base + "/drafts", json=flow.body, headers=headers).json() == accepted.json()
     assert attempts == ["draft_sections"]
+
+
+@pytest.mark.parametrize("damage", [None, "policy", "coverage"])
+def test_editorial_selection_job_storage_and_idempotency(graph_flow, monkeypatch, damage):
+    flow = graph_flow
+    calls = []
+    def responder(instructions, payload, schema, name):
+        calls.append(name)
+        assert payload["selection_constraints"]
+        result = editorial_response(payload)
+        if damage == "policy":
+            result["selections"][0]["disposition"] = "optional"
+        elif damage == "coverage":
+            result["selections"][-1] = result["selections"][-2]
+        return result
+    monkeypatch.setattr(ai_jobs, "get_bridge", lambda settings: llm.LlmAgent(responder, settings=settings))
+    headers = {"Idempotency-Key": "selection-policy-regression"}
+    accepted = flow.client.post(flow.base + "/drafts", json=flow.body, headers=headers)
+    result = graph_job(flow, accepted)
+    if damage:
+        assert result["status"] == "failed" and result["error"]["code"] == "AGENT_OUTPUT_INVALID"
+        assert ("사실 분류" if damage == "policy" else "선별 목록") in result["error"]["message"]
+        assert flow.client.get(flow.base).json()["document_summary"] is None
+    else:
+        assert result["status"] == "succeeded", result
+        doc = flow.client.get(flow.base + "/documents/" + result["result_ref"]["document_id"]).json()["document"]
+        assert doc["editorial"]["selections"] and doc["pages"][0]["blocks"][0]["evidence_refs"]
+    assert flow.client.post(flow.base + "/drafts", json=flow.body, headers=headers).json() == accepted.json()
+    assert calls == ["draft_sections"]
 
 
 @pytest.fixture

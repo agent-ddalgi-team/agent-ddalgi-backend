@@ -986,6 +986,40 @@ def _editorial_required(request: DraftRequest, facts: dict[str, Fact]) -> tuple[
     return required, missing
 
 
+def _editorial_selection_policy(facts: dict[str, Fact], required: set[str],
+                               excluded: set[str]) -> dict[str, tuple[str, ...]]:
+    """Use the same preflight policy for constrained generation and response validation."""
+    policy = {}
+    for fid, fact in facts.items():
+        if fact.status != "supported":
+            policy[fid] = ("review",)
+        elif fact.field_key in excluded:
+            policy[fid] = ("excluded",)
+        elif fid in required:
+            policy[fid] = ("required",)
+        else:
+            policy[fid] = ("required", "optional", "excluded", "review")
+    return policy
+
+
+def _constrain_editorial_selections(schema: dict, policy: dict[str, tuple[str, ...]]) -> None:
+    # Group IDs instead of adding one object per fact. Nested anyOf is supported
+    # by strict Structured Outputs; each group binds IDs to allowed dispositions.
+    groups: dict[tuple[str, ...], list[str]] = {}
+    for fid, allowed in policy.items():
+        groups.setdefault(allowed, []).append(fid)
+    selection = schema["$defs"].pop("FactSelection")
+    variants = []
+    for allowed, ids in groups.items():
+        variant = copy.deepcopy(selection)
+        variant["properties"]["fact_id"]["enum"] = sorted(ids)
+        variant["properties"]["disposition"]["enum"] = list(allowed)
+        variants.append(variant)
+    entries = schema["properties"]["selections"]
+    entries["minItems"] = entries["maxItems"] = len(policy)
+    entries["items"] = {"anyOf": variants} if variants else selection
+
+
 def _brochure_text_problem(plan: _BrochurePlan) -> str | None:
     """명백히 끊긴 서술/접속어와 실제 접두어 여유를 포함한 페이지 분량을 검사한다."""
     for page in plan.pages:
@@ -1600,10 +1634,13 @@ class LlmAgent:
                 request.brief.target_company == _company_name_title(f) for f in names):
             raise AgentError("INVALID_REQUEST", "대상 회사명과 확인된 회사명 근거가 일치하지 않습니다. 자료를 보완해 주세요.")
         photos = self._brochure_photos(request, excluded)
+        selection_policy = _editorial_selection_policy(facts, required, excluded)
         payload = {
             "prompt_version": "editorial_v2", "brief": request.brief.model_dump(),
             "facts": [f.model_dump() for f in facts.values()],
             "required_fact_ids": sorted(required), "excluded_fields": sorted(excluded),
+            "selection_constraints": [{"fact_id": fid, "allowed_dispositions": list(allowed)}
+                                      for fid, allowed in selection_policy.items()],
             "supplement_requests": missing,
             "source_units": index.units,
             "source_origins": {s.source_id: s.origin_kind for s in request.sources},
@@ -1624,6 +1661,7 @@ class LlmAgent:
             elif "photo_ids" in props:
                 props["photo_ids"]["maxItems"] = 0
         schema["properties"]["pages"]["maxItems"] = request.brief.target_pages
+        _constrain_editorial_selections(schema, selection_policy)
         response = self._request(instructions, payload, schema, "draft_sections")
         try:
             plan = _EditorialPlan.model_validate(response)
@@ -1634,11 +1672,7 @@ class LlmAgent:
         if set(selections) != set(facts) or len(selections) != len(plan.selections):
             raise _editorial_invalid("selection_coverage")
         for fid, decision in selections.items():
-            fact = facts[fid]
-            if (not decision.reason.strip() or
-                    (fact.status != "supported" and decision.disposition != "review") or
-                    (fact.status == "supported" and fact.field_key in excluded and decision.disposition != "excluded") or
-                    (fid in required and decision.disposition != "required")):
+            if not decision.reason.strip() or decision.disposition not in selection_policy[fid]:
                 raise _editorial_invalid("selection_policy")
         included = {fid for fid, d in selections.items() if d.disposition in {"required", "optional"}}
         if not included or not 1 <= len(plan.pages) <= request.brief.target_pages:
