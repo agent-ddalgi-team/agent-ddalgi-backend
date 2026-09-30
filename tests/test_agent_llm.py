@@ -263,6 +263,83 @@ def test_scope_label_does_not_hide_rank_guarantees_or_numbers(title, allowed):
     assert validation.is_label(title) is allowed
 
 
+@pytest.mark.parametrize("title", ["회사 소개", "기업 소개", "제품 소개", "서비스 소개", "사업 소개",
+                                  "사업 개요", "기업 개요", "제품 설명"])
+def test_editorial_neutral_section_titles_do_not_require_claim_evidence(title):
+    request = build_editorial_request("manufacturing")
+    captured = []
+    def responder(instructions, payload, schema, name):
+        captured.append(name)
+        result = editorial_response(payload)
+        point = result["pages"][0]["points"].pop(0)
+        result["pages"].append({
+            "heading": {"text": title, "fact_ids": []},
+            "lead": {"text": point["text"], "fact_ids": point["fact_ids"]}, "points": [],
+            "photo_ids": [], "layout": "fact_sheet", "density": "comfortable", "sequence_fact_ids": [],
+        })
+        return result
+    result = llm.LlmAgent(responder).draft(request)
+    assert result.pages[1].blocks[0].content["text"] == title
+    assert result.pages[1].blocks[0].fact_ids == []
+    assert result.pages[1].blocks[1].fact_ids and result.pages[1].blocks[1].evidence_refs
+    assert validate_draft(result, request.sources, {f.fact_id for f in request.preflight.facts}, request.preflight) is None
+    assert captured == ["draft_sections"]
+
+
+@pytest.mark.parametrize("title", ["최고 제품 소개", "제품 소개 200mm", "세계 기업 소개", "인증 제품 소개",
+                                  "제품 설명 납기 보장", "회사 소개 매출 100억원"])
+def test_neutral_title_allowlist_does_not_admit_added_claims(title):
+    assert not validation.is_label(title)
+
+
+@pytest.mark.parametrize("rule,message", [
+    ("schema", "필수 항목"), ("selection_coverage", "선별 목록"),
+    ("selection_policy", "사실 분류"), ("blank_text", "비어 있는"),
+    ("duplicate_reference", "중복 연결"), ("excluded_reference", "선별되지 않은"),
+    ("heading_evidence", "제목의 사실 표현"), ("body_evidence", "본문에 원문 근거"),
+    ("sequence_reference", "순서·연혁"), ("photo_reference", "없는 사진"),
+    ("cover_position", "첫 페이지 이외"),
+])
+def test_editorial_rejection_identifies_rule_without_exposing_response(rule, message, caplog):
+    request = build_editorial_request("manufacturing")
+    calls = []
+    def responder(instructions, payload, schema, name):
+        calls.append(name)
+        result = editorial_response(payload)
+        page = result["pages"][0]
+        if rule == "schema":
+            result["palette"] = "PRIVATE_MODEL_RESPONSE"
+        elif rule == "selection_coverage":
+            result["selections"].pop()
+        elif rule == "selection_policy":
+            result["selections"][0]["disposition"] = "excluded"
+        elif rule == "blank_text":
+            page["lead"]["text"] = "   "
+        elif rule == "duplicate_reference":
+            page["lead"]["fact_ids"] *= 2
+        elif rule == "excluded_reference":
+            page["lead"]["fact_ids"] = ["PRIVATE_MODEL_RESPONSE"]
+        elif rule == "heading_evidence":
+            page["heading"] = {"text": "최고 품질 PRIVATE_MODEL_RESPONSE", "fact_ids": []}
+        elif rule == "body_evidence":
+            page["lead"]["fact_ids"] = []
+        elif rule == "sequence_reference":
+            page["sequence_fact_ids"] = ["PRIVATE_MODEL_RESPONSE"]
+        elif rule == "photo_reference":
+            page["photo_ids"] = ["PRIVATE_MODEL_RESPONSE"]
+        else:
+            result["pages"].append({**copy.deepcopy(page), "layout": "cover_text"})
+        return result
+    with pytest.raises(AgentError) as caught:
+        llm.LlmAgent(responder).draft(request)
+    assert caught.value.code == "AGENT_OUTPUT_INVALID" and not caught.value.retryable
+    assert message in caught.value.message
+    assert f"rule={rule}" in caplog.text
+    assert "PRIVATE_MODEL_RESPONSE" not in caplog.text + str(caught.value)
+    assert request.preflight.facts[0].value not in caplog.text
+    assert calls == ["draft_sections"]
+
+
 def test_editorial_required_history_cannot_be_excluded_by_purpose():
     request = build_editorial_request("manufacturing")
     request.brief.required_fields = ["history"]
@@ -4707,6 +4784,39 @@ def test_interactive_failed_draft_recovers_after_fresh_confirmation(graph_flow, 
     assert saved["editorial"]["prompt_version"] == "editorial_v2"
     assert attempts == ["draft_sections", "company_info", "draft_sections"]
     assert not ledger.snapshot()["stopped"]
+
+
+@pytest.mark.parametrize("invalid_heading", [False, True])
+def test_editorial_heading_fix_and_rejection_reach_job_api(graph_flow, monkeypatch, invalid_heading):
+    flow = graph_flow
+    attempts = []
+    def responder(instructions, payload, schema, name):
+        attempts.append(name)
+        result = editorial_response(payload)
+        point = result["pages"][0]["points"].pop(0)
+        result["pages"].append({
+            "heading": {"text": "최고 품질" if invalid_heading else "제품 소개", "fact_ids": []},
+            "lead": {"text": point["text"], "fact_ids": point["fact_ids"]}, "points": [],
+            "photo_ids": [], "layout": "fact_sheet", "density": "comfortable", "sequence_fact_ids": [],
+        })
+        return result
+    monkeypatch.setattr(ai_jobs, "get_bridge", lambda settings: llm.LlmAgent(responder, settings=settings))
+    headers = {"Idempotency-Key": "editorial-title-regression"}
+    accepted = flow.client.post(flow.base + "/drafts", json=flow.body, headers=headers)
+    result = graph_job(flow, accepted)
+    if invalid_heading:
+        assert result["status"] == "failed" and result["error"]["code"] == "AGENT_OUTPUT_INVALID"
+        assert "제목의 사실 표현" in result["error"]["message"] and "사전 점검부터" in result["error"]["message"]
+        assert not result["error"]["retryable"]
+        assert flow.client.get(flow.base).json()["document_summary"] is None
+    else:
+        assert result["status"] == "succeeded", result
+        doc = flow.client.get(flow.base + "/documents/" + result["result_ref"]["document_id"]).json()["document"]
+        assert doc["pages"][1]["blocks"][0]["content"]["text"] == "제품 소개"
+        assert doc["pages"][1]["blocks"][1]["evidence_refs"]
+        assert doc["editorial"]["prompt_version"] == "editorial_v2"
+    assert flow.client.post(flow.base + "/drafts", json=flow.body, headers=headers).json() == accepted.json()
+    assert attempts == ["draft_sections"]
 
 
 @pytest.fixture
