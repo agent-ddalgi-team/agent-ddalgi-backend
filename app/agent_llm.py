@@ -1014,6 +1014,13 @@ class _EditorialFactNote(BaseModel):
     reason: str = Field(min_length=1, max_length=1200)
 
 
+class _EditorialFactNoteGroup(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    fact_ids: list[str] = Field(min_length=1)
+    unused_disposition: Literal["excluded", "review"]
+    reason: str = Field(min_length=1, max_length=1200)
+
+
 class _EditorialFactPoint(BaseModel):
     """An explicit model choice to publish the confirmed fact's complete wording."""
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -1033,6 +1040,11 @@ class _EditorialComposition(BaseModel):
     pages: list[_EditorialCompositionPage] = Field(min_length=1, max_length=10)
     # Inclusion follows the written references; notes only explain unused facts.
     fact_notes: list[_EditorialFactNote]
+
+
+class _EditorialGroupedComposition(_EditorialComposition):
+    # Share identical unused-fact explanations on the wire, not in the saved audit.
+    fact_notes: list[_EditorialFactNoteGroup]
 
 
 def _whole_fact_point_available(fact: Fact) -> bool:
@@ -1056,6 +1068,12 @@ def _composition_plan(response: dict, facts: dict[str, Fact], policy: dict[str, 
     """
     if "fact_notes" not in response:
         return _EditorialPlan.model_validate(response)
+    if isinstance(response["fact_notes"], list) and any(
+            isinstance(note, dict) and "fact_ids" in note for note in response["fact_notes"]):
+        grouped = _EditorialGroupedComposition.model_validate(response)
+        response = {**grouped.model_dump(exclude={"fact_notes"}), "fact_notes": [
+            {"fact_id": fid, "unused_disposition": note.unused_disposition, "reason": note.reason}
+            for note in grouped.fact_notes for fid in note.fact_ids]}
     composition = _EditorialComposition.model_validate(response)
     notes = {note.fact_id: note for note in composition.fact_notes}
     if set(notes) != set(facts) or len(notes) != len(composition.fact_notes):
@@ -1117,14 +1135,15 @@ def _constrain_editorial_notes(schema: dict, policy: dict[str, tuple[str, ...]])
     for fid, allowed in policy.items():
         unused = allowed if allowed in {("review",), ("excluded",)} else ("excluded", "review")
         groups.setdefault(unused, []).append(fid)
-    note_schema = schema["$defs"].pop("_EditorialFactNote")
+    note_schema = schema["$defs"].pop("_EditorialFactNoteGroup")
     variants = []
     for allowed, ids in groups.items():
         variant = copy.deepcopy(note_schema)
-        variant["properties"]["fact_id"]["enum"] = sorted(ids)
+        variant["properties"]["fact_ids"]["items"]["enum"] = sorted(ids)
+        variant["properties"]["fact_ids"]["maxItems"] = len(ids)
         variant["properties"]["unused_disposition"]["enum"] = list(allowed)
         variants.append(variant)
-    schema["properties"]["fact_notes"].update(minItems=len(policy), maxItems=len(policy),
+    schema["properties"]["fact_notes"].update(minItems=1 if policy else 0, maxItems=len(policy),
         items={"anyOf": variants} if variants else note_schema)
 
 
@@ -1828,7 +1847,7 @@ class LlmAgent:
             "maximum_pages": request.brief.target_pages,
         }
         instructions = legacy.load_draft_prompt(editorial=True)
-        schema = _EditorialComposition.model_json_schema()
+        schema = _EditorialGroupedComposition.model_json_schema()
         usable_ids = sorted(fid for fid, allowed in selection_policy.items() if "optional" in allowed or "required" in allowed)
         whole_fact_ids = [fid for fid in usable_ids if _whole_fact_point_available(facts[fid])]
         whole_only_ids = {fid for fid in usable_ids if _whole_fact_point_required(facts[fid])}

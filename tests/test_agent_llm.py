@@ -209,6 +209,18 @@ def editorial_composition(plan):
     return result
 
 
+def grouped_editorial_composition(plan):
+    """Group identical prepared explanations; retain legacy replay fixtures too."""
+    result = editorial_composition(plan)
+    groups = {}
+    for note in result["fact_notes"]:
+        key = (note["unused_disposition"], note["reason"])
+        groups.setdefault(key, []).append(note["fact_id"])
+    result["fact_notes"] = [{"fact_ids": ids, "unused_disposition": disposition, "reason": reason}
+                            for (disposition, reason), ids in groups.items()]
+    return result
+
+
 @pytest.mark.parametrize("status", ["supported", "needs_confirmation", "conflict", "missing"])
 @pytest.mark.parametrize("excluded", [False, True])
 def test_editorial_selection_schema_binds_status_exclusion_and_required(status, excluded):
@@ -267,17 +279,21 @@ def test_editorial_109_facts_sdk_schema_and_coverage(monkeypatch, damage):
         schema = kwargs["text"]["format"]["schema"]
         assert kwargs["text"]["format"]["strict"] is True
         entries = schema["properties"]["fact_notes"]
-        assert entries["minItems"] == entries["maxItems"] == 109
+        assert entries["minItems"] == 1 and entries["maxItems"] == 109
         variants = entries["items"]["anyOf"]
         assert len(variants) == 2  # unused discretionary, explicitly excluded
         for rule in payload["selection_constraints"]:
             assert rule["fact_id"].startswith("F")
-            matches = [v for v in variants if rule["fact_id"] in v["properties"]["fact_id"]["enum"]]
+            matches = [v for v in variants if rule["fact_id"] in v["properties"]["fact_ids"]["items"]["enum"]]
             assert len(matches) == 1
+            ids_schema = matches[0]["properties"]["fact_ids"]
+            assert ids_schema["minItems"] == 1 and ids_schema["maxItems"] == len(ids_schema["items"]["enum"])
             allowed = rule["allowed_dispositions"]
             assert matches[0]["properties"]["unused_disposition"]["enum"] == (
                 allowed if allowed in [["review"], ["excluded"]] else ["excluded", "review"])
-        response = editorial_composition(editorial_response(payload))
+        response = grouped_editorial_composition(editorial_response(payload))
+        assert len(response["fact_notes"]) < 10
+        assert sum(len(n["fact_ids"]) for n in response["fact_notes"]) == 109
         if damage == "required_body_missing":
             response["pages"][0]["heading"] = {"text": "회사 소개", "fact_ids": []}
         elif damage == "duplicate":
@@ -285,7 +301,7 @@ def test_editorial_109_facts_sdk_schema_and_coverage(monkeypatch, damage):
         elif damage == "omitted":
             response["fact_notes"].pop()
         elif damage == "foreign":
-            response["fact_notes"][-1]["fact_id"] = "F999"
+            response["fact_notes"][-1]["fact_ids"][0] = "F999"
         return metered_response(output_text=json.dumps(response, ensure_ascii=False))
     calls = fake_sdk(monkeypatch, response=respond)
     agent = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=llm.RuntimeLedger()))
@@ -717,16 +733,77 @@ def test_native_composition_derives_optional_inclusion_from_written_references(u
     assert validate_draft(result, request.sources, {f.fact_id for f in request.preflight.facts}, request.preflight) is None
 
 
+@pytest.mark.parametrize("case_id", EDITORIAL_CASES)
+def test_grouped_notes_preserve_every_saved_selection_and_page(case_id):
+    request = build_editorial_request(case_id)
+    before = copy.deepcopy(request)
+    responses = []
+    def responder(instructions, payload, schema, name):
+        response = grouped_editorial_composition(editorial_response(payload))
+        responses.append((response, copy.deepcopy(response)))
+        return response
+    grouped = llm.LlmAgent(responder).draft(request)
+    legacy_result = llm.LlmAgent(lambda i, p, s, n: editorial_composition(editorial_response(p))).draft(request)
+    assert grouped.editorial.selections == legacy_result.editorial.selections
+    # Generated block IDs differ; body, metadata, provenance and fact IDs must not.
+    def content(result):
+        return [{**p.model_dump(exclude={"page_id", "blocks"}), "blocks": [
+            b.model_dump(exclude={"block_id"}) for b in p.blocks]} for p in result.pages]
+    assert content(grouped) == content(legacy_result)
+    assert len(grouped.editorial.selections) == len(request.preflight.facts)
+    assert validate_draft(grouped, request.sources, {f.fact_id for f in request.preflight.facts}, request.preflight) is None
+    assert request == before and all(actual == original for actual, original in responses)
+
+
+@pytest.mark.parametrize("damage", ["within_duplicate", "across_duplicate", "omitted", "foreign", "empty",
+    "blank_reason", "mixed", "both_ids", "review_policy", "excluded_policy", "invalid_type"])
+def test_grouped_notes_reject_incomplete_or_invalid_audit_without_retry(damage):
+    request = build_editorial_request("conflict")
+    request.brief.emphasis = ["납기 제외"]
+    calls = []
+    def responder(instructions, payload, schema, name):
+        calls.append(name)
+        response = grouped_editorial_composition(editorial_response(payload))
+        notes = response["fact_notes"]
+        if damage == "within_duplicate":
+            notes[0]["fact_ids"].append(notes[0]["fact_ids"][0])
+        elif damage == "across_duplicate":
+            notes[-1]["fact_ids"].append(notes[0]["fact_ids"][0])
+        elif damage == "omitted":
+            notes[0]["fact_ids"].pop()
+        elif damage == "foreign":
+            notes[0]["fact_ids"][0] = "outside"
+        elif damage == "empty":
+            notes.append({"fact_ids": [], "unused_disposition": "excluded", "reason": "빈 묶음"})
+        elif damage == "blank_reason":
+            notes[-1]["reason"] = "  "
+        elif damage == "mixed":
+            notes[-1] = {"fact_id": notes[-1]["fact_ids"][0], "unused_disposition": "excluded", "reason": "옛 형식"}
+        elif damage == "both_ids":
+            notes[0]["fact_id"] = notes[0]["fact_ids"][0]
+        elif damage in {"review_policy", "excluded_policy"}:
+            fid = "fact_conflict_cert" if damage == "review_policy" else "fact_conflict_lead_time"
+            next(n for n in notes if fid in n["fact_ids"])["unused_disposition"] = (
+                "excluded" if damage == "review_policy" else "review")
+        elif damage == "invalid_type":
+            notes[0]["fact_ids"] = notes[0]["fact_ids"][0]
+        return response
+    with pytest.raises(AgentError):
+        llm.LlmAgent(responder).draft(request)
+    assert calls == ["draft_sections"]
+
+
+@pytest.mark.parametrize("grouped", [False, True])
 @pytest.mark.parametrize("damage", ["required_missing", "numeric_missing", "heading_only", "excluded_field",
                                     "review_reference", "duplicate_note", "missing_note", "unknown_reference"])
-def test_native_composition_keeps_all_required_evidence_and_body_gates(damage):
+def test_native_composition_keeps_all_required_evidence_and_body_gates(damage, grouped):
     request = build_editorial_request("conflict")
     if damage == "excluded_field":
         request.brief.emphasis = ["납기 제외"]
     calls = []
     def responder(instructions, payload, schema, name):
         calls.append(name)
-        result = editorial_composition(editorial_response(payload))
+        result = (grouped_editorial_composition if grouped else editorial_composition)(editorial_response(payload))
         if damage == "required_missing":
             result["pages"][0]["heading"] = {"text": "회사 소개", "fact_ids": []}
         elif damage in {"numeric_missing", "heading_only"}:
