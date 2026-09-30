@@ -131,6 +131,27 @@ def _invalid() -> AgentError:
     return AgentError("AGENT_OUTPUT_INVALID", "AI 결과의 형식이나 원문 근거가 맞지 않습니다.", False)
 
 
+def _editorial_invalid(rule: str) -> AgentError:
+    """Keep rejection reasons actionable without logging source text or model output."""
+    messages = {
+        "schema": "AI 초안 응답에 필수 항목이 없거나 값의 형식·길이가 맞지 않습니다.",
+        "fact_reference": "AI 초안이 이번 사전 점검에 없는 근거 번호를 반환했습니다.",
+        "selection_coverage": "AI 초안의 사실 선별 목록에 누락·중복 또는 알 수 없는 근거가 있습니다.",
+        "selection_policy": "AI 초안의 필수·제외·확인 필요 사실 분류가 사전 점검과 맞지 않습니다.",
+        "page_count": "AI 초안의 페이지 수나 본문에 포함할 사실 목록이 작성 조건과 맞지 않습니다.",
+        "blank_text": "AI 초안에 비어 있는 제목·소제목 또는 본문이 있습니다.",
+        "duplicate_reference": "AI 초안의 한 문구에 같은 근거 번호가 중복 연결됐습니다.",
+        "excluded_reference": "AI 초안 문구가 제외·확인 필요 또는 선별되지 않은 사실을 참조합니다.",
+        "heading_evidence": "AI 초안 제목의 사실 표현에 원문 근거가 연결되지 않았습니다.",
+        "body_evidence": "AI 초안 본문에 원문 근거가 연결되지 않은 문장이 있습니다.",
+        "sequence_reference": "AI 초안의 순서·연혁 배치가 선별되지 않은 사실을 참조합니다.",
+        "photo_reference": "AI 초안이 선택 자료에서 사용할 수 없는 사진을 참조합니다.",
+        "cover_position": "AI 초안이 첫 페이지 이외에 표지 배치를 사용했습니다.",
+    }
+    logger.warning("Editorial draft rejected: rule=%s", rule)
+    return AgentError("AGENT_OUTPUT_INVALID", messages[rule] + " 초안을 저장하지 않았습니다.", False)
+
+
 class ReviewInputLimitError(AgentError):
     """API 전송 전 검증 입력 크기 거부. 시험 전체를 중단할 모델 결과 오류가 아니다."""
 
@@ -631,7 +652,7 @@ def _map_editorial_fact_ids(value: Any, mapping: dict[str, str]) -> Any:
     """Translate reference fields only. Never rewrite prose, evidence, or source identifiers."""
     def one(fid):
         if type(fid) is not str or fid not in mapping:
-            raise _invalid()
+            raise _editorial_invalid("fact_reference")
         return mapping[fid]
     if isinstance(value, list):
         return [_map_editorial_fact_ids(item, mapping) for item in value]
@@ -642,7 +663,7 @@ def _map_editorial_fact_ids(value: Any, mapping: dict[str, str]) -> Any:
                 result[key] = one(item)
             elif key in {"fact_ids", "required_fact_ids", "sequence_fact_ids"}:
                 if not isinstance(item, list):
-                    raise _invalid()
+                    raise _editorial_invalid("fact_reference")
                 result[key] = [one(fid) for fid in item]
             else:
                 result[key] = _map_editorial_fact_ids(item, mapping)
@@ -1603,29 +1624,38 @@ class LlmAgent:
             elif "photo_ids" in props:
                 props["photo_ids"]["maxItems"] = 0
         schema["properties"]["pages"]["maxItems"] = request.brief.target_pages
-        plan = _EditorialPlan.model_validate(self._request(instructions, payload, schema, "draft_sections"))
+        response = self._request(instructions, payload, schema, "draft_sections")
+        try:
+            plan = _EditorialPlan.model_validate(response)
+        except ValidationError:
+            # Pydantic exceptions include response values; do not log or return the raw exception.
+            raise _editorial_invalid("schema") from None
         selections = {s.fact_id: s for s in plan.selections}
         if set(selections) != set(facts) or len(selections) != len(plan.selections):
-            raise _invalid()
+            raise _editorial_invalid("selection_coverage")
         for fid, decision in selections.items():
             fact = facts[fid]
             if (not decision.reason.strip() or
                     (fact.status != "supported" and decision.disposition != "review") or
                     (fact.status == "supported" and fact.field_key in excluded and decision.disposition != "excluded") or
                     (fid in required and decision.disposition != "required")):
-                raise _invalid()
+                raise _editorial_invalid("selection_policy")
         included = {fid for fid, d in selections.items() if d.disposition in {"required", "optional"}}
         if not included or not 1 <= len(plan.pages) <= request.brief.target_pages:
-            raise _invalid()
+            raise _editorial_invalid("page_count")
         used: dict[str, list[str]] = {fid: [] for fid in included}
         seen_texts, used_photos, pages = set(), set(), []
         origins = {s.source_id: s.origin_kind for s in request.sources}
 
         def claim(item: _EditorialText, kind: str, *, level: int = 1) -> Block:
-            if not item.text.strip() or len(item.fact_ids) != len(set(item.fact_ids)):
-                raise _invalid()
-            if not set(item.fact_ids) <= included or (not item.fact_ids and (kind != "heading" or not is_label(item.text))):
-                raise _invalid()
+            if not item.text.strip():
+                raise _editorial_invalid("blank_text")
+            if len(item.fact_ids) != len(set(item.fact_ids)):
+                raise _editorial_invalid("duplicate_reference")
+            if not set(item.fact_ids) <= included:
+                raise _editorial_invalid("excluded_reference")
+            if not item.fact_ids and (kind != "heading" or not is_label(item.text)):
+                raise _editorial_invalid("heading_evidence" if kind == "heading" else "body_evidence")
             if kind != "heading":
                 normalized = " ".join(item.text.split())
                 if normalized in seen_texts:
@@ -1649,7 +1679,7 @@ class LlmAgent:
 
         for n, planned in enumerate(plan.pages):
             if not set(planned.sequence_fact_ids) <= included:
-                raise _invalid()
+                raise _editorial_invalid("sequence_reference")
             if planned.layout in {"process_steps", "timeline"}:
                 # Do not manufacture a chronology from a plain process list.
                 sequence = " ".join(r.excerpt for fid in planned.sequence_fact_ids for r in facts[fid].evidence_refs)
@@ -1657,12 +1687,12 @@ class LlmAgent:
                 if not planned.sequence_fact_ids or not re.search(pattern, sequence):
                     raise AgentError("AGENT_OUTPUT_INVALID", "순서·시점 근거가 없는 단계/연혁 배치를 거부했습니다.")
             if any(aid not in photos for aid in planned.photo_ids):
-                raise _invalid()
+                raise _editorial_invalid("photo_reference")
             limit = 2 if request.brief.photo_preference == "many" else 1
             chosen = list(dict.fromkeys(aid for aid in planned.photo_ids if aid not in used_photos))[:limit]
             layout = planned.layout
             if layout in {"cover_text", "cover_photo"} and n != 0:
-                raise _invalid()
+                raise _editorial_invalid("cover_position")
             if layout == "cover_photo" and not chosen:
                 layout = "cover_text"
             # The lead and every point are independent editable/provenance units.
