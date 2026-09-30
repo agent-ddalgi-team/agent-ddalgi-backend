@@ -36,6 +36,65 @@ BROWSER = export_render.find_browser(Settings(private_runs_dir=Path("."), db_pat
 needs_browser = pytest.mark.skipif(BROWSER is None, reason="Chromium 계열 브라우저 없음 — 배치 검사(PDF) 테스트 미실행")
 
 
+@needs_browser
+def test_editorial_saved_plan_design_proposal_approval_and_pdf_roundtrip(app, settings, monkeypatch):
+    """Real API/SQLite/Chrome/PDF; extraction/review responses are offline fixtures, never live model proof."""
+    from app import agent_llm
+    from app.services import ai_jobs
+    from test_agent_llm import editorial_response
+    drafted = []
+    class EditorialBridge(MockAgent):
+        def draft(self, request):
+            drafted.append(request.input_revision)
+            return agent_llm.LlmAgent(lambda i, p, s, n: editorial_response(p)).draft(request)
+
+        def propose(self, request):
+            return agent_llm.LlmAgent(lambda *args: pytest.fail("Design must not call a model")).propose(request)
+
+    monkeypatch.setattr(ai_jobs, "get_bridge", lambda settings: EditorialBridge())
+    flow = Flow(app, settings, upload_png=False)
+    original = flow.doc()
+    assert original["editorial"]["prompt_version"] == "editorial_v2"
+    assert original["pages"][0]["design"]["palette"] == "ocean"
+    checked = flow.validate()
+    assert checked["status"] == "passed", checked
+    flow.layout_check()
+    layout = flow.get()["layout_checks"]["pdf"]
+    assert layout["status"] == "passed" and layout["actual_pages"] == 1
+    approval = flow.approve(checked["validation_id"], layout["layout_check_id"])
+    assert approval.status_code == 201, approval.text
+    export = flow.export_ready(approval.json()["approval_id"])
+    first = flow.download(export["export_id"])
+    assert first.status_code == 200 and first.content.startswith(b"%PDF")
+    assert flow.download(export["export_id"]).content == first.content and len(drafted) == 1
+    base = f"/api/v1/sessions/{flow.sid}"
+    doc_url = base + f"/documents/{flow.did}"
+    proposal_job = flow.c.post(doc_url + "/proposals", json={
+        "expected_revision": flow.rev(), "input_revision": flow.rev_in,
+        "target_block_ids": [original["pages"][0]["blocks"][0]["block_id"]],
+        "kind": "structure", "instruction": "카드형"})
+    assert proposal_job.status_code == 202, proposal_job.text
+    pid = flow.job(proposal_job.json()["job_id"])["result_ref"]["proposal_id"]
+    assert flow.doc()["document_revision"] == original["document_revision"]
+    proposal = flow.c.get(base + f"/proposals/{pid}").json()
+    assert proposal["changes"][0]["op"] == "set_page_design"
+    applied = flow.c.post(base + f"/proposals/{pid}/apply", json={"expected_revision": flow.rev()},
+                          headers={"Idempotency-Key": "editorial-design-apply"})
+    assert applied.status_code == 200, applied.text
+    updated = flow.doc()
+    assert updated["document_revision"] == original["document_revision"] + 1
+    assert updated["editorial"] == original["editorial"]
+    assert updated["pages"][0]["blocks"] == original["pages"][0]["blocks"]
+    assert flow.get()["approval"] is None
+    assert flow.download(export["export_id"]).status_code == 409
+    # Replaying apply does not create another revision or another draft.
+    again = flow.c.post(base + f"/proposals/{pid}/apply", json={"expected_revision": original["document_revision"]},
+                       headers={"Idempotency-Key": "editorial-design-apply"})
+    assert again.status_code == 200 and flow.rev() == updated["document_revision"] and len(drafted) == 1
+    flow.layout_check()
+    assert flow.get()["layout_checks"]["pdf"]["status"] == "passed"
+
+
 def _png(width: int = 8, height: int = 6, color=(10, 20, 30)) -> bytes:
     from PIL import Image
 
@@ -267,7 +326,8 @@ def test_llm_photo_normalization_review_blocker_and_pdf_download(settings, monke
         return {"checked_block_ids": payload["changed_block_ids"],
                 "checked_image_ids": [picture.asset_id], "findings": findings}
 
-    monkeypatch.setattr(ai_jobs, "get_bridge", lambda options: agent_llm.LlmAgent(requester, settings=options))
+    # 계약 1.6 사진 정규화 회귀. 새 editorial 경로의 저장→승인→PDF는 위 별도 통합 검사에서 확인한다.
+    monkeypatch.setattr(ai_jobs, "get_bridge", lambda options: agent_llm.LlmAgent(requester, settings=options, legacy_draft=True))
     flow = Flow(create_app(settings), settings, png_size=(640, 480))
     base = f"/api/v1/sessions/{flow.sid}"
     saved = flow.get()
@@ -289,7 +349,7 @@ def test_llm_photo_normalization_review_blocker_and_pdf_download(settings, monke
             assert block["evidence_refs"] == [ref for fid in expected["fact_ids"] for ref in facts[fid]["evidence_refs"]]
     with connect(settings.db_path, immediate=True) as conn:
         row = conn.execute("SELECT content_json FROM document_revisions WHERE document_id=? AND revision=1", (flow.did,)).fetchone()
-        assert json.loads(row["content_json"]) == {"title": draft["title"], "pages": draft["pages"]}
+        assert json.loads(row["content_json"]) == {"title": draft["title"], "pages": draft["pages"], "editorial": None}
         with agent_llm.DraftConfirmationGraph(settings)._open(conn, flow.sid, flow.rev_in, create=False) as (graph, config):
             state = graph.get_state(config)
             assert state.values["preflight_id"] == flow.pf and state.values["consumed"]

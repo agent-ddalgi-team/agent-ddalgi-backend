@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from app.config import Settings
-from app.models import Brief, Candidate, Document, Fact, Issue, Operation, Page, PreflightOut, Recommendations
+from app.models import Brief, Candidate, Document, EditorialRecord, Fact, Issue, Operation, Page, PreflightOut, Recommendations
 
 
 # ---------------- 입력 ----------------
@@ -79,6 +79,7 @@ class AnalyzeResult:
 class DraftResult:
     title: str
     pages: list[Page]
+    editorial: EditorialRecord | None = None
 
 
 @dataclass

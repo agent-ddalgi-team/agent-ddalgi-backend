@@ -1,6 +1,26 @@
 # 공통 데이터·API 계약
 
-기준일: 2026-09-30 · 문서 v1.16 · contract_version: 1.6 · 데이터 schema_version: 1.0
+기준일: 2026-09-30 · 문서 v1.18 · contract_version: 1.8 · 데이터 schema_version: 1.0
+
+**계약 1.8 — 근거 연결 소제목(2026-09-30):** 기본 작성 계획은 `editorial_v2`다. 기존 `editorial_v1` 문서는 계속 읽으며 `prompt_version` 허용값만 확장한다. 새 point의 소제목을 기존 `heading {text, level:2}` 블록으로 저장하고 바로 뒤에 독립 paragraph를 둔다. 두 블록은 같은 fact_ids/evidence_refs를 가지며 소제목에도 수치·참조 검사와 원문 의미 검증을 적용한다. 소제목 참조로 본문의 사실·수치 누락을 충족시킬 수 없다. 공개 블록 종류·DB v11·데이터 1.0은 유지한다.
+
+- **출력:** template_v5는 Page.design이 있는 문서의 인접한 level 2 제목+문단을 함께 배치한다. product_grid의 짧은 두 항목은 나란히, 긴 설명과 홀수로 남은 항목은 전체 너비로 배치한다. fact_sheet/certification_summary는 소제목·본문을 열로 구분한다. 본문 11pt를 유지하고 자동 잘림·내용 삭제는 없다. 실제 배치 검사는 계속 필요하다.
+- **편집·검증:** 소제목 문구·연결 문단이 바뀌면 해당 쌍의 의미 검증을 다시 수행한다. 색상·간격만 바꾸면 내용 검증은 재사용할 수 있으나 배치·승인은 갱신한다. 이전 템플릿의 승인 artifact를 자동 교체하지 않는다.
+- **프론트 영향:** 기존 heading level 2 표시·편집을 재사용하고 `prompt_version=editorial_v2`를 허용해야 한다. 별도 저장소 사본·타입·화면은 미갱신/미검증이다. 아래 1.7의 추가 UI·접근 제한도 유지한다. 이번 실제 모델 평가는 크레딧 소진으로 추출 1회 실패에서 중단되어 v2의 실제 작성 품질은 미검증이다.
+
+아래 1.7 이하 설명은 도입 당시의 계약 기록이며, 기본 프롬프트·템플릿은 위 1.8로 대체한다.
+
+**계약 1.7 — 근거 선별·구성·디자인(2026-09-30):** LlmAgent의 기본 초안 경로는 사진 유무·쪽수와 무관하게 `editorial_v1` 계획을 사용한다. 기존 문서는 선택 필드의 기본값으로 읽는다. DB 테이블 변경 없이 문서 revision JSON에 계획과 디자인을 저장한다. 프론트 사본은 미갱신이며 아래 추가 필드·연산 처리가 필요하다. 이전 1.6 이하 기록은 당시 결과다.
+
+- **Brief 추가:** `audience`(최대 300자, 기본 고객·협력사), `usage_context`(최대 500자, 기본 빈 문자열), `tone`(`plain|formal|concise`), `target_company`(선택, 원문 속 대상 식별 단서), `required_fields`(기존 회사정보 14개 key 중 중복 없는 배열), `brand_color`(선택, `#RRGGBB`). 회사명 단서는 근거를 생성하지 않으며 확인된 회사명과 다르면 생성 거부다. 필수 항목의 근거 부재는 보완 요청과 승인 blocker로 처리한다. 세션 생성/입력 수정의 멱등 해시는 새 필드가 기본값일 때 기존 요청과 동일하게 유지하며 실제 선호가 달라지면 구분한다.
+- **Page.design 추가:** nullable `{palette: neutral|ocean|forest|clay, density: comfortable|compact, typography: editorial|restrained, brand_color: null|#RRGGBB}`. 외부 폰트·임의 CSS/HTML은 허용하지 않는다. 브랜드 색상은 선·강조에 사용하고 본문 대비는 고정된 안전한 색상으로 유지한다. 글꼴은 동봉 Pretendard, 밀도는 간격만 바꾸며 글자 축소로 넘침을 숨기지 않는다.
+- **레이아웃:** 기존 5종에 `cover_text`, `fact_sheet`, `timeline`, `certification_summary`를 추가한다. 저장된 과거 자유 문자열은 읽되 미등록 값은 text로 렌더링한다. 새 디자인 변경 연산은 허용 목록만 받는다. 단계·연혁은 원문 순서/날짜와 의미 검증이 필요하다. 신규 table/차트 블록은 추가하지 않았다.
+- **Document.editorial 추가:** nullable 생성 감사 기록. `prompt_version=editorial_v1`, `input_revision`, `basis_document_revision=1`, `selections[{fact_id, disposition: required|optional|excluded|review, reason}]`, `requested_pages`, `generated_pages`, `page_count_reason`, `supplement_requests`, `unextracted_segment_ids`. 모든 Fact를 한 번 분류한다. optional도 이번 본문에 포함하기로 선택한 사실이다. 수정 후에도 원래 생성 기록을 보존하므로 현재 문서의 검증/승인 상태로 표시하면 안 된다. 현재 반영 위치는 현재 블록의 fact_ids로 찾아야 하며, 자료 변경 후에는 기록의 input_revision과 최신 입력을 구분한다. 미추출 구간 표시는 해당 구간에 Fact 참조가 없다는 진단이지 모든 사실 누락을 판정한 결과가 아니다.
+- **주장 단위:** 새 초안의 lead와 각 point는 독립 paragraph 블록이다. 각 블록에 fact_ids와 전체 evidence_refs(자료 버전·구간·원문 위치·발췌)를 연결한다. 목록 항목을 하나의 배열로 합쳐 근거를 잃지 않는다. 기존 다항목 list는 계속 읽고 편집하지만 과거 근거를 항목별로 복원했다고 표시하지 않는다. 사실 없는 단순 제목은 빈 참조를 허용한다.
+- **수정 연산 추가:** `{"op":"set_page_design","page_id":"p1","layout_key":"fact_sheet","design":{"palette":"ocean","density":"comfortable","typography":"editorial","brand_color":null}}`. 기존 PATCH와 Proposal의 operations/changes에서 처리한다. `kind=structure` 제안의 instruction은 이번 구현에서 `카드형|텍스트형|여유롭게|촘촘하게`를 지원한다. 문구·근거는 변경하지 않으며 적용 전 문서를 보존한다. 요청 외 페이지는 거부한다. 적용하면 revision을 올려 기존 승인·배치 검사를 무효화한다. 색상/간격 변경은 기존 내용 검증 재사용이 가능하지만 단계/연혁으로의 배치 변경이나 해당 페이지의 블록 순서 변경은 내용 검증도 다시 수행한다.
+- **검증·출력:** `template_v4`. 세로/가로 넘침·블록 겹침·논리/물리 쪽수 불일치를 검사하며 실패를 통과로 바꾸지 않는다. 초안·수정 저장 후 원문 의미 검증과 실제 PDF 배치 검사를 거쳐 승인한다. 출력/재다운로드는 저장된 artifact를 사용하며 AI 초안을 재호출하지 않는다. DOCX 승인·출력 제한은 유지한다.
+- **프론트 동작:** S01의 독자/용도/문체·필수 항목·회사명 단서·브랜드 색상 입력, S02의 생성 계획/실제 쪽수 이유·보완/제외 사유 패널과 블록별 원문 이동, Page.design/추가 layout 표시, 디자인 제안 전후 비교와 명시적 적용, S03의 배치 재검사·승인 무효화 표시가 필요하다. 내부 검토 기록은 고객용 본문에 삽입하지 않는다. 로고 전용 선택 UI, 표·차트 편집 UI, 자동 넘침 재작성은 이번 계약에서 추가하지 않는다.
+- **접근 한계:** 익명 소유자 쿠키·선택 자료 검사는 세션 보호다. 공용 등록 자료에는 tenant/company ACL이 없으므로 비공개 회사 자료를 여러 기업에 공용 등록하는 운영은 지원하지 않는다. 현재 안전한 시연 범위는 공개 허용 공통 자료와 각 소유자의 세션 첨부다. 기업 서비스에는 인증된 사용자/기업·등록 자료 ACL·기업별 저장/검색 범위 설계가 별도로 필요하다.
 
 **계약 1.6 — 자료 변경 후 편집 복귀(C-05, 2026-09-30):** 기존 문서의 재점검 확인·영향 조회·선택 적용 API 3개를 추가한다. 적용 전 편집 내용을 보존하고, 명시적 적용 시 새 문서 버전과 현재 입력/점검을 연결하며 전체 내용 검증을 예약한다. 같은 입력의 과거 버전만 바로 복원할 수 있다. DB v11의 기존 영향/확인 테이블을 사용하며 스키마 변경은 없다. 프론트 계약 사본·타입·자료 변경 배너와 확인/적용 화면은 별도 갱신이 필요하다.
 
@@ -75,6 +95,11 @@
 | direction | balanced / quality_process / customer_response | A/B/C 작성 방향 |
 | target_pages | 1 / 4 / 6 / 8 / 10 | 기본 목표 쪽수 |
 | photo_preference | none / balanced / many | 사진 비중; 많아도 자료 없는 사진을 만들지 않음 |
+| audience / usage_context | string / string | 독자(기본 처음 회사를 접하는 고객·협력사) / 사용 상황(기본 빈 문자열) |
+| tone | plain / formal / concise | 문체; 기본 plain |
+| target_company | string 또는 null | 원문에서 대상 회사를 고르는 단서; 사실 근거가 아님 |
+| required_fields | string[] | 반드시 포함할 기존 회사정보 key; 근거 부재 시 보완 요청 |
+| brand_color | #RRGGBB 또는 null | 제공된 브랜드 강조색 |
 
 ### Source — 원자료
 
@@ -136,9 +161,10 @@
 필수: `schema_version`, `document_id`, `session_id`, `document_revision`, `input_revision`, `title`, `target_pages`, `pages`, `status`.
 
 - status: `draft`, `review_required`, `ready_for_approval`, `approved`.
-- `target_pages`는 사용자 목표이며 `pages` 개수와 같음을 보장하지 않는다. 새 초안은 자료 부족·확인 안내를 마지막 묶음으로 모으므로 본문이 적으면 목표보다 적은 논리 페이지를 반환한다. 실제 PDF/DOCX 출력 배치는 별도 검사한다.
+- `target_pages`는 사용자 목표이며 `pages` 개수와 같음을 보장하지 않는다. 새 editorial 초안은 사실과 조건을 담을 수 있는 목표 이하의 분량으로 구성하고 `editorial.page_count_reason`에 이유를 기록한다. 부족·확인 안내는 본문을 채우는 대신 내부 기록에 남긴다. 실제 PDF/DOCX 출력 배치는 별도 검사한다.
+- 선택 `editorial`은 위 계약 1.7의 생성 감사 기록이다. 과거 문서는 null이며 편집 후 현재 검증 결과로 해석하지 않는다.
 - 서버가 검증 결과와 승인 상태로 status를 계산한다. 클라이언트가 임의로 approved를 설정할 수 없다.
-- Page: `page_id`, `title`, `layout_key`, `blocks`.
+- Page: `page_id`, `title`, `layout_key`, `blocks`, 선택 `design`(기본 null, 위 계약 1.7의 토큰).
 - Block 공통: `block_id`, `type`, `content`, `fact_ids`, `evidence_refs`.
 - 블록은 배열 순서로 배치하고 ID는 순서와 분리한다.
 
@@ -164,6 +190,7 @@ AI가 임의 URL이나 실제로 없는 asset_id를 생성하면 저장 전에 �
 | rename_page | page_id, title |
 | move_page | page_id, after_page_id 또는 null |
 | delete_page | page_id |
+| set_page_design | page_id, layout_key, design(계약 1.7의 허용 토큰) |
 
 after 값이 null이면 맨 앞이다. 존재하지 않는 대상, 자신 뒤로 이동, 다른 문서의 ID 참조는 거부한다. 사용자 직접 수정에서 근거 연결이 유효한지는 서버가 확인하며, 화면이 전달한 fact_ids만으로 검증 완료 처리하지 않는다.
 

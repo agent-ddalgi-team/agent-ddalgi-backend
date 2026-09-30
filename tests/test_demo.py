@@ -610,8 +610,13 @@ def test_preview_mode_guard_keeps_bytes_and_checks_owner(app, settings):
 
 @pytest.mark.parametrize("permission", [None, 0])
 def test_demo_approval_does_not_bypass_photo_permission(app, settings, permission):
-    flow = DemoFlow(app, settings).draft()
+    flow = DemoFlow(app, settings)
     _seed_registered(settings, "DEMOIMG", image=True)
+    selected = flow.c.patch(f"/api/v1/sessions/{flow.sid}/inputs", json={
+        "expected_input_revision": flow.rev_in, "selected_source_ids": flow.source_ids + ["DEMOIMG"]})
+    assert selected.status_code == 200, selected.text
+    flow.rev_in = selected.json()["input_revision"]
+    flow.draft()
     first_page = flow.doc()["pages"][0]
     flow.patch([{"op": "insert_block", "page_id": first_page["page_id"], "after_block_id": first_page["blocks"][-1]["block_id"],
                  "block": {"block_id": "b_photo", "type": "image", "content": {"asset_id": "asset_DEMOIMG", "caption": "예시 사진", "alt": "예시 사진", "fit": "contain"},

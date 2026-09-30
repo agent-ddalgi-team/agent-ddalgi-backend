@@ -141,6 +141,12 @@ def apply_operations(pages: list[Page], ops: list[Operation]) -> list[Page]:
                 raise OpError(index, name, "페이지가 없습니다", {"page_id": op.page_id})
             page_by_id[op.page_id].title = op.title
 
+        elif name == "set_page_design":
+            if op.page_id not in page_by_id:
+                raise OpError(index, name, "페이지가 없습니다", {"page_id": op.page_id})
+            page_by_id[op.page_id].layout_key = op.layout_key
+            page_by_id[op.page_id].design = op.design.model_copy(deep=True)
+
         elif name == "move_page":
             if op.page_id not in page_by_id:
                 raise OpError(index, name, "페이지가 없습니다", {"page_id": op.page_id})

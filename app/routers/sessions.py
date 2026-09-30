@@ -20,7 +20,9 @@ def create_session(request: Request, response: Response, body: SessionCreate,
     settings = settings_of(request)
     owner = ensure_owner(request, response)
     # Preserve legacy non-demo session-create keys while distinguishing explicit demo requests.
-    digest = idempotency.body_hash(body.model_dump() if body.demo else body.model_dump(exclude={"demo"}))
+    hash_payload = body.model_dump() if body.demo else body.model_dump(exclude={"demo"})
+    hash_payload["brief"] = body.brief.idempotency_payload()
+    digest = idempotency.body_hash(hash_payload)
     with connect(settings.db_path) as conn:
         # 연결된 세션이 종료·만료됐으면 최초 응답(brief)을 돌려주지 않고 410(만료 확정·정리 등록 포함, BE-09).
         replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest, settings)
@@ -59,7 +61,10 @@ def patch_inputs(request: Request, sid: str, body: InputsPatch,
                  idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")):
     settings = settings_of(request)
     owner = require_owner(request)
-    digest = idempotency.body_hash(body.model_dump())
+    hash_payload = body.model_dump()
+    if body.brief is not None:
+        hash_payload["brief"] = body.brief.idempotency_payload()
+    digest = idempotency.body_hash(hash_payload)
     # 세션 상태 검사·버전 검사·내용 변경·멱등 저장을 BEGIN IMMEDIATE 한 트랜잭션으로(BE-09 리뷰 1): 종료 확정과 직렬화돼
     # 종료가 먼저면 410, PATCH가 먼저면 종료(finalize)가 그 결과까지 제거한다. purged 세션에 brief·응답이 다시 저장되지 않는다.
     with connect(settings.db_path, immediate=True) as conn:

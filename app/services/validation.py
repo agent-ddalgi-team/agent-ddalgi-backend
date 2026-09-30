@@ -23,7 +23,7 @@ from typing import Any
 
 from app.agent_bridge import SourceIn
 from app.db import Connection, Row
-from app.models import (Block, CheckRecord, Document, EvidenceRef, Fact, Issue, IssueOut, PreflightOut,
+from app.models import (Block, Brief, CheckRecord, Document, EvidenceRef, Fact, Issue, IssueOut, PreflightOut,
                         ValidationOut)
 from app.services import refs as refs_service
 from app.timeutil import now, to_iso
@@ -80,12 +80,21 @@ _SECTION_LABELS = frozenset({"회사명", "회사소개서 초안", "회사 개�
 def is_label(text: str) -> bool:
     """절 번호를 뺀 정확한 항목 제목을 허용한다. 나머지는 숫자·주장 키워드·길이를 검사한다."""
     t = _SECTION_NUMBER.sub("", text.strip()).strip()
+    # '범위' is a scope noun, not the ranking marker '위'. Other claim words and digits still require evidence.
+    claim_text = t.replace("범위", "")
     return t in _SECTION_LABELS or (len(t) <= LABEL_MAX_LEN and not _DIGIT.search(t)
-                                    and not any(k in t for k in _CLAIM_KEYWORDS))
+                                    and not any(k in claim_text for k in _CLAIM_KEYWORDS))
 
 
 def _norm(text: str) -> str:
     return " ".join(text.split())
+
+
+def quantity_tokens(text: str) -> set[tuple[str, str]]:
+    """Literal number/unit pairs; semantic equivalence and unit conversions remain review work."""
+    return {(number.replace(",", ""), unit.lower()) for number, unit in re.findall(
+        r"(?<![0-9.])(\d+(?:[.,]\d+)*)\s*(영업일|개월|시간|억원|만원|kg|mm|cm|㎡|m²|%|톤|년|월|일|명|개|대|건|회|원|g|m)(?![A-Za-z])",
+        text, re.IGNORECASE)}
 
 
 def value_in_text(value: str | None, text: str) -> bool:
@@ -124,7 +133,21 @@ def fingerprint_block(block: Block, seg_texts: dict[str, str]) -> str:
 
 
 def fingerprints(document: Document, seg_texts: dict[str, str]) -> dict[str, str]:
-    return {b.block_id: fingerprint_block(b, seg_texts) for p in document.pages for b in p.blocks}
+    result = {b.block_id: fingerprint_block(b, seg_texts) for p in document.pages for b in p.blocks}
+    for page in document.pages:
+        if page.design is not None:
+            for heading, body in zip(page.blocks, page.blocks[1:]):
+                if heading.type == "heading" and heading.content.get("level") == 2 and body.type == "paragraph":
+                    pair = json.dumps([heading.block_id, body.block_id, result[heading.block_id], result[body.block_id]],
+                                      separators=(",", ":"))
+                    for block in (heading, body):
+                        result[block.block_id] = hashlib.sha256((result[block.block_id] + pair).encode()).hexdigest()
+        # Ordered visual presentations add meaning. Color/spacing-only edits can reuse content checks.
+        if page.design is not None and page.layout_key in {"process_steps", "timeline"}:
+            sequence = json.dumps([page.layout_key, [b.block_id for b in page.blocks]], separators=(",", ":"))
+            for block in page.blocks:
+                result[block.block_id] = hashlib.sha256((result[block.block_id] + sequence).encode()).hexdigest()
+    return result
 
 
 # ---------------- 세션 사실 정보 ----------------
@@ -143,6 +166,9 @@ class Context:
     asset_captions: dict[str, str] = field(default_factory=dict)
     selected_sources: list[SourceIn] | None = None
     selected_preflight: PreflightOut | None = None
+    required_fields: list[str] = field(default_factory=list)
+    scope_sources: list[SourceIn] | None = None
+    scope_preflight: PreflightOut | None = None
 
 
 def load_context(conn: Connection, session_id: str, preflight: PreflightOut | None) -> Context:
@@ -157,7 +183,7 @@ def load_context(conn: Connection, session_id: str, preflight: PreflightOut | No
         "SELECT asset_id, source_id FROM assets WHERE deleted_at IS NULL AND (session_id=? OR scope='registered')", (session_id,))}
     mock_sources = {r["source_id"] for r in conn.execute("SELECT source_id FROM sources WHERE is_mock=1 OR origin_kind='mock'")}
     demo_sources = {r["source_id"] for r in conn.execute("SELECT source_id FROM sources WHERE origin_kind='demo'")}
-    session = conn.execute("SELECT demo, input_revision, selected_source_ids FROM sessions WHERE session_id=?",
+    session = conn.execute("SELECT demo, input_revision, selected_source_ids, brief_json FROM sessions WHERE session_id=?",
                            (session_id,)).fetchone()
     from app.services import preflights
     sources = preflights.build_sources(conn, session_id, json.loads(session["selected_source_ids"])) if session else []
@@ -176,7 +202,9 @@ def load_context(conn: Connection, session_id: str, preflight: PreflightOut | No
     captions = {aid: meta["caption"] for src in sources for aid, meta in src.asset_descriptions.items()}
     return Context(seg_texts, seg_source, asset_source, mock_sources, refs_service.load(conn, session_id), facts,
                    list(preflight.issues) if preflight else [], demo_sources, bool(session and session["demo"]), captions,
-                   selected_sources=selected_sources, selected_preflight=preflight if selected_sources is not None else None)
+                   selected_sources=selected_sources, selected_preflight=preflight if selected_sources is not None else None,
+                   scope_sources=sources, scope_preflight=preflight,
+                   required_fields=Brief.model_validate_json(session["brief_json"]).required_fields if session else [])
 
 
 def image_has_descriptive_caption(block: Block, ctx: Context) -> bool:
@@ -329,6 +357,19 @@ def server_checks(document: Document, ctx: Context) -> tuple[list[IssueDraft], l
         drafts.append(_required_issue(document, ctx, REQUIRED_NAME_KEYS, "회사명"))
     if not _required_present(document, ctx, REQUIRED_BUSINESS_KEYS):
         drafts.append(_required_issue(document, ctx, REQUIRED_BUSINESS_KEYS, "주요 사업/공정 설명"))
+    for key in ctx.required_fields:
+        if not _required_present(document, ctx, (key,)):
+            drafts.append(_required_issue(document, ctx, (key,), key))
+    if document.editorial and document.editorial.input_revision == document.input_revision:
+        present = {fid for p in document.pages for b in p.blocks
+                   if b.type != "heading" for fid in b.fact_ids}
+        present.update(fid for p in document.pages for b in p.blocks for fid in b.fact_ids
+                       if fid in ctx.facts and ctx.facts[fid].field_key == "company_name")
+        missing = [s.fact_id for s in document.editorial.selections if s.disposition == "required"
+                   and s.fact_id in ctx.facts and s.fact_id not in present]
+        if missing:
+            drafts.append(IssueDraft("content", "REQUIRED_MISSING", "blocker",
+                                     "구성 계획의 필수 사실이 현재 본문에서 빠졌습니다.", fact_ids=missing))
     records.append(CheckRecord(check_key="required_content", kind="server", result="issue" if drafts else "ok"))
 
     conflicts = preflight_conflicts(ctx)
@@ -337,16 +378,24 @@ def server_checks(document: Document, ctx: Context) -> tuple[list[IssueDraft], l
     conflict_by_fact = {fid: issue for issue in conflicts for fid in issue.fact_ids}
 
     for page in document.pages:
+        if page.design and page.layout_key in {"process_steps", "timeline"}:
+            evidence = " ".join(r.excerpt for b in page.blocks for r in b.evidence_refs)
+            pattern = r"(?:\d{4}년|\d{4}[-./]\d{1,2})" if page.layout_key == "timeline" else r"(?:→|->|\d+[.)]\s|먼저.+다음|후에|이후)"
+            if not re.search(pattern, evidence):
+                drafts.append(IssueDraft("content", "UNSUPPORTED_CLAIM", "blocker",
+                    "순서·시점 근거가 없는 단계/연혁 배치입니다.", block_ids=[b.block_id for b in page.blocks]))
         for block in page.blocks:
             bid = block.block_id
             texts = block_texts(block)
             joined = " ".join(texts).strip()
             before = len(drafts)
             selected_problem = None
-            if ctx.selected_sources is not None:
+            current_sources = ctx.scope_sources if ctx.scope_sources is not None else ctx.selected_sources
+            current_preflight = ctx.scope_preflight or ctx.selected_preflight
+            if current_sources is not None:
                 selected_problem = (refs_service.selected_problem(
-                    [page.model_copy(update={"blocks": [block]})], ctx.selected_sources, ctx.selected_preflight)
-                    if ctx.selected_preflight is not None else "현재 입력에 해당하는 사전 점검이 없습니다.")
+                    [page.model_copy(update={"blocks": [block]})], current_sources, current_preflight)
+                    if current_preflight is not None else "현재 입력에 해당하는 사전 점검이 없습니다.")
             if selected_problem:
                 drafts.append(IssueDraft("content", "EVIDENCE_INVALID", "blocker",
                                          "현재 선택 자료와 최신 점검에서 사용할 수 없는 참조입니다. " + selected_problem,
@@ -354,6 +403,18 @@ def server_checks(document: Document, ctx: Context) -> tuple[list[IssueDraft], l
             elif any(fid not in ctx.refs.fact_ids for fid in block.fact_ids):
                 drafts.append(IssueDraft("content", "EVIDENCE_INVALID", "blocker",
                                          "현재 세션에서 근거로 사용할 수 없는 사실 참조입니다.", block_ids=[bid]))
+
+            if document.editorial and block.fact_ids:
+                expected_refs = [r for fid in block.fact_ids if fid in ctx.facts for r in ctx.facts[fid].evidence_refs]
+                if any(ref not in block.evidence_refs for ref in expected_refs):
+                    drafts.append(IssueDraft("content", "EVIDENCE_INVALID", "blocker",
+                        "주장의 사실 근거 또는 조건 근거가 빠졌습니다.", block_ids=[bid]))
+                numbers = set(re.findall(r"\d+(?:[.,]\d+)*", joined))
+                original_numbers = set(re.findall(r"\d+(?:[.,]\d+)*", " ".join(r.excerpt for r in expected_refs)))
+                if (numbers - original_numbers or quantity_tokens(joined) - quantity_tokens(
+                        " ".join(r.excerpt for r in expected_refs))):
+                    drafts.append(IssueDraft("content", "VALUE_MISMATCH", "blocker",
+                        "현재 문구의 수치·단위 조합이 연결된 원문에 없습니다.", block_ids=[bid]))
 
             # 근거 없는 사실 주장(㉛). 종류가 아니라 내용으로 판단한다.
             if not block.fact_ids and not is_placeholder(joined):

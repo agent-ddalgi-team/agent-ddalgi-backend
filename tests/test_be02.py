@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from app import create_app
 from app.config import Settings
+from app.models import Brief
 from app.services import sessions as sessions_service
 from app.timeutil import from_iso, to_iso
 
@@ -52,10 +53,36 @@ def _txt(name: str, size: int = 10):
 def test_create_and_get_session(client):
     s = _create(client)
     assert s["status"] == "active" and s["input_revision"] == 1 and s["selected_source_ids"] == []
-    assert s["brief"] == BRIEF
+    assert s["brief"] == Brief.model_validate(BRIEF).model_dump()
     assert client.cookies.get("ddalgi_owner")
     r = client.get(f"/api/v1/sessions/{s['session_id']}")
     assert r.status_code == 200 and r.json()["session_id"] == s["session_id"]
+
+
+def test_editorial_brief_defaults_preserve_legacy_idempotency(client, settings):
+    from app.db import connect
+    from app.services.idempotency import body_hash
+
+    headers = {"Idempotency-Key": "editorial-create"}
+    created = client.post("/api/v1/sessions", json={"brief": BRIEF}, headers=headers)
+    assert created.status_code == 201
+    with connect(settings.db_path) as conn:
+        stored = conn.execute("SELECT body_hash FROM idempotency_keys WHERE idem_key='editorial-create'").fetchone()[0]
+    assert stored == body_hash({"brief": BRIEF})
+    expanded = Brief.model_validate(BRIEF).model_dump()
+    assert client.post("/api/v1/sessions", json={"brief": expanded}, headers=headers).json()["session_id"] == created.json()["session_id"]
+    changed = {**expanded, "audience": "기술 검토자"}
+    assert client.post("/api/v1/sessions", json={"brief": changed}, headers=headers).status_code == 409
+
+    url = f"/api/v1/sessions/{created.json()['session_id']}/inputs"
+    patch = {"expected_input_revision": 1, "brief": BRIEF}
+    headers = {"Idempotency-Key": "editorial-patch"}
+    assert client.patch(url, json=patch, headers=headers).status_code == 200
+    with connect(settings.db_path) as conn:
+        stored = conn.execute("SELECT body_hash FROM idempotency_keys WHERE idem_key='editorial-patch'").fetchone()[0]
+    assert stored == body_hash({**patch, "selected_source_ids": None})
+    assert client.patch(url, json={**patch, "brief": expanded}, headers=headers).status_code == 200
+    assert client.patch(url, json={**patch, "brief": changed}, headers=headers).status_code == 409
 
 
 def test_invalid_brief_returns_common_error(client):

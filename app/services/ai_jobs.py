@@ -87,7 +87,7 @@ def validate_analyze(result: AnalyzeResult, sources: list[SourceIn]) -> str | No
     return None
 
 
-def validate_draft(result: DraftResult, sources: list[SourceIn], fact_ids: set[str]) -> str | None:
+def validate_draft(result: DraftResult, sources: list[SourceIn], fact_ids: set[str], preflight=None) -> str | None:
     segs, assets, versions = preflights.allowed_ids(sources)
     page_ids: set[str] = set()
     block_ids: set[str] = set()
@@ -110,6 +110,15 @@ def validate_draft(result: DraftResult, sources: list[SourceIn], fact_ids: set[s
                 return f"근거 없는 문단: {block.block_id}"
     if not result.pages:
         return "페이지가 없음"
+    if preflight is not None:
+        if problem := refs.selected_problem(result.pages, sources, preflight):
+            return problem
+        if result.editorial is not None:
+            chosen = [s.fact_id for s in result.editorial.selections]
+            if set(chosen) != fact_ids or len(chosen) != len(set(chosen)):
+                return "구성 계획의 사실 선별 기록 불일치"
+            if result.editorial.input_revision != preflight.input_revision:
+                return "구성 계획의 입력 버전 불일치"
     return None
 
 
@@ -191,9 +200,11 @@ def validate_propose_ops(ops: list[Operation], document: Document, target_block_
     page_of = {b.block_id: p.page_id for p in document.pages for b in p.blocks}
     target_pages = {page_of[t] for t in targets if t in page_of}
     for op in ops:
-        if op.op in ("insert_page", "rename_page", "move_page", "delete_page"):
+        if op.op in ("insert_page", "rename_page", "move_page", "delete_page", "set_page_design"):
             if kind != "structure":
                 return f"kind={kind}에서 페이지 연산은 허용되지 않음: {op.op}"
+            if op.op == "set_page_design" and op.page_id not in target_pages:
+                return "선택 영역 밖 페이지의 디자인 변경"
         elif op.op == "insert_block":
             if op.page_id not in target_pages or (op.after_block_id is not None and op.after_block_id not in targets
                                                   and not op.after_block_id.startswith(tuple(f"{t}_" for t in targets))):
@@ -469,7 +480,7 @@ def run_draft_job(settings: Settings, session_id: str, job_id: str, input_revisi
                     return
                 _fail_agent(conn, job_id, exc, requires_reanalysis=resumed)
             return
-        problem = validate_draft(result, sources, {f.fact_id for f in preflight.facts})
+        problem = validate_draft(result, sources, {f.fact_id for f in preflight.facts}, preflight)
         with connect(settings.db_path, immediate=True) as conn:   # 세션 확인과 저장을 한 잠금 안에서(BE-09)
             if _policy_failure(conn, settings, session_id, job_id):
                 return
@@ -490,7 +501,8 @@ def run_draft_job(settings: Settings, session_id: str, job_id: str, input_revisi
             # 미해결 blocker가 있으면 검토 필요. 검증(BE-06) 전까지는 사전 점검의 문제로만 판단한다.
             status = "review_required" if any(i.severity == "blocker" and i.status == "open" for i in preflight.issues) else "draft"
             document_id = documents.create_initial(conn, session_id, input_revision, result.title,
-                                                   brief.target_pages, result.pages, status, preflight_id=preflight_id)
+                                                   brief.target_pages, result.pages, status, preflight_id=preflight_id,
+                                                   editorial=result.editorial)
             jobs.succeed(conn, job_id, {"type": "document", "document_id": document_id, "document_revision": 1})
     except Exception:
         logger.exception("draft job crashed: %s", job_id)

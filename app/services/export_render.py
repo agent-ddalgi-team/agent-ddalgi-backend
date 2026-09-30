@@ -390,6 +390,31 @@ def _view_blocks(snapshot: RenderSnapshot, page: Page) -> list[dict[str, Any]]:
                             "data_b64": base64.b64encode(data).decode("ascii")})
         elif block.type == "image_placeholder":
             out.append({"type": "image_placeholder", "block_id": block.block_id, "description": _clean_text(c.get("description"))})
+    if page.design:
+        # Pair existing editable blocks only; never rewrite, reorder, or hide document text.
+        for n, block in enumerate(out[:-1]):
+            following = out[n + 1]
+            if block["type"] == "heading" and block["level"] == 2 and following["type"] == "paragraph":
+                block["group_start"] = True
+                block["wide"] = len(following["text"]) >= 50
+                following["group_end"] = True
+        if layout_checks.render_layout(page.layout_key) == "product_grid":
+            pending = None
+            for n, block in enumerate(out):
+                if not block.get("group_start"):
+                    continue
+                if block["wide"]:
+                    if pending is not None:
+                        out[pending]["wide"] = True
+                    pending = None
+                elif pending is not None and n == pending + 2:
+                    pending = None
+                else:
+                    if pending is not None:
+                        out[pending]["wide"] = True
+                    pending = n
+            if pending is not None:
+                out[pending]["wide"] = True
     return out
 
 
@@ -420,6 +445,7 @@ def build_html(snapshot: RenderSnapshot) -> str:
         demo=snapshot.demo, demo_footer_text=DEMO_FOOTER_TEXT, demo_footer_mm=DEMO_FOOTER_MM,
         image_max_h_mm=IMAGE_MAX_H_MM, image_crop_h_mm=IMAGE_CROP_H_MM,
         pages=[{"page_id": p.page_id, "title": _clean_text(p.title),
+                "design": p.design.model_dump() if p.design else None,
                 "layout": layout_checks.render_layout(p.layout_key),
                 "photo_count": sum(b.type == "image" for b in p.blocks),
                 "blocks": _view_blocks(snapshot, p)} for p in snapshot.pages],
@@ -758,9 +784,18 @@ def _overflow_findings(measure: dict[str, Any]) -> list[Finding]:
     for p in measure.get("pages", []):
         if p.get("overflow"):
             excess_mm = round(float(p.get("excess_px", 0)) * 25.4 / 96, 1)
+            causes = []
+            if excess_mm > 0:
+                causes.append(f"본문 높이가 {excess_mm}mm 넘칩니다")
+            if p.get("horizontal_overflow"):
+                causes.append("내용이 본문 가로 경계를 넘칩니다")
+            if p.get("overlapping_blocks"):
+                causes.append("블록이 서로 겹칩니다")
             out.append(Finding("overflow", p["page_id"], p.get("first_overflow_block_id"),
-                               f"이 페이지 내용이 A4 한 쪽 본문 높이를 {excess_mm}mm 넘칩니다.",
-                               {"excess_mm": excess_mm, "height_mm": round(float(p.get("height_px", 0)) * 25.4 / 96, 1)}))
+                               " / ".join(causes or ["페이지 내용이 본문 영역을 넘칩니다"]) + ". 재배치하거나 내용을 나누어 주세요.",
+                               {"excess_mm": excess_mm, "height_mm": round(float(p.get("height_px", 0)) * 25.4 / 96, 1),
+                                "horizontal_overflow": p.get("horizontal_overflow", False),
+                                "overlapping_blocks": p.get("overlapping_blocks", [])}))
     return out
 
 
@@ -794,6 +829,17 @@ def _render_pdf(snapshot: RenderSnapshot, out_dir: Path, settings: Settings | No
         if snapshot.demo and (not info["pages"] or info["missing_footer_pages"]):
             raise RenderError("demo_footer_missing", "시연 표시가 없는 PDF는 제공할 수 없습니다. 지원되는 브라우저에서 다시 검사해 주세요.",
                               {"page_numbers": info["missing_footer_pages"]})
+        if info["pages"] != len(snapshot.pages):
+            mismatch = {"logical_pages": len(snapshot.pages), "actual_pages": info["pages"]}
+            details["page_count_mismatch"] = mismatch
+            known_overflows = [f for f in findings if f.kind == "overflow"]
+            if known_overflows:
+                # 이미 측정한 원인 블록을 유지한다. 마지막 페이지에 중복 경고를 붙이지 않는다.
+                for finding in known_overflows:
+                    finding.details.update(mismatch)
+            else:
+                findings.append(Finding("overflow", snapshot.pages[-1].page_id, None,
+                    "실제 PDF 쪽수와 저장 문서의 쪽수가 다릅니다. 넘침이나 빈 페이지를 확인해 주세요.", mismatch))
         try:
             os.replace(pdf_tmp, final)
         except OSError as exc:
