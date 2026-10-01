@@ -683,7 +683,7 @@ def test_editorial_whole_fact_point_sdk_preserves_compound_certification(monkeyp
 
 @pytest.mark.parametrize("damage", ["foreign", "excluded", "review", "duplicate", "mixed", "label_number",
                                     "too_long", "conditions", "required_missing"])
-def test_editorial_whole_fact_point_preserves_rejection_gates(damage):
+def test_editorial_whole_fact_point_validates_and_removes_exact_repeats(damage):
     request, fid = numeric_editorial_request("유효기간 2025년부터 2027년까지, 정기 사후심사가 조건입니다.",
                                            "유효기간 2025년부터 2027년까지, 정기 사후심사가 조건입니다.")
     fact = next(f for f in request.preflight.facts if f.fact_id == fid)
@@ -717,8 +717,16 @@ def test_editorial_whole_fact_point_preserves_rejection_gates(damage):
         if damage == "duplicate":
             response["pages"][0]["points"].append(copy.deepcopy(point))
         return response
-    with pytest.raises(AgentError):
-        llm.LlmAgent(responder).draft(request)
+    if damage == "duplicate":
+        result = llm.LlmAgent(responder).draft(request)
+        matching = [b for p in result.pages for b in p.blocks if b.type == "paragraph" and fid in b.fact_ids]
+        assert len(matching) == 1
+        assert matching[0].content["text"] == fact.value
+        assert matching[0].evidence_refs == fact.evidence_refs
+        assert "동일한 중복 본문 1개" in result.editorial.page_count_reason
+    else:
+        with pytest.raises(AgentError):
+            llm.LlmAgent(responder).draft(request)
     assert calls == ["draft_sections"]
 
 
@@ -1088,7 +1096,8 @@ def test_editorial_rejects_invalid_or_ungrounded_plan_without_retry(damage):
         elif damage == "unknown_photo":
             result["pages"][0]["photo_ids"] = ["asset_other_company"]
         elif damage == "repeat":
-            result["pages"][0]["points"].append({**result["pages"][0]["lead"], "label": "사업 소개"})
+            result["pages"][0]["points"].append({**result["pages"][0]["lead"], "label": "사업 소개",
+                "fact_ids": result["pages"][0]["points"][0]["fact_ids"]})
         elif damage == "label_new_number":
             result["pages"][0]["points"][0]["label"] = "매출 999억원"
         elif damage == "label_only_number":
@@ -1100,6 +1109,69 @@ def test_editorial_rejects_invalid_or_ungrounded_plan_without_retry(damage):
     with pytest.raises(AgentError):
         llm.LlmAgent(responder).draft(request)
     assert calls == ["draft_sections"]
+
+
+@pytest.mark.parametrize("duplicate_kind", ["point", "lead", "other_page"])
+def test_editorial_exact_body_repeat_is_removed_without_losing_evidence(duplicate_kind):
+    request = build_editorial_request("manufacturing", pages=4)
+    calls = []
+    def responder(instructions, payload, schema, name):
+        calls.append(name)
+        result = editorial_response(payload)
+        page = result["pages"][0]
+        if duplicate_kind == "point":
+            repeated = copy.deepcopy(page["points"][0])
+            repeated["text"] = "  " + repeated["text"].replace(" ", "  ") + "  "
+            repeated["label"] = "반복 항목"
+            page["points"].append(repeated)
+        elif duplicate_kind == "lead":
+            page["points"].append({**copy.deepcopy(page["lead"]), "label": "반복 항목"})
+        else:
+            unique = page["points"].pop()
+            result["pages"].append({**copy.deepcopy(page),
+                "heading": {"text": "제품 소개", "fact_ids": []},
+                "points": [unique], "layout": "fact_sheet"})
+        return result
+    result = llm.LlmAgent(responder).draft(request)
+    paragraphs = [block for page in result.pages for block in page.blocks if block.type == "paragraph"]
+    assert len(paragraphs) == len({" ".join(block.content["text"].split()) for block in paragraphs})
+    assert not any(block.content.get("text") == "반복 항목" for page in result.pages for block in page.blocks)
+    assert all(any(block.type == "paragraph" for block in page.blocks) for page in result.pages)
+    assert len(result.pages) == (2 if duplicate_kind == "other_page" else 1)
+    assert "동일한 중복 본문 1개" in result.editorial.page_count_reason
+    assert all("실제 본문" in selection.reason for selection in result.editorial.selections
+               if selection.disposition in {"required", "optional"})
+    assert validate_draft(result, request.sources, {f.fact_id for f in request.preflight.facts}, request.preflight) is None
+    assert calls == ["draft_sections"]
+
+
+@pytest.mark.parametrize("damage,message", [
+    ("different_refs", "서로 다른 사실"), ("duplicate_refs", "중복 연결"),
+    ("blank_label", "비어 있는"), ("numeric_label", "수치·단위·날짜"),
+    ("empty_page", "내용이 없는 페이지"), ("missing_body", "본문에서 빠졌습니다"),
+])
+def test_editorial_repeat_cleanup_does_not_bypass_validation(damage, message):
+    request = build_editorial_request("manufacturing", pages=4)
+    def responder(instructions, payload, schema, name):
+        result = editorial_response(payload)
+        page = result["pages"][0]
+        repeated = {**copy.deepcopy(page["lead"]), "label": "반복 항목"}
+        if damage == "different_refs":
+            repeated["fact_ids"] = page["points"][0]["fact_ids"]
+        elif damage == "duplicate_refs":
+            repeated["fact_ids"] *= 2
+        elif damage == "blank_label":
+            repeated["label"] = " "
+        elif damage == "numeric_label":
+            repeated["label"] = "납기 987일"
+        elif damage == "empty_page":
+            result["pages"].append({**copy.deepcopy(page), "layout": "fact_sheet"})
+        elif damage == "missing_body":
+            page["points"].pop()
+        page["points"].append(repeated)
+        return result
+    with pytest.raises(AgentError, match=message):
+        llm.LlmAgent(responder).draft(request)
 
 
 @pytest.mark.parametrize("title,allowed", [("가공 범위와 주문 참고사항", True), ("적용 범위", True),

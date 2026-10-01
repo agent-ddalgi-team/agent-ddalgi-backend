@@ -1991,10 +1991,13 @@ class LlmAgent:
         if not included or not 1 <= len(plan.pages) <= request.brief.target_pages:
             raise _editorial_invalid("page_count")
         used: dict[str, list[str]] = {fid: [] for fid in included}
-        seen_texts, used_photos, pages = set(), set(), []
+        seen_texts: dict[str, frozenset[str]] = {}
+        used_photos, pages = set(), []
+        removed_duplicates = 0
         origins = {s.source_id: s.origin_kind for s in request.sources}
 
-        def claim(item: _EditorialText, kind: str, *, level: int = 1) -> Block:
+        def claim(item: _EditorialText, kind: str, *, level: int = 1) -> Block | None:
+            nonlocal removed_duplicates
             if not item.text.strip():
                 raise _editorial_invalid("blank_text")
             if len(item.fact_ids) != len(set(item.fact_ids)):
@@ -2003,16 +2006,23 @@ class LlmAgent:
                 raise _editorial_invalid("excluded_reference")
             if not item.fact_ids and (kind != "heading" or not is_label(item.text)):
                 raise _editorial_invalid("heading_evidence" if kind == "heading" else "body_evidence")
-            if kind != "heading":
-                normalized = " ".join(item.text.split())
-                if normalized in seen_texts:
-                    raise AgentError("AGENT_OUTPUT_INVALID", "AI가 같은 본문을 반복했습니다. 작성 범위를 조정해 주세요.")
-                seen_texts.add(normalized)
             evidence = _unique_refs([r for fid in item.fact_ids for r in facts[fid].evidence_refs])
             original = " ".join(r.excerpt for r in evidence)
             if numeric_evidence_tokens(item.text) - numeric_evidence_tokens(original):
                 logger.warning("Editorial draft rejected: rule=numeric_evidence kind=%s level=%s", kind, level)
                 raise AgentError("AGENT_OUTPUT_INVALID", "생성 문구의 수치·단위·날짜가 연결된 원문에 없습니다.")
+            if kind != "heading":
+                normalized = " ".join(item.text.split())
+                references = frozenset(item.fact_ids)
+                if normalized in seen_texts:
+                    if seen_texts[normalized] != references:
+                        logger.warning("Editorial draft rejected: rule=duplicate_body_evidence")
+                        raise AgentError("AGENT_OUTPUT_INVALID", "AI가 같은 본문에 서로 다른 사실을 연결했습니다. 사전 점검 후 다시 생성해 주세요.")
+                    # Validate references and numbers before dropping only an
+                    # exact body/reference repeat. Never merge distinct facts.
+                    removed_duplicates += 1
+                    return None
+                seen_texts[normalized] = references
             for fid in item.fact_ids:
                 # Titles cannot launder an omitted body fact by attaching all IDs.
                 if kind != "heading" or (level == 1 and facts[fid].field_key == "company_name"):
@@ -2059,10 +2069,21 @@ class LlmAgent:
             if layout == "cover_photo" and not chosen:
                 layout = "cover_text"
             # The lead and every point are independent editable/provenance units.
-            blocks = [claim(planned.heading, "heading"), claim(planned.lead, "paragraph")]
+            heading = claim(planned.heading, "heading")
+            assert heading is not None
+            blocks = [heading]
+            lead = claim(planned.lead, "paragraph")
+            if lead is not None:
+                blocks.append(lead)
             for item in planned.points:
-                blocks.append(claim(_EditorialText(text=item.label, fact_ids=item.fact_ids), "heading", level=2))
-                blocks.append(claim(item, "paragraph"))
+                label = claim(_EditorialText(text=item.label, fact_ids=item.fact_ids), "heading", level=2)
+                body = claim(item, "paragraph")
+                if body is not None:
+                    assert label is not None
+                    blocks.extend([label, body])
+            if not any(block.type == "paragraph" for block in blocks):
+                logger.warning("Editorial draft rejected: rule=duplicate_only_page")
+                raise AgentError("AGENT_OUTPUT_INVALID", "반복된 본문을 정리하면 내용이 없는 페이지가 생깁니다. 작성 범위와 자료를 확인하고 다시 생성해 주세요.")
             for aid in chosen:
                 # A label is not evidence of ownership/capacity; descriptions remain internal inputs for review.
                 blocks.append(Block(block_id="block_" + uuid.uuid4().hex[:16], type="image",
@@ -2083,6 +2104,18 @@ class LlmAgent:
             raise AgentError("AGENT_OUTPUT_INVALID", "포함하기로 한 사실 또는 수치·단위가 본문에서 빠졌습니다.")
         extracted = {r.segment_id for f in facts.values() for r in f.evidence_refs}
         count_reason = plan.page_count_reason
+        if removed_duplicates:
+            logger.info("Editorial draft normalized: duplicate_body_count=%s", removed_duplicates)
+            count_reason += f" 문구와 연결 사실이 동일한 중복 본문 {removed_duplicates}개를 한 번만 남겼습니다."
+            for selection in plan.selections:
+                if selection.fact_id not in included:
+                    continue
+                locations = [str(n) for n, page in enumerate(pages, 1) if any(
+                    selection.fact_id in block.fact_ids and (block.type == "paragraph" or (
+                        block.type == "heading" and block.content.get("level") == 1
+                        and facts[selection.fact_id].field_key == "company_name"))
+                    for block in page.blocks)]
+                selection.reason = "중복 정리 후 실제 본문(회사명은 페이지 제목 포함)에 연결된 위치: " + ", ".join(locations) + "쪽."
         original_count = len(response["pages"])
         if len(pages) != original_count:
             count_reason += (f" 선택한 {request.brief.target_pages}쪽에 맞추기 위해 기존 {original_count}쪽의 독립 본문을 "
