@@ -50,6 +50,25 @@ LABEL_MAX_LEN = 20
 CONNECTOR_MAX_LEN = 40
 
 
+def sequence_evidence_supported(layout: str, evidence: str,
+                                fact_evidence: list[tuple[str, list[str]]]) -> bool:
+    """Shared draft/review rule; table years and ordered step headings are evidence too."""
+    pattern = (r"(?:\d{4}년|\d{4}[-./]\d{1,2})" if layout == "timeline"
+               else r"(?:→|->|\d+[.)]\s|먼저.+다음|후에|이후)")
+    if re.search(pattern, evidence):
+        return True
+    for field, excerpts in fact_evidence:
+        if layout == "timeline" and field == "history" and any(
+                re.search(r"(?m)^\s*(?:19|20)\d{2}\s*[|｜]\s*\S", text) for text in excerpts):
+            return True
+        if layout == "process_steps" and field == "processes":
+            steps = [int(value) for text in excerpts for value in re.findall(
+                r"(?<!\w)(?:제[^\S\r\n]*)?([1-9]\d{0,2})[^\S\r\n]*단계[^\S\r\n]*[:：—–-][^\S\r\n]*\S", text)]
+            if len(steps) >= 2 and all(a < b for a, b in zip(steps, steps[1:])):
+                return True
+    return False
+
+
 def block_texts(block: Block) -> list[str]:
     c = block.content
     if block.type in ("heading", "paragraph"):
@@ -435,9 +454,12 @@ def server_checks(document: Document, ctx: Context) -> tuple[list[IssueDraft], l
 
     for page in document.pages:
         if page.design and page.layout_key in {"process_steps", "timeline"}:
-            evidence = " ".join(r.excerpt for b in page.blocks for r in b.evidence_refs)
-            pattern = r"(?:\d{4}년|\d{4}[-./]\d{1,2})" if page.layout_key == "timeline" else r"(?:→|->|\d+[.)]\s|먼저.+다음|후에|이후)"
-            if not re.search(pattern, evidence):
+            page_refs = [r for b in page.blocks for r in b.evidence_refs]
+            page_fids = {fid for b in page.blocks for fid in b.fact_ids}
+            # Only facts and references actually linked on this page can justify its layout.
+            fact_evidence = [(fact.field_key, [r.excerpt for r in fact.evidence_refs if r in page_refs])
+                             for fid, fact in ctx.facts.items() if fid in page_fids]
+            if not sequence_evidence_supported(page.layout_key, " ".join(r.excerpt for r in page_refs), fact_evidence):
                 drafts.append(IssueDraft("content", "UNSUPPORTED_CLAIM", "blocker",
                     "순서·시점 근거가 없는 단계/연혁 배치입니다.", block_ids=[b.block_id for b in page.blocks]))
         for block in page.blocks:

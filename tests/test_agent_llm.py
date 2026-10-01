@@ -919,6 +919,30 @@ def test_editorial_sequence_accepts_source_headings_without_inventing_order(exce
             llm.LlmAgent(respond).draft(request)
     assert request == before and calls == ["draft_sections"]
 
+    # The final server review must agree with the draft gate, including legacy
+    # saved documents. Repeated heading/body references must not duplicate steps.
+    from app.models import PageDesign
+    fact = next(f for f in request.preflight.facts if f.fact_id == fid)
+    blocks = [Block(block_id=f"sequence_{i}", type="paragraph", content={"text": excerpt},
+                    fact_ids=[fid], evidence_refs=fact.evidence_refs) for i in range(2)]
+    doc = Document(document_id="sequence_review", session_id=request.session_id, document_revision=1,
+        input_revision=1, title="검사", target_pages=4, status="draft",
+        pages=[Page(page_id="sequence_page", title="검사", layout_key=layout,
+                    blocks=blocks, design=PageDesign(palette="ocean", typography="editorial", density="comfortable"))])
+    facts = {f.fact_id: f for f in request.preflight.facts}
+    src = request.sources[0]
+    ctx = validation.Context({s.segment_id: s.text for s in src.segments},
+        {s.segment_id: src.source_id for s in src.segments}, {}, set(),
+        refs.SessionRefs({s.segment_id for s in src.segments}, {src.source_id: 1}, set(), set(facts)), facts, [])
+    def sequence_issues():
+        return [i for i in validation.server_checks(doc, ctx)[0] if i.message == "순서·시점 근거가 없는 단계/연혁 배치입니다."]
+    assert bool(sequence_issues()) is not allowed
+    if allowed:
+        # An unrelated fact in the session cannot justify a page with no linked evidence.
+        for block in blocks:
+            block.evidence_refs = []
+        assert sequence_issues()
+
 
 @pytest.mark.parametrize("case_id", EDITORIAL_CASES)
 def test_grouped_notes_preserve_every_saved_selection_and_page(case_id):

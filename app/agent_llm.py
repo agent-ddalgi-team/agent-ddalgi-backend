@@ -1900,7 +1900,7 @@ class LlmAgent:
     def _draft_editorial(self, request: DraftRequest, supported: list[dict], facts: dict[str, Fact],
                          excluded: set[str], index: SourceIndex) -> DraftResult:
         """One bounded call: select -> compose -> write atomic claims -> choose safe design tokens."""
-        from app.services.validation import is_label, numeric_evidence_tokens
+        from app.services.validation import is_label, numeric_evidence_tokens, sequence_evidence_supported
         required, missing = _editorial_required(request, facts)
         if any(facts[fid].field_key in excluded for fid in required):
             raise AgentError("INVALID_REQUEST", "필수 내용과 제외 요청이 겹칩니다. 작성 조건을 정리해 주세요.")
@@ -2040,24 +2040,9 @@ class LlmAgent:
             if planned.layout in {"process_steps", "timeline"}:
                 # Do not manufacture a chronology from a plain process list.
                 sequence = " ".join(r.excerpt for fid in planned.sequence_fact_ids for r in facts[fid].evidence_refs)
-                pattern = r"(?:\d{4}년|\d{4}[-./]\d{1,2})" if planned.layout == "timeline" else r"(?:→|->|\d+[.)]\s|먼저.+다음|후에|이후)"
-                table_year = planned.layout == "timeline" and any(
-                    facts[fid].field_key == "history"
-                    and re.search(r"(?m)^\s*(?:19|20)\d{2}\s*[|｜]\s*\S", ref.excerpt)
-                    for fid in planned.sequence_fact_ids for ref in facts[fid].evidence_refs)
-                numbered_steps = False
-                if planned.layout == "process_steps":
-                    for fid in planned.sequence_fact_ids:
-                        fact = facts[fid]
-                        if fact.field_key != "processes":
-                            continue
-                        # Korean source headings express order too. Require
-                        # multiple increasing steps with actual labels, not a
-                        # step count, product code, or unordered process list.
-                        steps = [int(m) for ref in fact.evidence_refs for m in re.findall(
-                            r"(?<!\w)(?:제[^\S\r\n]*)?([1-9]\d{0,2})[^\S\r\n]*단계[^\S\r\n]*[:：—–-][^\S\r\n]*\S", ref.excerpt)]
-                        numbered_steps |= len(steps) >= 2 and all(a < b for a, b in zip(steps, steps[1:]))
-                if not planned.sequence_fact_ids or not (re.search(pattern, sequence) or table_year or numbered_steps):
+                fact_evidence = [(facts[fid].field_key, [r.excerpt for r in facts[fid].evidence_refs])
+                                 for fid in planned.sequence_fact_ids]
+                if not planned.sequence_fact_ids or not sequence_evidence_supported(planned.layout, sequence, fact_evidence):
                     raise AgentError("AGENT_OUTPUT_INVALID", "순서·시점 근거가 없는 단계/연혁 배치를 거부했습니다.")
             if any(aid not in photos for aid in planned.photo_ids):
                 raise _editorial_invalid("photo_reference")
