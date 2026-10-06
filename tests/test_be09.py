@@ -53,6 +53,112 @@ def app(settings):
     return create_app(settings)
 
 
+@pytest.fixture(params=["legacy", "orm_v11"])
+def restart_db(request, settings):
+    from app.db import ORM_SCHEMA_VERSION, init_orm_db
+
+    if request.param == "orm_v11":
+        init_orm_db(settings.db_path, settings.private_runs_dir)
+    yield create_app(settings), settings
+    with connect(settings.db_path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == (ORM_SCHEMA_VERSION if request.param == "orm_v11" else SCHEMA_VERSION)
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def _lock_windows_file(path):
+    """실제 Windows 공유 삭제 금지 핸들. 오류나 assertion에도 호출자가 finally로 닫는다."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                                  wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    handle = kernel.CreateFileW(str(path), 0x80000000, 1, None, 3, 0x80, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return kernel, handle
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="실제 Windows 파일 잠금 검사")
+def test_windows_locked_long_profile_close_and_restart_recovery(restart_db):
+    app, settings = restart_db
+    flow = Flow(app, settings)
+    root = settings.private_runs_dir / flow.sid
+    # Chrome/Office가 남기는 MAX_PATH 초과 프로필 + 실제 읽기 전용 파일.
+    profile = Path("\\\\?\\" + str(root.absolute())) / "chrome_profile"
+    for index in range(5):
+        profile /= f"component_{index}_" + "x" * 45
+    profile.mkdir(parents=True)
+    locked = profile / "LOCK"
+    locked.write_bytes(b"synthetic browser lock")
+    readonly = profile / "readonly.bin"
+    readonly.write_bytes(b"synthetic component")
+    readonly.chmod(0o444)
+    assert len(str(locked)) > 260
+    registered_file = settings.private_runs_dir / "registered" / "keep.txt"
+    registered_file.parent.mkdir()
+    registered_file.write_bytes(b"registered original")
+    kernel, handle = _lock_windows_file(locked)
+    try:
+        response = flow.c.delete(f"/api/v1/sessions/{flow.sid}")
+        assert response.json() == {"session_id": flow.sid, "status": "closed", "cleanup": "pending"}
+        assert locked.exists() and MARK not in _db_text(settings)
+        task = _row(settings, "SELECT * FROM cleanup_queue WHERE session_id=?", flow.sid)
+        assert (task["status"], task["attempt"], task["last_error"]) == ("pending", 1, "remove_failed")
+        # 이전 프로세스가 점유만 하고 사라진 실제 DB 상태에서 앱 시작 경로 실행.
+        with connect(settings.db_path, immediate=True) as conn:
+            claimed = cleanup.claim(conn, "interrupted-process", session_id=flow.sid, ignore_schedule=True)
+            assert len(claimed) == 1
+        restarted = TestClient(create_app(settings))
+        restarted.cookies.update(flow.c.cookies)
+        task = _row(settings, "SELECT * FROM cleanup_queue WHERE session_id=?", flow.sid)
+        assert (task["status"], task["attempt"], task["claim_token"], task["last_error"]) == ("pending", 1, None, "stale_claim")
+        response = restarted.get(f"/api/v1/sessions/{flow.sid}")
+        assert response.status_code == 410 and response.json()["error"]["details"]["cleanup"] == "pending"
+    finally:
+        assert kernel.CloseHandle(handle)
+    assert sweeper.sweep_once(settings)["done"] == 1
+    assert not root.exists()
+    assert restarted.get(f"/api/v1/sessions/{flow.sid}").json()["error"]["details"]["cleanup"] == "done"
+    assert registered_file.read_bytes() == b"registered original"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="실제 Windows 파일 잠금 검사")
+def test_windows_locked_job_temp_survives_startup_then_sweep_removes_it(restart_db):
+    app, settings = restart_db
+    flow = Flow(app, settings)
+    with connect(settings.db_path) as conn:
+        job = jobs.create(conn, flow.sid, "layout_check", "interrupted render")
+        jobs.set_progress(conn, job.job_id, "rendering", "interrupted render")
+    temp = artifacts.temp_dir(settings, flow.sid, job.job_id)
+    locked = temp / "LOCK"
+    locked.write_bytes(b"synthetic browser lock")
+    kernel, handle = _lock_windows_file(locked)
+    try:
+        restarted = TestClient(create_app(settings))
+        restarted.cookies.update(flow.c.cookies)
+        assert temp.exists()
+        assert _row(settings, "SELECT status FROM jobs WHERE job_id=?", job.job_id)["status"] == "failed"
+        assert restarted.get(f"/api/v1/sessions/{flow.sid}").status_code == 200
+        old = time.time() - cleanup.ORPHAN_TMP_MIN_AGE_S - 10
+        os.utime(temp, (old, old))
+        counts = sweeper.sweep_once(settings)
+        assert counts["orphan_tmp"] == 1 and counts["retry"] == 1
+    finally:
+        assert kernel.CloseHandle(handle)
+    with connect(settings.db_path) as conn:
+        conn.execute("UPDATE cleanup_queue SET next_retry_at=? WHERE session_id=?", (PAST, flow.sid))
+    assert sweeper.sweep_once(settings)["done"] == 1
+    assert not temp.exists()
+    assert restarted.get(f"/api/v1/sessions/{flow.sid}").status_code == 200
+    assert (settings.private_runs_dir / flow.sid).exists()
+
+
 def _row(settings, sql, *params):
     with connect(settings.db_path) as conn:
         return conn.execute(sql, params).fetchone()
