@@ -53,6 +53,15 @@ class Brief(BaseModel):
                 payload.pop(name)
         return payload
 
+    @field_validator("target_company")
+    @classmethod
+    def normalized_target_company(cls, value):
+        if value is None:
+            return None
+        if not value.strip() or any(ord(c) < 32 or ord(c) == 127 for c in value):
+            raise ValueError("target_company must be nonblank without control characters")
+        return value.strip()
+
     @field_validator("required_fields")
     @classmethod
     def known_required_fields(cls, value):
@@ -312,11 +321,35 @@ class PreflightCreate(BaseModel):
     expected_input_revision: RequestRevision
 
 
+class SufficiencyCategory(BaseModel):
+    key: str
+    label: str
+    status: Literal["supported", "needs_confirmation", "conflict", "missing"]
+
+
+class DataSufficiency(BaseModel):
+    score: int = Field(ge=0, le=100)
+    categories: list[SufficiencyCategory]
+    has_blockers: bool
+
+
+class PublicDataImport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_input_revision: RequestRevision
+
+
+class PublicDataStatus(BaseModel):
+    status: Literal["not_configured"] = "not_configured"
+    providers: list[str] = Field(default_factory=lambda: ["dart", "kipris", "g2b"])
+    message: str = "외부 API 키와 수집 연결을 아직 설정하지 않았습니다."
+
+
 class PreflightOut(BaseModel):
     preflight_id: str
     session_id: str
     input_revision: int
     usable_source_ids: list[str]
+    sufficiency: DataSufficiency | None = None
     facts: list[Fact]
     issues: list[Issue]
     recommendations: Recommendations

@@ -3777,5 +3777,69 @@
     "target_company": null,
     "required_fields": [],
     "brand_color": "#246A73"
+  },
+  "frontend_company_coverage_v1_9": {
+    "_note": "2026-10-06 설명용 합성 예시. 공개 자료 실제 수집은 미구현, 키/수집기 미설정 상태만 연결.",
+    "company_patch": {
+      "method": "PATCH",
+      "path": "/api/v1/sessions/{sid}/inputs",
+      "body": {
+        "expected_input_revision": 2,
+        "brief": {
+          "purpose": "회사소개",
+          "emphasis": [],
+          "direction": "balanced",
+          "target_pages": 4,
+          "photo_preference": "balanced",
+          "target_company": "예시 회사"
+        },
+        "selected_source_ids": []
+      }
+    },
+    "public_status": {
+      "status": "not_configured",
+      "providers": [
+        "dart",
+        "kipris",
+        "g2b"
+      ],
+      "message": "외부 API 키와 수집 연결을 아직 설정하지 않았습니다."
+    },
+    "public_import": {
+      "method": "POST",
+      "path": "/api/v1/sessions/{sid}/public-data/import",
+      "body": {
+        "expected_input_revision": 3
+      },
+      "response_status": 503,
+      "error_code": "PUBLIC_DATA_NOT_CONFIGURED",
+      "retryable": false
+    },
+    "sufficiency": {
+      "score": 25,
+      "categories": [
+        {
+          "key": "overview",
+          "label": "기업 개요·연혁",
+          "status": "supported"
+        },
+        {
+          "key": "process",
+          "label": "제조 공정·설비",
+          "status": "missing"
+        },
+        {
+          "key": "performance",
+          "label": "고객사·납품 실적",
+          "status": "missing"
+        },
+        {
+          "key": "certification",
+          "label": "품질·공인 인증",
+          "status": "missing"
+        }
+      ],
+      "has_blockers": false
+    }
   }
 }

@@ -521,3 +521,39 @@ def test_mock_never_contains_real_company_terms():
     text = inspect.getsource(m)
     for banned in ("거산", "케미칼", "Geosan"):
         assert banned not in text
+
+
+def test_sufficiency_uses_evidence_and_preserves_conflicts():
+    from app.models import Fact, Issue, EvidenceRef
+    from app.services.preflights import assess_sufficiency
+    ref = EvidenceRef(source_id="s", source_version=1, segment_id="seg", locator={}, excerpt="근거")
+    def fact(key, status="supported", evidence=True):
+        return Fact(fact_id=key, field_key=key, value="자료", status=status, evidence_refs=[ref] if evidence else [])
+    facts = [fact("company_name"), fact("processes"), fact("customers_markets"), fact("certifications")]
+    assert assess_sufficiency(facts, []).score == 100
+    facts[3] = fact("certifications", evidence=False)
+    assert assess_sufficiency(facts, []).score == 75
+    facts[1] = fact("processes", status="conflict")
+    facts.append(fact("technology"))
+    result = assess_sufficiency(facts, [])
+    assert result.score == 50 and result.categories[1].status == "conflict"
+    issue = Issue(issue_id="i", scope="content", code="UNSUPPORTED_CLAIM", severity="blocker",
+                  message="확인", fact_ids=["company_name"])
+    result = assess_sufficiency(facts, [issue])
+    assert result.score == 25 and result.has_blockers
+    assert result.categories[0].status == "needs_confirmation"
+    issue.scope = "source"
+    issue.source_ids = ["s"]
+    assert assess_sufficiency(facts, [issue]).score == 0
+    assert assess_sufficiency([], []).score == 0
+
+
+def test_preflight_api_exposes_evidence_coverage(client):
+    sid = _session(client)
+    ids = _upload(client, sid, ("company.txt", SOURCE_A))
+    rev = _select(client, sid, ids)
+    result = _preflight(client, sid, rev)
+    coverage = result["sufficiency"]
+    assert len(coverage["categories"]) == 4
+    assert coverage["score"] == 25 * sum(c["status"] == "supported" for c in coverage["categories"])
+    assert isinstance(coverage["has_blockers"], bool)

@@ -1,6 +1,12 @@
 # 공통 데이터·API 계약
 
-기준일: 2026-10-06 · 문서 v1.32 · contract_version: 1.9 · 데이터 schema_version: 1.0
+기준일: 2026-10-06 · 문서 v1.33 · contract_version: 1.9 · 데이터 schema_version: 1.0
+
+**2026-10-06 프론트 회사 선택·충족도 연결(호환 확장):** 기존 Brief.target_company를 회사 선택 UI와 연결한다. 값은 앞뒤 공백을 정리하며 공백뿐인 값·제어 문자는 400이다. 프론트는 회사 변경 시 PATCH /sessions/{sid}/inputs에 새 brief와 selected_source_ids: []를 함께 보내 입력 revision을 올린다. 원자료·기존 문서는 보존하고 최신 점검/C-05 복귀가 필요하다. 회사명 입력 자체는 사실 근거가 아니다.
+
+GET /sessions/{sid}/preflights/{pid}에 sufficiency: {score, categories, has_blockers}를 추가한다. categories는 overview/process/performance/certification의 4개이며 각 항목은 {key,label,status}다. status는 supported|needs_confirmation|conflict|missing; 값·근거가 있는 supported 사실을 포함한 분야당 25점이다. 같은 분야의 충돌/확인 필요 또는 연결된 열린 blocker는 supported보다 우선한다. score는 근거 분야 포함 비율이며 생성 가능 여부·필수 항목 충족·승인 통과를 대체하지 않는다. 구버전 응답이나 최신 입력과 다른 점검은 프론트에서 '점검 필요'로 표시한다.
+
+GET /sessions/{sid}/public-data는 현재 {status:"not_configured",providers:["dart","kipris","g2b"],message}를 반환한다. POST /sessions/{sid}/public-data/import는 {expected_input_revision}를 받고 최신 버전을 검사한 뒤 회사 미선택이면 422 COMPANY_REQUIRED, 외부 키/수집기가 없는 현재 단계에서는 503 PUBLIC_DATA_NOT_CONFIGURED(retryable=false)다. 두 API 모두 기존 소유자·세션 활성 정책(401/404/410/403)을 따른다. 실패 시 자료·Job·revision을 만들거나 바꾸지 않는다. 실제 외부 수집·키 설정·원문 저장 연결은 다음 구현이며 키를 넣는 것만으로 수집이 활성화되지 않는다. API 계약1.9 호환 확장, DB v11 유지.
 
 **2026-10-06 형식별 승인 조회:** 문서 GET에 `approvals_by_format: {pdf: Approval|null, docx: Approval|null}`을 호환 가능한 조회 필드로 추가한다. 현재 문서·입력 버전의 active 승인만 형식별로 반환하며 문서/입력 변경 또는 승인 무효화 후에는 null이다. 기존 `approval`은 어느 형식이든 최신 active 승인이라는 의미를 유지한다. 프론트는 새 필드가 있으면 선택 형식의 승인을 사용하고, 구버전 응답/가상 미리보기에서는 기존 필드를 사용한다. 승인·출력 조건·자동 생성/승인 정책·DB 스키마는 변경하지 않는다.
 
