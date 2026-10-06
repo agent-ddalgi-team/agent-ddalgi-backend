@@ -35,6 +35,7 @@ BANNED = ("거산", "케미칼", "Geosan")
 
 # 템플릿·폰트·DOCX 배치 상수·PDF 렌더 상수의 sha256(줄바꿈 정규화). 이 중 하나라도 바꾸면 TEMPLATE_VERSION을 올리고 여기 값을 갱신한다.
 TEMPLATE_FINGERPRINTS = {
+    "template_v8": "77bee728ad40c81e24e5abb5b12c24fcaa282399a7da8224f14a9ec9bf82ac88",
     "template_v7": "4be75f1522c12f656c964872f89797c24e5b3396138ed237eeabaa2757562134",
     "template_v6": "20677eaf1d7238e726d7a9b13e7648ad79440be189dc17b8203cfa8ad0229950",
     "template_v5": "f8f7d40b6c886b14eb813bbdf561bf1c540d6483c336a78bee377bac46b60fa9",
@@ -375,7 +376,7 @@ def test_draft_pagination_bounds_repeated_overflow_without_losing_content(out_di
 
 def test_identity_values_come_from_layout_checks(out_dir):
     r = er.render(_fixture_snapshot("1pages"), "docx", out_dir)
-    assert r.template_version == layout_checks.TEMPLATE_VERSION == "template_v7"
+    assert r.template_version == layout_checks.TEMPLATE_VERSION == "template_v8"
     assert r.render_options_hash == layout_checks.RENDER_OPTIONS_HASH == layout_checks.render_options_hash(layout_checks.DEFAULT_RENDER_OPTIONS)
     assert len(r.render_options_hash) == 16 and int(r.render_options_hash, 16) >= 0
     changed = dict(layout_checks.DEFAULT_RENDER_OPTIONS, margin_mm=20)
@@ -713,6 +714,33 @@ def test_docx_actual_overflow_remains_blocked(settings, out_dir):
     assert result.layout_ok is False and result.actual_pages > 1 and result.preview_path.is_file()
     assert result.checks[0].result == "finding" and not result.not_checked
     assert any(f.kind == "overflow" for f in result.findings)
+
+
+@needs_libreoffice
+@pytest.mark.parametrize("pages", [4, 8])
+def test_docx_dense_photo_pages_have_no_blank_break_pages(settings, out_dir, pages):
+    from dataclasses import replace
+    import docx
+
+    contents = []
+    body = "표면 처리 공정은 확인된 조건과 검사 순서를 유지하며 고객의 요청에 따라 작업합니다. "
+    for i in range(pages):
+        blocks = [_blk(f"h{i}", "heading", text=f"공정 소개 {i}", level=1),
+                  _blk(f"intro{i}", "paragraph", text=body)]
+        for j in range(4):
+            blocks.extend([_blk(f"h{i}_{j}", "heading", text=f"검사 항목 {j}", level=2),
+                           _blk(f"b{i}_{j}", "paragraph", text=body + "수량 12개, 적용 기간은 2026년 10월입니다.")])
+        blocks.append(_blk(f"photo{i}", "image", asset_id="image", caption="확인한 공정 사진", fit="contain"))
+        contents.append(Page(page_id=f"p{i}", title=f"공정 소개 {i}", layout_key="text_photo", blocks=blocks))
+    snapshot = er.snapshot_from_document(_doc(contents), {"image": er.asset_from_bytes("image", _png(320, 210))}, demo=True)
+    result = er.render(snapshot, "docx", out_dir, replace(settings, export_libreoffice_path=LIBREOFFICE))
+    assert result.actual_pages == pages and result.layout_ok is True, result.findings
+    assert result.details["images_per_page"] == [1] * pages
+    editable = docx.Document(str(result.file_path))
+    # All editable text, repeated picture instances and their original maximum size survive.
+    text = "\n".join(p.text for p in editable.paragraphs)
+    assert text.count(body) == pages * 5 and len(editable.inline_shapes) == pages
+    assert all(abs(shape.height.mm - 118.125) < 0.01 for shape in editable.inline_shapes)
 
 
 # ================= HTML(템플릿) 안전성 — 브라우저 없이 확인 =================

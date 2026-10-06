@@ -64,7 +64,7 @@ DEMO_FOOTER_TEXT = "시연용 · 일부 내용은 임시 데이터입니다"
 DEMO_FOOTER_MM = 9
 DOCX_COLORS = {"text": "111111", "label": "8A8A8A", "caption": "555555", "box": "666666", "broken": "A93226"}
 DOCX_LAYOUT_CONSTANTS = {"page_mm": [PAGE_W_MM, PAGE_H_MM], "image_max_h_mm": IMAGE_MAX_H_MM, "image_max_px": IMAGE_MAX_PX,
-                         "heading_pt": HEADING_PT, "label_pt": LABEL_PT, "caption_pt": CAPTION_PT, "page_break": "per_logical_page",
+                         "heading_pt": HEADING_PT, "label_pt": LABEL_PT, "caption_pt": CAPTION_PT, "page_break": "before_logical_page_label",
                          "box": "table_grid_1x1", "box_space_pt": DOCX_BOX_SPACE_PT, "colors": DOCX_COLORS, "crop": "contain_fallback",
                          "exif_orientation": "apply_before_embed", "image_decode": "full_pixels",
                          "demo_footer": DEMO_FOOTER_TEXT, "demo_footer_mm": DEMO_FOOTER_MM,
@@ -249,7 +249,7 @@ def build_snapshot(conn: Connection, settings: Settings, session_id: str, docume
 @dataclass
 class Finding:
     kind: Literal["overflow", "broken_image", "placeholder_remaining"]
-    page_id: str
+    page_id: str | None
     block_id: str | None
     message: str
     details: dict[str, Any] = field(default_factory=dict)
@@ -1140,9 +1140,10 @@ def _build_docx(snapshot: RenderSnapshot, family: str, base_pt: float, content_w
     doc.core_properties.comments = ""
 
     for index, page in enumerate(snapshot.pages, start=1):
-        if index > 1:
-            doc.add_page_break()
         label = doc.add_paragraph()
+        # 빈 쪽 나눔 문단은 앞쪽이 꽉 차면 다음 쪽으로 밀린 뒤 다시 넘겨 빈 쪽을 만든다.
+        # 새 논리 쪽의 기존 라벨에 나눔을 붙여 추가 줄 높이 없이 시작한다.
+        label.paragraph_format.page_break_before = index > 1
         label.alignment = WD_ALIGN_PARAGRAPH.RIGHT
         run = label.add_run(f"{index} / {_clean_text(page.title)}")
         run.font.size = Pt(LABEL_PT)
