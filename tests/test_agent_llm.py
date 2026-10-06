@@ -1169,6 +1169,49 @@ def test_editorial_exact_body_repeat_is_removed_without_losing_evidence(duplicat
     assert calls == ["draft_sections"]
 
 
+@pytest.mark.parametrize("label_kind", ["same", "whitespace", "different"])
+def test_editorial_repeated_point_label_keeps_body_and_provenance(label_kind):
+    request = build_editorial_request("manufacturing")
+    original = copy.deepcopy(request)
+    baseline = llm.LlmAgent(lambda instructions, payload, schema, name: editorial_response(payload)).draft(request)
+    captured = {}
+
+    def responder(instructions, payload, schema, name):
+        result = editorial_response(payload)
+        point = result["pages"][0]["points"][0]
+        label = point["text"] if label_kind != "different" else "제품과 서비스 설명"
+        if label_kind == "whitespace":
+            label = "  " + label.replace(" ", "  ") + "  "
+        point["label"] = label
+        captured["label"] = " ".join(label.split())
+        return result
+
+    result = llm.LlmAgent(responder).draft(request)
+    paragraphs = lambda draft: [(b.content, b.fact_ids, b.evidence_refs)
+                               for page in draft.pages for b in page.blocks if b.type == "paragraph"]
+    assert paragraphs(result) == paragraphs(baseline)
+    headings = [" ".join(b.content["text"].split()) for page in result.pages
+                for b in page.blocks if b.type == "heading"]
+    assert (captured["label"] in headings) is (label_kind == "different")
+    assert ("중복 항목 제목 1개" in result.editorial.page_count_reason) is (label_kind != "different")
+    assert len(result.pages) == len(baseline.pages)
+    assert validate_draft(result, request.sources, {f.fact_id for f in request.preflight.facts}, request.preflight) is None
+    assert request == original
+
+
+def test_editorial_identical_label_and_body_still_reject_unsupported_number():
+    request = build_editorial_request("manufacturing")
+
+    def responder(instructions, payload, schema, name):
+        result = editorial_response(payload)
+        point = result["pages"][0]["points"][0]
+        point["label"] = point["text"] = "설비 987대"
+        return result
+
+    with pytest.raises(AgentError, match="수치·단위·날짜"):
+        llm.LlmAgent(responder).draft(request)
+
+
 @pytest.mark.parametrize("damage,message", [
     ("different_refs", "서로 다른 사실"), ("duplicate_refs", "중복 연결"),
     ("blank_label", "비어 있는"), ("numeric_label", "수치·단위·날짜"),
