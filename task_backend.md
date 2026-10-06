@@ -7,6 +7,8 @@
 
 ## 1. Quick Status
 
+- **2026-10-06 [F-06/08 · BE-08/10] 최신 사진 설명·크기 반영 문서 승인/다운로드 완료:** revision7 내용·PDF/DOCX8쪽 검수 후 두 형식 시연 승인·파일 바이트/해시 일치·멱등 재전송/ready 재사용·구버전/무소유 접근 차단·DB 무결성 확인. 제품 코드·AI 호출·프론트 변경 없음. [기록](#native-ppi-approval-download-20261006).
+
 - **2026-10-06 [F-06/08 · BE-07/10] 사진 설명·DOCX 확대 제한 반영 완료:** 사진6개 caption/alt 저장·불명확 공정1개 중립 설명 보완, template_v10에서 DOCX 사진150ppi 확대 상한 적용. 관련40건 통과·revision7 실제 내용/두 형식8쪽 검사 통과·사진 원본/과거 승인 파일 보존·새 버전 명시 승인 후속. [기록](#photo-native-ppi-20261006).
 
 - **2026-10-06 [F-08 · BE-10] 사진 설명·실제 출력 해상도/제외 자료 검수 완료:** 사진6개의 원자료 표기 기반 캡션 정리, PDF/DOCX 실제 배치 크기/PPI 계산 및 카탈로그8쪽·ISO4쪽 원본 대조 완료. 기존 승인/선택/자료 보존. [기록](#photo-source-quality-20261006).
@@ -48,8 +50,8 @@
 - **2026-10-06 [F-04/08 · BE-01/05/10] 계약 대조·C-05 실제 HTTP 확인**: 현재 백엔드 `test` 0ad3eb2와 `C:\frontend` develop 0771d54를 읽기 전용 대조했다. 계약 1.8·DB v11·template_v6 기준과 프론트 미연결 항목을 contracts.md v1.24/기존 인계 예시에 정리했다. 새 C-05 HTTP 검사와 관련 회귀 290건, 사진 포함 PDF 승인·다운로드·종료 정리를 확인했다. [현재 실행 기록](#backend-contract-c05-20261006). 이후 DOCX 실제 검사·승인은 아래 2026-10-06 DOCX 기록을 따른다. 프론트·실제 모델·최종 품질 검수는 미완료다.
 - **2026-09-30 분량 사전 확인 후속(BE-04/07)**: 새 editorial 초안 저장 전에 실제 PDF를 확인하고 내용을 보존하며 페이지를 자동 추가한다. 기존 저장본은 유지한다. [자동 분할 기록](#draft-pagination-20260930).
 - **2026-09-30 PDF 사진 넘침 후속(BE-07/08)**: 고정 사진 높이 때문에 6쪽 초안이 8쪽 PDF로 밀리는 사례를 보완했다. template_v6에서 초과한 editorial 페이지의 contain 사진 높이만 제한적으로 줄이며 본문·사진·근거는 유지한다. 동일 문서의 로컬 시험은 6쪽·넘침 0건, 본문 동일·사진 5장 보존이며 6쪽 모두 시각 확인했다. [사진 맞춤 기록](#pdf-photo-fit-20260930).
-- **현재 작업**: **[F-06/08 · BE-07/10] 사진 설명·DOCX 확대 제한 반영/재검수 완료**. revision7 내용 검증·PDF/DOCX8쪽 배치 통과. 새 버전은 미승인이다. [현재 기록](#photo-native-ppi-20261006).
-- **다음 작업**: **[F-06/08 · BE-08/10] 최신 버전 최종 검수·명시 승인/다운로드**. revision7 미리보기·사진 설명·본문을 확인하고 형식별 새 승인과 동일 파일 다운로드를 검사한다. 카탈로그의 현재 사실/ISO 원본 최초승인일·인증번호 확인은 미완료로 유지한다.
+- **현재 작업**: **[F-06/08 · BE-08/10] 최신revision7 시연 PDF/DOCX 최종 검수·승인·다운로드 완료**. 두 형식 승인 active·검사 파일과 다운로드 동일·구버전/무소유 접근 차단 확인. [현재 기록](#native-ppi-approval-download-20261006).
+- **다음 작업**: **[F-08 · BE-10] 백엔드 완료 기준/잔여 항목 대조**. task_backend.md·공통task의 QA와 현행 코드/실행 증거를 대조해 서버 완료·시연 완료·외부 확인이 필요한 항목을 구분하고 백엔드에서 해결 가능한 누락부터 마무리한다. 제외 ISO 원본 날짜/번호·카탈로그 현재성 확인은 완료로 바꾸지 않는다.
 - **주요 메모**: 2026-09-29, 원격 develop / 22fc345에서 백엔드 변경 PR #21~#23 병합을 확인했다. 아래 이전 작업 환경·프론트 시험 결과는 담당자의 당시 기록이며 이 PC에서 다시 확인한 결과는 아니다. 자료 적재 보류와 BE 상태를 유지한다.
 - **이전 작업 환경 기록**: 2026-09-29, 로컬 기준. 원격 `develop`은 ca3ecf4(현황판 양식)까지이며 PR #19·#20 병합을 확인했다. 백엔드 로컬에는 `app/agent_llm.py`·`agent_bridge.py`·`agent_mock.py`, `app/services/ai_jobs.py`·`preflights.py`·`proposals.py`·`validation.py`·`export_render.py`, `contracts.md`(문서 v1.11, 계약 1.5 유지), `prompts/extract.txt`, `.env.example`, `plan.md`(4.24~4.30절), `tests/test_agent_llm.py`·`test_be05.py`, 신규 `scripts/run_llm.ps1`의 미커밋 변경이 있다. 프론트 기준 폴더는 `C:\frontend`이며 `D:\frontend`는 9/29 이전 사본이다. 시연 자료는 `private_runs/demo_preview_20260929_131826/app.sqlite3`에만 있고 기본 `private_runs/erd_v2`의 등록 자료는 0개다. 자료 적재는 사용자 요청으로 보류 중이다.
 - **상태 기준**: BE-01~07·BE-09는 기존 범위 완료, BE-08은 PDF·LibreOffice 기반 DOCX 서버 범위 완료(프론트/실자료 검수 후속), BE-10은 진행중(IN_PROGRESS)이다. 진행률은 기존 BE 업무 10개를 같은 비중으로 계산한 참고값이며 F 기능의 완료율이나 진행 순서를 뜻하지 않는다(완료 1, 부분 완료·진행중 0.5, 대기 0 → 완료8개 + 부분 완료1개 + 진행중1개 = 9/10, 약90%). 화면까지의 완성 여부는 F-08에서 확인한다.
@@ -118,6 +120,16 @@
 ---
 
 ## 5. 완료된 기능 히스토리 (누적 아카이브)
+
+<a id="native-ppi-approval-download-20261006"></a>
+
+### [F-06/08 · BE-08/10] → 사진 품질 반영 최신 문서 시연 승인·다운로드 검수 (2026-10-06)
+
+- **범위/확인:** 사용자의 ‘다음 작업’ 요청으로 직전 예고한 최신 버전 최종 확인·형식별 시연 승인·다운로드 검수를 실행했다. 현재 문서 본문8쪽/사진 설명6개를 GET으로 읽고 두 형식 전체8쪽 미리보기를 열었다. revision7/input2·내용 val_2750c4eadcbc40fb passed·열린 문제0·input_review_required=false, PDF lc_c45f71e706e44d08 / DOCX lc_33ee9cc390b54674 template_v10/8쪽/passed 확인. 제외 ISO 자료의 진위/현재성이나 회사 현재 운영 상태를 확정하지 않는다.
+- **명시 시연 승인:** sess_cece8323f3a247ce / doc_f682a61bb898474e에 기존 승인 API confirmed=true로 PDF apr_def9f32f2bb742b7 / DOCX apr_a39bf1b07fc04039를 생성했다. 둘 다 demo=true·revision7·active이며 GET approvals_by_format에서도 함께 복원된다. 기존 검사 산출물 각각 art_80082f9db7df4b26 / art_c02e8b35f90f4cc2와 연결했다. 사용자 사업상 최종 결재나 외부 배포를 대신한 것이 아닌 로컬 시연 승인이다.
+- **다운로드:** PDF exp_17f4aed597234a9b / DOCX exp_8a8a1a92664847c4 ready. 각2회 실제 HTTP 다운로드가 검사 artifact와 바이트/저장 SHA256 모두 일치했다. PDF2,654,801bytes / 81efceb31de290c9ae695a9836562b5e4b7aeb98505246898b1aeae28db0c1ca, DOCX2,320,528bytes / 657db2c5c570761fa09b27ed4e15d28df24c15732cc839d7c70965b1bb888b5d. 올바른 MIME 확인.
+- **중복/접근 보호:** 각 승인/출력의 동일키 재전송 상태·응답 동일, 새키 ready 재사용200/같은Export 확인. 세션 승인2→4·Export2→4·Job29→31(새 출력2개)이며 artifact14/revision7은 그대로다. 추가 렌더·초안/점검/검증 AI 호출 없이 기존 검사 파일 사용. 이전revision5 다운로드2개는409 APPROVAL_NOT_ACTIVE, 파일 해시는 보존. 새 출력2개 무소유 요청은401. DB quick_check=ok·foreign_key_check0건.
+- **환경/한계:** 기존 시연 서버8000과 프론트5173 HTTP200 유지. 제품 코드·프론트·Agent·.env 변경 없음. 기존 파일과 HTTP 상태만 검사했으므로 별도 pytest/브라우저 버튼 다운로드를 이번 실행으로 주장하지 않는다. 직전 코드 회귀40건과 이전 실제 화면 검사 기록은 각각 당시 결과다. BE-10 진행중 유지, 완료 기준/잔여 QA 대조 후속.
 
 <a id="photo-native-ppi-20261006"></a>
 
