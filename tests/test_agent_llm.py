@@ -1800,6 +1800,10 @@ def test_extract_restores_source_version_location_and_keeps_conditions():
     ("예시 수량 1200개", "예시 수량 1,200개", "supported"),
     ("만료일 2027.02.15", "만료일 2027년 2월 15일", "supported"),
     ("Issue date: 25 September 2025", "발행일 2025년 9월 25일", "supported"),
+    ("2017 | 가상 기관 공정 승인", "연혁에는 가상 기관 공정 승인(2017년)이 기재되어 있다.", "supported"),
+    ("2017 | 가상 기관 공정 승인", "연혁에는 가상 기관 공정 승인(2017)이 기재되어 있다.", "needs_confirmation"),
+    ("2017 | 가상 기관 공정 승인", "가상 기관 공정 승인(2018년)", "needs_confirmation"),
+    ("수량 2017개", "가상 기관 공정 승인(2017년)", "needs_confirmation"),
     ("후보 9행, 월 20영업일", "P01~P09, 월 20영업일", "needs_confirmation"),
     ("길이 200mm", "길이 200cm", "needs_confirmation"),
     ("만료일 2027.02.15", "만료일 2027년 2월 16일", "needs_confirmation"),
@@ -1826,6 +1830,33 @@ def test_extraction_numeric_evidence_is_checked_before_draft(source, value, expe
         assert llm._editorial_selection_policy({fact.fact_id: fact}, set(), set())[fact.fact_id] == ("review",)
     assert validate_analyze(result, selected) is None
     assert calls == ["company_info"]
+
+
+@pytest.mark.parametrize("include_header", [False, True])
+def test_certificate_scope_requires_evidence_for_standard_numbers(include_header):
+    header = "가상 인증서: AS9100D, ISO 9001:2015"
+    scope = "승인 범위: 금속 부품 표면처리 제공"
+    selected = [SourceIn("src_certificate", 1, "company", "가상 인증서", "complete", [
+        SegmentIn("seg_header", {"page": 1}, header),
+        SegmentIn("seg_scope", {"page": 1}, scope)])]
+
+    def responder(instructions, payload, schema, name):
+        units = payload["source_units"]
+        chosen = units if include_header else units[1:]
+        info = {key: {"status": "not_found", "facts": []} for key in legacy.COMPANY_INFO_KEYS}
+        info["certifications"] = {"status": "supported", "facts": [{
+            "text": "AS9100D·ISO 9001 승인 범위는 금속 부품 표면처리 제공이다.",
+            "evidence": [{"source_id": unit["source_id"], "locator": unit["locator"],
+                          "quote": unit["text"]} for unit in chosen]}]}
+        return info
+
+    result = llm.LlmAgent(responder).analyze(AnalyzeRequest("ses_certificate", 1, BRIEF, selected))
+    fact = next(f for f in result.facts if f.field_key == "certifications")
+    assert fact.status == ("supported" if include_header else "needs_confirmation")
+    assert {ref.segment_id for ref in fact.evidence_refs} == (
+        {"seg_header", "seg_scope"} if include_header else {"seg_scope"})
+    assert any(i.code == "UNSUPPORTED_CLAIM" and fact.fact_id in i.fact_ids
+               for i in result.issues) is (not include_header)
 
 
 def test_multiple_facts_conflict_candidates_and_uncertain_text_are_preserved():
