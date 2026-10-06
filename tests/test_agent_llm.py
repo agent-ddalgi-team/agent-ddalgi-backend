@@ -6444,12 +6444,16 @@ def test_stopped_trial_preserves_existing_document_through_server(tmp_path, monk
         for input_revision in (rev, changed["input_revision"]):
             stale = client.post(base + "/drafts", json=draft_body | {"input_revision": input_revision})
             assert stale.status_code == 409 and stale.json()["error"]["code"] == "INPUT_REVISION_CONFLICT"
+        changed_view = client.get(document_url).json()
+        assert changed_view["document"] == saved["document"]
+        assert changed_view["input_review_required"] is True
+        assert changed_view["latest_preflight_id"] is None
         cookies = dict(client.cookies)
         assert len(calls) == 4 and llm.trial_report()["calls_started"] == 2
-    # 같은 임시 DB를 새 앱 인스턴스로 열어 영속 저장을 확인한다. 프로세스·ledger는 유지한다.
+    # 본문은 보존하되, 변경된 입력의 재점검 필요 상태도 재시작 뒤 유지한다.
     with TestClient(create_app(settings)) as reopened:
         reopened.cookies.update(cookies)
-        assert reopened.get(document_url).json() == saved
+        assert reopened.get(document_url).json() == changed_view
         assert reopened.get(preflight_url).json() == confirmed
         assert len(calls) == 4 and llm.trial_report()["calls_started"] == 2
 
