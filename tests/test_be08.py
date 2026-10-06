@@ -801,6 +801,148 @@ def test_recheck_does_not_replace_approval_artifact_and_explicit_reapproval_supe
 # ================= 재시도·재시작·만료 =================
 
 @needs_browser
+@pytest.mark.parametrize("db_mode", ["legacy", "orm_v11"])
+@pytest.mark.parametrize("operation,phase", [("apply", "before_commit"), ("apply", "after_commit"),
+    ("export", "before_commit"), ("export", "after_commit"), ("export", "publishing")])
+def test_http_process_crash_replay_keeps_single_revision_and_export(settings, db_mode, operation, phase):
+    from contextlib import contextmanager
+    import socket
+    import httpx
+    from app.db import ORM_SCHEMA_VERSION, SCHEMA_VERSION, init_orm_db
+
+    if db_mode == "orm_v11":
+        init_orm_db(settings.db_path, settings.private_runs_dir)
+    application = create_app(settings)
+    flow = Flow(application, settings)
+    base = f"/api/v1/sessions/{flow.sid}"
+    artifact_before = None
+    if operation == "apply":
+        block = flow.doc()["pages"][0]["blocks"][0]
+        response = flow.c.post(base + f"/documents/{flow.did}/proposals", json={
+            "expected_revision": flow.rev(), "input_revision": flow.rev_in,
+            "target_block_ids": [block["block_id"]], "kind": "text", "instruction": "문구 정리"})
+        assert response.status_code == 202, response.text
+        pid = flow.job(response.json()["job_id"])["result_ref"]["proposal_id"]
+        path, body = base + f"/proposals/{pid}/apply", {"expected_revision": flow.rev()}
+        original_revision = flow.rev()
+    else:
+        validation, layout = flow.ready_pdf()
+        approval = flow.approve(validation["validation_id"], layout["layout_check_id"]).json()
+        path, body = base + "/exports", {"approval_id": approval["approval_id"], "format": "pdf"}
+        with connect(settings.db_path) as conn:
+            artifact = artifacts.get(conn, layout["artifact_id"])
+            artifact_count = conn.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0]
+        artifact_before = (settings.private_runs_dir / artifact["stored_path"]).read_bytes()
+    crash_key = "http-crash-replay"
+    server_code = '''
+import os,sys,uvicorn
+from pathlib import Path
+from app import create_app
+from app.config import Settings
+from app.services import idempotency,exports,export_render,ai_jobs
+def forbidden(*args,**kwargs):
+    raise AssertionError("Crash recovery must not render or generate another draft")
+export_render.render=forbidden
+ai_jobs.get_bridge=forbidden
+app=create_app(Settings(private_runs_dir=Path(sys.argv[1]),db_path=Path(sys.argv[2]),cleanup_sweep_interval_s=0))
+phase,key=sys.argv[4:6]
+real_remember=idempotency.remember
+def interrupted_remember(conn,request_key,*args,**kwargs):
+    result=real_remember(conn,request_key,*args,**kwargs)
+    if request_key==key and phase in ("before_commit","after_commit"):
+        if phase=="after_commit": conn.commit()
+        os._exit(71)
+    return result
+idempotency.remember=interrupted_remember
+real_publish=exports.publish
+def interrupted_publish(*args,**kwargs):
+    result=real_publish(*args,**kwargs)
+    if phase=="publishing": os._exit(71)
+    return result
+exports.publish=interrupted_publish
+uvicorn.run(app,host="127.0.0.1",port=int(sys.argv[3]),log_level="error")
+'''
+
+    @contextmanager
+    def server(fault):
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        proc = subprocess.Popen([sys.executable, "-X", "utf8", "-B", "-c", server_code,
+            str(settings.private_runs_dir), str(settings.db_path), str(port), fault, crash_key], cwd=ROOT,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        try:
+            cookie = "; ".join(f"{key}={value}" for key, value in flow.c.cookies.items())
+            with httpx.Client(base_url=f"http://127.0.0.1:{port}", headers={"Cookie": cookie}, timeout=10, trust_env=False) as client:
+                deadline = time.monotonic() + 25
+                while True:
+                    assert proc.poll() is None, "Isolated server stopped before startup"
+                    try:
+                        assert client.get("/").status_code == 200
+                        break
+                    except httpx.ConnectError:
+                        assert time.monotonic() < deadline, "Isolated HTTP startup timed out"
+                        time.sleep(0.05)
+                yield proc, client
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+            proc.wait(timeout=15)
+
+    with server(phase) as (proc, client):
+        try:
+            response = client.post(path, json=body, headers={"Idempotency-Key": crash_key})
+            assert operation == "export" and phase == "publishing" and response.status_code == 202
+        except (httpx.RemoteProtocolError, httpx.ReadError):
+            pass  # 응답 유실과 별개로 아래 실제 종료 코드/DB 상태를 검사한다.
+        assert proc.wait(timeout=15) == 71
+    with connect(settings.db_path) as conn:
+        saved = conn.execute("SELECT * FROM idempotency_keys WHERE idem_key=?", (crash_key,)).fetchone()
+        assert (saved is None) == (phase == "before_commit")
+        if operation == "apply":
+            assert flow.rev() == original_revision + int(phase == "after_commit")
+        else:
+            assert conn.execute("SELECT COUNT(*) FROM exports").fetchone()[0] == int(phase != "before_commit")
+    with server("none") as (_, client):
+        first = client.post(path, json=body, headers={"Idempotency-Key": crash_key})
+        assert first.status_code == (200 if operation == "apply" else 202), first.text
+        again = client.post(path, json=body, headers={"Idempotency-Key": crash_key})
+        assert again.status_code == first.status_code and again.json() == first.json()
+        if saved is not None:
+            assert first.json() == json.loads(saved["response_json"])
+        changed = {**body, "expected_revision": body["expected_revision"] + 1} if operation == "apply" else {**body, "format": "docx"}
+        assert client.post(path, json=changed, headers={"Idempotency-Key": crash_key}).status_code == 409
+        if operation == "apply":
+            doc = client.get(base + f"/documents/{flow.did}").json()["document"]
+            assert doc["document_revision"] == original_revision + 1
+            assert client.get(base + f"/proposals/{pid}").json()["status"] == "applied"
+            assert _count(settings, "SELECT COUNT(*) FROM document_revisions WHERE document_id=?", flow.did) == original_revision + 1
+        else:
+            deadline = time.monotonic() + 15
+            while True:
+                current = client.post(path, json=body).json()["export"]
+                if current["status"] != "queued" and current["status"] != "generating":
+                    break
+                assert time.monotonic() < deadline, "Export recovery timed out"
+                time.sleep(0.05)
+            assert current["status"] == "ready" and current["attempt"] == 1
+            assert current["export_id"] == first.json()["export"]["export_id"]
+            download = client.get(base + f"/exports/{current['export_id']}/download")
+            assert download.status_code == 200 and download.content == artifact_before
+            assert client.get(base + f"/exports/{current['export_id']}/download").content == artifact_before
+            assert _count(settings, "SELECT COUNT(*) FROM exports WHERE session_id=?", flow.sid) == 1
+            assert _count(settings, "SELECT COUNT(*) FROM jobs WHERE session_id=? AND kind='export'", flow.sid) == 1
+            assert _count(settings, "SELECT COUNT(*) FROM artifacts") == artifact_count
+        assert _count(settings, "SELECT COUNT(*) FROM jobs WHERE session_id=? AND kind='draft'", flow.sid) == 1
+    with connect(settings.db_path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == (ORM_SCHEMA_VERSION if db_mode == "orm_v11" else SCHEMA_VERSION)
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+@needs_browser
 def test_retry_policy_and_restart_recovery(app, settings, monkeypatch):
     flow = Flow(app, settings)
     v, lc = flow.ready_pdf()
