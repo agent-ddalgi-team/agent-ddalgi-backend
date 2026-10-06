@@ -1859,6 +1859,36 @@ def test_certificate_scope_requires_evidence_for_standard_numbers(include_header
                for i in result.issues) is (not include_header)
 
 
+@pytest.mark.parametrize("identifier,include_header,expected", [
+    ("Q-P07", False, "needs_confirmation"),
+    ("Q-P07", True, "supported"),
+    ("Q-P08", True, "needs_confirmation"),
+])
+def test_measurement_fact_requires_its_record_identifier_evidence(identifier, include_header, expected):
+    header = "[시연] 가상 기록 식별: 품목 Q-P07 브래킷 예시"
+    measurement = "[시연] 가상 치수: 명목 외형 100×60×15 mm, 측정값 100.0×60.1×15.0 mm. 공차 적합 판정은 하지 않았다."
+    selected = [SourceIn("src_record", 1, "company", "가상 측정 기록", "complete", [
+        SegmentIn("seg_identity", {"line_start": 2, "line_end": 2}, header),
+        SegmentIn("seg_measurement", {"line_start": 4, "line_end": 4}, measurement)])]
+
+    def responder(instructions, payload, schema, name):
+        units = payload["source_units"]
+        chosen = units if include_header else units[1:]
+        info = {key: {"status": "not_found", "facts": []} for key in legacy.COMPANY_INFO_KEYS}
+        info["processes"] = {"status": "supported", "facts": [{
+            "text": f"[시연] {identifier} 예시의 명목 외형 100×60×15 mm와 측정값 100.0×60.1×15.0 mm를 기록했으며 공차 적합 판정은 하지 않았다.",
+            "evidence": [{"source_id": u["source_id"], "locator": u["locator"], "quote": u["text"]} for u in chosen]}]}
+        return info
+
+    result = llm.LlmAgent(responder).analyze(AnalyzeRequest("ses_record", 1, BRIEF, selected))
+    fact = next(f for f in result.facts if f.field_key == "processes")
+    assert fact.status == expected
+    assert {r.segment_id for r in fact.evidence_refs} == (
+        {"seg_identity", "seg_measurement"} if include_header else {"seg_measurement"})
+    assert any(i.code == "UNSUPPORTED_CLAIM" and fact.fact_id in i.fact_ids
+               for i in result.issues) is (expected == "needs_confirmation")
+
+
 def test_multiple_facts_conflict_candidates_and_uncertain_text_are_preserved():
     def change(info):
         item = info["products_services"]["facts"][0]
