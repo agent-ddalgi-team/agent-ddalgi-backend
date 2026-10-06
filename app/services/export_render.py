@@ -62,14 +62,15 @@ IMAGE_MAX_PX = 1600           # 삽입용 이미지의 긴 변 상한(px). 넘�
 DOCX_BOX_SPACE_PT = 18
 DEMO_FOOTER_TEXT = "시연용 · 일부 내용은 임시 데이터입니다"
 DEMO_FOOTER_MM = 9
+DOCX_PARAGRAPH_SPACING = {"before_pt": 0, "after_pt": 1, "line_spacing": 1.0}
 DOCX_COLORS = {"text": "111111", "label": "8A8A8A", "caption": "555555", "box": "666666", "broken": "A93226"}
 DOCX_LAYOUT_CONSTANTS = {"page_mm": [PAGE_W_MM, PAGE_H_MM], "image_max_h_mm": IMAGE_MAX_H_MM, "image_max_px": IMAGE_MAX_PX,
-                         "heading_pt": HEADING_PT, "label_pt": LABEL_PT, "caption_pt": CAPTION_PT, "page_break": "before_logical_page_label",
+                         "paragraph_spacing": DOCX_PARAGRAPH_SPACING, "heading_pt": HEADING_PT, "label_pt": LABEL_PT, "caption_pt": CAPTION_PT, "page_break": "before_logical_page_label",
                          "box": "table_grid_1x1", "box_space_pt": DOCX_BOX_SPACE_PT, "colors": DOCX_COLORS, "crop": "contain_fallback",
                          "exif_orientation": "apply_before_embed", "image_decode": "full_pixels",
                          "demo_footer": DEMO_FOOTER_TEXT, "demo_footer_mm": DEMO_FOOTER_MM,
                          "image_paragraph": "left_explicit_center_indent_zero_inline_distance",
-                         "layout_check": "libreoffice_pdf_per_page_text_images_printable_bounds_v1"}
+                         "layout_check": "libreoffice_pdf_per_page_text_images_printable_bounds_pypdf_exact_fallback_v2"}
 # 배치에 영향을 주는 브라우저 인자(창 크기·가상 시간). 바꾸면 TEMPLATE_VERSION을 올린다(지문 포함). 샌드박스·프로필 등 환경 인자는 제외.
 PDF_RENDER_CONSTANTS = {"window_size": "1000,1400", "virtual_time_budget_ms": 10000, "measure": "after_load_and_fonts_ready"}
 
@@ -977,6 +978,21 @@ def _docx_page_text(snapshot: RenderSnapshot, page: Page, index: int) -> list[st
     return expected
 
 
+def _docx_page_text_matches(expected: list[str], actual: str) -> bool:
+    """Compare all original characters/numbers in order; only layout whitespace is ignored."""
+    actual = _docx_text(actual)
+    cursor = 0
+    for text in expected:
+        target = _docx_text(text)
+        if not target:
+            continue
+        position = actual.find(target, cursor)
+        if position < 0:
+            return False
+        cursor = position + len(target)
+    return True
+
+
 def _measure_docx_pdf(snapshot: RenderSnapshot, pdf_path: Path) -> tuple[int, list[Finding], dict[str, Any]]:
     """DOCX에서 변환한 실제 PDF를 보수적으로 검사한다. 측정 실패는 통과가 아니다.
 
@@ -989,6 +1005,8 @@ def _measure_docx_pdf(snapshot: RenderSnapshot, pdf_path: Path) -> tuple[int, li
     findings: list[Finding] = []
     details: dict[str, Any] = {"measurement": "docx_converted_pdf", "logical_pages": len(snapshot.pages)}
     pdf = pdfium.PdfDocument(str(pdf_path))
+    fallback_reader = None
+    fallback_pages: list[int] = []
     try:
         actual_pages = len(pdf)
         if actual_pages <= 0:
@@ -1010,21 +1028,27 @@ def _measure_docx_pdf(snapshot: RenderSnapshot, pdf_path: Path) -> tuple[int, li
                 tolerance = 2.0
                 if abs(width - PAGE_W_MM * 72 / 25.4) > tolerance or abs(height - PAGE_H_MM * 72 / 25.4) > tolerance:
                     findings.append(Finding("overflow", pid, None, "DOCX 변환본의 용지가 A4가 아닙니다."))
-                actual_text = _docx_text(textpage.get_text_bounded())
-                cursor = 0
                 if logical:
-                    for expected in _docx_page_text(snapshot, logical, number + 1):
-                        target = _docx_text(expected)
-                        if not target:
-                            continue
-                        # PDF가 삽입한 목록 기호는 문단 사이에 남지만 본문 자체를 잘라 비교하지 않는다.
-                        pos = actual_text.find(target, cursor)
-                        if pos < 0:
-                            findings.append(Finding("overflow", pid, None,
-                                "DOCX 변환본에서 해당 쪽의 본문 일부 또는 순서를 확인하지 못했습니다.",
-                                {"physical_page": number + 1}))
-                            break
-                        cursor = pos + len(target)
+                    expected = _docx_page_text(snapshot, logical, number + 1)
+                    text_matches = _docx_page_text_matches(expected, textpage.get_text_bounded())
+                    if not text_matches:
+                        # PDFium may decode a line-end hyphen as U+0002. Never discard or
+                        # replace characters: an independent extraction must match the
+                        # entire original page in order, including hyphens and numbers.
+                        try:
+                            from pypdf import PdfReader
+                            if fallback_reader is None:
+                                fallback_reader = PdfReader(str(pdf_path))
+                            alternative = fallback_reader.pages[number].extract_text() or ""
+                            text_matches = _docx_page_text_matches(expected, alternative)
+                            if text_matches:
+                                fallback_pages.append(number + 1)
+                        except Exception:
+                            text_matches = False
+                    if not text_matches:
+                        findings.append(Finding("overflow", pid, None,
+                            "DOCX 변환본에서 해당 쪽의 본문 일부 또는 순서를 확인하지 못했습니다.",
+                            {"physical_page": number + 1}))
                 outside = False
                 for i in range(textpage.count_chars()):
                     codepoint = pdfium_c.FPDFText_GetUnicode(textpage, i)
@@ -1054,6 +1078,7 @@ def _measure_docx_pdf(snapshot: RenderSnapshot, pdf_path: Path) -> tuple[int, li
                 textpage.close()
                 page.close()
         details["images_per_page"] = image_counts
+        details["text_extraction_fallback_pages"] = fallback_pages
         return actual_pages, findings, details
     finally:
         pdf.close()
@@ -1175,6 +1200,11 @@ def _build_docx(snapshot: RenderSnapshot, family: str, base_pt: float, content_w
                 _docx_box(doc, "[이미지를 열 수 없음]", f"{b['asset_id']} ({b['reason']})" + (f"\n{b['caption']}" if b["caption"] else ""), True)
             elif b["type"] == "image_placeholder":
                 _docx_box(doc, "[사진 자리]", b["description"], False)
+    # Fix Word template defaults explicitly; preserve fonts, text and picture sizes.
+    for paragraph in doc.paragraphs:
+        paragraph.paragraph_format.space_before = Pt(DOCX_PARAGRAPH_SPACING["before_pt"])
+        paragraph.paragraph_format.space_after = Pt(DOCX_PARAGRAPH_SPACING["after_pt"])
+        paragraph.paragraph_format.line_spacing = DOCX_PARAGRAPH_SPACING["line_spacing"]
     return doc
 
 

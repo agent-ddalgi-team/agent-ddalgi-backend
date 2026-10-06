@@ -21,7 +21,7 @@ from collections.abc import Iterable
 from app.db import Connection, Row
 from app.models import Document
 
-TEMPLATE_VERSION = "template_v8"
+TEMPLATE_VERSION = "template_v9"
 # 기존 자유 문자열은 계속 읽되, 실제 배치는 아래 허용 목록만 사용한다. 임의 CSS로 사용하지 않는다.
 BROCHURE_LAYOUTS = frozenset({"cover_photo", "text_photo", "process_steps", "product_grid", "contact_photo",
                              "cover_text", "fact_sheet", "timeline", "certification_summary"})

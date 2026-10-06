@@ -35,6 +35,7 @@ BANNED = ("거산", "케미칼", "Geosan")
 
 # 템플릿·폰트·DOCX 배치 상수·PDF 렌더 상수의 sha256(줄바꿈 정규화). 이 중 하나라도 바꾸면 TEMPLATE_VERSION을 올리고 여기 값을 갱신한다.
 TEMPLATE_FINGERPRINTS = {
+    "template_v9": "576799643934d2178e3a03e6e569604c36e6859a51fa3e498caa1be15a8edad1",
     "template_v8": "77bee728ad40c81e24e5abb5b12c24fcaa282399a7da8224f14a9ec9bf82ac88",
     "template_v7": "4be75f1522c12f656c964872f89797c24e5b3396138ed237eeabaa2757562134",
     "template_v6": "20677eaf1d7238e726d7a9b13e7648ad79440be189dc17b8203cfa8ad0229950",
@@ -376,7 +377,7 @@ def test_draft_pagination_bounds_repeated_overflow_without_losing_content(out_di
 
 def test_identity_values_come_from_layout_checks(out_dir):
     r = er.render(_fixture_snapshot("1pages"), "docx", out_dir)
-    assert r.template_version == layout_checks.TEMPLATE_VERSION == "template_v8"
+    assert r.template_version == layout_checks.TEMPLATE_VERSION == "template_v9"
     assert r.render_options_hash == layout_checks.RENDER_OPTIONS_HASH == layout_checks.render_options_hash(layout_checks.DEFAULT_RENDER_OPTIONS)
     assert len(r.render_options_hash) == 16 and int(r.render_options_hash, 16) >= 0
     changed = dict(layout_checks.DEFAULT_RENDER_OPTIONS, margin_mm=20)
@@ -1259,3 +1260,49 @@ def test_brochure_layout_never_hides_long_content_to_pass_overflow(out_dir):
     result = er.render(_brochure_snapshot(long_text=True), "pdf", out_dir)
     assert not result.layout_ok
     assert any(f.kind == "overflow" for f in result.findings)
+
+
+@pytest.mark.parametrize("actual,matched", [
+    ("Town-si 2026\nQty 12", True),
+    ("Town\x02si 2026 Qty 12", False),
+    ("Townsi 2026 Qty 12", False),
+    ("Town-si 2025 Qty 12", False),
+    ("Qty 12 Town-si 2026", False),
+    ("Town-si 2026", False),
+])
+def test_docx_exact_page_text_keeps_hyphens_numbers_and_order(actual, matched):
+    assert er._docx_page_text_matches(["Town-si 2026", "Qty 12"], actual) is matched
+
+
+@pytest.mark.skipif(not LIBREOFFICE, reason="LibreOffice not installed")
+def test_docx_long_process_page_keeps_photo_caption_and_address(settings, out_dir, monkeypatch):
+    from dataclasses import replace
+    import docx
+
+    import pypdfium2 as pdfium
+    original_text = pdfium.PdfTextPage.get_text_bounded
+
+    def pdfium_line_end_hyphen(self, *args, **kwargs):
+        return original_text(self, *args, **kwargs).replace("Town-si", "Town\x02si")
+
+    monkeypatch.setattr(pdfium.PdfTextPage, "get_text_bounded", pdfium_line_end_hyphen)
+    text = "가상 제조 공정은 소재와 표면 상태를 확인하고 지정한 작업 순서와 조건에 따라 검사합니다. "
+    blocks = [_blk("title", "heading", text="제조 공정과 검사", level=1),
+              _blk("intro", "paragraph", text=text)]
+    for i in range(6):
+        blocks.extend([_blk(f"h{i}", "heading", text=f"공정별 확인 항목 {i}", level=2),
+                       _blk(f"t{i}", "paragraph", text=text + "주소는 Town-si, Example-gu이며 수량은 12개입니다.")])
+    blocks.append(_blk("photo", "image", asset_id="image", caption="확인한 가상 시설 사진"))
+    snapshot = er.snapshot_from_document(_doc([Page(page_id="p1", title="제조 공정", layout_key="text_photo", blocks=blocks)]),
+                                        {"image": er.asset_from_bytes("image", _png(320, 210))}, demo=True)
+    result = er.render(snapshot, "docx", out_dir, replace(settings, export_libreoffice_path=LIBREOFFICE))
+    assert result.actual_pages == 1 and result.layout_ok, result.findings
+    assert result.details["images_per_page"] == [1]
+    editable = docx.Document(str(result.file_path))
+    full_text = "\n".join(p.text for p in editable.paragraphs)
+    assert full_text.count(text) == 7
+    assert result.details["text_extraction_fallback_pages"] == [1]
+    assert full_text.count("Town-si, Example-gu") == 6
+    assert "확인한 가상 시설 사진" in full_text
+    assert len(editable.inline_shapes) == 1
+    assert abs(editable.inline_shapes[0].height.mm - 118.125) < 0.01
