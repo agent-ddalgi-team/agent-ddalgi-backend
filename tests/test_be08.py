@@ -120,10 +120,10 @@ class Flow:
     """세션 + clean TXT/PNG 업로드 + mock 초안 + 검증(passed). 배치 검사·승인·출력 헬퍼."""
 
     def __init__(self, app, settings, *, upload_png: bool = True, registered_ids: list[str] | None = None,
-                 png_size: tuple[int, int] = (8, 6)):
+                 png_size: tuple[int, int] = (8, 6), target_pages: int = 4):
         self.app, self.settings = app, settings
         self.c = TestClient(app)
-        self.sid = self.c.post("/api/v1/sessions", json={"brief": BRIEF}).json()["session_id"]
+        self.sid = self.c.post("/api/v1/sessions", json={"brief": {**BRIEF, "target_pages": target_pages}}).json()["session_id"]
         files = [("files", ("a.txt", io.BytesIO(CLEAN_TXT)))]
         if upload_png:
             files.append(("files", ("p.png", io.BytesIO(_png(*png_size)))))
@@ -416,22 +416,28 @@ def test_llm_photo_normalization_review_blocker_and_pdf_download(settings, monke
 
 
 @needs_browser
-def test_pdf_layout_check_approve_export_download(app, settings):
-    flow = Flow(app, settings)
+@pytest.mark.parametrize("pages", [1, 4, 6, 8, 10])
+def test_pdf_layout_check_approve_export_download(app, settings, pages):
+    flow = Flow(app, settings, target_pages=pages, png_size=(320, 160))
     v, lc = flow.ready_pdf()
     # 배치 검사 결과: 3종 required ok, 미리보기, artifact, 렌더러. 서버 경로 없음
     assert lc["layout_ok"] and lc["publication_policy_ok"] and lc["fail_reasons"] == [] and lc["findings"] == []
     assert {c["check_key"]: c["result"] for c in lc["checks"]} == {"overflow": "ok", "broken_image": "ok", "placeholder_remaining": "ok"}
-    assert lc["actual_pages"] == len(flow.doc()["pages"]) and lc["renderer"].startswith(("chrome/", "edge/", "chromium/"))
+    assert lc["actual_pages"] == len(flow.doc()["pages"]) == pages
+    assert flow.doc()["target_pages"] == pages and lc["renderer"].startswith(("chrome/", "edge/", "chromium/"))
     assert lc["preview_basis"] == "pdf" and len(lc["preview_asset_ids"]) == lc["actual_pages"] and lc["artifact_id"].startswith("art_")
     _no_paths(flow.get())
     # 미리보기는 기존 GET /assets/{asset_id}로
     png = flow.c.get(f"/api/v1/sessions/{flow.sid}/assets/{lc['preview_asset_ids'][0]}")
     assert png.status_code == 200 and png.headers["content-type"].startswith("image/png") and png.content[:8] == b"\x89PNG\r\n\x1a\n"
     # 승인 201(실제 행), renderer·artifact 기록
-    r = flow.approve(v["validation_id"], lc["layout_check_id"])
+    wrong_format = flow.approve(v["validation_id"], lc["layout_check_id"], fmt="docx")
+    assert wrong_format.status_code == 422 and wrong_format.json()["error"]["code"] == "LAYOUT_NOT_READY"
+    assert flow.approve(v["validation_id"], lc["layout_check_id"], confirmed=False).status_code == 422
+    r = flow.approve(v["validation_id"], lc["layout_check_id"], headers={"Idempotency-Key": "pdf-approval"})
     assert r.status_code == 201, r.text
     a = r.json()
+    assert flow.approve(v["validation_id"], lc["layout_check_id"], headers={"Idempotency-Key": "pdf-approval"}).json() == a
     assert a["status"] == "active" and a["layout_check_id"] == lc["layout_check_id"] and a["artifact_id"] == lc["artifact_id"] and a["renderer"] == lc["renderer"]
     assert flow.doc()["status"] == "approved"
     # Export 202 → ready → 다운로드
@@ -451,10 +457,20 @@ def test_pdf_layout_check_approve_export_download(app, settings):
 
     reader = PdfReader(io.BytesIO(d.content))
     assert len(reader.pages) == lc["actual_pages"] and "예시 회사" in (reader.pages[0].extract_text() or "")
+    assert len(reader.pages[0].images) == 1
+    assert flow.download(exp["export_id"]).content == d.content
+    for number, page in enumerate(reader.pages[1:], start=2):
+        assert f"예시 구성 {number}" in (page.extract_text() or "")
     assert not any(w in (reader.pages[0].extract_text() or "") for w in BANNED)
     with connect(settings.db_path) as conn:
         art = conn.execute("SELECT * FROM artifacts WHERE artifact_id=?", (lc["artifact_id"],)).fetchone()
+        assert conn.execute("SELECT COUNT(*) FROM jobs WHERE kind='draft'").fetchone()[0] == 1
     assert hashlib.sha256(d.content).hexdigest() == art["sha256"] and len(d.content) == art["size_bytes"]
+    flow.patch([{"op": "rename_page", "page_id": flow.doc()["pages"][0]["page_id"], "title": "승인 뒤 수정"}])
+    assert flow.download(exp["export_id"]).status_code == 409
+    assert flow.c.delete(f"/api/v1/sessions/{flow.sid}").json()["cleanup"] == "done"
+    assert flow.download(exp["export_id"]).status_code == 410
+    assert not (settings.private_runs_dir / flow.sid).exists()
 
 
 @needs_browser
@@ -560,7 +576,8 @@ def test_docx_page_count_failure_remains_readable_and_blocks_approval(app, setti
 
 
 @needs_libreoffice
-def test_actual_docx_check_approve_download_reuse_and_invalidate(settings, monkeypatch):
+@pytest.mark.parametrize("pages", [1, 4, 6, 8, 10])
+def test_actual_docx_check_approve_download_reuse_and_invalidate(settings, monkeypatch, pages):
     from dataclasses import replace
     import docx
 
@@ -569,14 +586,15 @@ def test_actual_docx_check_approve_download_reuse_and_invalidate(settings, monke
     application = create_app(settings)
     # DOCX preview must come from its own conversion, even when Chrome is unavailable.
     monkeypatch.setattr(export_render, "_render_pdf", lambda *a, **k: pytest.fail("DOCX used the HTML/PDF fallback"))
-    flow = Flow(application, settings)
+    flow = Flow(application, settings, target_pages=pages, png_size=(320, 160))
     flow.clean()
     validation = flow.validate()
     assert validation["status"] == "passed"
     _, job = flow.layout_check("docx")
     layout = flow.get()["layout_checks"]["docx"]
-    assert layout["status"] == "passed" and layout["layout_ok"] and layout["actual_pages"] == 4
-    assert layout["preview_basis"] == "pdf" and len(layout["preview_asset_ids"]) == 4
+    assert layout["status"] == "passed" and layout["layout_ok"] and layout["actual_pages"] == pages
+    assert flow.doc()["target_pages"] == len(flow.doc()["pages"]) == pages
+    assert layout["preview_basis"] == "pdf" and len(layout["preview_asset_ids"]) == pages
     assert ";libreoffice/" in layout["renderer"] and any("LibreOffice" in text for text in layout["warnings"])
     assert job["result_ref"]["status"] == "passed"
     for aid in layout["preview_asset_ids"]:
@@ -584,6 +602,8 @@ def test_actual_docx_check_approve_download_reuse_and_invalidate(settings, monke
         assert response.status_code == 200 and response.content.startswith(b"\x89PNG")
     refused = flow.approve(validation["validation_id"], layout["layout_check_id"], fmt="docx", confirmed=False)
     assert refused.status_code == 422
+    wrong_format = flow.approve(validation["validation_id"], layout["layout_check_id"], fmt="pdf")
+    assert wrong_format.status_code == 422 and wrong_format.json()["error"]["code"] == "LAYOUT_NOT_READY"
     approval = flow.approve(validation["validation_id"], layout["layout_check_id"], fmt="docx",
                             headers={"Idempotency-Key": "docx-approval"})
     assert approval.status_code == 201, approval.text
@@ -601,6 +621,8 @@ def test_actual_docx_check_approve_download_reuse_and_invalidate(settings, monke
     assert flow.download(ready["export_id"]).content == first.content
     editable = docx.Document(io.BytesIO(first.content))
     assert len(editable.inline_shapes) == 1 and any("예시 회사" in p.text for p in editable.paragraphs)
+    editable_text = "\n".join(p.text for p in editable.paragraphs)
+    assert all(f"예시 구성 {number}" in editable_text for number in range(2, pages + 1))
     with connect(settings.db_path) as conn:
         artifact = artifacts.get(conn, layout["artifact_id"])
         assert hashlib.sha256(first.content).hexdigest() == artifact["sha256"]
