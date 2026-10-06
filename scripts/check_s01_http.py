@@ -244,7 +244,10 @@ def _publication_check(client: httpx.Client, sid: str, document_route: str, time
 def _impact_check(client: httpx.Client, sid: str, document_route: str, timeout_s: float) -> dict:
     """Add a source and resume an edited document through the public C-05 API."""
     route = f"/api/v1/sessions/{sid}"
-    document = _response(client.get(document_route), 200)["document"]
+    initial_state = _response(client.get(document_route), 200)
+    _check(initial_state["input_review_required"] is False and initial_state["latest_preflight_id"],
+           "Initial document review metadata is missing")
+    document = initial_state["document"]
     _response(client.patch(document_route, json={"expected_revision": document["document_revision"], "operations": [
         {"op": "rename_page", "page_id": document["pages"][0]["page_id"], "title": "사용자가 편집한 제목"}]}), 200)
     before = _response(client.get(document_route), 200)["document"]
@@ -259,6 +262,9 @@ def _impact_check(client: httpx.Client, sid: str, document_route: str, timeout_s
     revision = selected["input_revision"]
     started = _response(client.post(route + "/preflights", json={"expected_input_revision": revision}), 202)
     preflight = _job(client, sid, started["job_id"], timeout_s)["result_ref"]["preflight_id"]
+    changed_state = _response(client.get(document_route), 200)
+    _check(changed_state["input_review_required"] is True and changed_state["latest_preflight_id"] == preflight,
+           "Source change review metadata did not identify the latest preflight")
     review_body = {"expected_revision": before["document_revision"], "input_revision": revision,
                    "preflight_id": preflight, "confirmed": False}
     reviews = document_route + "/impact-reviews"
@@ -279,6 +285,8 @@ def _impact_check(client: httpx.Client, sid: str, document_route: str, timeout_s
     validation_job = _job(client, sid, applied["validation_job_id"], timeout_s)
     state = _response(client.get(document_route), 200)
     after = state["document"]
+    _check(state["input_review_required"] is False and state["latest_preflight_id"] == preflight,
+           "Applied review still appears unconnected")
     expected_pages = json.loads(json.dumps(before["pages"]))
     for page in expected_pages:
         for block in page["blocks"]:

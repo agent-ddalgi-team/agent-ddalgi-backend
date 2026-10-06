@@ -1,6 +1,8 @@
 # 공통 데이터·API 계약
 
-기준일: 2026-10-06 · 문서 v1.28 · contract_version: 1.9 · 데이터 schema_version: 1.0
+기준일: 2026-10-06 · 문서 v1.29 · contract_version: 1.9 · 데이터 schema_version: 1.0
+
+**2026-10-06 C-05 화면 연결:** 문서 GET은 호환 가능한 조회 필드 `input_review_required: boolean`(기본false), `latest_preflight_id: string|null`(기본null)를 추가 제공한다. 앞 필드는 입력 버전 차이 또는 DB v11의 연결 점검/최신 점검 차이를 뜻하며 사용자 확인만으로 false가 되지 않는다. 최신 점검 확인·유효한 영향 검토 적용 후 false가 된다. 진행 중 점검의 완료 여부와 적용 가능 여부는 기존 Job/ImpactReview 조회와 적용 가드에서 다시 확인한다. C:\frontend의 기존 API 타입·자료 변경 배너·영향 선택 화면에 연결하며 브라우저에는 생성 요청 ID/버전/키와 적용 키/검토 ID/해시만 저장한다. 문서 본문·근거 인용·유지 사유·사용자 확인은 저장하지 않는다. 정상 적용은 반환한 전체 검증 Job을 조회하고, 적용 응답 유실은 applied 검토/문서 GET으로 복구한다. 실자료 의미 검증·사진별 공개 허가·사용자 최종 승인은 후속이다. 계약1.9·DB v11·template_v8 유지.
 
 **2026-10-06 DOCX 빈 페이지 보완:** 현재 출력 템플릿은 `template_v8`이다. DOCX의 독립 쪽 나눔 문단을 제거하고 다음 논리 쪽의 라벨에 page_break_before를 지정한다. 본문·사진·캡션·글꼴·그림 크기·순서는 유지하며 출력 중 문서를 재작성하거나 내용을 삭제하지 않는다. 이전 템플릿 검사는 재검사·재승인이 필요하다(PDF/DOCX 공통 템플릿 식별값). 기존 문서 revision·내용 검증·DB v11·계약1.9는 유지한다. 실제 넘침·내용 누락·사진 누락 검사와 승인 차단은 그대로 적용한다.
 
@@ -8,11 +10,11 @@
 
 **2026-10-06 점검 문제의 문서 연결 보완(BE-04/06):** 최신 Preflight의 열린 content/source blocker는 필수 내용 누락을 제외하고 VALUE_CONFLICT 외의 코드도 본문 참조 여부와 무관하게 문서 Issue(origin=preflight)에 보존한다. needs_confirmation 사실에 연결된 UNSUPPORTED_CLAIM blocker도 초안 최초 저장·조회/세션 요약·재검증·승인 차단에 연결한다. REQUIRED_MISSING은 문서 전체의 기존 필수 내용 검사에서 대체 사업 설명·사용자 지정 필수 항목을 함께 재판정한다. warning 수준의 미확인 사실은 임의 blocker로 승격하지 않는다. Agent가 확인/해결 상태·resolution을 반환하거나 선택 밖 자료/사실, 중복 Issue ID, 생성 전 블록/배치를 참조하면 AGENT_OUTPUT_INVALID로 점검 전체를 저장하지 않는다. 점검의 필수 문제는 안내 삭제·확인/제외 버튼으로 해결할 수 없으며 자료 보완·최신 점검·문서 재검증이 필요하다. 재점검은 다른 문제를 닫지 않고, 실제 문서 재검증에서 원인이 사라진 문제만 해결한다. 기존 preflight_conflicts 검사 키와 preflight_conflict 승인 무효화 사유는 호환을 위해 유지하며 이번 보완 이후 점검 필수 문제 전체를 포함한다. API 필드·계약1.9·DB v11·template_v7은 유지한다. 프론트는 문서 Issue와 review_required를 표시하며 최종 통합 검수는 후속이다.
 
-**현재 연결 기준(2026-10-06, BE-01/10):** 계약 1.9·데이터 1.0·DB v11·template_v8가 기준이다. 아래 1.5/1.6/1.7/1.8 설명은 각 기능의 도입 이력이며 현재 계약을 낮춰 연결하지 않는다. 백엔드 `test` 0ad3eb2와 프론트 `C:\frontend` develop 0771d54를 대조했다. 프론트에는 계약 사본이 없고 C-05/생성 계획 타입·화면이 미연결이다. `D:\frontend`는 다른 커밋(15289fb)이므로 같은 작업본으로 취급하지 않는다. 현재 DOCX 검사·승인 규격은 아래 계약 1.9를 따른다. 프론트 반영 완료를 뜻하지 않는다.
+**연결 대조 이력(2026-10-06, BE-01/10):** 계약 1.9·데이터 1.0·DB v11·template_v8가 기준이다. 아래 1.5/1.6/1.7/1.8 설명은 각 기능의 도입 이력이며 현재 계약을 낮춰 연결하지 않는다. 백엔드 `test` 0ad3eb2와 프론트 `C:\frontend` develop 0771d54를 대조했다. 대조 당시 프론트에는 계약 사본이 없고 C-05/생성 계획 타입·화면이 미연결이었다. C-05 API 타입·화면의 현재 연결은 이 문서 첫 C-05 화면 연결 규칙과 task_backend.md의 c05-ui-20261006 기록을 따른다. 생성 계획 타입/화면과 새 계약 사본은 추가하지 않았다. `D:\frontend`는 다른 커밋(15289fb)이므로 같은 작업본으로 취급하지 않는다. 현재 DOCX 검사·승인 규격은 아래 계약 1.9를 따른다. 프론트 반영 완료를 뜻하지 않는다.
 
 | 연결 영역 | 백엔드 제공·보존 규칙 | 프론트 후속 |
 |---|---|---|
-| 자료 변경 복귀(C-05) | 영향 검토 생성/조회/적용. 적용 전 문서 보존, 정확히 같은 사실만 자동 연결. 적용 결과의 `validation_job_id`로 전체 재검증 조회 | 자료 변경 배너, 최신 점검 명시 확인, 영향 목록·선택 수정·유지 사유, 적용 뒤 문서/Job 재조회. 재생성으로 대체하지 않음 |
+| 자료 변경 복귀(C-05) | 영향 검토 생성/조회/적용. 적용 전 문서 보존, 정확히 같은 사실만 자동 연결. 적용 결과의 `validation_job_id`로 전체 재검증 조회 | 자료 변경 배너·최신 점검 명시 확인·영향/선택 수정·근거 연결·유지 사유·문서/Job 재조회 연결/가상 확인 완료. 실자료 의미 검수 후속 |
 | 작성 조건·초안 기록 | Brief의 audience/usage_context/tone/target_company/required_fields/brand_color, nullable Document.editorial, editorial_v1/v2 호환 | 타입·입력·생성 사유·보완/제외 사유 표시. 생성 감사 기록을 현재 검증 완료 표시로 쓰지 않음 |
 | 분량·배치 | 새 초안의 target_pages는 최소 분량. generated_pages는 생성 당시 논리 쪽수, 현재 pages와 LayoutCheck.actual_pages는 각각 별도 값 | 선택 최소 분량·현재 논리 쪽수·검사한 출력 쪽수와 차이 사유 구분 |
 | 편집·승인 | Page.design·set_page_design 및 level 2 heading 유지. 버전/내용 변경에 따른 검사·승인 무효화 | 디자인/소제목 표시, 재검사 안내, 최신 검사·개별 경고 확인 후 명시 승인 |
@@ -402,7 +404,7 @@ HTTP 필드·상태·DB 스키마는 그대로여서 contract_version 1.5/schema
 
 source 업로드만으로 자동 선택하지 않는 UI를 택하면 사용자가 선택할 때 input_revision을 갱신한다. 단, 선택된 기존 원자료를 수정·삭제하거나 문서가 참조하는 자산을 바꾸면 즉시 영향 상태를 갱신한다.
 
-`DocumentChangeOut`은 `{document_id, document_revision, input_revision, status, validation_job_id}`이며 전체 문서 본문이 아니다. `validation_job_id`는 C-05 영향 적용에서 예약한 전체 검증 Job ID다. 일반 직접 수정/Proposal 적용/복원에서는 null이며 필요하면 validate API를 호출한다. 문서 GET은 `{demo, document, validation, approval, layout_checks}`이며 `layout_checks`는 `{pdf: LayoutCheck|null, docx: LayoutCheck|null}`다. `document_summary.status`, 문서 변경의 `status`, `document_status`는 Document의 4종 상태를 공유한다. 다운로드 성공은 PDF 또는 DOCX 바이트이며 JSON 오류는 아래 공통 봉투다.
+`DocumentChangeOut`은 `{document_id, document_revision, input_revision, status, validation_job_id}`이며 전체 문서 본문이 아니다. `validation_job_id`는 C-05 영향 적용에서 예약한 전체 검증 Job ID다. 일반 직접 수정/Proposal 적용/복원에서는 null이며 필요하면 validate API를 호출한다. 문서 GET은 `{demo, document, input_review_required, latest_preflight_id, validation, approval, layout_checks}`이며 새 조회 필드는 위 C-05 화면 연결 규칙을 따른다. `layout_checks`는 `{pdf: LayoutCheck|null, docx: LayoutCheck|null}`다. `document_summary.status`, 문서 변경의 `status`, `document_status`는 Document의 4종 상태를 공유한다. 다운로드 성공은 PDF 또는 DOCX 바이트이며 JSON 오류는 아래 공통 봉투다.
 
 ### Job — 진행 상태와 결과 조회
 
@@ -516,7 +518,7 @@ HTTP 오류의 `request_id`는 필수 문자열이고 `X-Request-Id` 헤더와 �
 
 | ID | 우선순위 | 현재 상태 | 합의·구현할 것 |
 |---|---|---|---|
-| C-05 | P0 | 계약 1.6: DB v11에서 재점검 확인·영향 조회·선택 수정/유지 사유·최신 입력 연결·전체 재검증 API 구현. 다른 입력 복원 우회 차단 | 프론트 계약 사본/타입/화면 연결, 실제 모델의 변경 자료 의미 검증과 사용자 통합 확인. 자동 의미 수정안 생성은 별도 |
+| C-05 | P0 | 계약 1.6: DB v11에서 재점검 확인·영향 조회·선택 수정/유지 사유·최신 입력 연결·전체 재검증 API 구현. 다른 입력 복원 우회 차단 | 2026-10-06 기존 프론트 타입/화면 연결·가상 PDF/DOCX 완주 완료. 새 계약 사본 미생성. 실제 모델의 변경 자료 의미 검증·사용자 실자료 확인은 후속. 자동 의미 수정안 생성은 별도 |
 | C-06 | P0 | 서버 시작·최종 저장 가드 유지. 최초 초안의 LangGraph 대기·재개도 세션·입력 버전·현재 preflight·DB의 사용자 확인을 검사하고 소비한 확인의 중복 호출을 거부함. 세션 폴더 체크포인트 삭제 연결 검사 완료(task_agent.md 6.22절) | 실제 모델을 붙인 그래프·편집 단계·프로세스 장애 복구 확인. 별도 SQLite 커밋 사이 장애는 재점검 필요(plan.md 4.7절) |
 | C-08 | P1 | 계약 1.5에서 D-07 서버 확인 기록·최신 검증/버전 검사·승인/출력 차단 구현. 기존 정확성 blocker 유지 | 프론트 확인 UI·계약 사본 연결, 실제 Agent/화면 통합 검증은 후속. 시연 warning도 명시 확인하며 일반 문서의 정확성 기준은 완화하지 않음 |
 | C-09 | P1 | 계약 1.9: PDF와 명시 설정한 LibreOffice 기반 DOCX 실제 검사·미리보기·승인·Export·다운로드. 실제 측정/필수 검사 증거 없는 DOCX는 차단 | 프론트 형식별 검사·승인 연결, LibreOffice 검사 기준/다른 열람 환경의 배치 차이 경고 표시. 실자료·실제 화면 품질 확인 후속 |

@@ -1353,9 +1353,12 @@ def test_c05_same_input_new_preflight_can_be_confirmed_and_rebound_with_full_val
     ctx, settings = c05_ctx
     _c05_apply(ctx, _c05_review(ctx))
     ctx.make_clean_and_validate(settings)
+    assert ctx.get()["input_review_required"] is False
     previous_pf, unchanged_input = ctx.pf, ctx.rev_in
     ctx.preflight()
     assert ctx.pf != previous_pf and ctx.rev_in == unchanged_input
+    assert ctx.get()["input_review_required"] is True
+    assert ctx.get()["latest_preflight_id"] == ctx.pf
     # 적용 전에 새 점검으로 검증해도 명시 확인과 적용 후 전체 검증을 대신하지 않는다.
     prior_check = ctx.validated()
     assert prior_check["status"] == "passed"
@@ -1370,12 +1373,14 @@ def test_c05_same_input_new_preflight_can_be_confirmed_and_rebound_with_full_val
     assert review["from_input_revision"] == review["to_input_revision"] == unchanged_input
     assert review["preflight_id"] == ctx.pf and review["status"] == "pending"
     assert ctx.doc() == before
+    assert ctx.get()["input_review_required"] is True  # 명시 확인만으로 연결되지 않는다.
     calls_before_apply = MockAgent.validate_calls
     applied = _c05_apply(ctx, route + "/" + review["review_id"] + "/apply")
     assert applied["document_revision"] == before["document_revision"] + 1
     assert applied["input_revision"] == unchanged_input
     assert ctx.job(applied["validation_job_id"])["status"] == "succeeded"
     out = ctx.get()
+    assert out["input_review_required"] is False and out["latest_preflight_id"] == ctx.pf
     checked = out["validation"]
     assert out["document"]["pages"] == before["pages"]
     assert checked["validation_id"] != prior_check["validation_id"]

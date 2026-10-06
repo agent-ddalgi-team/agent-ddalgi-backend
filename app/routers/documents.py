@@ -54,7 +54,15 @@ def get_document(request: Request, sid: str, did: str):
 
         v = validation.latest_validation(conn, did, document.document_revision, row["input_revision"])
         a = approvals.active_for(conn, did, document.document_revision, row["input_revision"])
-        return DocumentOut(demo=bool(row["demo"]), document=document, validation=validation.to_validation_out(v) if v else None,
+        from app.services import db_history
+
+        latest_preflight = documents._latest_preflight_id(conn, sid, row["input_revision"])
+        needs_review = document.input_revision != row["input_revision"]
+        if latest_preflight and db_history.enabled(conn):
+            needs_review |= documents.bound_preflight_id(conn, document) != latest_preflight
+        return DocumentOut(demo=bool(row["demo"]), document=document,
+                           input_review_required=needs_review, latest_preflight_id=latest_preflight,
+                           validation=validation.to_validation_out(v) if v else None,
                            approval=approvals.to_out(a) if a else None,
                            layout_checks=layout_check_jobs.latest_by_format(conn, did, document.document_revision, row["input_revision"]))
 

@@ -561,6 +561,8 @@ class LayoutChecksByFormat(TypedDict):
 class DocumentOut(BaseModel):
     demo: bool = False
     document: Document
+    input_review_required: bool = False  # 현재 입력/최신 점검을 문서에 연결해야 하는지
+    latest_preflight_id: str | None = None
     validation: ValidationOut | None = None   # 현재 문서·입력 버전의 최신 검증. 없으면 null
     approval: ApprovalOut | None = None       # 현재 문서·입력 버전의 active 승인(어느 형식이든). 없으면 null
     layout_checks: LayoutChecksByFormat = Field(default_factory=lambda: {"pdf": None, "docx": None})
