@@ -948,6 +948,44 @@ def test_concurrent_approval_creates_single_row(app, settings):
 
 # ================= 리뷰 회귀 (Codex 리뷰 4건) =================
 
+def test_deleted_agent_targets_resolve_without_closing_surviving_or_document_issues(app, settings, monkeypatch):
+    from app.agent_bridge import ValidateResult
+    from app.models import Issue as IssueModel
+
+    ctx = Ctx(app)
+    ctx.patch([{"op": "insert_block", "page_id": "page_02", "after_block_id": None,
+                "block": {"block_id": bid, "type": "paragraph", "content": {"text": "가상 공정 소개"}}}
+               for bid in ("b_drop", "b_keep")])
+
+    async def review(self, request):
+        changed = set(request.changed_block_ids)
+        candidates = [("deleted", ["b_drop"]), ("mixed", ["b_drop", "b_keep"]), ("document", [])]
+        return ValidateResult(issues=[
+            IssueModel(issue_id=name, scope="content", code="REPETITION", severity="warning",
+                       message=name, block_ids=blocks)
+            for name, blocks in candidates if set(blocks) <= changed
+        ])
+
+    monkeypatch.setattr(MockAgent, "validate", review)
+    ctx.validated()
+    initial = {issue["message"]: issue["issue_id"] for issue in ctx.open_issues("REPETITION")}
+    assert set(initial) == {"deleted", "mixed", "document"}
+    original_revision = ctx.rev()
+    ctx.patch([{"op": "delete_block", "block_id": "b_drop"}])
+    result = ctx.validated()
+    assert result["agent_called"] is False
+    current = {issue["message"]: issue for issue in ctx.issues() if issue["code"] == "REPETITION"}
+    assert current["deleted"]["status"] == "resolved"
+    assert current["deleted"]["resolution"]["by"] == "server"
+    assert current["mixed"]["status"] == current["document"]["status"] == "open"
+    restored = ctx.c.post(f"/api/v1/sessions/{ctx.sid}/documents/{ctx.did}/restore",
+                          json={"expected_revision": ctx.rev(), "restore_from_revision": original_revision})
+    assert restored.status_code == 200, restored.text
+    ctx.validated()
+    reopened = _first(ctx.issues(), issue_id=initial["deleted"])
+    assert reopened["status"] == "open" and reopened["resolution"] is None
+
+
 def test_review1_resolved_issue_reopens_when_cause_returns(app, settings):
     """MOCK_VALUE → 블록 삭제 → 재검증으로 resolved → restore로 블록 복원 → validate → open blocker, failed."""
     registered.run(settings, BUNDLE_INGEST, with_mock=True)

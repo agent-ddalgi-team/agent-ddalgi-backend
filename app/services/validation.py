@@ -784,7 +784,11 @@ def persist_issues(conn: Connection, session_id: str, document: Document, valida
     for row in previous_open:
         if row["identity_key"] in produced:
             continue
-        if not _covered_by_this_validation(row, agent_covered_blocks, agent_full):
+        blocks = set(json.loads(row["block_ids_json"]))
+        # 대상 블록이 전부 삭제된 지적은 현재 문서에서 존재할 수 없다.
+        # 일부 대상이 남거나 문서 전체 지적이면 기존 부분 검증 범위를 유지한다.
+        deleted_agent_target = row["origin"] == "agent" and bool(blocks) and blocks.isdisjoint(fps)
+        if not deleted_agent_target and not _covered_by_this_validation(row, agent_covered_blocks, agent_full):
             continue  # 재실행하지 않은 검사의 Issue(문서 전체 Issue 포함)는 보존
         from app.services import db_history
         db_history.invalidate_warning(conn, row["issue_id"])
