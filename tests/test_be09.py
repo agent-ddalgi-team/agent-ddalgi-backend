@@ -1,8 +1,9 @@
-"""BE-09 세션 종료·만료 정리 테스트 — 실제 AI 없이 실행된다(배치 검사 행·artifact는 가짜 바이트로 직접 만든다).
+"""BE-09 세션 종료·만료 정리 테스트 — 기본 실행에는 실제 AI 호출이 없다.
 
 일반 검사는 브라우저 없이, 실제 Chrome 프로필/서버 재시작 검사는 Windows+Chromium에서만 실행한다.
 
 배경 sweep 스레드는 끄고(cleanup_sweep_interval_s=0) sweeper.sweep_once를 직접 부른다. 실제 회사 자료 없음.
+BE09_LIVE_AI=1을 명시한 경우에만 격리 HTTP 서버에서 실제 유료 AI 중단 검사를 실행한다.
 """
 from __future__ import annotations
 
@@ -715,6 +716,204 @@ def test_idempotent_replay_after_expiry_or_close_returns_410_not_content(app, se
 
 
 # ================= 5. 늦은 Job 결과·재시작 복구 =================
+
+# 통신은 실제 SDK/HTTP를 그대로 사용한다. 요청 본문 전송 완료와 Job 종료만 관측하며
+# 비밀값·요청/응답 본문은 기록하지 않는다. 별도 프로세스의 패치는 제품 서버에 영향이 없다.
+_LIVE_AI_SERVER = r'''
+import sys
+sys.path.insert(0, sys.argv[1])
+import json
+from pathlib import Path
+from dataclasses import replace
+import httpx
+import uvicorn
+from app import create_app
+from app.config import load_settings
+from app.db import init_orm_db
+from app import agent_llm
+from app.services import ai_jobs
+
+root, phase, port = Path(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+def mark(suffix, value):
+    (root / (phase + '-' + suffix)).write_text(json.dumps(value), encoding='utf-8')
+
+def trace(event, info):
+    if event.endswith('send_request_body.complete'):
+        mark('sent', True)
+
+def request_hook(request):
+    request.extensions['trace'] = trace
+
+real_openai = agent_llm.OpenAI
+def observed_openai(**kwargs):
+    kwargs['http_client'] = httpx.Client(event_hooks={'request': [request_hook]})
+    return real_openai(**kwargs)
+agent_llm.OpenAI = observed_openai
+
+real_validate = ai_jobs.validate_analyze
+def observed_validate(*args):
+    problem = real_validate(*args)
+    mark('validated', {'valid': problem is None})
+    return problem
+ai_jobs.validate_analyze = observed_validate
+
+real_run = ai_jobs.run_preflight_job
+def observed_run(*args):
+    try:
+        return real_run(*args)
+    finally:
+        mark('done', agent_llm.trial_report())
+ai_jobs.run_preflight_job = observed_run
+
+settings = replace(load_settings(), private_runs_dir=root / 'runs',
+                   db_path=root / 'runs' / 'live.sqlite3', agent_mode='llm',
+                   demo_mode=False, cleanup_sweep_interval_s=0)
+if not settings.db_path.exists():
+    init_orm_db(settings.db_path, settings.private_runs_dir)
+uvicorn.run(create_app(settings), host='127.0.0.1', port=port, log_level='error')
+'''
+
+
+@pytest.mark.skipif(os.environ.get("BE09_LIVE_AI") != "1", reason="실제 유료 AI: BE09_LIVE_AI=1 명시 필요")
+@pytest.mark.parametrize("interruption", ["session_close", "server_restart"])
+def test_live_ai_interruption_and_explicit_retry(tmp_path, interruption):
+    """가상 TXT만 전송. 실제 전송 중 종료/강제 중단 및 명시적 재시도 저장을 확인한다."""
+    import socket
+    import httpx
+
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    env = os.environ.copy()
+    env.pop("PYTHON_DOTENV_DISABLED", None)
+    env.update(AGENT_MODE="llm", OPENAI_EXECUTION_MODE="runtime", PYTHONDONTWRITEBYTECODE="1",
+               PRIVATE_RUNS_DIR=str(tmp_path / "runs"), DB_PATH=str(tmp_path / "runs" / "live.sqlite3"))
+    settings = Settings(private_runs_dir=tmp_path / "runs", db_path=tmp_path / "runs" / "live.sqlite3")
+    process = None
+
+    def wait_until(check, timeout=35):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            result = check()
+            if result:
+                return result
+            time.sleep(0.1)
+        pytest.fail("격리 실제 AI 검사 대기 시간 초과")
+
+    def stop():
+        nonlocal process
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait(timeout=15)
+
+    def start(phase):
+        nonlocal process
+        # Windows venv redirector 대신 실제 서버 PID를 갖는 기반 Python을 사용한다.
+        libraries = Path(sys.prefix) / ("Lib/site-packages" if os.name == "nt" else
+                                        f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages")
+        process = subprocess.Popen([getattr(sys, "_base_executable", sys.executable), "-X", "utf8", "-B", "-c",
+                                    _LIVE_AI_SERVER, str(libraries), str(tmp_path), phase, str(port)],
+                                   cwd=ROOT, env=env, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        def ready():
+            assert process.poll() is None, "격리 서버 시작 실패"
+            try:
+                return client.get("/openapi.json").status_code == 200
+            except httpx.TransportError:
+                return False
+        wait_until(ready)
+
+    def job(jid):
+        response = client.get(f"/api/v1/sessions/{sid}/jobs/{jid}")
+        assert response.status_code == 200
+        return response.json()
+
+    def terminal(jid):
+        current = job(jid)
+        return current if current["status"] in {"succeeded", "failed", "cancelled"} else None
+
+    def empty_results():
+        with connect(settings.db_path) as conn:
+            for table in ("preflights", "documents", "proposals", "approvals", "exports"):
+                assert conn.execute(f"SELECT COUNT(*) FROM {table} WHERE session_id=?", (sid,)).fetchone()[0] == 0
+
+    try:
+        with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=10, trust_env=False) as client:
+            start("before")
+            created = client.post("/api/v1/sessions", json={"brief": BRIEF})
+            assert created.status_code == 201
+            sid = created.json()["session_id"]
+            control = client.post("/api/v1/sessions", json={"brief": BRIEF}).json()["session_id"]
+            uploaded = client.post(f"/api/v1/sessions/{sid}/sources", files=[("files", ("virtual.txt", TXT, "text/plain"))])
+            assert uploaded.status_code == 202
+            upload = uploaded.json()
+            assert wait_until(lambda: terminal(upload["job_id"]))["status"] == "succeeded"
+            selected = client.patch(f"/api/v1/sessions/{sid}/inputs", json={"expected_input_revision": 1,
+                                   "selected_source_ids": [item["source_id"] for item in upload["items"]]})
+            assert selected.status_code == 200
+            body = {"expected_input_revision": selected.json()["input_revision"]}
+            path = f"/api/v1/sessions/{sid}/preflights"
+            headers = {"Idempotency-Key": "inflight-preflight"}
+            requested = client.post(path, json=body, headers=headers)
+            assert requested.status_code == 202
+            jid = requested.json()["job_id"]
+            wait_until(lambda: (tmp_path / "before-sent").exists(), timeout=60)
+            assert not (tmp_path / "before-done").exists(), "AI 완료 전에 중단해야 한다"
+            assert job(jid)["status"] == "running"
+            empty_results()
+
+            if interruption == "session_close":
+                closed = client.delete(f"/api/v1/sessions/{sid}")
+                assert closed.status_code == 200 and closed.json()["cleanup"] == "done"
+                wait_until(lambda: (tmp_path / "before-done").exists(), timeout=240)
+                assert json.loads((tmp_path / "before-validated").read_text())["valid"]
+                report = json.loads((tmp_path / "before-done").read_text())
+                assert report["calls_started"] == 1 and report["records"][0]["outcome"] == "json_received"
+                assert not report["in_flight"]
+                current = _row(settings, "SELECT status, error_json FROM jobs WHERE job_id=?", jid)
+                assert current["status"] == "cancelled" and json.loads(current["error_json"]) == jobs.CANCELLED_ERROR
+                assert client.get(f"/api/v1/sessions/{sid}").status_code == 410
+                assert not (settings.private_runs_dir / sid).exists()
+                assert MARK not in _row(settings, "SELECT brief_json FROM sessions WHERE session_id=?", sid)[0]
+                empty_results()
+            else:
+                stop()
+                assert not (tmp_path / "before-done").exists()
+                empty_results()
+                start("after")
+                recovered = job(jid)
+                assert recovered["status"] == "failed"
+                assert recovered["error"]["code"] == "SERVICE_TEMPORARY_FAILURE" and recovered["error"]["retryable"]
+                assert client.get(f"/api/v1/sessions/{sid}").status_code == 200
+                assert client.get(f"/api/v1/sessions/{sid}/sources").json()["items"][0]["parse_status"] == "complete"
+                replay = client.post(path, json=body, headers=headers)
+                assert replay.status_code == requested.status_code and replay.json() == requested.json()
+                assert not (tmp_path / "after-sent").exists()
+                empty_results()
+                retry_headers = {"Idempotency-Key": "explicit-retry"}
+                retry = client.post(path, json=body, headers=retry_headers)
+                assert retry.status_code == 202 and retry.json()["job_id"] != jid
+                finished = wait_until(lambda: terminal(retry.json()["job_id"]), timeout=240)
+                assert finished["status"] == "succeeded", finished
+                wait_until(lambda: (tmp_path / "after-done").exists())
+                report = json.loads((tmp_path / "after-done").read_text())
+                assert report["calls_started"] == 1 and report["records"][0]["outcome"] == "json_received"
+                assert json.loads((tmp_path / "after-validated").read_text())["valid"]
+                assert client.post(path, json=body, headers=retry_headers).json() == retry.json()
+                with connect(settings.db_path) as conn:
+                    assert conn.execute("SELECT COUNT(*) FROM preflights WHERE session_id=?", (sid,)).fetchone()[0] == 1
+                    assert conn.execute("SELECT COUNT(*) FROM jobs WHERE session_id=? AND kind='preflight'", (sid,)).fetchone()[0] == 2
+                    assert conn.execute("SELECT COUNT(*) FROM documents WHERE session_id=?", (sid,)).fetchone()[0] == 0
+                assert job(jid)["status"] == "failed"
+            assert client.get(f"/api/v1/sessions/{control}").status_code == 200
+            with connect(settings.db_path) as conn:
+                assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+                assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+            print(json.dumps({"interruption": interruption, "calls_completed": report["calls_started"],
+                              "known_estimated_cost_usd": report["known_estimated_cost_usd"],
+                              "interrupted_call_cost_unknown": interruption == "server_restart"}))
+    finally:
+        stop()
 
 def _close_during(settings, sid, real):
     def wrapper(*args, **kwargs):
