@@ -1469,3 +1469,37 @@ def test_c05_confirming_review_cannot_skip_apply_before_final_approval(c05_ctx, 
     approved = ctx.approve(after["validation"]["validation_id"], ctx.layout_row(settings))
     assert approved.status_code == 201, approved.text
     assert ctx.get()["approval"]["approval_id"] == approved.json()["approval_id"]
+
+
+@pytest.mark.parametrize("kind", ["validate", "layout_check"])
+def test_joined_active_check_remembers_new_idempotency_key(app, settings, monkeypatch, kind):
+    """A lost response joining an active job must replay after that job terminates."""
+    from app.services import ai_jobs, layout_check_jobs
+
+    ctx = Ctx(app, with_photo=False)
+    runner, method, endpoint = (
+        (ai_jobs, "run_validate_job", "validate") if kind == "validate"
+        else (layout_check_jobs, "run_layout_check_job", "layout-checks")
+    )
+    monkeypatch.setattr(runner, method, lambda *args: None)
+    url = f"/api/v1/sessions/{ctx.sid}/documents/{ctx.did}/{endpoint}"
+    body = {"expected_revision": ctx.rev()}
+    body.update({"input_revision": ctx.rev_in} if kind == "validate" else {"format": "pdf"})
+    first = ctx.c.post(url, json=body, headers={"Idempotency-Key": "first-check"})
+    joined = ctx.c.post(url, json=body, headers={"Idempotency-Key": "joined-check"})
+    assert first.status_code == joined.status_code == 202
+    assert first.json()["job_id"] == joined.json()["job_id"]
+    with connect(settings.db_path, immediate=True) as conn:
+        # Complete the orchestration fixture without invoking an AI or renderer.
+        conn.execute("UPDATE jobs SET status='succeeded' WHERE job_id=?", (first.json()["job_id"],))
+        count = conn.execute("SELECT count(*) FROM jobs WHERE session_id=? AND kind=?", (ctx.sid, kind)).fetchone()[0]
+    replay = ctx.c.post(url, json=body, headers={"Idempotency-Key": "joined-check"})
+    assert replay.status_code == 202
+    assert replay.json() == joined.json()
+    conflict = ctx.c.post(url, json={**body, "expected_revision": body["expected_revision"] + 1},
+                          headers={"Idempotency-Key": "joined-check"})
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "IDEMPOTENCY_KEY_CONFLICT"
+    with connect(settings.db_path) as conn:
+        assert conn.execute("SELECT count(*) FROM jobs WHERE session_id=? AND kind=?", (ctx.sid, kind)).fetchone()[0] == count
+    ctx.c.close()
