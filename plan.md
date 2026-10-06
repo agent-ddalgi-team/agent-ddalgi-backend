@@ -1050,6 +1050,14 @@ trial/interactive는 동시 실행 차단·원문 근거/형식 검사·사용�
 
 새 실제 호출에서는 fact_notes를 목록 대신 모든 사실 ID가 required인 객체로 받는다. 실제 사용 사실의 값은 null, 미사용 사실의 값은 {unused_disposition, reason}이며 사유는 160자로 제한한다. ID 별칭 복원은 객체 키에도 적용하고 서버가 전체 키 집합을 다시 검사한다. null은 실제 본문/회사명 제목 참조가 있는 supported 사실에만 허용한다. 이는 미사용 사실 하나가 목록에서 통째로 빠진 실제 실패를 출력 구조에서 예방하기 위한 변경이다. 기존 묶음/평면 응답 재생은 호환하며 공개 Document.editorial에는 기존 사실별 감사 기록을 저장한다.
 
+### 4.59 DOCX 실제 배치 검사·승인·출력 (2026-10-06, BE-07/08)
+
+사용자의 순차 백엔드 작업 재개에 따라 권장한 LibreOffice headless 방식을 구현한다. `EXPORT_LIBREOFFICE_PATH` 명시 설정으로 활성화하고 엔진 없는 기존 서버는 미측정 상태로 차단한다. 생성한 DOCX 자체를 독립 프로필로 PDF 변환하여 실제 쪽수, 쪽별 본문 순서/사진 수, A4 인쇄 영역과 기존 placeholder/broken_image 검사를 연결한다. 변환본에서 미리보기를 만들고 통과한 원래 DOCX를 불변 artifact로 승인·발행한다. 승인·출력에서 실제 측정·엔진·필수 검사 기록을 재확인한다. 오류/시간 초과/미측정으로 승인할 수 없고 재다운로드에 AI/렌더를 호출하지 않는다.
+
+Windows에서 발견한 기본 그림 여백과 긴 프로필 경로를 보완한다. 그림 거리/위치를 명시하고 같은 세션 폴더의 짧은 Windows 경로로 Office를 실행하며 긴 경로 삭제를 지원한다. 입력 사본·프로필·변환 PDF는 Job/세션 임시 폴더 안에서 정리하며 동시 검사끼리 공유하지 않는다. 설치된 로컬 LibreOffice와 임시 DB·가상 자료로 검증하고 운영 `.env`/DB/서버는 변경하지 않는다.
+
+계약 1.9·template_v7로 올리고 DB v11/데이터 1.0/공개 필드는 유지한다. 이전 PDF/DOCX 승인은 재검사·재승인이 필요하다. Word와 다른 글꼴의 동일 쪽 나눔, 임의 Word 문서의 전체 배치 분석, DOCX 브로슈어 디자인 구현은 보장 범위에 포함하지 않는다. 프론트 형식별 검사·경고·승인 연결과 실자료 품질 검수는 후속이다. 실제 실행 결과는 task_backend.md의 DOCX 기록을 따른다.
+
 ## 5. 데이터 모델
 
 이전 문서가 ‘plan.md 5절의 진행 순서’를 가리키면 [8절](#8-구현-순서)을 읽는다. 아래는 기존 객체를 이해하기 위한 요약이며 새 테이블을 추가하는 설계가 아니다.
@@ -1066,7 +1074,7 @@ trial/interactive는 동시 실행 차단·원문 근거/형식 검사·사용�
 
 자료·설정 변경은 `input_revision`, 문서 편집은 `document_revision`으로 구분한다. 수정안·검사·승인을 해당 버전에 연결해 오래된 결과의 적용을 막는다. 새 자료를 선택하면 기존 편집을 보존한 채 재점검·사용자 확인·영향 확인 후 필요한 수정과 재검증을 진행한다(C-05).
 
-검증·승인·PDF 출력과 D-07 서버 경고 확인은 구현되어 있으며, 개별 확인 UI와 DOCX 승인 등은 아직 미완료다. 필드와 구현 상태는 [contracts.md](contracts.md), [app/models.py](app/models.py), 역할별 task에서 확인한다.
+검증·승인·PDF 출력과 D-07 서버 경고 확인은 구현되어 있으며, 현재 DOCX 실제 검사·승인·출력은 4.59절을 따르며 프론트 DOCX 연결·최종 품질 검수는 후속이다. 필드와 구현 상태는 [contracts.md](contracts.md), [app/models.py](app/models.py), 역할별 task에서 확인한다.
 
 ## 6. 주요 API
 
@@ -1082,7 +1090,7 @@ API는 화면과 서버가 주고받는 요청이다. 기본 경로는 `/api/v1`
 | 자료 변경 후 편집 복귀 | `POST /sessions/{sid}/documents/{did}/impact-reviews`, `GET .../{rid}`, `POST .../{rid}/apply` | 계약 1.6·DB v11 API 구현. 프론트 연결·실제 모델 검증 후속 |
 | AI 수정안·적용 | `POST /sessions/{sid}/documents/{did}/proposals`, `POST /sessions/{sid}/proposals/{pid}/apply` | 코드 있음, 제안 생성은 mock |
 | 검증·배치·승인 | `POST /sessions/{sid}/documents/{did}/validate`, `/layout-checks`, `/approvals` | 라우트 있음. PDF 배치·D-07 서버 경고 확인 연결. 실제 AI/확인 UI 통합은 후속 |
-| 출력·다운로드 | `POST /sessions/{sid}/exports`, `GET /sessions/{sid}/exports/{eid}/download` | 라우트 있음. PDF 구현, DOCX 승인·출력 미완료 |
+| 출력·다운로드 | `POST /sessions/{sid}/exports`, `GET /sessions/{sid}/exports/{eid}/download` | PDF와 LibreOffice 검사 통과 DOCX 승인·출력 구현. 프론트/실자료 검수 후속 |
 | 진행·사진 조회 | `GET /sessions/{sid}/jobs/{jid}`, `GET /sessions/{sid}/assets/{asset_id}` | 코드 있음. asset은 현재 이미지 조회 |
 
 사전 점검·수정안 GET, 수정안 거절·문서 복원 등 전체 규격은 [공통 계약](contracts.md)과 `app/routers/`를 따른다. 코드에 이미 있는 추가 필드·GET과 계약 본문의 차이는 C-01~C-04·C-07에서 맞춘다. 원본 문서·출력 미리보기 조회는 이미지 조회와 구분한다.

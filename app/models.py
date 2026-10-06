@@ -548,7 +548,7 @@ class LayoutCheckOut(BaseModel):
     renderer: str | None = None
     artifact_id: str | None = None
     preview_asset_ids: list[str] = Field(default_factory=list)
-    preview_basis: Literal["pdf"] | None = None    # DOCX도 같은 스냅샷의 PDF 렌더로 미리보기(검사 증거 아님)
+    preview_basis: Literal["pdf"] | None = None    # DOCX는 설정된 엔진의 실제 변환본 또는 검사 미완료 시 참고 PDF. warnings로 구분.
     warnings: list[str] = Field(default_factory=list)
     created_at: str
 

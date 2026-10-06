@@ -35,6 +35,7 @@ BANNED = ("거산", "케미칼", "Geosan")
 
 # 템플릿·폰트·DOCX 배치 상수·PDF 렌더 상수의 sha256(줄바꿈 정규화). 이 중 하나라도 바꾸면 TEMPLATE_VERSION을 올리고 여기 값을 갱신한다.
 TEMPLATE_FINGERPRINTS = {
+    "template_v7": "4be75f1522c12f656c964872f89797c24e5b3396138ed237eeabaa2757562134",
     "template_v6": "20677eaf1d7238e726d7a9b13e7648ad79440be189dc17b8203cfa8ad0229950",
     "template_v5": "f8f7d40b6c886b14eb813bbdf561bf1c540d6483c336a78bee377bac46b60fa9",
     "template_v4": "538839538005c76d91e68a091398ce4cd20842499f62d147c52852339d98b237",
@@ -48,6 +49,9 @@ TEMPLATE_FINGERPRINTS = {
 BROWSER_PATH_ENV = (os.environ.get("EXPORT_BROWSER_PATH") or "").strip() or None
 BROWSER = er.find_browser(Settings(private_runs_dir=Path("."), db_path=Path("."), export_browser_path=BROWSER_PATH_ENV))
 needs_browser = pytest.mark.skipif(BROWSER is None, reason="Chromium 계열 브라우저 없음 — PDF 렌더 테스트 미실행")
+LIBREOFFICE = next((str(p) for p in [Path(os.environ.get("TEST_LIBREOFFICE_PATH") or
+    r"C:\Program Files\LibreOffice\program\soffice.com")] if p.is_file()), None)
+needs_libreoffice = pytest.mark.skipif(LIBREOFFICE is None, reason="LibreOffice 없음 — DOCX 실제 배치 검사 미실행")
 
 
 def _png(width: int = 8, height: int = 6, color=(10, 20, 30)) -> bytes:
@@ -371,7 +375,7 @@ def test_draft_pagination_bounds_repeated_overflow_without_losing_content(out_di
 
 def test_identity_values_come_from_layout_checks(out_dir):
     r = er.render(_fixture_snapshot("1pages"), "docx", out_dir)
-    assert r.template_version == layout_checks.TEMPLATE_VERSION == "template_v6"
+    assert r.template_version == layout_checks.TEMPLATE_VERSION == "template_v7"
     assert r.render_options_hash == layout_checks.RENDER_OPTIONS_HASH == layout_checks.render_options_hash(layout_checks.DEFAULT_RENDER_OPTIONS)
     assert len(r.render_options_hash) == 16 and int(r.render_options_hash, 16) >= 0
     changed = dict(layout_checks.DEFAULT_RENDER_OPTIONS, margin_mm=20)
@@ -622,6 +626,75 @@ def test_docx_concurrent_renders_of_same_revision_do_not_collide(out_dir):
     assert errors == [] and len(results) == 3
     assert sorted(p.name for p in out_dir.iterdir()) == [results[0].file_path.name]
     assert er.docx_info(results[0].file_path)["inline_shapes"] == 1
+
+
+def test_docx_configured_missing_engine_does_not_pass(settings, out_dir):
+    from dataclasses import replace
+
+    result = er.render(_fixture_snapshot("1pages"), "docx", out_dir,
+                       replace(settings, export_libreoffice_path=str(out_dir / "missing-soffice.exe")))
+    assert result.actual_pages is None and result.layout_ok is False and result.preview_path is None
+    assert result.not_checked == ["overflow"]
+    assert result.checks[0].reason == "docx_layout_engine_unavailable"
+
+
+@pytest.mark.parametrize("failure", ["version", "conversion", "missing_pdf", "invalid_pdf", "timeout"])
+def test_docx_engine_failure_never_passes_and_removes_profile(settings, out_dir, monkeypatch, failure):
+    from dataclasses import replace
+
+    # Existing executable is only an identity placeholder; the runner is replaced before any invocation.
+    engine = Path(sys.executable)
+    calls = []
+    def run(command, timeout, what):
+        calls.append(command)
+        if failure == "timeout":
+            raise er.RenderError("render_timeout", "simulated timeout")
+        if "--version" in command:
+            return subprocess.CompletedProcess(command, 1 if failure == "version" else 0, b"LibreOffice 26.8.0.3", b"")
+        if failure in {"invalid_pdf", "conversion"}:
+            (Path(command[command.index("--outdir") + 1]) / "document.pdf").write_bytes(b"not a PDF")
+        return subprocess.CompletedProcess(command, 1 if failure == "conversion" else 0, b"", b"PRIVATE_SENTINEL")
+    monkeypatch.setattr(er, "_run", run)
+    with pytest.raises(er.RenderError) as exc:
+        er.render(_fixture_snapshot("1pages"), "docx", out_dir,
+                  replace(settings, export_libreoffice_path=str(engine)))
+    assert exc.value.code == ("render_timeout" if failure == "timeout" else "render_failed")
+    assert "PRIVATE_SENTINEL" not in str(exc.value)
+    assert calls and not list(out_dir.glob("docx_check_*")) and not list(out_dir.glob("*.preview.pdf"))
+
+
+@needs_libreoffice
+@pytest.mark.parametrize("pages", [1, 4, 6, 8, 10])
+def test_docx_actual_pages_text_photos_and_editability(settings, out_dir, pages):
+    from dataclasses import replace
+    import docx
+
+    contents = [Page(page_id=f"p{i}", title=f"회사 정보 {i}", layout_key="text", blocks=[
+        _blk(f"h{i}", "heading", text=f"한글 회사 소개 {i}", level=1),
+        _blk(f"b{i}", "paragraph", text=f"시험 본문 {i}: 수량 12개, 적용 기간 2026년 10월."),
+        _blk(f"l{i}", "list", items=["검사 후 출하합니다.", "납기는 확인 후 안내합니다."])] ) for i in range(pages)]
+    contents[0].blocks.append(_blk("photo", "image", asset_id="image", caption="검사용 가상 사진", fit="contain"))
+    snapshot = er.snapshot_from_document(_doc(contents), {"image": er.asset_from_bytes("image", _png(320, 160))})
+    result = er.render(snapshot, "docx", out_dir, replace(settings, export_libreoffice_path=LIBREOFFICE))
+    assert result.layout_ok is True and result.actual_pages == pages and result.findings == []
+    assert result.preview_path.is_file() and ";libreoffice/" in result.renderer
+    assert result.details["images_per_page"] == [1] + [0] * (pages - 1)
+    assert all(check.result == "ok" for check in result.checks)
+    editable = docx.Document(str(result.file_path))
+    assert any("시험 본문 0" in paragraph.text for paragraph in editable.paragraphs)
+    assert len(editable.inline_shapes) == 1 and not list(out_dir.glob("docx_check_*"))
+
+
+@needs_libreoffice
+def test_docx_actual_overflow_remains_blocked(settings, out_dir):
+    from dataclasses import replace
+
+    snapshot = er.snapshot_from_document(_doc([Page(page_id="p1", title="긴 본문", layout_key="text", blocks=[
+        _blk("long", "paragraph", text=LONG_UNIT * 250)])]), {})
+    result = er.render(snapshot, "docx", out_dir, replace(settings, export_libreoffice_path=LIBREOFFICE))
+    assert result.layout_ok is False and result.actual_pages > 1 and result.preview_path.is_file()
+    assert result.checks[0].result == "finding" and not result.not_checked
+    assert any(f.kind == "overflow" for f in result.findings)
 
 
 # ================= HTML(템플릿) 안전성 — 브라우저 없이 확인 =================

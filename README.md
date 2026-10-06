@@ -182,7 +182,9 @@ DDL과 이력 기록은 하나의 명시적 트랜잭션으로 처리하고 실�
 **현재 로컬 상태(2026-09-29):** 사용자 요청으로 자료 적재는 보류했다. `.env`는 `private_runs/erd_v2`를 사용하며, 활성 DB는 **v11 / Alembic `20260929_01`, 업무 테이블 25개·업무 데이터 0건**이다. Alembic 관리 테이블/버전 행은 별도로 유지한다. 이전 `private_runs/app.sqlite3`와 연결 파일은 사용자 요청으로 삭제했다(6.28절). 원본 자료와 새 폴더의 준비용 복사본은 보관하며 이번 구조 변경에서 수정·삭제하지 않았다. 나중에 적재를 요청하면 준비된 `import_packages/real`·`import_packages/demo` 묶음을 기존 적재기로 넣을 수 있다. 기존 대상 폴더에 위 재생성 명령을 다시 실행하면 보호 검사로 중단한다. 다른 PC의 기존 v10 DB는 새 코드를 받은 뒤 서버를 중지하고 `uv run alembic upgrade head`로 갱신한다. 적용·검증 결과는 `task_backend.md` 6.31절을 따른다.
 
 ### PDF/DOCX 출력 준비 (BE-07, D-03)
-- **DOCX**는 python-docx로 만들며 추가 설치가 없다.
+- **DOCX**는 python-docx로 만든다. 실제 배치 검사·승인·다운로드를 사용하려면 서버에 LibreOffice를 설치하고 `EXPORT_LIBREOFFICE_PATH`에 절대 실행 파일 경로를 지정한다(Windows 예: `C:\Program Files\LibreOffice\program\soffice.com`, Linux 예: `/usr/bin/libreoffice`). 자동 활성화하지 않으며 엔진 미설정/없는 경로는 `overflow=not_checked`로 승인을 차단한다. 변환 실패·시간 초과·측정 실패도 통과 처리하지 않는다.
+  - 각 검사에 독립 headless 프로필을 사용하고 같은 DOCX의 변환 PDF에서 실제 쪽수·쪽별 본문/사진·인쇄 영역을 검사한다. PNG 미리보기도 이 변환본에서 만든다. 검사 뒤 승인된 원래 DOCX를 그대로 발행하며 AI/렌더를 다시 호출하지 않는다.
+  - `EXPORT_RENDER_TIMEOUT_S`는 DOCX 변환·측정에도 적용한다. Windows의 긴 프로필 경로는 짧은 경로 이름과 긴 경로 삭제 지원으로 처리한다.
 - **PDF**는 서버에 설치된 Chromium 계열 브라우저(Google Chrome 또는 Microsoft Edge)의 headless 인쇄로 만든다.
   필요한 Python 패키지는 `uv sync`에 포함된다. 브라우저가 없으면 PDF 생성은 `browser_not_found`로 실패한다.
   - **실행 조건**: 서버 프로세스를 root로 실행하지 않는다. Chromium은 root에서 샌드박스 때문에 시작을 거부하며, 어댑터는 `--no-sandbox`를 넣지 않는다(컨테이너도 비root 사용자로).
@@ -197,9 +199,9 @@ DDL과 이력 기록은 하나의 명시적 트랜잭션으로 처리하고 실�
 - 배치 검사 미리보기(쪽 PNG)는 pypdfium2로 만든다(런타임 의존성, `uv sync`에 포함).
 
 ### 배치 검사·승인·출력 흐름 (BE-08)
-- `POST /documents/{did}/layout-checks`(202 Job) → `GET /jobs/{jid}` → `GET /documents/{did}`의 `layout_checks.pdf` → 미리보기 `GET /assets/{preview_asset_id}`
+- `POST /documents/{did}/layout-checks`(202 Job, format=pdf|docx) → `GET /jobs/{jid}` → `GET /documents/{did}`의 `layout_checks[format]` → 미리보기 `GET /assets/{preview_asset_id}`
   → `POST /documents/{did}/approvals`(201) → `POST /exports`(202, ready면 200) → `GET /exports/{eid}/download`.
-- PDF만 승인·출력이 열린다. DOCX는 파일 생성과 PDF 기준 미리보기까지이며 승인·출력은 차단된다(task_backend.md 6.15절 ㉞).
+- PDF와 실제 DOCX 검사 통과본을 승인·출력할 수 있다(계약 1.9, template_v7). DOCX는 LibreOffice 검사 기준이며 Word 등 다른 프로그램·글꼴에서 쪽 나눔이 달라질 수 있으므로 응답의 warnings를 표시한다. 엔진 없는 경우의 HTML/PDF 참고 미리보기는 DOCX 검사 증거가 아니며 승인이 차단된다. 기존 단일 열 DOCX 배치/편집성은 유지하며 PDF 브로슈어 디자인과 동일 배치를 보장하지 않는다.
 - Export는 배치 검사 때 만든 불변 산출물(`private_runs/<sid>/artifacts/`)을 그대로 내려준다. 파일이 없거나 바뀌면 자동으로 다시 만들지 않고
   재검사·재승인이 필요하다. `EXPORT_TTL_MINUTES`(기본 120)로 만료.
 - 등록 사진은 `approved_for_external_use=true`일 때만 출력할 수 있다. 값을 바꾸려면 `uv run python scripts/import_registered.py --source-dir <묶음> --update-publication`

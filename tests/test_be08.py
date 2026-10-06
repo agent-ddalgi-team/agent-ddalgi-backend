@@ -1,7 +1,7 @@
 """BE-08 확인: 배치 검사 Job·미리보기·승인 ⑥ 실체화·불변 artifact·Export·다운로드·공개 허가·Issue 분리·재시작 복구·만료.
 
 모든 자료는 가상(clean TXT·Pillow PNG·가짜 등록 묶음). 실제 AI 호출 없음(mock Agent 또는 LlmAgent의 준비된 모델 응답). PDF 배치 검사는 시스템 Chromium 계열
-브라우저가 있을 때만 실제로 돈다. 없으면 해당 테스트는 skip으로 표시된다(통과가 아니다). DOCX 승인·Export·다운로드는 이 범위에서 차단이 정상.
+PDF는 브라우저, DOCX 실제 검사는 LibreOffice가 있어야 돈다. 없으면 skip(통과가 아니다). 엔진 미설정 DOCX는 차단한다.
 """
 from __future__ import annotations
 
@@ -34,6 +34,9 @@ BANNED = ("거산", "케미칼", "Geosan")
 BROWSER_PATH_ENV = (os.environ.get("EXPORT_BROWSER_PATH") or "").strip() or None
 BROWSER = export_render.find_browser(Settings(private_runs_dir=Path("."), db_path=Path("."), export_browser_path=BROWSER_PATH_ENV))
 needs_browser = pytest.mark.skipif(BROWSER is None, reason="Chromium 계열 브라우저 없음 — 배치 검사(PDF) 테스트 미실행")
+LIBREOFFICE = next((str(p) for p in [Path(os.environ.get("TEST_LIBREOFFICE_PATH") or
+    r"C:\Program Files\LibreOffice\program\soffice.com")] if p.is_file()), None)
+needs_libreoffice = pytest.mark.skipif(LIBREOFFICE is None, reason="LibreOffice 없음 — DOCX 승인 통합 검사 미실행")
 
 
 @needs_browser
@@ -527,6 +530,60 @@ def test_docx_check_creates_file_and_pdf_preview_but_stays_blocked(app, settings
     a, _ = flow.approved_pdf()
     r = flow.export(a["approval_id"], fmt="docx")
     assert r.status_code == 422 and r.json()["error"]["code"] == "EXPORT_NOT_ALLOWED"
+
+
+@needs_libreoffice
+def test_actual_docx_check_approve_download_reuse_and_invalidate(settings, monkeypatch):
+    from dataclasses import replace
+    import docx
+
+    settings = replace(settings, export_libreoffice_path=LIBREOFFICE,
+                       export_browser_path=str(settings.private_runs_dir / "no-browser.exe"))
+    application = create_app(settings)
+    # DOCX preview must come from its own conversion, even when Chrome is unavailable.
+    monkeypatch.setattr(export_render, "_render_pdf", lambda *a, **k: pytest.fail("DOCX used the HTML/PDF fallback"))
+    flow = Flow(application, settings)
+    flow.clean()
+    validation = flow.validate()
+    assert validation["status"] == "passed"
+    _, job = flow.layout_check("docx")
+    layout = flow.get()["layout_checks"]["docx"]
+    assert layout["status"] == "passed" and layout["layout_ok"] and layout["actual_pages"] == 4
+    assert layout["preview_basis"] == "pdf" and len(layout["preview_asset_ids"]) == 4
+    assert ";libreoffice/" in layout["renderer"] and any("LibreOffice" in text for text in layout["warnings"])
+    assert job["result_ref"]["status"] == "passed"
+    for aid in layout["preview_asset_ids"]:
+        response = flow.c.get(f"/api/v1/sessions/{flow.sid}/assets/{aid}")
+        assert response.status_code == 200 and response.content.startswith(b"\x89PNG")
+    refused = flow.approve(validation["validation_id"], layout["layout_check_id"], fmt="docx", confirmed=False)
+    assert refused.status_code == 422
+    approval = flow.approve(validation["validation_id"], layout["layout_check_id"], fmt="docx",
+                            headers={"Idempotency-Key": "docx-approval"})
+    assert approval.status_code == 201, approval.text
+    assert approval.json()["artifact_id"] == layout["artifact_id"]
+    assert flow.approve(validation["validation_id"], layout["layout_check_id"], fmt="docx",
+                        headers={"Idempotency-Key": "docx-approval"}).json() == approval.json()
+    accepted = flow.export(approval.json()["approval_id"], fmt="docx", key="docx-export")
+    assert accepted.status_code == 202, accepted.text
+    flow.job(accepted.json()["job_id"])
+    ready = flow.export(approval.json()["approval_id"], fmt="docx").json()["export"]
+    assert ready["status"] == "ready" and ready["artifact_id"] == layout["artifact_id"]
+    first = flow.download(ready["export_id"])
+    assert first.status_code == 200 and first.content.startswith(b"PK")
+    assert "officedocument.wordprocessingml.document" in first.headers["content-type"]
+    assert flow.download(ready["export_id"]).content == first.content
+    editable = docx.Document(io.BytesIO(first.content))
+    assert len(editable.inline_shapes) == 1 and any("예시 회사" in p.text for p in editable.paragraphs)
+    with connect(settings.db_path) as conn:
+        artifact = artifacts.get(conn, layout["artifact_id"])
+        assert hashlib.sha256(first.content).hexdigest() == artifact["sha256"]
+        assert conn.execute("SELECT COUNT(*) FROM jobs WHERE kind='draft'").fetchone()[0] == 1
+    _no_paths(layout)
+    flow.patch([{"op": "rename_page", "page_id": flow.doc()["pages"][0]["page_id"], "title": "승인 뒤 수정"}])
+    assert flow.download(ready["export_id"]).status_code == 409
+    assert flow.c.delete(f"/api/v1/sessions/{flow.sid}").json()["cleanup"] == "done"
+    assert flow.download(ready["export_id"]).status_code == 410
+    assert not (settings.private_runs_dir / flow.sid).exists()
 
 
 # ================= 승인 후 변경·재사용·동시성 =================
