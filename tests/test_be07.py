@@ -611,22 +611,35 @@ def test_docx_build_failure_is_render_error_without_partial_file(out_dir, monkey
 
 
 def test_docx_concurrent_renders_of_same_revision_do_not_collide(out_dir):
+    from dataclasses import replace
+    import docx
+
     snap = _fixture_snapshot("1pages")
     results, errors = [], []
 
-    def run():
+    def run(index):
         try:
-            results.append(er.render(snap, "docx", out_dir))
+            title = f"동시 출력 {index}"
+            result = er.render(replace(snap, title=title), "docx", out_dir)
+            results.append((title, result))
         except Exception as exc:  # noqa: BLE001
             errors.append(exc)
-    threads = [threading.Thread(target=run) for _ in range(3)]
+    threads = [threading.Thread(target=run, args=(i,)) for i in range(3)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
     assert errors == [] and len(results) == 3
-    assert sorted(p.name for p in out_dir.iterdir()) == [results[0].file_path.name]
-    assert er.docx_info(results[0].file_path)["inline_shapes"] == 1
+    assert len({result.file_path for _, result in results}) == 3
+    assert set(out_dir.iterdir()) == {result.file_path for _, result in results}
+    for title, result in results:
+        document = docx.Document(str(result.file_path))
+        assert document.core_properties.title == title
+        assert len(document.inline_shapes) == 1
+    # 후속 렌더가 앞서 반환한 출력 파일을 바꾸지 않아야 검사·다운로드 대상이 유지된다.
+    originals = {result.file_path: result.file_path.read_bytes() for _, result in results}
+    er.render(snap, "docx", out_dir)
+    assert all(path.read_bytes() == data for path, data in originals.items())
 
 
 def test_renderer_child_does_not_inherit_open_server_stdin():

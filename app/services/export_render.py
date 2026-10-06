@@ -925,7 +925,8 @@ def _render_docx(snapshot: RenderSnapshot, out_dir: Path) -> tuple[Path, int | N
     opts = layout_checks.DEFAULT_RENDER_OPTIONS
     family, margin = opts["font_family"], opts["margin_mm"]
     content_w = PAGE_W_MM - 2 * margin
-    final = out_dir / f"{snapshot.document_id}_rev{snapshot.document_revision}.docx"
+    # 반환한 파일은 후속 검사·발행이 읽는다. 동시/반복 렌더가 그 파일을 교체하지 않는다.
+    final = out_dir / f"{snapshot.document_id}_rev{snapshot.document_revision}_{secrets.token_hex(8)}.docx"
     findings = _snapshot_findings(snapshot)
 
     try:

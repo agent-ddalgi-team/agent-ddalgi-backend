@@ -7,6 +7,8 @@
 
 ## 1. Quick Status
 
+- **2026-10-06 [F-06/08 · BE-07/08/10] DOCX 동시 출력·전체 회귀:** 출력 파일 덮어쓰기를 막고 전체 검사 **1,764 passed / 8 skipped / 3 warnings / 실패0**를 확인했다. 프론트·Agent 변경 없음. [기록](#backend-regression-20261006).
+
 - **2026-10-06 [F-06 · BE-07/08/10] DOCX 11쪽→8쪽 배치 보완:** 독립 쪽 나눔 문단이 만든 빈 쪽 3개를 제거했다. 본문·사진 6장의 바이트와 표시 크기를 유지하고 실문서 8쪽/배치 문제0건을 확인했다. template_v8 사용으로 기존 검사는 재실행 필요. [기록](#docx-blank-pages-20261006).
 
 - **2026-10-06 [F-06/08 · BE-07/08/10] DOCX 화면 연결·오류 보완:** 출력 형식별 검사·승인·다운로드를 연결하고 열린 stdin의 변환 중단 및 쪽수 불일치 조회 500을 수정했다. 시연 검증 한도는 기존 기본값 40만자로 복구했다. [기록](#docx-ui-20261006).
@@ -67,7 +69,7 @@
 환경 준비가 필요한 PC에서는 저장소 루트의 PowerShell에서 `uv sync --locked --group dev`를 먼저 실행한다. 아래 검사는 `$env:PYTHON_DOTENV_DISABLED = "1"`로 .env 자동 로딩을 끄고 실행한다. 테스트는 임시 DB와 가짜 AI 응답을 사용한다.
 
 - [x] `uv run python -B -m pytest -q -p no:cacheprovider tests/test_agent_llm.py tests/test_be05.py`가 실패 없이 끝난다. 2026-09-29 마지막 실행 **528 passed, 1 warning**(6.44절).
-- [/] 전체 `uv run pytest -q`: 2026-09-29 **1,034 passed / 3 failed**. `tests/test_be08.py::test_stress_document_layout_failed_then_fixed_and_issue_separation`은 원격 `develop`(ca3ecf4)에서도 같은 이유로 실패한다. D-07 이후 이슈 resolve 요청이 `body` 필드를 요구해 400이 오는데 테스트는 422를 기대하므로 테스트 갱신이 필요하다. `tests/test_be05.py::test_mock_unsupported_kinds_fail_not_empty_success`와 `tests/test_be07.py::test_docx_concurrent_renders_of_same_revision_do_not_collide`는 전체 실행에서만 실패하고 단독·파일 단위 실행은 통과해 순서 의존·동시성 문제로 본다. 세 건 모두 이번 미커밋 변경이 원인이 아니다.
+- [x] 전체 백엔드 pytest: 2026-10-06 현재 `test`에서 **1,764 passed / 8 skipped / 3 warnings / 실패0**. 실제 Chrome·LibreOffice, 가상 자료·임시 DB·mock/저장 응답으로 실행했다. 건너뜀8건은 Windows의 macOS/POSIX 전용 검사이며 통과로 계산하지 않는다. 과거 실패 목록 3건도 같은 전체 실행에서 통과했다. [현재 실행 기록](#backend-regression-20261006).
 - [x] `C:\frontend`에서 `node scripts/check-ai-workflow.mjs --publication --photos`가 `result: PASS`로 끝난다. 2026-09-29 설계도 배치 적용 후 재실행 **19개 검사 묶음 통과**, 시연 PDF 4쪽·26,213바이트, 재다운로드 동일.
 - [x] `C:\frontend`에서 TypeScript(`tsc -b`)·ESLint·Prettier·`vite build` 통과.
 - [x] **2026-09-30 Mac 재실행**: `scripts/check_s01_http.py --publication --timeout 120` 및 `--publication --photos --timeout 120` 모두 `status: passed`. 실제 localhost HTTP·Chrome·가상 자료 범위이며 이번 프론트 실행은 포함하지 않는다. [최신 결과](#http-photo-publication-20260930).
@@ -89,6 +91,17 @@
 ---
 
 ## 5. 완료된 기능 히스토리 (누적 아카이브)
+
+<a id="backend-regression-20261006"></a>
+
+### [F-06/08 · BE-07/08/10] → DOCX 동시 출력 보존·전체 회귀 (2026-10-06)
+
+- **재현·원인:** DOCX는 임시 파일 이름만 분리하고 최종 document_id/revision 경로를 공유했다. 기존 동시 렌더 검사를 각 결과의 제목·사진·후속 렌더 뒤 바이트 보존까지 확장하니 수정 전 1 failed로 최종 경로 1개 공유를 재현했다. 기존 간헐 Windows 파일 교체 실패와 다른 출력으로 덮어쓰는 원인이 같았다.
+- **변경:** 기존 export_render.py의 최종 DOCX 이름에도 렌더별 무작위 식별값을 추가했다. 반환 파일은 다른 동시/후속 렌더에 의해 교체되지 않는다. 저장 시 기존 artifacts.store가 독립 artifact 경로로 옮기므로 기존 세션 정리와 다운로드를 재사용한다. 사용자 다운로드 이름·문서 내용·template_v8/지문·옵션·API·계약1.9·DB v11은 유지한다. 프론트·Agent·.env는 변경하지 않았다. 결정은 plan4.63.
+- **집중 검증:** DOCX 동시 렌더·mock 미지원 제안·배치 실패/수정 후 형식별 이슈 분리의 기존 실패 목록 3건을 실제 Chrome으로 실행해 **3 passed / 경고1개 / 10.77초**. 뒤 2건은 현재 코드에서 수정 없이 통과했다. 과거 전체 실행의 순서 의존 원인을 이번에 새로 고쳤다고 주장하지 않는다.
+- **전체 회귀:** PYTHON_DOTENV_DISABLED=1, EXPORT_BROWSER_PATH=실제 Chrome, CLEANUP_SWEEP_INTERVAL_S=0으로 `.venv/Scripts/python.exe -X utf8 -B -m pytest -q -p no:cacheprovider --disable-warnings --maxfail=5` 실행: **1,764 passed / 8 skipped / 3 warnings / 실패0 / 559.23초**. 가상 자료·임시 DB·mock/저장 응답을 사용하며 실제 AI를 호출하지 않는다. Windows의 macOS/POSIX 전용 8건은 통과로 계산하지 않는다. 실제 Chrome PDF·LibreOffice DOCX·승인/다운로드·DB/접근 보호·정리 회귀를 포함한다. 실회사 의미 정확성·사진별 공개 허가·사람 검수의 완료를 뜻하지 않는다.
+- **서버 적용:** 진행 Job0건과 기존 서버 PID를 재확인하고 같은 시연 DB/LibreOffice/내용 검증400000자/재시도0으로 재구동했다. 시작 설정의 review=400000, 시연 모드, OpenAPI200을 확인했다. 시연 DB를 읽기 전용으로 확인해 integrity_check=ok, foreign_key_check 위반0건이었다. 서버 시작만으로 실제 AI를 호출하지 않았으며 사용자 문서를 승인하지 않았다.
+- **상태·다음:** BE-07/08 서버 완료, BE-10/F-06/F-08 진행중 유지. 전체 검사 실패 목록은 이번 실행에서 해소됐으며 C-05 프론트 복귀 연결과 실자료 사람 검수는 후속이다. 실제 문서를 자동 승인하지 않는다.
 
 <a id="docx-blank-pages-20261006"></a>
 
