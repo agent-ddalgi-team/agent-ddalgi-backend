@@ -323,6 +323,26 @@ def test_draft_pagination_preserves_content_and_fits_actual_pdf(case, out_dir, s
     assert [p.model_dump() for p in snap.pages] == before
 
 
+@pytest.mark.parametrize("with_heading", [False, True])
+@pytest.mark.parametrize("photo_count", [1, 2])
+def test_draft_split_keeps_explanation_with_trailing_photo(with_heading, photo_count):
+    blocks = [_blk("intro", "paragraph", text="소개 문장"),
+              _blk("other", "paragraph", text="앞 설명")]
+    if with_heading:
+        blocks.append(_blk("heading", "heading", text="설비 설명", level=2))
+    blocks.extend([_blk("body", "paragraph", text="사진과 연결된 설명", fact_ids=["fact_photo"]),
+                   _blk("photo", "image", asset_id="image", caption="설비 사진", fit="contain")])
+    page = Page(page_id="p", title="설비", layout_key="text_photo", blocks=blocks)
+    if photo_count == 2:
+        page.blocks.append(_blk("photo2", "image", asset_id="image", caption="다른 설비 사진", fit="contain"))
+    before = page.model_dump()
+    split = er._split_draft_page(page, "photo2" if photo_count == 2 else "photo")
+    assert split is not None and len(split) == 2
+    assert [b.model_dump() for p in split for b in p.blocks] == before["blocks"]
+    assert [b.block_id for b in split[1].blocks] == (["heading"] if with_heading else []) + ["body", "photo"] + (["photo2"] if photo_count == 2 else [])
+    assert split[0].blocks and page.model_dump() == before
+
+
 @needs_browser
 def test_draft_pagination_leaves_a_fitting_document_unchanged(out_dir, settings):
     snap = _editorial_photo_snapshot(sparse=True)

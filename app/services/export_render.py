@@ -1253,6 +1253,13 @@ def _split_draft_page(page: Page, first_block_id: str | None) -> list[Page] | No
         return None
     index = next((i for i, group in enumerate(groups) if any(b.block_id == first_block_id for b in group)),
                  len(groups) - 1)
+    # Keep the preceding explanation with trailing photos instead of making
+    # a continuation containing only images. Leave at least one group before it.
+    if index > 1 and all(b.type == "image" for group in groups[index:] for b in group):
+        while index > 1 and all(b.type == "image" for b in groups[index - 1]):
+            index -= 1
+        if index > 1:
+            index -= 1
     if index > 0:
         left = [b for group in groups[:index] for b in group]
         right = [b for group in groups[index:] for b in group]
