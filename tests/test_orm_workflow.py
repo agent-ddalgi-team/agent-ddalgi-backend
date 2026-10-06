@@ -266,6 +266,14 @@ def test_s01_http_server_stops_and_removes_temp_files_on_failure():
             client.get("/")
 
 
+def test_c05_real_http_source_change_preserves_edits_and_revalidates():
+    from scripts.check_s01_http import run_check
+
+    result = run_check(timeout_s=30, impact=True)
+    assert result["status"] == result["impact"]["status"] == "passed"
+    assert {"source_added", "apply_replay", "full_revalidation", "closed_review_410"} <= set(result["impact"]["checks"])
+
+
 @pytest.fixture(params=[9, ORM_SCHEMA_VERSION], ids=["legacy-v9", "orm-current"])
 def upload_case(tmp_path, request):
     """구형/ERD DB 양쪽에서 같은 업로드 요청·오류·재전송 규칙을 확인한다."""

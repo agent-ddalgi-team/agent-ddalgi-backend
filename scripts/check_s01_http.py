@@ -241,12 +241,73 @@ def _publication_check(client: httpx.Client, sid: str, document_route: str, time
                 + (["photo_preserved_after_edit", "photo_embedded_in_pdf", "pdf_preview_png"] if photo_asset_id else [])}
 
 
-def run_check(*, timeout_s: float = 30, publication: bool = False, photos: bool = False,
+def _impact_check(client: httpx.Client, sid: str, document_route: str, timeout_s: float) -> dict:
+    """Add a source and resume an edited document through the public C-05 API."""
+    route = f"/api/v1/sessions/{sid}"
+    document = _response(client.get(document_route), 200)["document"]
+    _response(client.patch(document_route, json={"expected_revision": document["document_revision"], "operations": [
+        {"op": "rename_page", "page_id": document["pages"][0]["page_id"], "title": "사용자가 편집한 제목"}]}), 200)
+    before = _response(client.get(document_route), 200)["document"]
+    upload = _response(client.post(route + "/sources", data={"kind": "company"},
+        files=[("files", ("supplement.txt", "연락처: 02-123-4567\n".encode("utf-8"), "text/plain"))]), 202)
+    _job(client, sid, upload["job_id"], timeout_s)
+    session = _response(client.get(route), 200)
+    sources = _response(client.get(route + "/sources"), 200)["items"]
+    selected = _response(client.patch(route + "/inputs", json={
+        "expected_input_revision": session["input_revision"],
+        "selected_source_ids": [source["source_id"] for source in sources]}), 200)
+    revision = selected["input_revision"]
+    started = _response(client.post(route + "/preflights", json={"expected_input_revision": revision}), 202)
+    preflight = _job(client, sid, started["job_id"], timeout_s)["result_ref"]["preflight_id"]
+    review_body = {"expected_revision": before["document_revision"], "input_revision": revision,
+                   "preflight_id": preflight, "confirmed": False}
+    reviews = document_route + "/impact-reviews"
+    _response(client.post(reviews, json=review_body), 422, "PREFLIGHT_NOT_CONFIRMED")
+    review_body["confirmed"] = True
+    review = _response(client.post(reviews, json=review_body), 201)
+    review_route = reviews + "/" + review["review_id"]
+    _check(_response(client.get(review_route), 200) == review, "Impact review GET changed")
+    preserved = _response(client.get(document_route), 200)["document"]
+    _check(preserved["pages"] == before["pages"] and
+           preserved["document_revision"] == before["document_revision"], "Review changed existing edits")
+    body = {"expected_revision": before["document_revision"], "input_revision": revision,
+            "keep_reason": "추가 연락처 자료를 확인했으며 기존 문장과 사진을 유지합니다."}
+    headers = {"Idempotency-Key": "http-impact-apply"}
+    applied = _response(client.post(review_route + "/apply", json=body, headers=headers), 200)
+    _check(_response(client.post(review_route + "/apply", json=body, headers=headers), 200) == applied,
+           "Impact application replay changed")
+    validation_job = _job(client, sid, applied["validation_job_id"], timeout_s)
+    state = _response(client.get(document_route), 200)
+    after = state["document"]
+    expected_pages = json.loads(json.dumps(before["pages"]))
+    for page in expected_pages:
+        for block in page["blocks"]:
+            block["fact_ids"] = [review["fact_rebindings"].get(fid, fid) for fid in block["fact_ids"]]
+    _check(after["pages"] == expected_pages, "Impact application lost edited content, photos or ordering")
+    _check(after["document_revision"] == before["document_revision"] + 1 and after["input_revision"] == revision,
+           "Impact application did not save exactly one current revision")
+    _check(state["validation"]["validation_id"] == validation_job["result_ref"]["validation_id"] and
+           state["validation"]["input_revision"] == revision and
+           state["validation"]["document_revision"] == after["document_revision"], "Full validation used stale input")
+    _check(state["approval"] is None, "Impact application revived an approval")
+    _check(_response(client.get(review_route), 200)["status"] == "applied", "Review was not marked applied")
+    with httpx.Client(base_url=str(client.base_url), timeout=timeout_s, trust_env=False) as stranger:
+        _response(stranger.get(review_route), 401, "UNAUTHORIZED")
+        other = _response(stranger.post("/api/v1/sessions", json={"brief": BRIEF}), 201)
+        _response(stranger.get(review_route), 404, "RESOURCE_NOT_FOUND")
+        _response(stranger.delete(f"/api/v1/sessions/{other['session_id']}"), 200)
+    return {"status": "passed", "checks": ["source_added", "explicit_preflight_confirmation",
+        "review_preserves_edits", "apply_preserves_content_and_photos", "apply_replay",
+        "latest_input_bound", "full_revalidation", "review_owner_isolation"], "review_route": review_route}
+
+
+def run_check(*, timeout_s: float = 30, publication: bool = False, photos: bool = False, impact: bool = False,
               export_browser_path: Path | None = None) -> dict:
     """Exercise cookie ownership, the S01 happy path, replays, errors and cleanup."""
     _check(not publication or export_browser_path is not None, "Publication check requires an explicit installed browser")
     _check(not photos or publication, "Photo check requires publication=True")
     publication_result = None
+    impact_result = None
     brief = {**BRIEF, "photo_preference": "balanced"} if photos else BRIEF
     photo_data = _photo_png() if photos else None
     photo_asset_id = None
@@ -344,6 +405,12 @@ def run_check(*, timeout_s: float = 30, publication: bool = False, photos: bool 
                 _check(conn.execute("PRAGMA user_version").fetchone()[0] == ORM_SCHEMA_VERSION,
                        f"Expected ERD v{ORM_SCHEMA_VERSION}")
                 _check(conn.execute("PRAGMA foreign_key_check").fetchall() == [], "Foreign key violation")
+            if impact:
+                impact_result = _impact_check(client, sid, document_route, timeout_s)
+                with connect(settings.db_path) as conn:
+                    _check(conn.execute("SELECT COUNT(*) FROM jobs WHERE kind='draft'").fetchone()[0] == 1,
+                           "Impact review generated a replacement draft")
+                    _check(conn.execute("PRAGMA foreign_key_check").fetchall() == [], "Impact foreign key violation")
             if publication:
                 publication_result = _publication_check(client, sid, document_route, timeout_s, photo_asset_id)
                 with connect(settings.db_path) as conn:
@@ -359,6 +426,9 @@ def run_check(*, timeout_s: float = 30, publication: bool = False, photos: bool 
             _check(closed["cleanup"] == "done", "Session cleanup did not finish")
             _check(not (settings.private_runs_dir / sid).exists(), "Session files remain after cleanup")
             _response(client.get(document_route), 410, "SESSION_EXPIRED")
+            if impact_result:
+                _response(client.get(impact_result.pop("review_route")), 410, "SESSION_EXPIRED")
+                impact_result["checks"].append("closed_review_410")
             if photo_asset_id:
                 _response(client.get(route + f"/assets/{photo_asset_id}"), 410, "SESSION_EXPIRED")
             _response(upload(), 410, "SESSION_EXPIRED")
@@ -374,7 +444,8 @@ def run_check(*, timeout_s: float = 30, publication: bool = False, photos: bool 
                        "invalid_400", "revision_409", "unconfirmed_422", "no_owner_401", "other_owner_404",
                        "closed_410", "foreign_keys", "session_purge", "server_and_temp_cleanup"]
                        + (["photo_upload_and_asset_bytes", "photo_owner_isolation", "closed_photo_410"] if photos else []),
-            "counts_before_close": counts, **({"publication": publication_result} if publication_result else {})}
+            "counts_before_close": counts, **({"publication": publication_result} if publication_result else {}),
+            **({"impact": impact_result} if impact_result else {})}
 
 
 def main() -> int:
@@ -382,6 +453,7 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=30, help="Startup/job/request timeout in seconds (default: 30)")
     parser.add_argument("--frontend", type=Path, help="Also run the frontend's isolated S01 browser check (Node + Chrome/Edge)")
     parser.add_argument("--publication", action="store_true", help="Also edit, validate, approve and download an actual PDF")
+    parser.add_argument("--impact", action="store_true", help="Check C-05 source changes, edit preservation and revalidation")
     parser.add_argument("--photos", action="store_true", help="Include a generated PNG in the HTTP/PDF check (requires --publication)")
     parser.add_argument("--browser-path", type=Path, help="Installed Chrome/Edge for --publication (otherwise auto-detect)")
     args = parser.parse_args()
@@ -400,7 +472,8 @@ def main() -> int:
                           shutil.which("google-chrome"), shutil.which("chromium"), shutil.which("chromium-browser")]
             browser_path = next((Path(candidate).resolve() for candidate in candidates if candidate and Path(candidate).is_file()), None)
             _check(browser_path is not None, "--publication requires an installed Chrome/Edge browser")
-        result = run_check(timeout_s=args.timeout, publication=args.publication, photos=args.photos, export_browser_path=browser_path)
+        result = run_check(timeout_s=args.timeout, publication=args.publication, photos=args.photos,
+                           impact=args.impact, export_browser_path=browser_path)
         if args.frontend:
             frontend = args.frontend.resolve()
             script = frontend / "scripts" / "check-s01-browser.mjs"
