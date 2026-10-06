@@ -565,6 +565,7 @@ class DocumentOut(BaseModel):
     latest_preflight_id: str | None = None
     validation: ValidationOut | None = None   # 현재 문서·입력 버전의 최신 검증. 없으면 null
     approval: ApprovalOut | None = None       # 현재 문서·입력 버전의 active 승인(어느 형식이든). 없으면 null
+    approvals_by_format: dict[Literal["pdf", "docx"], ApprovalOut | None] = Field(default_factory=lambda: {"pdf": None, "docx": None})
     layout_checks: LayoutChecksByFormat = Field(default_factory=lambda: {"pdf": None, "docx": None})
 
 

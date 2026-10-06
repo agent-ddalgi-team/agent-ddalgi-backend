@@ -638,6 +638,37 @@ def test_actual_docx_check_approve_download_reuse_and_invalidate(settings, monke
 # ================= 승인 후 변경·재사용·동시성 =================
 
 @needs_browser
+@needs_libreoffice
+def test_document_preserves_both_format_approvals_after_reload(app, settings):
+    from dataclasses import replace
+
+    settings = replace(settings, export_libreoffice_path=LIBREOFFICE)
+    flow = Flow(create_app(settings), settings)
+    flow.clean()
+    assert flow.get()["approvals_by_format"] == {"pdf": None, "docx": None}
+    validation = flow.validate()
+    expected = {}
+    for fmt in ("pdf", "docx"):
+        flow.layout_check(fmt)
+        layout = flow.get()["layout_checks"][fmt]
+        assert layout["status"] == "passed"
+        approved = flow.approve(validation["validation_id"], layout["layout_check_id"], fmt=fmt)
+        assert approved.status_code == 201
+        expected[fmt] = approved.json()["approval_id"]
+    # A fresh GET keeps the legacy latest approval and both individually current approvals.
+    fetched = flow.get()
+    assert fetched["approval"]["approval_id"] == expected["docx"]
+    assert {fmt: row["approval_id"] for fmt, row in fetched["approvals_by_format"].items()} == expected
+    for fmt, approval_id in expected.items():
+        response = flow.export(approval_id, fmt=fmt)
+        assert response.status_code == 202
+        flow.job(response.json()["job_id"])
+        ready = flow.export(approval_id, fmt=fmt)
+        assert ready.status_code == 200 and ready.json()["export"]["status"] == "ready"
+    flow.patch([{"op": "rename_page", "page_id": flow.doc()["pages"][0]["page_id"], "title": "승인 뒤 수정"}])
+    assert flow.get()["approvals_by_format"] == {"pdf": None, "docx": None}
+
+@needs_browser
 def test_export_and_download_rejected_after_document_or_input_change(app, settings):
     flow = Flow(app, settings)
     a, exp = flow.approved_pdf()

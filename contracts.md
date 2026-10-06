@@ -1,6 +1,8 @@
 # 공통 데이터·API 계약
 
-기준일: 2026-10-06 · 문서 v1.30 · contract_version: 1.9 · 데이터 schema_version: 1.0
+기준일: 2026-10-06 · 문서 v1.31 · contract_version: 1.9 · 데이터 schema_version: 1.0
+
+**2026-10-06 형식별 승인 조회:** 문서 GET에 `approvals_by_format: {pdf: Approval|null, docx: Approval|null}`을 호환 가능한 조회 필드로 추가한다. 현재 문서·입력 버전의 active 승인만 형식별로 반환하며 문서/입력 변경 또는 승인 무효화 후에는 null이다. 기존 `approval`은 어느 형식이든 최신 active 승인이라는 의미를 유지한다. 프론트는 새 필드가 있으면 선택 형식의 승인을 사용하고, 구버전 응답/가상 미리보기에서는 기존 필드를 사용한다. 승인·출력 조건·자동 생성/승인 정책·DB 스키마는 변경하지 않는다.
 
 **2026-10-06 DOCX 문단 간격·추출 대조 보완:** 현재 템플릿은 `template_v9`이다. 단일 열 DOCX의 문단 전0pt/후1pt/줄 간격1.0을 명시해 기본 서식의 추가 여백으로 사진·캡션이 다음 쪽에 밀리는 것을 줄인다. 본문·폰트 크기·사진 바이트·표시 크기·순서는 유지하며 과도한 내용은 기존 실제 넘침 검사로 계속 차단한다. PDFium이 줄 끝 하이픈을 잘못 추출하면 기존 pypdf로 같은 실제 쪽의 전체 원문 문자·수치·순서를 다시 대조하며, 정확히 일치한 경우에만 본문 검사를 통과한다. 쪽수·사진수·인쇄 영역 검사는 그대로다. 새 API·DB 변경은 없으며 기존 PDF/DOCX 배치·승인은 템플릿 변경으로 재검사·재승인이 필요하다. 과거 저장 산출물과 사용자 승인/문제 행을 자동 교체하지 않는다.
 
@@ -406,7 +408,7 @@ HTTP 필드·상태·DB 스키마는 그대로여서 contract_version 1.5/schema
 
 source 업로드만으로 자동 선택하지 않는 UI를 택하면 사용자가 선택할 때 input_revision을 갱신한다. 단, 선택된 기존 원자료를 수정·삭제하거나 문서가 참조하는 자산을 바꾸면 즉시 영향 상태를 갱신한다.
 
-`DocumentChangeOut`은 `{document_id, document_revision, input_revision, status, validation_job_id}`이며 전체 문서 본문이 아니다. `validation_job_id`는 C-05 영향 적용에서 예약한 전체 검증 Job ID다. 일반 직접 수정/Proposal 적용/복원에서는 null이며 필요하면 validate API를 호출한다. 문서 GET은 `{demo, document, input_review_required, latest_preflight_id, validation, approval, layout_checks}`이며 새 조회 필드는 위 C-05 화면 연결 규칙을 따른다. `layout_checks`는 `{pdf: LayoutCheck|null, docx: LayoutCheck|null}`다. `document_summary.status`, 문서 변경의 `status`, `document_status`는 Document의 4종 상태를 공유한다. 다운로드 성공은 PDF 또는 DOCX 바이트이며 JSON 오류는 아래 공통 봉투다.
+`DocumentChangeOut`은 `{document_id, document_revision, input_revision, status, validation_job_id}`이며 전체 문서 본문이 아니다. `validation_job_id`는 C-05 영향 적용에서 예약한 전체 검증 Job ID다. 일반 직접 수정/Proposal 적용/복원에서는 null이며 필요하면 validate API를 호출한다. 문서 GET은 `{demo, document, input_review_required, latest_preflight_id, validation, approval, approvals_by_format, layout_checks}`이며 새 조회 필드는 위 C-05·형식별 승인 조회 규칙을 따른다. `layout_checks`는 `{pdf: LayoutCheck|null, docx: LayoutCheck|null}`다. `document_summary.status`, 문서 변경의 `status`, `document_status`는 Document의 4종 상태를 공유한다. 다운로드 성공은 PDF 또는 DOCX 바이트이며 JSON 오류는 아래 공통 봉투다.
 
 ### Job — 진행 상태와 결과 조회
 

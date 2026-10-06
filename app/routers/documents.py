@@ -64,6 +64,9 @@ def get_document(request: Request, sid: str, did: str):
                            input_review_required=needs_review, latest_preflight_id=latest_preflight,
                            validation=validation.to_validation_out(v) if v else None,
                            approval=approvals.to_out(a) if a else None,
+                           approvals_by_format={fmt: approvals.to_out(item) if (item := approvals.active_for(
+                               conn, did, document.document_revision, row["input_revision"], fmt)) else None
+                               for fmt in ("pdf", "docx")},
                            layout_checks=layout_check_jobs.latest_by_format(conn, did, document.document_revision, row["input_revision"]))
 
 
