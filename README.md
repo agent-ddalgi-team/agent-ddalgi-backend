@@ -43,14 +43,38 @@ $env:OPENAI_EXECUTION_MODE = 'interactive'
 
 `-CheckOnly`는 API 호출·DB 초기화·서버 시작 없이 유효 설정을 확인한다. 실행 스크립트는 요청 옵션과 `OPENAI_TRIAL_*` 내부 상한을 함께 맞춘다. `trial`/`interactive`는 기존 모델·재시도 0·모드별 범위·예산 검사를 유지하며, 범위를 벗어나면 시작을 거부한다. 일반 `runtime`의 확대 범위는 유지한다. 직접 uvicorn으로 실행할 때는 `.env.example`의 대응 설정을 함께 지정해야 한다.
 
+### 현재 PC의 시연 실행·인계 (2026-10-06)
+
+백엔드 작업본은 `C:\backend`의 `test` 브랜치다. 기존 시연 자료를 이어서 사용하려면 아래 폴더와 DB를 지정한다. 서버 재시작은 DB를 재생성하지 않는다. 경로의 DB가 없으면 실행을 멈추고 복원 여부를 확인한다.
+
+```powershell
+Set-Location C:\backend
+$env:PRIVATE_RUNS_DIR = 'C:\backend\private_runs\demo_preview_20260929_131826'
+$env:DB_PATH = Join-Path $env:PRIVATE_RUNS_DIR 'app.sqlite3'
+if (-not (Test-Path -LiteralPath $env:DB_PATH -PathType Leaf)) { throw '기존 시연 DB가 없습니다.' }
+$env:EXPORT_LIBREOFFICE_PATH = 'C:\Program Files\LibreOffice\program\soffice.com'
+$env:OPENAI_EXECUTION_MODE = 'runtime'
+.\scripts\run_llm.ps1 -Demo -ContentReview -TextProposals -CheckOnly
+# 설정 확인 후 서버 시작 (8000 포트의 기존 서버가 종료된 상태에서 실행)
+.\scripts\run_llm.ps1 -Demo -ContentReview -TextProposals
+```
+
+스크립트 기본값은 입력 200,000자·내용 검증 **400,000자**·출력 64,000토큰·요청 제한 180초·재시도 2회다. 검증 한도를 별도 옵션으로 낮출 필요가 없다. 이 실행은 실제 AI 호출을 허용하며 `.env`의 모델·키를 그대로 사용한다. `-CheckOnly` 자체는 AI 호출이나 서버 시작을 하지 않는다.
+
+프론트 작업본은 `C:\frontend`다. 해당 폴더에서 `npm run dev -- --host 127.0.0.1`로 실행한 뒤 [백엔드 연동 화면](http://localhost:5173/)을 연다. `?preview=1`은 가상 자료 미리보기다. 백엔드 API 문서는 [8000/docs](http://127.0.0.1:8000/docs)에서 확인한다. 이미 서버가 켜져 있으면 중복 실행하지 않는다.
+
+현재 시연 DB에는 고객 제안용 8쪽(revision 7)과 품질 심사용 9쪽(revision 3)의 PDF·LibreOffice DOCX 승인/출력 결과가 있다. 세션·출력 만료와 종료 정리 정책은 계속 적용되므로 DB 보존만으로 승인 파일을 영구 재다운로드할 수 있는 것은 아니다. DOCX 배치 검사는 LibreOffice 기준이며 Word에서는 글꼴·쪽 나눔이 달라질 수 있다.
+
+현재 API 계약은 1.9, 데이터 형식은 1.0, DB는 v11, 출력 템플릿은 `template_v10`이다. 서버 기능 및 두 시연 표본 검수는 완료했다. 전체 회귀 1,807 passed/10 skipped와 이후 사진 분할 관련 10 passed는 각각의 검사 기록이다. 다른 목적·업종의 AI 품질, 제외 ISO 자료의 회사 확인, 별도 프론트 작업 공유는 남아 있다. 완료 범위·제한·검사 근거는 [백엔드 인계 기록](task_backend.md#backend-handoff-20261006)을 따른다.
+
 ### 테스트
 ```bash
 uv run pytest
 ```
 
-백엔드 통합 검사는 mock(가짜 응답)으로 실행한다. 실제 LLM 분석·초안과 AG-07 원문 의미 검증의 구현/별도 시험 기록은 `task_agent.md`를 따른다. 기본 유료 호출 한도에는 content_review가 포함되지 않으므로 의미 검증 구현과 일반 서버의 호출 허용을 구분한다. 이번 PR 정리에서는 실제 AI를 호출하지 않았다.
+백엔드 통합 검사는 mock(가짜 응답)으로 실행한다. 실제 LLM 분석·초안과 AG-07 원문 의미 검증의 구현/별도 시험 기록은 `task_agent.md`를 따른다. 기본 유료 호출 한도에는 content_review가 포함되지 않으므로 의미 검증 구현과 일반 서버의 호출 허용을 구분한다. 기본 통합 검사와 별도로 실제 AI·실자료 시연 검수를 수행했으며 범위와 결과는 [백엔드 작업표](task_backend.md)에 기록한다.
 
-### API 요청·응답 형식 (Pydantic, 계약 1.6)
+### API 요청·응답 형식 (Pydantic, 계약 1.9)
 
 Pydantic 모델은 **화면이 보내는 값과 서버가 돌려주는 값의 형식**을 검사한다. `app/models.py`에 선언하며, DB 테이블을 정의하는 `app/orm_models.py`와 역할이 다르다. 예를 들어 입력 버전은 숫자 `2`이고 문자열 `"2"`가 아니며, 사용자 확인은 `true`이고 문자열 `"true"`가 아니다. 형식이 맞아도 세션 소유자·최신 버전·근거·승인 조건 검사는 별도로 통과해야 한다.
 
@@ -60,7 +84,7 @@ Pydantic 모델은 **화면이 보내는 값과 서버가 돌려주는 값의 �
 - `/docs`와 `/openapi.json`에 30개 API의 모델·오류·파일 응답을 표시한다. 구조가 있는 JSON 응답 28개와 이미지/출력 파일 응답 2개가 있다. Export는 새 작업 202와 준비된 결과 재사용 200을 구분한다.
 - 긴 작업은 접수 후 Job을 조회한다. `result_ref`는 작업 종류별 결과 ID이며 Preflight·Document·Proposal 등 결과를 별도 GET으로 읽는다. `succeeded`인 검사 Job도 검사 결과 자체는 failed일 수 있다.
 
-현재 형식과 예시는 [contracts.md](contracts.md), [API 예시](handoff/api_examples_v1.1.json)를 따른다. 예시 파일명은 기존 참조를 위해 유지하고 내부 계약 버전은 1.6이다. 기존 프론트 S01~S03 연결 기록은 [백엔드 작업표](task_backend.md)를 따른다. 새 C-05 API의 프론트 계약 사본·타입·화면 연결과 실제 모델 검증, DOCX 승인·출력은 후속이다.
+현재 형식과 예시는 [contracts.md](contracts.md), [API 예시](handoff/api_examples_v1.1.json)를 따른다. 예시 파일명은 기존 참조를 위해 유지하고 내부 계약 버전은 1.9이다. 기존 프론트 S01~S03 연결 기록은 [백엔드 작업표](task_backend.md)를 따른다. C-05 가상 화면 연결·실제 AI 보완 자료 복귀 및 DOCX 승인·출력 표본 검수는 완료했다. 별도 프론트 계약 사본 공유와 일반 품질 평가는 후속이다.
 
 ### 자료 변경 후 기존 편집으로 복귀 (C-05)
 
@@ -71,7 +95,7 @@ Pydantic 모델은 **화면이 보내는 값과 서버가 돌려주는 값의 �
 3. 변경할 편집 연산 `operations`, 필요한 `reference_updates`, 필수 유지 사유 `keep_reason`을 `POST /documents/{did}/impact-reviews/{rid}/apply`로 보낸다. 정확히 같은 supported 사실·근거는 최신 Fact ID로 연결하고, 제외되거나 달라진 근거는 명시적으로 수정하거나 해당 블록을 삭제해야 한다.
 4. 응답의 `validation_job_id`로 전체 내용 검증 결과를 조회한 뒤 편집을 계속한다. 승인·PDF 배치는 새 문서 기준으로 다시 확인한다.
 
-DB v11의 기존 `impact_reviews`·`confirmations`를 사용한다. v9 DB는 자동 이전하지 않으며 C-05 요청에 `409 IMPACT_HISTORY_UNAVAILABLE`를 반환한다. 프론트 복귀 화면과 실제 모델을 사용한 변경 자료 검증은 아직 연결·확인하지 않았다. 상세 규칙은 [공통 계약](contracts.md), 결과는 [C-05 작업 기록](task_backend.md#c05-edit-return-20260930)을 따른다.
+DB v11의 기존 `impact_reviews`·`confirmations`를 사용한다. v9 DB는 자동 이전하지 않으며 C-05 요청에 `409 IMPACT_HISTORY_UNAVAILABLE`를 반환한다. 프론트 복귀 화면은 가상 자료로 연결 검사했고, 실제 AI로 보완 자료 추가 후 기존 편집 보존·근거 연결·재검증 표본을 확인했다. 수치 변경·자료 제외와 다른 업종의 일반 품질 평가는 별도다. 상세 규칙은 [공통 계약](contracts.md), 결과는 [C-05 작업 기록](task_backend.md#c05-edit-return-20260930)을 따른다.
 
 실제 사용 DB에 자료를 넣지 않고, 임시 DB와 mock 자료로 형식·S01 흐름을 확인하려면 다음 검사를 실행한다.
 
@@ -103,13 +127,13 @@ uv run pytest -q tests/test_orm_workflow.py tests/test_be04.py
 .\.venv\Scripts\python.exe -X utf8 -B scripts/check_s01_http.py
 
 # 프론트 의존성 설치/빌드 후: 실제 Chrome/Edge 버튼·Vite 프록시까지 확인
-.\.venv\Scripts\python.exe -X utf8 -B scripts/check_s01_http.py --frontend D:\frontend
+.\.venv\Scripts\python.exe -X utf8 -B scripts/check_s01_http.py --frontend C:\frontend
 ```
 
 화면 검사는 Node 24와 설치된 Chrome/Edge를 사용한다. 다른 브라우저 실행 파일은 `S01_BROWSER_PATH`로 지정한다. 기존 브라우저 프로필 대신 임시 프로필을 사용하고, 예시 화면은 프론트의 무시되는 `dist/s01-check.png`에 저장한다. 응답 유실 뒤 업로드 재시도·새로고침 복원·동의 전 생성 차단·입력 충돌·이미지만 선택한 경우·첨부 삭제·만료 복구를 포함한다. 기본 명령은 S01까지만 검사한다. 편집·승인·실제 PDF 다운로드까지 검사하려면 아래처럼 실행한다.
 
 ```powershell
-.\.venv\Scripts\python.exe -X utf8 -B scripts/check_s01_http.py --publication --frontend D:\frontend --timeout 120
+.\.venv\Scripts\python.exe -X utf8 -B scripts/check_s01_http.py --publication --frontend C:\frontend --timeout 120
 ```
 
 `--publication`은 설치된 Chrome/Edge를 PDF 렌더러로 사용한다. macOS의 `/Applications` Chrome·Edge도 자동 탐색하며 별도 위치는 `--browser-path`로 지정한다. 실제 HTTP로 PDF 바이트·반복 다운로드·수정 후 승인 무효화를 확인한다. `--frontend`를 함께 쓰면 편집/AI 제안 비교·적용·거절을 화면에서 확인하고, 미리보기는 `dist/publication-check.png`, 편집 화면은 `dist/s02-publication-check.png`에 저장한다. AI는 계속 mock이며 실제 AI 품질이나 DOCX 승인·출력 확인을 뜻하지 않는다.

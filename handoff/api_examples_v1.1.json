@@ -3746,6 +3746,7 @@
     "issues": "저장된 내부 field_key는 한국어로 표시한다. code/severity/status와 승인 조건은 유지한다.",
     "photo_review": "선택·허가된 사진의 등록 설명과 origin_kind를 내부 Agent images에 전달한다. 인증·성능 근거가 아니며 실제 이미지 검사는 유지한다.",
     "local_start": "scripts/run_llm.ps1 -Demo -ContentReview -TextProposals -RequestTimeoutSeconds 120 -MaxInputChars 40000 -MaxReviewInputChars 80000 -MaxOutputTokens 24000",
+    "local_start_note": "위 명령은 2026-09-30 당시 제한 실행 기록입니다. 현재 시연 실행은 README.md의 현재 PC의 시연 실행·인계를 따릅니다(runtime, 검증 기본 400000자).",
     "contracts_original": "변경 없음"
   },
   "editorial_design_patch_example": {
