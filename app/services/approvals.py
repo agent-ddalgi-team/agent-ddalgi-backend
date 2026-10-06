@@ -146,7 +146,7 @@ def check_conditions(conn: Connection, session_row: Row, document: Document, bod
             raise ApiError(409, "IMPACT_REVIEW_REQUIRED", "최신 점검의 영향 검토를 적용한 뒤 문서를 다시 검증해 주세요.")
     # 같은 입력 버전의 재점검 또는 수정 전 검증에는 문서 Issue로 전달되지 않은 충돌이 있을 수 있다.
     if validation.preflight_conflicts(ctx):
-        raise ApiError(422, "VALIDATION_NOT_PASSED", "최신 사전 점검에 미해결 충돌이 있습니다. 자료를 확인하고 문서를 재검증해 주세요.",
+        raise ApiError(422, "VALIDATION_NOT_PASSED", "최신 사전 점검에 미해결 필수 문제가 있습니다. 자료를 확인하고 문서를 재검증해 주세요.",
                        details={"validation_id": body.validation_id, "reason": "open_blockers"})
     if not (validation._required_present(document, ctx, validation.REQUIRED_NAME_KEYS)
             and validation._required_present(document, ctx, validation.REQUIRED_BUSINESS_KEYS)):

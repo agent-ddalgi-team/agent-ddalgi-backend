@@ -270,16 +270,22 @@ def test_conflicting_fact_remains_blocker_without_open_blocker_issue(app, settin
         result = await original(self, request)
         if issue_state == "missing":
             result.issues = []
-        else:
+        elif issue_state == "warning":
             for issue in result.issues:
-                if issue_state == "warning":
-                    issue.severity = "warning"
-                else:
-                    issue.status = issue_state
+                issue.severity = "warning"
         return result
 
     monkeypatch.setattr(MockAgent, "analyze", analyze)
     ctx = Ctx(app, txt=CONFLICT_TXT, with_photo=False)
+    if issue_state in {"resolved", "excluded", "acknowledged"}:
+        # 새 Agent 응답의 임의 해결은 거부한다. 과거 저장 점검의 닫힌 Issue에도
+        # conflict Fact가 살아 있으면 blocker로 복구되는 기존 보호는 유지한다.
+        with connect(settings.db_path) as conn:
+            row = conn.execute("SELECT issues_json FROM preflights WHERE preflight_id=?", (ctx.pf,)).fetchone()
+            issues = json.loads(row[0])
+            for issue in issues:
+                issue["status"] = issue_state
+            conn.execute("UPDATE preflights SET issues_json=? WHERE preflight_id=?", (json.dumps(issues), ctx.pf))
     assert ctx.make_clean_and_validate(settings)["status"] == "failed"
     conflicts = ctx.open_issues("VALUE_CONFLICT")
     assert len(conflicts) == 1 and conflicts[0]["origin"] == "preflight"
@@ -435,6 +441,95 @@ def test_section_label_with_added_claim_stays_blocked_after_revalidation(app, cl
     ctx.validated()
     assert _first(ctx.issues(), issue_id=issue["issue_id"])["status"] == "resolved"
     assert _first(ctx.issues(), issue_id=warning["issue_id"])["status"] == "open"
+
+
+def test_preflight_confirmation_warning_is_not_promoted_and_source_blocker_is_preserved():
+    from types import SimpleNamespace
+    from app.models import Fact, Issue
+    fact = Fact(fact_id="f", field_key="lead_time", value="확인 필요", status="needs_confirmation")
+    warning = Issue(issue_id="warning", scope="content", code="LEAD_TIME_UNQUANTIFIED", severity="warning",
+                    message="납기 확인 필요", fact_ids=["f"])
+    ctx = SimpleNamespace(facts={"f": fact}, preflight_issues=[warning])
+    assert validation.preflight_conflicts(ctx) == []
+    ctx.preflight_issues.append(Issue(issue_id="source_blocker", scope="source", code="SOURCE_REVIEW_REQUIRED",
+                                     severity="blocker", message="자료 확인 필요", source_ids=["s"]))
+    problems = validation.preflight_conflicts(ctx)
+    assert len(problems) == 1 and problems[0].scope == "source" and problems[0].source_ids == ["s"]
+
+
+def _add_unconfirmed_preflight_blocker(monkeypatch):
+    from app.models import Fact, Issue
+    original = MockAgent.analyze
+
+    async def analyze(self, request):
+        result = await original(self, request)
+        source = next(source for source in request.sources if source.segments)
+        evidence = next(fact.evidence_refs for fact in result.facts if fact.evidence_refs)
+        result.facts.append(Fact(fact_id="fact_night_unconfirmed", field_key="night_operation",
+                                 value="야간 운영 확인 필요", status="needs_confirmation", evidence_refs=evidence))
+        result.issues.append(Issue(issue_id="preflight_night_blocker", scope="content", code="UNSUPPORTED_CLAIM",
+                                  severity="blocker", message="야간 운영 여부는 자료 보완 후 확인해야 합니다.",
+                                  fact_ids=["fact_night_unconfirmed"], source_ids=[source.source_id]))
+        return result
+
+    monkeypatch.setattr(MockAgent, "analyze", analyze)
+    return original
+
+
+@pytest.fixture(params=["legacy", "orm_v11"])
+def preflight_bridge_app(tmp_path, request):
+    from app.db import init_orm_db, ORM_SCHEMA_VERSION, SCHEMA_VERSION
+    settings = Settings(private_runs_dir=tmp_path / "runs", db_path=tmp_path / "runs" / "bridge.sqlite3",
+                        cleanup_sweep_interval_s=0)
+    if request.param == "orm_v11":
+        init_orm_db(settings.db_path, settings.private_runs_dir)
+    yield create_app(settings), settings
+    with connect(settings.db_path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == (ORM_SCHEMA_VERSION if request.param == "orm_v11" else SCHEMA_VERSION)
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_unreferenced_needs_confirmation_blocker_survives_initial_save_and_partial_validation(preflight_bridge_app, monkeypatch):
+    app, settings = preflight_bridge_app
+    original = _add_unconfirmed_preflight_blocker(monkeypatch)
+    ctx = Ctx(app, with_photo=False)
+    assert not any("fact_night_unconfirmed" in b["fact_ids"] for p in ctx.doc()["pages"] for b in p["blocks"])
+    issue = next(i for i in ctx.open_issues("UNSUPPORTED_CLAIM") if i["origin"] == "preflight")
+    assert issue["fact_ids"] == ["fact_night_unconfirmed"] and issue["block_ids"] == []
+    assert ctx.doc()["status"] == "review_required"
+    assert ctx.c.get(f"/api/v1/sessions/{ctx.sid}").json()["document_summary"]["status"] == "review_required"
+    checked = ctx.make_clean_and_validate(settings)
+    assert checked["status"] == "failed"
+    assert ctx.approve(checked["validation_id"], ctx.layout_row(settings)).status_code == 422
+    for action in ("resolved", "excluded", "acknowledged"):
+        assert ctx.resolve(issue["issue_id"], action).status_code == 422
+    paragraph = next(b for p in ctx.doc()["pages"] for b in p["blocks"] if b["type"] == "paragraph")
+    ctx.patch([{"op": "replace_block_content", "block_id": paragraph["block_id"],
+                "content": dict(paragraph["content"], text=paragraph["content"]["text"] + " ")}])
+    assert ctx.validated()["status"] == "failed"
+    assert _first(ctx.issues(), issue_id=issue["issue_id"])["status"] == "open"
+    # 최신 점검에서 원인이 사라져도 클릭으로 닫지 않고 문서 재검증을 거친다.
+    monkeypatch.setattr(MockAgent, "analyze", original)
+    ctx.preflight()
+    assert ctx.resolve(issue["issue_id"], "resolved").status_code == 422
+    assert ctx.validated()["status"] == "passed"
+    assert _first(ctx.issues(), issue_id=issue["issue_id"])["status"] == "resolved"
+
+
+def test_same_input_recheck_non_conflict_blocker_invalidates_current_approval(preflight_bridge_app, monkeypatch):
+    app, settings = preflight_bridge_app
+    ctx = Ctx(app)
+    checked = ctx.make_clean_and_validate(settings)
+    approved = ctx.approve(checked["validation_id"], ctx.layout_row(settings))
+    assert approved.status_code == 201
+    _add_unconfirmed_preflight_blocker(monkeypatch)
+    ctx.preflight()
+    assert ctx.get()["approval"] is None and ctx.doc()["status"] == "review_required"
+    assert any(i["origin"] == "preflight" for i in ctx.open_issues("UNSUPPORTED_CLAIM"))
+    with connect(settings.db_path) as conn:
+        assert conn.execute("SELECT status FROM approvals WHERE approval_id=?", (approved.json()["approval_id"],)).fetchone()[0] == "invalidated"
 
 
 def test_required_content_needs_real_text_not_only_fact_ids(app, settings):

@@ -81,7 +81,17 @@ def validate_analyze(result: AnalyzeResult, sources: list[SourceIn]) -> str | No
             return f"근거 없는 사실: {fact.fact_id}"
         if (problem := _check_refs(fact.evidence_refs, segs, versions)) is not None:
             return problem
+    issue_ids: set[str] = set()
     for issue in result.issues:
+        if issue.issue_id in issue_ids:
+            return f"issue_id 중복: {issue.issue_id}"
+        issue_ids.add(issue.issue_id)
+        if issue.scope == "layout" or issue.block_ids:
+            return f"초안 생성 전 문서·배치 문제를 반환함: {issue.issue_id}"
+        if issue.status != "open" or issue.resolution is not None:
+            return f"Agent가 문제의 확인·해결을 대신함: {issue.issue_id}"
+        if any(sid not in versions for sid in issue.source_ids):
+            return f"선택 자료에 없는 source_id를 가리키는 issue: {issue.issue_id}"
         if any(fid not in seen for fid in issue.fact_ids):
             return f"없는 fact_id를 가리키는 issue: {issue.issue_id}"
     return None
@@ -546,6 +556,11 @@ def run_draft_job(settings: Settings, session_id: str, job_id: str, input_revisi
             document_id = documents.create_initial(conn, session_id, input_revision, result.title,
                                                    brief.target_pages, result.pages, status, preflight_id=preflight_id,
                                                    editorial=result.editorial)
+            # 저장된 초기 status는 조회 시 다시 계산된다. 점검 blocker도 같은 트랜잭션에
+            # 문서 Issue로 기록해야 최초 조회/세션 요약에서 검토 필요 상태가 유지된다.
+            saved_document = documents.get_current(conn, session_id, document_id)
+            if validation.record_preflight_conflicts(conn, session_id, saved_document, preflight):
+                documents.refresh_status_cache(conn, session_id, document_id)
             jobs.succeed(conn, job_id, {"type": "document", "document_id": document_id, "document_revision": 1})
     except Exception:
         logger.exception("draft job crashed: %s", job_id)

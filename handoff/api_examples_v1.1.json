@@ -80,6 +80,33 @@
       "approval": "blocked"
     }
   },
+  "preflight_blocker_bridge_20261006": {
+    "_note": "계약1.9 유지·문서v1.26. 설명용 가상 예시, 실제 LLM 결과 아님. 초기 저장/재점검/재검증에 모두 적용.",
+    "preflight_issue": {
+      "issue_id": "iss_example",
+      "scope": "content",
+      "code": "UNSUPPORTED_CLAIM",
+      "severity": "blocker",
+      "status": "open",
+      "message": "야간 운영 여부는 자료 보완 후 확인해야 합니다.",
+      "source_ids": [
+        "source_selected"
+      ],
+      "fact_ids": [
+        "fact_night_unconfirmed"
+      ],
+      "block_ids": [],
+      "resolution": null
+    },
+    "fact_status": "needs_confirmation",
+    "body_references_fact": false,
+    "document_status": "review_required",
+    "document_issue_origin": "preflight",
+    "validation_status": "failed",
+    "approval": "blocked",
+    "resolution": "자료 보완·최신 점검 후 문서 재검증. 안내 삭제/확인/제외 버튼으로 해결하지 않음",
+    "warning_policy": "warning 수준 needs_confirmation을 자동 blocker로 승격하지 않음"
+  },
   "schema_version": "1.0",
   "base_path": "/api/v1",
   "written_at": "2026-09-25",

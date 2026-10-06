@@ -1,6 +1,8 @@
 # 공통 데이터·API 계약
 
-기준일: 2026-10-06 · 문서 v1.25 · contract_version: 1.9 · 데이터 schema_version: 1.0
+기준일: 2026-10-06 · 문서 v1.26 · contract_version: 1.9 · 데이터 schema_version: 1.0
+
+**2026-10-06 점검 문제의 문서 연결 보완(BE-04/06):** 최신 Preflight의 열린 content/source blocker는 필수 내용 누락을 제외하고 VALUE_CONFLICT 외의 코드도 본문 참조 여부와 무관하게 문서 Issue(origin=preflight)에 보존한다. needs_confirmation 사실에 연결된 UNSUPPORTED_CLAIM blocker도 초안 최초 저장·조회/세션 요약·재검증·승인 차단에 연결한다. REQUIRED_MISSING은 문서 전체의 기존 필수 내용 검사에서 대체 사업 설명·사용자 지정 필수 항목을 함께 재판정한다. warning 수준의 미확인 사실은 임의 blocker로 승격하지 않는다. Agent가 확인/해결 상태·resolution을 반환하거나 선택 밖 자료/사실, 중복 Issue ID, 생성 전 블록/배치를 참조하면 AGENT_OUTPUT_INVALID로 점검 전체를 저장하지 않는다. 점검의 필수 문제는 안내 삭제·확인/제외 버튼으로 해결할 수 없으며 자료 보완·최신 점검·문서 재검증이 필요하다. 재점검은 다른 문제를 닫지 않고, 실제 문서 재검증에서 원인이 사라진 문제만 해결한다. 기존 preflight_conflicts 검사 키와 preflight_conflict 승인 무효화 사유는 호환을 위해 유지하며 이번 보완 이후 점검 필수 문제 전체를 포함한다. API 필드·계약1.9·DB v11·template_v7은 유지한다. 프론트는 문서 Issue와 review_required를 표시하며 최종 통합 검수는 후속이다.
 
 **현재 연결 기준(2026-10-06, BE-01/10):** 계약 1.9·데이터 1.0·DB v11·template_v7가 기준이다. 아래 1.5/1.6/1.7/1.8 설명은 각 기능의 도입 이력이며 현재 계약을 낮춰 연결하지 않는다. 백엔드 `test` 0ad3eb2와 프론트 `C:\frontend` develop 0771d54를 대조했다. 프론트에는 계약 사본이 없고 C-05/생성 계획 타입·화면이 미연결이다. `D:\frontend`는 다른 커밋(15289fb)이므로 같은 작업본으로 취급하지 않는다. 현재 DOCX 검사·승인 규격은 아래 계약 1.9를 따른다. 프론트 반영 완료를 뜻하지 않는다.
 

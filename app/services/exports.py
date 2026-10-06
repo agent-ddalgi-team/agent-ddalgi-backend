@@ -121,7 +121,7 @@ def approval_validity(conn: Connection, settings: Settings, session_row: Row, ap
     if approval["status"] != "active":
         message = "승인이 무효화되었습니다. 배치 검사와 승인을 다시 진행해 주세요."
         if approval["invalidated_reason"] == "preflight_conflict":
-            message = "자료 충돌로 승인이 무효화되었습니다. 문제를 해결하고 문서 검증을 다시 실행한 뒤 새로 승인해 주세요."
+            message = "사전 점검의 필수 문제로 승인이 무효화되었습니다. 문제를 해결하고 문서 검증을 다시 실행한 뒤 새로 승인해 주세요."
         return Verdict(False, 409, "APPROVAL_NOT_ACTIVE", message,
                        details={"approval_id": approval["approval_id"], "invalidated_reason": approval["invalidated_reason"]})
     if fmt is not None and approval["format"] != fmt:

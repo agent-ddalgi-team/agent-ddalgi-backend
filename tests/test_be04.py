@@ -235,6 +235,43 @@ def test_active_job_join_key_replays_after_finish_and_explicit_retry(retry_api, 
     assert gone.status_code == 410 and gone.json()["error"]["code"] == "SESSION_EXPIRED"
 
 
+@pytest.mark.parametrize("change", ["foreign_source", "foreign_fact", "duplicate_id", "closed", "resolution", "layout", "block"])
+def test_preflight_issue_cannot_escape_selected_sources_or_claim_user_resolution(client, settings, monkeypatch, change):
+    from app.models import Issue
+    sid = _session(client)
+    selected = _upload(client, sid, ("a.txt", SOURCE_A))
+    rev = _select(client, sid, selected)
+    original = MockAgent.analyze
+
+    async def tampered(self, request):
+        result = await original(self, request)
+        issue = Issue(issue_id="tampered", scope="content", code="UNSUPPORTED_CLAIM", severity="blocker",
+                      message="검사용 문제", source_ids=selected)
+        if change == "foreign_source":
+            issue.source_ids = ["source_other_session"]
+        elif change == "foreign_fact":
+            issue.fact_ids = ["fact_other_preflight"]
+        elif change == "duplicate_id":
+            issue.issue_id = result.issues[0].issue_id
+        elif change == "closed":
+            issue.status = "resolved"
+        elif change == "resolution":
+            issue.resolution = {"action": "acknowledged", "reason": "Agent 임의 확인"}
+        elif change == "layout":
+            issue.scope = "layout"
+        elif change == "block":
+            issue.block_ids = ["block_not_created"]
+        result.issues.append(issue)
+        return result
+
+    monkeypatch.setattr(MockAgent, "analyze", tampered)
+    response = client.post(f"/api/v1/sessions/{sid}/preflights", json={"expected_input_revision": rev})
+    job = client.get(f"/api/v1/sessions/{sid}/jobs/{response.json()['job_id']}").json()
+    assert job["status"] == "failed" and job["error"]["code"] == "AGENT_OUTPUT_INVALID"
+    with connect(settings.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM preflights WHERE session_id=?", (sid,)).fetchone()[0] == 0
+
+
 def test_agent_output_with_unknown_segment_is_rejected(client, settings, monkeypatch):
     sid = _session(client)
     src = _upload(client, sid, ("a.txt", SOURCE_A))

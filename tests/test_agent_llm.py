@@ -2663,14 +2663,12 @@ def test_draft_condition_preserves_review_facts_and_server_conflict(target_pages
         fact = next(f for f in facts.values() if f.status == status)
         assert any(issue.code == code and issue.severity == "blocker" and fact.fact_id in issue.fact_ids
                    for issue in request.preflight.issues)
-        if status == "conflict":
-            assert any(issue.code == code and issue.severity == "blocker" and fact.fact_id in issue.fact_ids
-                       for issue in issues)
+        assert any(issue.code == code and issue.severity == "blocker" and fact.fact_id in issue.fact_ids
+                   for issue in issues)
         assert not any(fact.fact_id in b.fact_ids for p in result.pages for b in p.blocks)
         assert any(b.content.get("text") == legacy.SECTION_TITLES[fact.field_key] for p in result.pages for b in p.blocks)
     assert sum(b.content.get("text") == "추가 확인 필요" for p in result.pages for b in p.blocks) == 2
-    # 서버 일반 검사의 미참조 needs_confirmation 전달은 이번 준비의 통과 범위가 아니다.
-    # 사전 점검 보존과 VALUE_CONFLICT의 서버 전달을 구분한다(task_agent.md 준비 기록 참조).
+    # 본문에서 제외된 미확인 사실의 점검 blocker도 서버 문서 검사에 보존한다.
     assert request == before
 
 
