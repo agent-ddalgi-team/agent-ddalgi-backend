@@ -708,7 +708,7 @@ def _run(cmd: list[str], timeout: int, what: str) -> subprocess.CompletedProcess
     if sys.platform == "darwin" and what == "print-to-pdf":
         return _run_mac_pdf(cmd, timeout)
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 **({"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32"
                                    else {"start_new_session": True}))
     except OSError as exc:

@@ -1,6 +1,8 @@
 # 공통 데이터·API 계약
 
-기준일: 2026-10-06 · 문서 v1.26 · contract_version: 1.9 · 데이터 schema_version: 1.0
+기준일: 2026-10-06 · 문서 v1.27 · contract_version: 1.9 · 데이터 schema_version: 1.0
+
+**2026-10-06 DOCX 화면 연결 후속:** 출력 형식별 배치 검사·미리보기·승인·다운로드를 선택한다. 형식 변경 시 동의 체크는 해제하며 다른 형식의 검사/승인으로 다운로드하지 않는다. 문서 전체 쪽수 불일치 Finding은 특정 논리 쪽을 지정할 수 없으므로 `findings[].page_id`가 null일 수 있다. 형식별 실패는 조회 가능한 검사 결과와 미해결 필수 문제로 반환하며 승인할 수 없다. 헤드리스 변환 자식은 서버의 열린 표준 입력을 상속하지 않는다. DB v11·template_v7은 유지한다.
 
 **2026-10-06 점검 문제의 문서 연결 보완(BE-04/06):** 최신 Preflight의 열린 content/source blocker는 필수 내용 누락을 제외하고 VALUE_CONFLICT 외의 코드도 본문 참조 여부와 무관하게 문서 Issue(origin=preflight)에 보존한다. needs_confirmation 사실에 연결된 UNSUPPORTED_CLAIM blocker도 초안 최초 저장·조회/세션 요약·재검증·승인 차단에 연결한다. REQUIRED_MISSING은 문서 전체의 기존 필수 내용 검사에서 대체 사업 설명·사용자 지정 필수 항목을 함께 재판정한다. warning 수준의 미확인 사실은 임의 blocker로 승격하지 않는다. Agent가 확인/해결 상태·resolution을 반환하거나 선택 밖 자료/사실, 중복 Issue ID, 생성 전 블록/배치를 참조하면 AGENT_OUTPUT_INVALID로 점검 전체를 저장하지 않는다. 점검의 필수 문제는 안내 삭제·확인/제외 버튼으로 해결할 수 없으며 자료 보완·최신 점검·문서 재검증이 필요하다. 재점검은 다른 문제를 닫지 않고, 실제 문서 재검증에서 원인이 사라진 문제만 해결한다. 기존 preflight_conflicts 검사 키와 preflight_conflict 승인 무효화 사유는 호환을 위해 유지하며 이번 보완 이후 점검 필수 문제 전체를 포함한다. API 필드·계약1.9·DB v11·template_v7은 유지한다. 프론트는 문서 Issue와 review_required를 표시하며 최종 통합 검수는 후속이다.
 

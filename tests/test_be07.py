@@ -628,6 +628,24 @@ def test_docx_concurrent_renders_of_same_revision_do_not_collide(out_dir):
     assert er.docx_info(results[0].file_path)["inline_shapes"] == 1
 
 
+def test_renderer_child_does_not_inherit_open_server_stdin():
+    """실제 서버의 stdin 파이프가 열려 있어도 렌더 자식은 EOF를 받아 종료해야 한다."""
+    import subprocess
+
+    script = "from app.services.export_render import _run; import sys; r=_run([sys.executable,'-c','import sys; print(len(sys.stdin.read()))'],3,'stdin-probe'); print(r.stdout.decode().strip())"
+    parent = subprocess.Popen([sys.executable, "-X", "utf8", "-B", "-c", script], cwd=Path(__file__).resolve().parent.parent,
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        # communicate보다 먼저 wait: communicate는 부모 stdin을 닫아 오류를 숨길 수 있다.
+        assert parent.wait(timeout=10) == 0
+        output, error = parent.communicate(timeout=2)
+        assert output.strip() == b"0", error.decode(errors="replace")
+    finally:
+        if parent.poll() is None:
+            parent.kill()
+        parent.communicate(timeout=2)
+
+
 def test_docx_configured_missing_engine_does_not_pass(settings, out_dir):
     from dataclasses import replace
 

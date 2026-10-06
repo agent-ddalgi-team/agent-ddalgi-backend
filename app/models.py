@@ -514,7 +514,7 @@ class LayoutCheckRecordOut(BaseModel):
 
 class FindingOut(BaseModel):
     kind: Literal["overflow", "broken_image", "placeholder_remaining"]
-    page_id: str
+    page_id: str | None
     block_id: str | None = None
     message: str
     details: dict[str, Any] = Field(default_factory=dict)

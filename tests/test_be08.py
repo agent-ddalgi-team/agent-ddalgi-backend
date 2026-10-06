@@ -532,6 +532,33 @@ def test_docx_check_creates_file_and_pdf_preview_but_stays_blocked(app, settings
     assert r.status_code == 422 and r.json()["error"]["code"] == "EXPORT_NOT_ALLOWED"
 
 
+def test_docx_page_count_failure_remains_readable_and_blocks_approval(app, settings, monkeypatch):
+    from pypdf import PdfWriter
+
+    def mismatched_pages(snapshot, path, out_dir, settings, timeout):
+        preview = out_dir / "mismatch.pdf"
+        writer = PdfWriter()
+        for _ in range(len(snapshot.pages) + 1):
+            writer.add_blank_page(width=595, height=842)
+        writer.write(preview)
+        finding = export_render.Finding("overflow", None, None, "DOCX의 실제 쪽수가 문서 구성과 다릅니다.")
+        return len(snapshot.pages) + 1, [finding], "libreoffice/test", preview, {}, None
+
+    monkeypatch.setattr(export_render, "_check_docx_layout", mismatched_pages)
+    flow = Flow(app, settings)
+    flow.clean()
+    validation = flow.validate()
+    assert validation["status"] == "passed"
+    flow.layout_check("docx")
+    response = flow.c.get(f"/api/v1/sessions/{flow.sid}/documents/{flow.did}")
+    assert response.status_code == 200, response.text
+    layout = response.json()["layout_checks"]["docx"]
+    assert layout["status"] == "failed" and layout["findings"][0]["page_id"] is None
+    assert layout["actual_pages"] == 5 and len(layout["preview_asset_ids"]) == 5
+    assert flow.open_issues("LAYOUT_OVERFLOW")
+    assert flow.approve(validation["validation_id"], layout["layout_check_id"], fmt="docx").status_code == 422
+
+
 @needs_libreoffice
 def test_actual_docx_check_approve_download_reuse_and_invalidate(settings, monkeypatch):
     from dataclasses import replace

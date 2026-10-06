@@ -261,7 +261,16 @@ Stitch 화면 설계와의 연결 기준은 [prd.md 3~5절](prd.md), 화면 상�
 
 ### 로컬 시연: 문구 수정안·내용 검증 함께 켜기
 
-현재 시연 흐름은 `powershell -File scripts/run_llm.ps1 -Demo -ContentReview -TextProposals`로 실행한다. 기본 입력 200,000자·검증 400,000자·출력 64,000토큰·SDK 대기 300초·일시 오류 재시도 최대 2회가 적용된다. 재시도가 발생하면 전체 작업 시간은 300초보다 길어질 수 있다. 수정 요청 문장은 화면/서버 모두 10,000자까지이며 한 번에 블록 하나를 수정한다. 스크립트 기본값으로 저장되어 다음 실행에도 적용되고 기존 .env 비밀값은 수정하지 않는다.
+현재 시연의 interactive 모드는 아래 명령으로 실행한다. 내용 검증 한도는 400,000자이며 작성 입력 40,000자·출력 32,000토큰·요청 대기 120초·자동 재시도 0·기존 실행 예산 가드를 유지한다. 수정 요청 문장은 화면/서버 모두 10,000자까지이며 한 번에 블록 하나를 수정한다.
+
+```powershell
+$env:PRIVATE_RUNS_DIR='C:\backend\private_runs\demo_preview_20260929_131826'
+$env:DB_PATH='C:\backend\private_runs\demo_preview_20260929_131826\app.sqlite3'
+$env:EXPORT_LIBREOFFICE_PATH='C:\Program Files\LibreOffice\program\soffice.com'
+.\scripts\run_llm.ps1 -Demo -ContentReview -TextProposals -RequestTimeoutSeconds 120 -MaxInputChars 40000 -MaxReviewInputChars 400000 -MaxOutputTokens 32000 -MaxRetries 0
+```
+
+`run_llm.ps1`의 `MaxReviewInputChars` 기본값도 400,000자다. 예전 실행 명령에 `-MaxReviewInputChars 120000`이 있으면 그 명시값이 우선하므로 위 명령으로 교체한다. `.env`의 값을 바꿔도 이 실행 스크립트가 덮어쓴다. 검증 한도는 실제 전송 문자열 전체에 적용하며 한도 변경으로 문서·자료를 자르거나 검증 통과로 처리하지 않는다. 서버 재시작 전에 진행 중 작업이 없는지 확인하고 같은 시연 DB를 사용한다. `.env` 비밀값은 수정하지 않는다.
 
 일반 서버는 총 8회/$1·기능별 횟수·동시 AI 작업 1개 제한을 적용하지 않는다. 사용량은 측정만 하며 한 요청의 오류가 다음 요청을 막지 않는다. `-TextProposals`와 `-ContentReview`의 명시 활성화, 수동 중단, 외부 API의 한도, 근거/권한/버전/승인 검사는 유지한다. 과거 `TrialLedger`와 `OPENAI_TRIAL_*`는 명시적으로 사용하는 제한된 평가용이다. 런타임 측정값은 프로세스 메모리 총계와 최근 100회 메타이며 영구 청구 장부가 아니다. 알 수 없는 비용은 미확인으로 표시한다.
 
