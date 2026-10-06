@@ -1,4 +1,6 @@
-"""BE-09 세션 종료·만료 정리 테스트 — 브라우저·실제 AI 없이 실행된다(배치 검사 행·artifact는 가짜 바이트로 직접 만든다).
+"""BE-09 세션 종료·만료 정리 테스트 — 실제 AI 없이 실행된다(배치 검사 행·artifact는 가짜 바이트로 직접 만든다).
+
+일반 검사는 브라우저 없이, 실제 Chrome 프로필/서버 재시작 검사는 Windows+Chromium에서만 실행한다.
 
 배경 sweep 스레드는 끄고(cleanup_sweep_interval_s=0) sweeper.sweep_once를 직접 부른다. 실제 회사 자료 없음.
 """
@@ -22,7 +24,7 @@ from fastapi.testclient import TestClient
 from app import create_app
 from app.config import Settings
 from app.db import SCHEMA_VERSION, connect, init_db
-from app.services import ai_jobs, artifacts, cleanup, jobs, layout_check_jobs, layout_checks, reading, registered, sessions, sources, sweeper
+from app.services import ai_jobs, artifacts, cleanup, export_render, jobs, layout_check_jobs, layout_checks, reading, registered, sessions, sources, sweeper
 from app.services.documents import get_current
 from app.timeutil import from_iso, now, to_iso
 
@@ -157,6 +159,147 @@ def test_windows_locked_job_temp_survives_startup_then_sweep_removes_it(restart_
     assert not temp.exists()
     assert restarted.get(f"/api/v1/sessions/{flow.sid}").status_code == 200
     assert (settings.private_runs_dir / flow.sid).exists()
+
+
+def _windows_child_pids(pid):
+    """Toolhelp 스냅샷으로 이 테스트가 실행한 프로세스의 자손만 식별한다."""
+    import ctypes
+    from ctypes import wintypes
+
+    class Entry(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                    ("pid", wintypes.DWORD), ("heap", ctypes.c_size_t),
+                    ("module", wintypes.DWORD), ("threads", wintypes.DWORD),
+                    ("parent", wintypes.DWORD), ("priority", wintypes.LONG),
+                    ("flags", wintypes.DWORD), ("name", wintypes.WCHAR * 260)]
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel.Process32FirstW.argtypes = kernel.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(Entry)]
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel.CreateToolhelp32Snapshot(2, 0)
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    parents = {}
+    try:
+        entry = Entry(dwSize=ctypes.sizeof(Entry))
+        more = kernel.Process32FirstW(handle, ctypes.byref(entry))
+        while more:
+            parents[entry.pid] = entry.parent
+            more = kernel.Process32NextW(handle, ctypes.byref(entry))
+    finally:
+        kernel.CloseHandle(handle)
+    family = {pid}
+    while True:
+        found = {child for child, parent in parents.items() if parent in family} - family
+        if not found:
+            return family - {pid}, set(parents)
+        family.update(found)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="실제 Windows Chrome 프로세스 검사")
+@pytest.mark.parametrize("close_session", [True, False], ids=["closed_session", "active_orphan"])
+def test_actual_chrome_profile_close_process_restart_and_cleanup(restart_db, close_session):
+    import socket
+    from urllib.error import URLError
+    from urllib.request import urlopen
+
+    browser = export_render.find_browser()
+    if browser is None:
+        pytest.skip("Chromium 없음 — 실제 프로세스 정리 미실행")
+    application, settings = restart_db
+    flow = Flow(application, settings)
+    live = Flow(application, settings)
+    live_files = {p: p.read_bytes() for p in (settings.private_runs_dir / live.sid).rglob("*") if p.is_file()}
+    registered_file = settings.private_runs_dir / "registered" / "keep.txt"
+    registered_file.parent.mkdir()
+    registered_file.write_bytes(b"registered original")
+    with connect(settings.db_path) as conn:
+        job = jobs.create(conn, flow.sid, "layout_check", "interrupted Chrome")
+        jobs.set_progress(conn, job.job_id, "rendering", "interrupted Chrome")
+    temp = artifacts.temp_dir(settings, flow.sid, job.job_id)
+    profile = temp / "profile"
+    args = export_render._browser_args(browser, profile) + ["--remote-debugging-port=0", "about:blank"]
+    proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+    child_pids = set()
+    try:
+        deadline = time.monotonic() + 25
+        while not (profile / "DevToolsActivePort").is_file() and time.monotonic() < deadline:
+            assert proc.poll() is None, "Chrome exited before profile initialization"
+            time.sleep(0.05)
+        assert (profile / "DevToolsActivePort").is_file(), "Chrome profile initialization timed out"
+        child_pids, _ = _windows_child_pids(proc.pid)
+        assert child_pids, "Chrome must have real child processes"
+        os.utime(temp, (time.time() - cleanup.ORPHAN_TMP_MIN_AGE_S - 10,) * 2)
+        if close_session:
+            response = flow.c.delete(f"/api/v1/sessions/{flow.sid}")
+            assert response.status_code == 200 and response.json()["cleanup"] == "pending"
+            assert _count(settings, "SELECT COUNT(*) FROM sources WHERE session_id=? AND deleted_at IS NULL", flow.sid) == 0
+            assert _row(settings, "SELECT brief_json FROM sessions WHERE session_id=?", flow.sid)[0] == "{}"
+            assert all(_row(settings, "SELECT name FROM sources WHERE source_id=?", sid)[0] == "" for sid in flow.source_ids)
+            with connect(settings.db_path, immediate=True) as conn:
+                assert len(cleanup.claim(conn, "interrupted-process", session_id=flow.sid, ignore_schedule=True)) == 1
+        else:
+            assert sweeper.sweep_once(settings)["orphan_tmp"] == 0
+            assert temp.exists() and flow.c.get(f"/api/v1/sessions/{flow.sid}").status_code == 200
+        # 별도 Uvicorn 프로세스에서 앱 시작/작업 복구 후 실제 HTTP 응답까지 확인한다.
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            port = listener.getsockname()[1]
+        server = subprocess.Popen([sys.executable, "-X", "utf8", "-B", "-c",
+            "import sys,uvicorn; from pathlib import Path; from app import create_app; from app.config import Settings; "
+            "app=create_app(Settings(private_runs_dir=Path(sys.argv[1]),db_path=Path(sys.argv[2]),cleanup_sweep_interval_s=0)); "
+            "uvicorn.run(app,host='127.0.0.1',port=int(sys.argv[3]),log_level='error')",
+            str(settings.private_runs_dir), str(settings.db_path), str(port)], cwd=ROOT,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+        try:
+            deadline = time.monotonic() + 25
+            while True:
+                assert server.poll() is None, "Isolated server exited before HTTP recovery"
+                try:
+                    with urlopen(f"http://127.0.0.1:{port}/", timeout=1) as response:
+                        assert response.status == 200 and json.load(response)["api"] == "/api/v1"
+                    break
+                except (URLError, TimeoutError):
+                    assert time.monotonic() < deadline, "Isolated HTTP restart timed out"
+                    time.sleep(0.05)
+        finally:
+            server.terminate()
+            server.wait(timeout=15)
+        if close_session:
+            task = _row(settings, "SELECT * FROM cleanup_queue WHERE session_id=?", flow.sid)
+            assert task["status"] == "pending" and task["claim_token"] is None and task["last_error"] == "stale_claim"
+        else:
+            assert _row(settings, "SELECT status FROM jobs WHERE job_id=?", job.job_id)["status"] == "failed"
+            assert temp.exists()
+            counts = sweeper.sweep_once(settings)
+            assert counts["orphan_tmp"] == 1 and counts["retry"] == 1
+        assert proc.poll() is None and temp.exists()
+    finally:
+        child_pids.update(_windows_child_pids(proc.pid)[0])
+        export_render._kill_tree(proc)
+        proc.wait(timeout=15)
+        deadline = time.monotonic() + 10
+        while child_pids & _windows_child_pids(proc.pid)[1] and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not (child_pids & _windows_child_pids(proc.pid)[1]), "Chrome children survived tree termination"
+    with connect(settings.db_path) as conn:
+        conn.execute("UPDATE cleanup_queue SET next_retry_at=? WHERE session_id=?", (PAST, flow.sid))
+    assert sweeper.sweep_once(settings)["done"] == 1
+    assert not temp.exists()
+    response = flow.c.get(f"/api/v1/sessions/{flow.sid}")
+    if close_session:
+        assert response.status_code == 410 and response.json()["error"]["details"]["cleanup"] == "done"
+        assert not (settings.private_runs_dir / flow.sid).exists()
+    else:
+        assert response.status_code == 200 and (settings.private_runs_dir / flow.sid).exists()
+        assert _count(settings, "SELECT COUNT(*) FROM sources WHERE session_id=?", flow.sid) == 2
+    assert live.c.get(f"/api/v1/sessions/{live.sid}").status_code == 200
+    assert all(p.read_bytes() == content for p, content in live_files.items())
+    assert registered_file.read_bytes() == b"registered original"
 
 
 def _row(settings, sql, *params):
