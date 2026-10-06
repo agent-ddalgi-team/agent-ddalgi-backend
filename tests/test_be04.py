@@ -235,6 +235,43 @@ def test_active_job_join_key_replays_after_finish_and_explicit_retry(retry_api, 
     assert gone.status_code == 410 and gone.json()["error"]["code"] == "SESSION_EXPIRED"
 
 
+@pytest.mark.parametrize("change", ["foreign_source", "foreign_fact", "duplicate_id", "closed", "resolution", "layout", "block"])
+def test_preflight_issue_cannot_escape_selected_sources_or_claim_user_resolution(client, settings, monkeypatch, change):
+    from app.models import Issue
+    sid = _session(client)
+    selected = _upload(client, sid, ("a.txt", SOURCE_A))
+    rev = _select(client, sid, selected)
+    original = MockAgent.analyze
+
+    async def tampered(self, request):
+        result = await original(self, request)
+        issue = Issue(issue_id="tampered", scope="content", code="UNSUPPORTED_CLAIM", severity="blocker",
+                      message="검사용 문제", source_ids=selected)
+        if change == "foreign_source":
+            issue.source_ids = ["source_other_session"]
+        elif change == "foreign_fact":
+            issue.fact_ids = ["fact_other_preflight"]
+        elif change == "duplicate_id":
+            issue.issue_id = result.issues[0].issue_id
+        elif change == "closed":
+            issue.status = "resolved"
+        elif change == "resolution":
+            issue.resolution = {"action": "acknowledged", "reason": "Agent 임의 확인"}
+        elif change == "layout":
+            issue.scope = "layout"
+        elif change == "block":
+            issue.block_ids = ["block_not_created"]
+        result.issues.append(issue)
+        return result
+
+    monkeypatch.setattr(MockAgent, "analyze", tampered)
+    response = client.post(f"/api/v1/sessions/{sid}/preflights", json={"expected_input_revision": rev})
+    job = client.get(f"/api/v1/sessions/{sid}/jobs/{response.json()['job_id']}").json()
+    assert job["status"] == "failed" and job["error"]["code"] == "AGENT_OUTPUT_INVALID"
+    with connect(settings.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM preflights WHERE session_id=?", (sid,)).fetchone()[0] == 0
+
+
 def test_agent_output_with_unknown_segment_is_rejected(client, settings, monkeypatch):
     sid = _session(client)
     src = _upload(client, sid, ("a.txt", SOURCE_A))
@@ -484,3 +521,39 @@ def test_mock_never_contains_real_company_terms():
     text = inspect.getsource(m)
     for banned in ("거산", "케미칼", "Geosan"):
         assert banned not in text
+
+
+def test_sufficiency_uses_evidence_and_preserves_conflicts():
+    from app.models import Fact, Issue, EvidenceRef
+    from app.services.preflights import assess_sufficiency
+    ref = EvidenceRef(source_id="s", source_version=1, segment_id="seg", locator={}, excerpt="근거")
+    def fact(key, status="supported", evidence=True):
+        return Fact(fact_id=key, field_key=key, value="자료", status=status, evidence_refs=[ref] if evidence else [])
+    facts = [fact("company_name"), fact("processes"), fact("customers_markets"), fact("certifications")]
+    assert assess_sufficiency(facts, []).score == 100
+    facts[3] = fact("certifications", evidence=False)
+    assert assess_sufficiency(facts, []).score == 75
+    facts[1] = fact("processes", status="conflict")
+    facts.append(fact("technology"))
+    result = assess_sufficiency(facts, [])
+    assert result.score == 50 and result.categories[1].status == "conflict"
+    issue = Issue(issue_id="i", scope="content", code="UNSUPPORTED_CLAIM", severity="blocker",
+                  message="확인", fact_ids=["company_name"])
+    result = assess_sufficiency(facts, [issue])
+    assert result.score == 25 and result.has_blockers
+    assert result.categories[0].status == "needs_confirmation"
+    issue.scope = "source"
+    issue.source_ids = ["s"]
+    assert assess_sufficiency(facts, [issue]).score == 0
+    assert assess_sufficiency([], []).score == 0
+
+
+def test_preflight_api_exposes_evidence_coverage(client):
+    sid = _session(client)
+    ids = _upload(client, sid, ("company.txt", SOURCE_A))
+    rev = _select(client, sid, ids)
+    result = _preflight(client, sid, rev)
+    coverage = result["sufficiency"]
+    assert len(coverage["categories"]) == 4
+    assert coverage["score"] == 25 * sum(c["status"] == "supported" for c in coverage["categories"])
+    assert isinstance(coverage["has_blockers"], bool)

@@ -400,19 +400,29 @@ def _required_issue(document: Document, ctx: Context, keys: tuple[str, ...], lab
 
 
 def preflight_conflicts(ctx: Context) -> list[IssueDraft]:
-    """본문 참조·안내 삭제와 무관한 현재 자료의 충돌. 승인 직전에도 같은 규칙을 사용한다."""
+    """현재 점검의 미해결 blocker. 기존 함수/검사 이름은 호환을 위해 유지한다.
+
+    본문 참조·안내 삭제로 점검 문제를 해결할 수 없다. conflict Fact는 Issue 누락에도
+    보존하며 warning 수준의 needs_confirmation을 임의 blocker로 승격하지 않는다.
+    """
     conflicts: list[IssueDraft] = []
     covered_facts: set[str] = set()
     for issue in ctx.preflight_issues:
-        if issue.code != "VALUE_CONFLICT" or issue.severity != "blocker" or issue.status != "open":
+        if issue.scope == "layout" or issue.severity != "blocker" or issue.status != "open":
+            continue
+        if issue.code == "REQUIRED_MISSING":
+            # 필수 회사/사업·사용자 지정 항목은 아래 required_content가 문서 전체에서
+            # 재판정한다. 점검의 company_summary 누락을 대체 사업 설명까지 막는
+            # 독립 blocker로 고정하지 않는다.
             continue
         sources = set(issue.source_ids)
         for fid in issue.fact_ids:
             if fid in ctx.facts:
                 sources.update(ref.source_id for ref in ctx.facts[fid].evidence_refs)
-        conflicts.append(IssueDraft("content", "VALUE_CONFLICT", "blocker", issue.message,
+        conflicts.append(IssueDraft(issue.scope, issue.code, "blocker", issue.message,
                                     fact_ids=sorted(set(issue.fact_ids)), source_ids=sorted(sources), origin="preflight"))
-        covered_facts.update(issue.fact_ids)
+        if issue.code == "VALUE_CONFLICT":
+            covered_facts.update(issue.fact_ids)
     # 분석 결과에 Issue가 누락되거나 완화돼도 아직 conflict인 Fact를 해결된 것으로 취급하지 않는다.
     for fact in ctx.facts.values():
         if fact.status == "conflict" and fact.fact_id not in covered_facts:
@@ -774,7 +784,11 @@ def persist_issues(conn: Connection, session_id: str, document: Document, valida
     for row in previous_open:
         if row["identity_key"] in produced:
             continue
-        if not _covered_by_this_validation(row, agent_covered_blocks, agent_full):
+        blocks = set(json.loads(row["block_ids_json"]))
+        # 대상 블록이 전부 삭제된 지적은 현재 문서에서 존재할 수 없다.
+        # 일부 대상이 남거나 문서 전체 지적이면 기존 부분 검증 범위를 유지한다.
+        deleted_agent_target = row["origin"] == "agent" and bool(blocks) and blocks.isdisjoint(fps)
+        if not deleted_agent_target and not _covered_by_this_validation(row, agent_covered_blocks, agent_full):
             continue  # 재실행하지 않은 검사의 Issue(문서 전체 Issue 포함)는 보존
         from app.services import db_history
         db_history.invalidate_warning(conn, row["issue_id"])
@@ -795,7 +809,7 @@ def persist_issues(conn: Connection, session_id: str, document: Document, valida
 
 def record_preflight_conflicts(conn: Connection, session_id: str, document: Document,
                               preflight: PreflightOut) -> bool:
-    """재점검에서 발견한 충돌만 현재 문서에 합친다. 의미 검증 완료·기존 문제 해결을 대신하지 않는다."""
+    """점검의 미해결 blocker를 현재 문서에 합친다. 다른 문제를 닫거나 검증 완료로 처리하지 않는다."""
     if document.input_revision != preflight.input_revision:
         return False
     ctx = load_context(conn, session_id, preflight)

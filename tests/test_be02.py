@@ -501,3 +501,56 @@ def test_sqlalchemy_keeps_existing_v9_schema_and_data_on_reinitialization(sqlalc
         assert tuple(legacy.iterdump()) == before
         assert legacy.execute("PRAGMA quick_check").fetchone()[0] == "ok"
         assert legacy.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_company_change_persists_clears_selection_and_replays(client, settings):
+    s = _create(client)
+    root = f"/api/v1/sessions/{s['session_id']}"
+    src = client.post(root + "/sources", files=[("files", _txt("company.txt"))]).json()["items"][0]["source_id"]
+    assert client.patch(root + "/inputs", json={"expected_input_revision": 1, "selected_source_ids": [src]}).status_code == 200
+    change = {"expected_input_revision": 2, "brief": {**BRIEF, "target_company": " 새 회사 "}, "selected_source_ids": []}
+    headers = {"Idempotency-Key": "company-change"}
+    result = client.patch(root + "/inputs", json=change, headers=headers)
+    assert result.status_code == 200
+    assert client.patch(root + "/inputs", json=change, headers=headers).json() == result.json()
+    current = client.get(root).json()
+    assert current["brief"]["target_company"] == "새 회사"
+    assert current["selected_source_ids"] == []
+    assert current["input_revision"] == 3
+    assert client.get(root + "/sources").json()["items"][0]["source_id"] == src
+    with TestClient(create_app(settings)) as restored:
+        restored.cookies.update(client.cookies)
+        assert restored.get(root).json()["brief"]["target_company"] == "새 회사"
+
+
+@pytest.mark.parametrize("name", ["  ", chr(10), "회사" + chr(9) + "명"])
+def test_company_name_rejects_empty_or_controls(client, name):
+    response = client.post("/api/v1/sessions", json={"brief": {**BRIEF, "target_company": name}})
+    assert response.status_code == 400
+
+
+def test_public_data_not_configured_is_protected_and_does_not_mutate(client, app, settings):
+    from app.db import connect
+    s = _create(client)
+    root = f"/api/v1/sessions/{s['session_id']}"
+    assert client.get(root + "/public-data").json()["status"] == "not_configured"
+    assert client.post(root + "/public-data/import", json={"expected_input_revision": 1}).status_code == 422
+    assert client.patch(root + "/inputs", json={"expected_input_revision": 1, "brief": {**BRIEF, "target_company": "테스트 회사"}}).status_code == 200
+    before = client.get(root).json()
+    for _ in range(2):
+        response = client.post(root + "/public-data/import", json={"expected_input_revision": 2})
+        assert response.status_code == 503
+        assert response.json()["error"]["code"] == "PUBLIC_DATA_NOT_CONFIGURED"
+        assert response.json()["error"]["retryable"] is False
+    assert client.get(root).json() == before
+    assert client.post(root + "/public-data/import", json={"expected_input_revision": 1}).status_code == 409
+    with connect(settings.db_path) as conn:
+        assert conn.execute("SELECT count(*) FROM sources WHERE session_id=?", (s["session_id"],)).fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM jobs WHERE session_id=?", (s["session_id"],)).fetchone()[0] == 0
+    with TestClient(app) as other:
+        assert other.get(root + "/public-data").status_code == 401
+        _create(other)
+        assert other.get(root + "/public-data").status_code == 404
+        assert other.post(root + "/public-data/import", json={"expected_input_revision": 2}).status_code == 404
+    client.delete(root)
+    assert client.get(root + "/public-data").status_code == 410

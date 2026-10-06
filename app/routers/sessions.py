@@ -8,7 +8,7 @@ from fastapi import APIRouter, Header, Request, Response
 from app.access import ensure_owner, require_owner, settings_of
 from app.db import connect
 from app.errors import ApiError
-from app.models import InputsOut, InputsPatch, SessionCreate, SessionDeleteOut, SessionOut
+from app.models import InputsOut, InputsPatch, SessionCreate, SessionDeleteOut, SessionOut, PublicDataImport, PublicDataStatus
 from app.services import cleanup, idempotency, sessions, sources
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -93,3 +93,27 @@ def patch_inputs(request: Request, sid: str, body: InputsPatch,
                         selected_source_ids=json.loads(selected), preflight_invalidated=True)
         idempotency.remember(conn, idempotency_key, owner, request.url.path, digest, 200, out.model_dump(), session_id=sid)
     return out
+
+
+@router.get("/{sid}/public-data", response_model=PublicDataStatus)
+def public_data_status(request: Request, sid: str):
+    settings = settings_of(request)
+    with connect(settings.db_path) as conn:
+        sessions.load_active(conn, require_owner(request), sid, settings)
+    return PublicDataStatus()
+
+
+@router.post("/{sid}/public-data/import")
+def import_public_data(request: Request, sid: str, body: PublicDataImport):
+    settings = settings_of(request)
+    with connect(settings.db_path) as conn:
+        row = sessions.load_active(conn, require_owner(request), sid, settings)
+        if row["input_revision"] != body.expected_input_revision:
+            raise ApiError(409, "INPUT_REVISION_CONFLICT", "작업이 변경되었습니다. 최신 상태를 확인해 주세요.")
+        brief = json.loads(row["brief_json"])
+        if not brief.get("target_company"):
+            raise ApiError(422, "COMPANY_REQUIRED", "공개 자료를 가져올 회사를 먼저 선택해 주세요.")
+    # No adapter is configured yet: never create fabricated sources or a success job.
+    status = PublicDataStatus()
+    raise ApiError(503, "PUBLIC_DATA_NOT_CONFIGURED", status.message,
+                   details={"providers": status.providers})

@@ -1,7 +1,7 @@
 """BE-08 확인: 배치 검사 Job·미리보기·승인 ⑥ 실체화·불변 artifact·Export·다운로드·공개 허가·Issue 분리·재시작 복구·만료.
 
 모든 자료는 가상(clean TXT·Pillow PNG·가짜 등록 묶음). 실제 AI 호출 없음(mock Agent 또는 LlmAgent의 준비된 모델 응답). PDF 배치 검사는 시스템 Chromium 계열
-브라우저가 있을 때만 실제로 돈다. 없으면 해당 테스트는 skip으로 표시된다(통과가 아니다). DOCX 승인·Export·다운로드는 이 범위에서 차단이 정상.
+PDF는 브라우저, DOCX 실제 검사는 LibreOffice가 있어야 돈다. 없으면 skip(통과가 아니다). 엔진 미설정 DOCX는 차단한다.
 """
 from __future__ import annotations
 
@@ -34,6 +34,9 @@ BANNED = ("거산", "케미칼", "Geosan")
 BROWSER_PATH_ENV = (os.environ.get("EXPORT_BROWSER_PATH") or "").strip() or None
 BROWSER = export_render.find_browser(Settings(private_runs_dir=Path("."), db_path=Path("."), export_browser_path=BROWSER_PATH_ENV))
 needs_browser = pytest.mark.skipif(BROWSER is None, reason="Chromium 계열 브라우저 없음 — 배치 검사(PDF) 테스트 미실행")
+LIBREOFFICE = next((str(p) for p in [Path(os.environ.get("TEST_LIBREOFFICE_PATH") or
+    r"C:\Program Files\LibreOffice\program\soffice.com")] if p.is_file()), None)
+needs_libreoffice = pytest.mark.skipif(LIBREOFFICE is None, reason="LibreOffice 없음 — DOCX 승인 통합 검사 미실행")
 
 
 @needs_browser
@@ -117,10 +120,10 @@ class Flow:
     """세션 + clean TXT/PNG 업로드 + mock 초안 + 검증(passed). 배치 검사·승인·출력 헬퍼."""
 
     def __init__(self, app, settings, *, upload_png: bool = True, registered_ids: list[str] | None = None,
-                 png_size: tuple[int, int] = (8, 6)):
+                 png_size: tuple[int, int] = (8, 6), target_pages: int = 4):
         self.app, self.settings = app, settings
         self.c = TestClient(app)
-        self.sid = self.c.post("/api/v1/sessions", json={"brief": BRIEF}).json()["session_id"]
+        self.sid = self.c.post("/api/v1/sessions", json={"brief": {**BRIEF, "target_pages": target_pages}}).json()["session_id"]
         files = [("files", ("a.txt", io.BytesIO(CLEAN_TXT)))]
         if upload_png:
             files.append(("files", ("p.png", io.BytesIO(_png(*png_size)))))
@@ -413,22 +416,28 @@ def test_llm_photo_normalization_review_blocker_and_pdf_download(settings, monke
 
 
 @needs_browser
-def test_pdf_layout_check_approve_export_download(app, settings):
-    flow = Flow(app, settings)
+@pytest.mark.parametrize("pages", [1, 4, 6, 8, 10])
+def test_pdf_layout_check_approve_export_download(app, settings, pages):
+    flow = Flow(app, settings, target_pages=pages, png_size=(320, 160))
     v, lc = flow.ready_pdf()
     # 배치 검사 결과: 3종 required ok, 미리보기, artifact, 렌더러. 서버 경로 없음
     assert lc["layout_ok"] and lc["publication_policy_ok"] and lc["fail_reasons"] == [] and lc["findings"] == []
     assert {c["check_key"]: c["result"] for c in lc["checks"]} == {"overflow": "ok", "broken_image": "ok", "placeholder_remaining": "ok"}
-    assert lc["actual_pages"] == len(flow.doc()["pages"]) and lc["renderer"].startswith(("chrome/", "edge/", "chromium/"))
+    assert lc["actual_pages"] == len(flow.doc()["pages"]) == pages
+    assert flow.doc()["target_pages"] == pages and lc["renderer"].startswith(("chrome/", "edge/", "chromium/"))
     assert lc["preview_basis"] == "pdf" and len(lc["preview_asset_ids"]) == lc["actual_pages"] and lc["artifact_id"].startswith("art_")
     _no_paths(flow.get())
     # 미리보기는 기존 GET /assets/{asset_id}로
     png = flow.c.get(f"/api/v1/sessions/{flow.sid}/assets/{lc['preview_asset_ids'][0]}")
     assert png.status_code == 200 and png.headers["content-type"].startswith("image/png") and png.content[:8] == b"\x89PNG\r\n\x1a\n"
     # 승인 201(실제 행), renderer·artifact 기록
-    r = flow.approve(v["validation_id"], lc["layout_check_id"])
+    wrong_format = flow.approve(v["validation_id"], lc["layout_check_id"], fmt="docx")
+    assert wrong_format.status_code == 422 and wrong_format.json()["error"]["code"] == "LAYOUT_NOT_READY"
+    assert flow.approve(v["validation_id"], lc["layout_check_id"], confirmed=False).status_code == 422
+    r = flow.approve(v["validation_id"], lc["layout_check_id"], headers={"Idempotency-Key": "pdf-approval"})
     assert r.status_code == 201, r.text
     a = r.json()
+    assert flow.approve(v["validation_id"], lc["layout_check_id"], headers={"Idempotency-Key": "pdf-approval"}).json() == a
     assert a["status"] == "active" and a["layout_check_id"] == lc["layout_check_id"] and a["artifact_id"] == lc["artifact_id"] and a["renderer"] == lc["renderer"]
     assert flow.doc()["status"] == "approved"
     # Export 202 → ready → 다운로드
@@ -448,10 +457,20 @@ def test_pdf_layout_check_approve_export_download(app, settings):
 
     reader = PdfReader(io.BytesIO(d.content))
     assert len(reader.pages) == lc["actual_pages"] and "예시 회사" in (reader.pages[0].extract_text() or "")
+    assert len(reader.pages[0].images) == 1
+    assert flow.download(exp["export_id"]).content == d.content
+    for number, page in enumerate(reader.pages[1:], start=2):
+        assert f"예시 구성 {number}" in (page.extract_text() or "")
     assert not any(w in (reader.pages[0].extract_text() or "") for w in BANNED)
     with connect(settings.db_path) as conn:
         art = conn.execute("SELECT * FROM artifacts WHERE artifact_id=?", (lc["artifact_id"],)).fetchone()
+        assert conn.execute("SELECT COUNT(*) FROM jobs WHERE kind='draft'").fetchone()[0] == 1
     assert hashlib.sha256(d.content).hexdigest() == art["sha256"] and len(d.content) == art["size_bytes"]
+    flow.patch([{"op": "rename_page", "page_id": flow.doc()["pages"][0]["page_id"], "title": "승인 뒤 수정"}])
+    assert flow.download(exp["export_id"]).status_code == 409
+    assert flow.c.delete(f"/api/v1/sessions/{flow.sid}").json()["cleanup"] == "done"
+    assert flow.download(exp["export_id"]).status_code == 410
+    assert not (settings.private_runs_dir / flow.sid).exists()
 
 
 @needs_browser
@@ -529,7 +548,125 @@ def test_docx_check_creates_file_and_pdf_preview_but_stays_blocked(app, settings
     assert r.status_code == 422 and r.json()["error"]["code"] == "EXPORT_NOT_ALLOWED"
 
 
+def test_docx_page_count_failure_remains_readable_and_blocks_approval(app, settings, monkeypatch):
+    from pypdf import PdfWriter
+
+    def mismatched_pages(snapshot, path, out_dir, settings, timeout):
+        preview = out_dir / "mismatch.pdf"
+        writer = PdfWriter()
+        for _ in range(len(snapshot.pages) + 1):
+            writer.add_blank_page(width=595, height=842)
+        writer.write(preview)
+        finding = export_render.Finding("overflow", None, None, "DOCX의 실제 쪽수가 문서 구성과 다릅니다.")
+        return len(snapshot.pages) + 1, [finding], "libreoffice/test", preview, {}, None
+
+    monkeypatch.setattr(export_render, "_check_docx_layout", mismatched_pages)
+    flow = Flow(app, settings)
+    flow.clean()
+    validation = flow.validate()
+    assert validation["status"] == "passed"
+    flow.layout_check("docx")
+    response = flow.c.get(f"/api/v1/sessions/{flow.sid}/documents/{flow.did}")
+    assert response.status_code == 200, response.text
+    layout = response.json()["layout_checks"]["docx"]
+    assert layout["status"] == "failed" and layout["findings"][0]["page_id"] is None
+    assert layout["actual_pages"] == 5 and len(layout["preview_asset_ids"]) == 5
+    assert flow.open_issues("LAYOUT_OVERFLOW")
+    assert flow.approve(validation["validation_id"], layout["layout_check_id"], fmt="docx").status_code == 422
+
+
+@needs_libreoffice
+@pytest.mark.parametrize("pages", [1, 4, 6, 8, 10])
+def test_actual_docx_check_approve_download_reuse_and_invalidate(settings, monkeypatch, pages):
+    from dataclasses import replace
+    import docx
+
+    settings = replace(settings, export_libreoffice_path=LIBREOFFICE,
+                       export_browser_path=str(settings.private_runs_dir / "no-browser.exe"))
+    application = create_app(settings)
+    # DOCX preview must come from its own conversion, even when Chrome is unavailable.
+    monkeypatch.setattr(export_render, "_render_pdf", lambda *a, **k: pytest.fail("DOCX used the HTML/PDF fallback"))
+    flow = Flow(application, settings, target_pages=pages, png_size=(320, 160))
+    flow.clean()
+    validation = flow.validate()
+    assert validation["status"] == "passed"
+    _, job = flow.layout_check("docx")
+    layout = flow.get()["layout_checks"]["docx"]
+    assert layout["status"] == "passed" and layout["layout_ok"] and layout["actual_pages"] == pages
+    assert flow.doc()["target_pages"] == len(flow.doc()["pages"]) == pages
+    assert layout["preview_basis"] == "pdf" and len(layout["preview_asset_ids"]) == pages
+    assert ";libreoffice/" in layout["renderer"] and any("LibreOffice" in text for text in layout["warnings"])
+    assert job["result_ref"]["status"] == "passed"
+    for aid in layout["preview_asset_ids"]:
+        response = flow.c.get(f"/api/v1/sessions/{flow.sid}/assets/{aid}")
+        assert response.status_code == 200 and response.content.startswith(b"\x89PNG")
+    refused = flow.approve(validation["validation_id"], layout["layout_check_id"], fmt="docx", confirmed=False)
+    assert refused.status_code == 422
+    wrong_format = flow.approve(validation["validation_id"], layout["layout_check_id"], fmt="pdf")
+    assert wrong_format.status_code == 422 and wrong_format.json()["error"]["code"] == "LAYOUT_NOT_READY"
+    approval = flow.approve(validation["validation_id"], layout["layout_check_id"], fmt="docx",
+                            headers={"Idempotency-Key": "docx-approval"})
+    assert approval.status_code == 201, approval.text
+    assert approval.json()["artifact_id"] == layout["artifact_id"]
+    assert flow.approve(validation["validation_id"], layout["layout_check_id"], fmt="docx",
+                        headers={"Idempotency-Key": "docx-approval"}).json() == approval.json()
+    accepted = flow.export(approval.json()["approval_id"], fmt="docx", key="docx-export")
+    assert accepted.status_code == 202, accepted.text
+    flow.job(accepted.json()["job_id"])
+    ready = flow.export(approval.json()["approval_id"], fmt="docx").json()["export"]
+    assert ready["status"] == "ready" and ready["artifact_id"] == layout["artifact_id"]
+    first = flow.download(ready["export_id"])
+    assert first.status_code == 200 and first.content.startswith(b"PK")
+    assert "officedocument.wordprocessingml.document" in first.headers["content-type"]
+    assert flow.download(ready["export_id"]).content == first.content
+    editable = docx.Document(io.BytesIO(first.content))
+    assert len(editable.inline_shapes) == 1 and any("예시 회사" in p.text for p in editable.paragraphs)
+    editable_text = "\n".join(p.text for p in editable.paragraphs)
+    assert all(f"예시 구성 {number}" in editable_text for number in range(2, pages + 1))
+    with connect(settings.db_path) as conn:
+        artifact = artifacts.get(conn, layout["artifact_id"])
+        assert hashlib.sha256(first.content).hexdigest() == artifact["sha256"]
+        assert conn.execute("SELECT COUNT(*) FROM jobs WHERE kind='draft'").fetchone()[0] == 1
+    _no_paths(layout)
+    flow.patch([{"op": "rename_page", "page_id": flow.doc()["pages"][0]["page_id"], "title": "승인 뒤 수정"}])
+    assert flow.download(ready["export_id"]).status_code == 409
+    assert flow.c.delete(f"/api/v1/sessions/{flow.sid}").json()["cleanup"] == "done"
+    assert flow.download(ready["export_id"]).status_code == 410
+    assert not (settings.private_runs_dir / flow.sid).exists()
+
+
 # ================= 승인 후 변경·재사용·동시성 =================
+
+@needs_browser
+@needs_libreoffice
+def test_document_preserves_both_format_approvals_after_reload(app, settings):
+    from dataclasses import replace
+
+    settings = replace(settings, export_libreoffice_path=LIBREOFFICE)
+    flow = Flow(create_app(settings), settings)
+    flow.clean()
+    assert flow.get()["approvals_by_format"] == {"pdf": None, "docx": None}
+    validation = flow.validate()
+    expected = {}
+    for fmt in ("pdf", "docx"):
+        flow.layout_check(fmt)
+        layout = flow.get()["layout_checks"][fmt]
+        assert layout["status"] == "passed"
+        approved = flow.approve(validation["validation_id"], layout["layout_check_id"], fmt=fmt)
+        assert approved.status_code == 201
+        expected[fmt] = approved.json()["approval_id"]
+    # A fresh GET keeps the legacy latest approval and both individually current approvals.
+    fetched = flow.get()
+    assert fetched["approval"]["approval_id"] == expected["docx"]
+    assert {fmt: row["approval_id"] for fmt, row in fetched["approvals_by_format"].items()} == expected
+    for fmt, approval_id in expected.items():
+        response = flow.export(approval_id, fmt=fmt)
+        assert response.status_code == 202
+        flow.job(response.json()["job_id"])
+        ready = flow.export(approval_id, fmt=fmt)
+        assert ready.status_code == 200 and ready.json()["export"]["status"] == "ready"
+    flow.patch([{"op": "rename_page", "page_id": flow.doc()["pages"][0]["page_id"], "title": "승인 뒤 수정"}])
+    assert flow.get()["approvals_by_format"] == {"pdf": None, "docx": None}
 
 @needs_browser
 def test_export_and_download_rejected_after_document_or_input_change(app, settings):
@@ -693,6 +830,148 @@ def test_recheck_does_not_replace_approval_artifact_and_explicit_reapproval_supe
 
 
 # ================= 재시도·재시작·만료 =================
+
+@needs_browser
+@pytest.mark.parametrize("db_mode", ["legacy", "orm_v11"])
+@pytest.mark.parametrize("operation,phase", [("apply", "before_commit"), ("apply", "after_commit"),
+    ("export", "before_commit"), ("export", "after_commit"), ("export", "publishing")])
+def test_http_process_crash_replay_keeps_single_revision_and_export(settings, db_mode, operation, phase):
+    from contextlib import contextmanager
+    import socket
+    import httpx
+    from app.db import ORM_SCHEMA_VERSION, SCHEMA_VERSION, init_orm_db
+
+    if db_mode == "orm_v11":
+        init_orm_db(settings.db_path, settings.private_runs_dir)
+    application = create_app(settings)
+    flow = Flow(application, settings)
+    base = f"/api/v1/sessions/{flow.sid}"
+    artifact_before = None
+    if operation == "apply":
+        block = flow.doc()["pages"][0]["blocks"][0]
+        response = flow.c.post(base + f"/documents/{flow.did}/proposals", json={
+            "expected_revision": flow.rev(), "input_revision": flow.rev_in,
+            "target_block_ids": [block["block_id"]], "kind": "text", "instruction": "문구 정리"})
+        assert response.status_code == 202, response.text
+        pid = flow.job(response.json()["job_id"])["result_ref"]["proposal_id"]
+        path, body = base + f"/proposals/{pid}/apply", {"expected_revision": flow.rev()}
+        original_revision = flow.rev()
+    else:
+        validation, layout = flow.ready_pdf()
+        approval = flow.approve(validation["validation_id"], layout["layout_check_id"]).json()
+        path, body = base + "/exports", {"approval_id": approval["approval_id"], "format": "pdf"}
+        with connect(settings.db_path) as conn:
+            artifact = artifacts.get(conn, layout["artifact_id"])
+            artifact_count = conn.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0]
+        artifact_before = (settings.private_runs_dir / artifact["stored_path"]).read_bytes()
+    crash_key = "http-crash-replay"
+    server_code = '''
+import os,sys,uvicorn
+from pathlib import Path
+from app import create_app
+from app.config import Settings
+from app.services import idempotency,exports,export_render,ai_jobs
+def forbidden(*args,**kwargs):
+    raise AssertionError("Crash recovery must not render or generate another draft")
+export_render.render=forbidden
+ai_jobs.get_bridge=forbidden
+app=create_app(Settings(private_runs_dir=Path(sys.argv[1]),db_path=Path(sys.argv[2]),cleanup_sweep_interval_s=0))
+phase,key=sys.argv[4:6]
+real_remember=idempotency.remember
+def interrupted_remember(conn,request_key,*args,**kwargs):
+    result=real_remember(conn,request_key,*args,**kwargs)
+    if request_key==key and phase in ("before_commit","after_commit"):
+        if phase=="after_commit": conn.commit()
+        os._exit(71)
+    return result
+idempotency.remember=interrupted_remember
+real_publish=exports.publish
+def interrupted_publish(*args,**kwargs):
+    result=real_publish(*args,**kwargs)
+    if phase=="publishing": os._exit(71)
+    return result
+exports.publish=interrupted_publish
+uvicorn.run(app,host="127.0.0.1",port=int(sys.argv[3]),log_level="error")
+'''
+
+    @contextmanager
+    def server(fault):
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        proc = subprocess.Popen([sys.executable, "-X", "utf8", "-B", "-c", server_code,
+            str(settings.private_runs_dir), str(settings.db_path), str(port), fault, crash_key], cwd=ROOT,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        try:
+            cookie = "; ".join(f"{key}={value}" for key, value in flow.c.cookies.items())
+            with httpx.Client(base_url=f"http://127.0.0.1:{port}", headers={"Cookie": cookie}, timeout=10, trust_env=False) as client:
+                deadline = time.monotonic() + 25
+                while True:
+                    assert proc.poll() is None, "Isolated server stopped before startup"
+                    try:
+                        assert client.get("/").status_code == 200
+                        break
+                    except httpx.ConnectError:
+                        assert time.monotonic() < deadline, "Isolated HTTP startup timed out"
+                        time.sleep(0.05)
+                yield proc, client
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+            proc.wait(timeout=15)
+
+    with server(phase) as (proc, client):
+        try:
+            response = client.post(path, json=body, headers={"Idempotency-Key": crash_key})
+            assert operation == "export" and phase == "publishing" and response.status_code == 202
+        except (httpx.RemoteProtocolError, httpx.ReadError):
+            pass  # 응답 유실과 별개로 아래 실제 종료 코드/DB 상태를 검사한다.
+        assert proc.wait(timeout=15) == 71
+    with connect(settings.db_path) as conn:
+        saved = conn.execute("SELECT * FROM idempotency_keys WHERE idem_key=?", (crash_key,)).fetchone()
+        assert (saved is None) == (phase == "before_commit")
+        if operation == "apply":
+            assert flow.rev() == original_revision + int(phase == "after_commit")
+        else:
+            assert conn.execute("SELECT COUNT(*) FROM exports").fetchone()[0] == int(phase != "before_commit")
+    with server("none") as (_, client):
+        first = client.post(path, json=body, headers={"Idempotency-Key": crash_key})
+        assert first.status_code == (200 if operation == "apply" else 202), first.text
+        again = client.post(path, json=body, headers={"Idempotency-Key": crash_key})
+        assert again.status_code == first.status_code and again.json() == first.json()
+        if saved is not None:
+            assert first.json() == json.loads(saved["response_json"])
+        changed = {**body, "expected_revision": body["expected_revision"] + 1} if operation == "apply" else {**body, "format": "docx"}
+        assert client.post(path, json=changed, headers={"Idempotency-Key": crash_key}).status_code == 409
+        if operation == "apply":
+            doc = client.get(base + f"/documents/{flow.did}").json()["document"]
+            assert doc["document_revision"] == original_revision + 1
+            assert client.get(base + f"/proposals/{pid}").json()["status"] == "applied"
+            assert _count(settings, "SELECT COUNT(*) FROM document_revisions WHERE document_id=?", flow.did) == original_revision + 1
+        else:
+            deadline = time.monotonic() + 15
+            while True:
+                current = client.post(path, json=body).json()["export"]
+                if current["status"] != "queued" and current["status"] != "generating":
+                    break
+                assert time.monotonic() < deadline, "Export recovery timed out"
+                time.sleep(0.05)
+            assert current["status"] == "ready" and current["attempt"] == 1
+            assert current["export_id"] == first.json()["export"]["export_id"]
+            download = client.get(base + f"/exports/{current['export_id']}/download")
+            assert download.status_code == 200 and download.content == artifact_before
+            assert client.get(base + f"/exports/{current['export_id']}/download").content == artifact_before
+            assert _count(settings, "SELECT COUNT(*) FROM exports WHERE session_id=?", flow.sid) == 1
+            assert _count(settings, "SELECT COUNT(*) FROM jobs WHERE session_id=? AND kind='export'", flow.sid) == 1
+            assert _count(settings, "SELECT COUNT(*) FROM artifacts") == artifact_count
+        assert _count(settings, "SELECT COUNT(*) FROM jobs WHERE session_id=? AND kind='draft'", flow.sid) == 1
+    with connect(settings.db_path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == (ORM_SCHEMA_VERSION if db_mode == "orm_v11" else SCHEMA_VERSION)
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
 
 @needs_browser
 def test_retry_policy_and_restart_recovery(app, settings, monkeypatch):

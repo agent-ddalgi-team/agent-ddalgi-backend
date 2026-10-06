@@ -6,7 +6,7 @@
 - 출력 식별값(template_version·render_options_hash·asset_manifest_hash)은 app/services/layout_checks.py의 정의를 그대로 쓴다(계약 확인 ㉖).
   render()는 호출자 옵션을 받지 않는다 — 해시에 반영되지 않는 가변 옵션은 없다.
 - 검사 3종(overflow / broken_image / placeholder_remaining)은 PDF·DOCX 모두 required. 검사하지 못한 항목은 result=not_checked로 남기고
-  layout_ok=False다(빈 findings를 통과로 해석하지 않는다). DOCX는 배치 엔진이 없어 overflow가 not_checked이고 actual_pages=None이다.
+  layout_ok=False다(빈 findings를 통과로 해석하지 않는다). DOCX는 명시 설정한 LibreOffice 변환본을 검사하며 엔진이 없으면 not_checked다.
 - PDF는 시스템 Chromium 계열 브라우저(Chrome/Edge)를 1회 실행해 headless 인쇄(--print-to-pdf)와 DOM 측정(--dump-dom)을 함께 얻는다.
   브라우저 종류·버전은 해시 밖이며 RenderResult.renderer에 기록한다. 검사와 출력 사이에 렌더러가 바뀌었을 때의 정책은 BE-08 몫.
 - 문서 값은 Jinja2 autoescape로만 HTML에 들어가며 첨부·문서 안 문구를 HTML/스크립트로 실행하지 않는다. 외부 리소스는 없다.
@@ -31,6 +31,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, BinaryIO, Literal
@@ -54,6 +55,7 @@ REQUIRED_CHECKS: dict[str, frozenset[str]] = {"pdf": frozenset(CHECK_KEYS), "doc
 # 템플릿 v1 배치 상수(형식 공통). 바꾸면 TEMPLATE_VERSION을 올린다(가드 테스트가 아래 값도 해시에 넣는다).
 PAGE_W_MM, PAGE_H_MM = 210, 297
 IMAGE_MAX_H_MM = 120          # contain: 폭 180mm·높이 120mm 안에 비율 유지
+DOCX_IMAGE_MIN_PPI = 150      # 원본 픽셀 기준 확대 상한; 새 픽셀/세부를 만들어 내지 않는다.
 IMAGE_CROP_H_MM = 100         # crop(PDF): 180mm × 100mm 상자에 object-fit: cover. DOCX는 contain으로 대체(제한 기록)
 HEADING_PT = {1: 20, 2: 14, 3: 12}
 LABEL_PT, CAPTION_PT = 8, 9
@@ -61,12 +63,16 @@ IMAGE_MAX_PX = 1600           # 삽입용 이미지의 긴 변 상한(px). 넘�
 DOCX_BOX_SPACE_PT = 18
 DEMO_FOOTER_TEXT = "시연용 · 일부 내용은 임시 데이터입니다"
 DEMO_FOOTER_MM = 9
+DOCX_PARAGRAPH_SPACING = {"before_pt": 0, "after_pt": 1, "line_spacing": 1.0}
 DOCX_COLORS = {"text": "111111", "label": "8A8A8A", "caption": "555555", "box": "666666", "broken": "A93226"}
 DOCX_LAYOUT_CONSTANTS = {"page_mm": [PAGE_W_MM, PAGE_H_MM], "image_max_h_mm": IMAGE_MAX_H_MM, "image_max_px": IMAGE_MAX_PX,
-                         "heading_pt": HEADING_PT, "label_pt": LABEL_PT, "caption_pt": CAPTION_PT, "page_break": "per_logical_page",
+                         "image_min_ppi": DOCX_IMAGE_MIN_PPI,
+                         "paragraph_spacing": DOCX_PARAGRAPH_SPACING, "heading_pt": HEADING_PT, "label_pt": LABEL_PT, "caption_pt": CAPTION_PT, "page_break": "before_logical_page_label",
                          "box": "table_grid_1x1", "box_space_pt": DOCX_BOX_SPACE_PT, "colors": DOCX_COLORS, "crop": "contain_fallback",
                          "exif_orientation": "apply_before_embed", "image_decode": "full_pixels",
-                         "demo_footer": DEMO_FOOTER_TEXT, "demo_footer_mm": DEMO_FOOTER_MM}
+                         "demo_footer": DEMO_FOOTER_TEXT, "demo_footer_mm": DEMO_FOOTER_MM,
+                         "image_paragraph": "left_explicit_center_indent_zero_inline_distance",
+                         "layout_check": "libreoffice_pdf_per_page_text_images_printable_bounds_pypdf_exact_fallback_v2"}
 # 배치에 영향을 주는 브라우저 인자(창 크기·가상 시간). 바꾸면 TEMPLATE_VERSION을 올린다(지문 포함). 샌드박스·프로필 등 환경 인자는 제외.
 PDF_RENDER_CONSTANTS = {"window_size": "1000,1400", "virtual_time_budget_ms": 10000, "measure": "after_load_and_fonts_ready"}
 
@@ -246,7 +252,7 @@ def build_snapshot(conn: Connection, settings: Settings, session_id: str, docume
 @dataclass
 class Finding:
     kind: Literal["overflow", "broken_image", "placeholder_remaining"]
-    page_id: str
+    page_id: str | None
     block_id: str | None
     message: str
     details: dict[str, Any] = field(default_factory=dict)
@@ -278,6 +284,8 @@ class RenderResult:
     elapsed_ms: int
     details: dict[str, Any] = field(default_factory=dict)
     demo: bool = False
+    # 내부 전용 경로. API/DB에 노출하지 않으며 DOCX 자체의 변환본으로 미리보기를 만든다.
+    preview_path: Path | None = None
 
     @property
     def not_checked(self) -> list[str]:
@@ -298,7 +306,7 @@ def _record(check_key: str, fmt: str, findings: list[Finding], *, not_checked_re
         return LayoutCheckRecord(check_key, required, "not_checked", reason=not_checked_reason)
     mine = [f for f in findings if f.kind == check_key]
     return LayoutCheckRecord(check_key, required, "finding" if mine else "ok",
-                             block_ids=[f.block_id for f in mine if f.block_id], page_ids=sorted({f.page_id for f in mine}))
+                             block_ids=[f.block_id for f in mine if f.block_id], page_ids=sorted({f.page_id for f in mine if f.page_id}))
 
 
 def _layout_ok(checks: list[LayoutCheckRecord]) -> bool:
@@ -560,6 +568,10 @@ def rmtree_retry(path: Path, attempts: int = 5, delay_s: float = 0.2) -> bool:
     if is_link(path):
         logging.getLogger(__name__).warning("refusing to remove a link: %s", path.name)
         return False
+    # Office/브라우저 프로필은 Windows MAX_PATH보다 깊다. 링크 검사는 위에서 먼저 수행한다.
+    if sys.platform == "win32" and not str(path).startswith("\\\\?\\"):
+        absolute = str(path.absolute())
+        path = Path("\\\\?\\UNC\\" + absolute[2:] if absolute.startswith("\\\\") else "\\\\?\\" + absolute)
     for i in range(attempts):
         _detach_links(path)
         _last_rmtree_error.clear()
@@ -699,8 +711,9 @@ def _run(cmd: list[str], timeout: int, what: str) -> subprocess.CompletedProcess
     if sys.platform == "darwin" and what == "print-to-pdf":
         return _run_mac_pdf(cmd, timeout)
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                **({} if sys.platform == "win32" else {"start_new_session": True}))
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                **({"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32"
+                                   else {"start_new_session": True}))
     except OSError as exc:
         raise RenderError("render_failed", f"브라우저를 실행할 수 없습니다: {what}") from exc
     try:
@@ -915,7 +928,8 @@ def _render_docx(snapshot: RenderSnapshot, out_dir: Path) -> tuple[Path, int | N
     opts = layout_checks.DEFAULT_RENDER_OPTIONS
     family, margin = opts["font_family"], opts["margin_mm"]
     content_w = PAGE_W_MM - 2 * margin
-    final = out_dir / f"{snapshot.document_id}_rev{snapshot.document_revision}.docx"
+    # 반환한 파일은 후속 검사·발행이 읽는다. 동시/반복 렌더가 그 파일을 교체하지 않는다.
+    final = out_dir / f"{snapshot.document_id}_rev{snapshot.document_revision}_{secrets.token_hex(8)}.docx"
     findings = _snapshot_findings(snapshot)
 
     try:
@@ -949,6 +963,183 @@ def _render_docx(snapshot: RenderSnapshot, out_dir: Path) -> tuple[Path, int | N
     return final, None, findings, checks, "python-docx/" + _module_version("docx"), details
 
 
+def _docx_text(value: str) -> str:
+    """PDF 줄바꿈/자동 목록 기호만 무시한다. 원문 문자·수치·순서는 대조한다."""
+    return re.sub(r"[\s\u00ad\u200b]+", "", unicodedata.normalize("NFKC", value))
+
+
+def _docx_page_text(snapshot: RenderSnapshot, page: Page, index: int) -> list[str]:
+    expected = [f"{index} / {_clean_text(page.title)}"]
+    for block in _view_blocks(snapshot, page):
+        if block["type"] in {"heading", "paragraph"}:
+            expected.append(block["text"])
+        elif block["type"] == "list":
+            expected.extend(block["list_items"])
+        elif block["type"] == "image" and block["caption"]:
+            expected.append(block["caption"])
+    return expected
+
+
+def _docx_page_text_matches(expected: list[str], actual: str) -> bool:
+    """Compare all original characters/numbers in order; only layout whitespace is ignored."""
+    actual = _docx_text(actual)
+    cursor = 0
+    for text in expected:
+        target = _docx_text(text)
+        if not target:
+            continue
+        position = actual.find(target, cursor)
+        if position < 0:
+            return False
+        cursor = position + len(target)
+    return True
+
+
+def _measure_docx_pdf(snapshot: RenderSnapshot, pdf_path: Path) -> tuple[int, list[Finding], dict[str, Any]]:
+    """DOCX에서 변환한 실제 PDF를 보수적으로 검사한다. 측정 실패는 통과가 아니다.
+
+    생성 서식은 단일 열·inline 이미지다. 각 논리 쪽의 본문 순서/사진 수와 인쇄 영역을
+    대조하며 넘치는 본문을 자동 페이지 추가로 승인하지 않는다. 임의 Word 서식의 판정기가 아니다.
+    """
+    import pypdfium2 as pdfium
+    import pypdfium2.raw as pdfium_c
+
+    findings: list[Finding] = []
+    details: dict[str, Any] = {"measurement": "docx_converted_pdf", "logical_pages": len(snapshot.pages)}
+    pdf = pdfium.PdfDocument(str(pdf_path))
+    fallback_reader = None
+    fallback_pages: list[int] = []
+    try:
+        actual_pages = len(pdf)
+        if actual_pages <= 0:
+            raise ValueError("empty converted PDF")
+        if actual_pages != len(snapshot.pages):
+            findings.append(Finding("overflow", None, None,
+                "DOCX의 실제 쪽수가 문서 구성과 다릅니다. 본문과 사진 배치를 조정해 다시 검사해 주세요.",
+                {"logical_pages": len(snapshot.pages), "actual_pages": actual_pages}))
+        image_counts = []
+        for number in range(actual_pages):
+            page = pdf[number]
+            textpage = page.get_textpage()
+            try:
+                logical = snapshot.pages[number] if number < len(snapshot.pages) else None
+                pid = logical.page_id if logical else None
+                width, height = page.get_size()
+                margin = layout_checks.DEFAULT_RENDER_OPTIONS["margin_mm"] * 72 / 25.4
+                bottom = (8 if snapshot.demo else layout_checks.DEFAULT_RENDER_OPTIONS["margin_mm"]) * 72 / 25.4
+                tolerance = 2.0
+                if abs(width - PAGE_W_MM * 72 / 25.4) > tolerance or abs(height - PAGE_H_MM * 72 / 25.4) > tolerance:
+                    findings.append(Finding("overflow", pid, None, "DOCX 변환본의 용지가 A4가 아닙니다."))
+                if logical:
+                    expected = _docx_page_text(snapshot, logical, number + 1)
+                    text_matches = _docx_page_text_matches(expected, textpage.get_text_bounded())
+                    if not text_matches:
+                        # PDFium may decode a line-end hyphen as U+0002. Never discard or
+                        # replace characters: an independent extraction must match the
+                        # entire original page in order, including hyphens and numbers.
+                        try:
+                            from pypdf import PdfReader
+                            if fallback_reader is None:
+                                fallback_reader = PdfReader(str(pdf_path))
+                            alternative = fallback_reader.pages[number].extract_text() or ""
+                            text_matches = _docx_page_text_matches(expected, alternative)
+                            if text_matches:
+                                fallback_pages.append(number + 1)
+                        except Exception:
+                            text_matches = False
+                    if not text_matches:
+                        findings.append(Finding("overflow", pid, None,
+                            "DOCX 변환본에서 해당 쪽의 본문 일부 또는 순서를 확인하지 못했습니다.",
+                            {"physical_page": number + 1}))
+                outside = False
+                for i in range(textpage.count_chars()):
+                    codepoint = pdfium_c.FPDFText_GetUnicode(textpage, i)
+                    if not codepoint or chr(codepoint).isspace():
+                        continue
+                    left, low, right, top = textpage.get_charbox(i)
+                    if (right > left and top > low and
+                            (left < margin - tolerance or right > width - margin + tolerance
+                             or low < bottom - tolerance or top > height - margin + tolerance)):
+                        outside = True
+                        break
+                images = list(page.get_objects(filter=[pdfium_c.FPDF_PAGEOBJ_IMAGE]))
+                image_counts.append(len(images))
+                for image in images:
+                    left, low, right, top = image.get_bounds()
+                    if left < margin - tolerance or right > width - margin + tolerance or low < bottom - tolerance or top > height - margin + tolerance:
+                        outside = True
+                if outside:
+                    findings.append(Finding("overflow", pid, None, "DOCX의 글자 또는 사진이 인쇄 영역을 벗어났습니다.",
+                                            {"physical_page": number + 1}))
+                if logical:
+                    expected_images = [b for b in _view_blocks(snapshot, logical) if b["type"] == "image"]
+                    if len(images) != len(expected_images):
+                        findings.append(Finding("broken_image", pid, None, "DOCX 변환본에서 해당 쪽의 사진을 모두 확인하지 못했습니다.",
+                            {"expected_images": len(expected_images), "actual_images": len(images)}))
+            finally:
+                textpage.close()
+                page.close()
+        details["images_per_page"] = image_counts
+        details["text_extraction_fallback_pages"] = fallback_pages
+        return actual_pages, findings, details
+    finally:
+        pdf.close()
+
+
+def _check_docx_layout(snapshot: RenderSnapshot, docx_path: Path, out_dir: Path, settings: Settings,
+                       timeout: int) -> tuple[int | None, list[Finding], str | None, Path | None, dict[str, Any], str | None]:
+    """명시 설정한 LibreOffice로 검사 대상 DOCX 자체를 변환한다."""
+    configured = settings.export_libreoffice_path
+    if not configured:
+        return None, [], None, None, {}, "docx_no_layout_engine"
+    engine = Path(configured)
+    if not engine.is_absolute() or not engine.is_file():
+        return None, [], None, None, {}, "docx_layout_engine_unavailable"
+    # 같은 문서의 동시 검사에서도 입력/출력/프로필을 공유하지 않는다.
+    work = out_dir / f"docx_check_{secrets.token_hex(8)}"
+    work.mkdir()
+    profile = work / "profile"
+    source = work / "document.docx"
+    pdf = work / "document.pdf"
+    deadline = time.monotonic() + timeout
+    try:
+        shutil.copyfile(docx_path, source)
+        profile.mkdir()
+        engine_work = work
+        if sys.platform == "win32":
+            # LibreOffice 프로필 초기화도 긴 경로 제한을 받는다. 같은 폴더의 Windows 짧은 이름 사용.
+            import ctypes
+            buffer = ctypes.create_unicode_buffer(32768)
+            if ctypes.windll.kernel32.GetShortPathNameW(str(work.resolve()), buffer, len(buffer)):
+                engine_work = Path(buffer.value)
+        flags = [f"-env:UserInstallation={(engine_work / 'profile').as_uri()}", "--headless", "--nologo", "--nodefault",
+                 "--nofirststartwizard", "--norestore"]
+        version = _run([str(engine), *flags, "--version"], min(timeout, 10), "libreoffice-version")
+        match = re.search(rb"LibreOffice\s+([0-9]+(?:\.[0-9]+){1,3})", version.stdout)
+        if version.returncode != 0 or match is None:
+            raise RenderError("render_failed", "LibreOffice 버전을 확인하지 못했습니다.")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RenderError("render_timeout", "DOCX 변환 시간 제한을 초과했습니다.")
+        converted = _run([str(engine), *flags, "--convert-to", "pdf:writer_pdf_Export", "--outdir", str(engine_work), str(engine_work / source.name)],
+                         remaining, "libreoffice-docx-to-pdf")
+        if converted.returncode != 0 or not pdf.is_file() or pdf.stat().st_size == 0:
+            raise RenderError("render_failed", "DOCX를 실제 PDF로 변환하지 못했습니다.")
+        try:
+            pages, findings, details = _measure_docx_pdf(snapshot, pdf)
+        except Exception as exc:
+            # 원문/실행 환경의 출력은 오류에 포함하지 않는다.
+            raise RenderError("render_failed", "DOCX 변환본의 배치를 측정하지 못했습니다.", {"stage": "docx_measure"}) from exc
+        if time.monotonic() >= deadline:
+            raise RenderError("render_timeout", "DOCX 배치 검사 시간 제한을 초과했습니다.")
+        # 입력 사본/프로필은 정리하고 검사한 변환본만 Job 임시 폴더에 둔다.
+        preview = out_dir / f".{docx_path.stem}.{secrets.token_hex(8)}.preview.pdf"
+        os.replace(pdf, preview)
+        return pages, findings, "libreoffice/" + match[1].decode("ascii"), preview, details, None
+    finally:
+        rmtree_retry(work)
+
+
 def _build_docx(snapshot: RenderSnapshot, family: str, base_pt: float, content_w: float):
     import docx
     from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -977,9 +1168,10 @@ def _build_docx(snapshot: RenderSnapshot, family: str, base_pt: float, content_w
     doc.core_properties.comments = ""
 
     for index, page in enumerate(snapshot.pages, start=1):
-        if index > 1:
-            doc.add_page_break()
         label = doc.add_paragraph()
+        # 빈 쪽 나눔 문단은 앞쪽이 꽉 차면 다음 쪽으로 밀린 뒤 다시 넘겨 빈 쪽을 만든다.
+        # 새 논리 쪽의 기존 라벨에 나눔을 붙여 추가 줄 높이 없이 시작한다.
+        label.paragraph_format.page_break_before = index > 1
         label.alignment = WD_ALIGN_PARAGRAPH.RIGHT
         run = label.add_run(f"{index} / {_clean_text(page.title)}")
         run.font.size = Pt(LABEL_PT)
@@ -993,9 +1185,18 @@ def _build_docx(snapshot: RenderSnapshot, family: str, base_pt: float, content_w
                 for item in b["list_items"]:
                     doc.add_paragraph(item, style="List Bullet")
             elif b["type"] == "image":
-                w_mm, h_mm = _fit_mm(b["width"], b["height"], content_w, IMAGE_MAX_H_MM)
-                doc.add_picture(io.BytesIO(b["embed"]), width=Mm(w_mm), height=Mm(h_mm))
-                doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+                w_mm, h_mm = _fit_mm(b["width"], b["height"],
+                                    min(content_w, b["width"] * 25.4 / DOCX_IMAGE_MIN_PPI),
+                                    min(IMAGE_MAX_H_MM, b["height"] * 25.4 / DOCX_IMAGE_MIN_PPI))
+                picture = doc.add_picture(io.BytesIO(b["embed"]), width=Mm(w_mm), height=Mm(h_mm))
+                for distance in ("distT", "distB", "distL", "distR"):
+                    picture._inline.set(distance, "0")
+                image_paragraph = doc.paragraphs[-1]
+                image_paragraph.style = doc.styles["Normal"]
+                image_paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                image_paragraph.paragraph_format.left_indent = Mm((content_w - w_mm) / 2)
+                image_paragraph.paragraph_format.right_indent = Pt(0)
+                image_paragraph.paragraph_format.first_line_indent = Pt(0)
                 if b["caption"]:
                     cap = doc.add_paragraph(b["caption"], style="Caption")
                     cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -1003,6 +1204,11 @@ def _build_docx(snapshot: RenderSnapshot, family: str, base_pt: float, content_w
                 _docx_box(doc, "[이미지를 열 수 없음]", f"{b['asset_id']} ({b['reason']})" + (f"\n{b['caption']}" if b["caption"] else ""), True)
             elif b["type"] == "image_placeholder":
                 _docx_box(doc, "[사진 자리]", b["description"], False)
+    # Fix Word template defaults explicitly; preserve fonts, text and picture sizes.
+    for paragraph in doc.paragraphs:
+        paragraph.paragraph_format.space_before = Pt(DOCX_PARAGRAPH_SPACING["before_pt"])
+        paragraph.paragraph_format.space_after = Pt(DOCX_PARAGRAPH_SPACING["after_pt"])
+        paragraph.paragraph_format.line_spacing = DOCX_PARAGRAPH_SPACING["line_spacing"]
     return doc
 
 
@@ -1047,6 +1253,13 @@ def _split_draft_page(page: Page, first_block_id: str | None) -> list[Page] | No
         return None
     index = next((i for i, group in enumerate(groups) if any(b.block_id == first_block_id for b in group)),
                  len(groups) - 1)
+    # Keep the preceding explanation with trailing photos instead of making
+    # a continuation containing only images. Leave at least one group before it.
+    if index > 1 and all(b.type == "image" for group in groups[index:] for b in group):
+        while index > 1 and all(b.type == "image" for b in groups[index - 1]):
+            index -= 1
+        if index > 1:
+            index -= 1
     if index > 0:
         left = [b for group in groups[:index] for b in group]
         right = [b for group in groups[index:] for b in group]
@@ -1159,15 +1372,24 @@ def render(snapshot: RenderSnapshot, fmt: str, out_dir: Path, settings: Settings
         raise RenderError("save_failed", f"저장 폴더를 만들 수 없습니다: {out_dir}") from exc
     timeout = settings.export_render_timeout_s if settings is not None else 90
     started = time.perf_counter()
+    preview = None
     if fmt == "pdf":
         path, pages, findings, checks, renderer, details = _render_pdf(snapshot, out_dir, settings, timeout)
     else:
         path, pages, findings, checks, renderer, details = _render_docx(snapshot, out_dir)
+        if settings is not None:
+            pages, measured, engine, preview, measured_details, reason = _check_docx_layout(snapshot, path, out_dir, settings, timeout)
+            findings.extend(measured)
+            details.update(measured_details)
+            checks = [_record("overflow", "docx", findings, not_checked_reason=reason),
+                      _record("broken_image", "docx", findings), _record("placeholder_remaining", "docx", findings)]
+            if engine:
+                renderer += ";" + engine
     return RenderResult(
         format=fmt, file_path=path, actual_pages=pages, checks=checks, findings=findings, layout_ok=_layout_ok(checks),
         template_version=layout_checks.TEMPLATE_VERSION, render_options_hash=layout_checks.RENDER_OPTIONS_HASH,
         asset_manifest_hash=snapshot.asset_manifest_hash, renderer=renderer,
-        elapsed_ms=int((time.perf_counter() - started) * 1000), details=details, demo=snapshot.demo,
+        elapsed_ms=int((time.perf_counter() - started) * 1000), details=details, demo=snapshot.demo, preview_path=preview,
     )
 
 

@@ -36,6 +36,8 @@ def create_layout_check(request: Request, sid: str, did: str, body: LayoutCheckC
         active = jobs.find_active_by_key(conn, sid, "layout_check", key)
         if active is not None:
             out = JobAccepted(job_id=active.job_id, status=active.status, kind="layout_check", session_id=sid, created_at=active.created_at)
+            idempotency.remember(conn, idempotency_key, owner, request.url.path, digest, 202,
+                                 out.model_dump(), session_id=sid)
             return JSONResponse(status_code=202, content=out.model_dump())
         job = jobs.create(conn, sid, "layout_check", "배치 검사 대기 중", input_revision=row["input_revision"], target_key=key)
         sessions.touch(conn, settings, row)

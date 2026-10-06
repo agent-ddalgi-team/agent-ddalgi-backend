@@ -1,5 +1,5 @@
 {
-  "_note": "2026-09-30 계약 1.8: editorial_v2 근거 연결 소제목·template_v5 배치. 기존 v1 기록 호환 유지. 이번 실제 호출은 크레딧 소진으로 추출에서 중단; 아래는 합성 준비 응답이며 실제 LLM 결과가 아니다. 2026-09-30 계약 1.7: 근거 선별 감사 기록·디자인 토큰·set_page_design 추가. 아래 editorial 예시는 합성 자료와 준비된 응답이며 실제 LLM 결과가 아니다. 프론트 사본 미갱신. 2026-09-30 계약 1.6: C-05 자료 변경 복귀 API 3개와 다른 입력 복원 차단을 추가. DB v11, 임시 DB TestClient 검증에 맞춘 가짜 설명용 예시. 프론트 사본/타입/화면은 미갱신. 당시 계약은 1.6이며 아래 1.5 이하는 당시 기록이다. 2026-09-29 계약 1.5: D-07 경고 확인은 input_revision/validation_id 필수, 승인 전에 개별 유효 확인 필요. 프론트 사본 미갱신. 아래 과거 실행 기록은 당시 동작이며 현재 승인 정책은 새 예시를 따른다. 2026-09-28 계약 1.4: S01 업로드 재전송·동시 저장·실패 정리 및 진행 중 점검/초안 Job 재사용 보완. 추가 예시는 임시 DB TestClient 검증에 맞춘 설명용 가짜 값이다. 당시 계약은 1.5, 데이터 schema_version은 1.0이다. 2026-09-28 계약 1.3: Pydantic 요청·응답 정리. 아래 추가 오류 사례는 가짜 값으로 작성한 설명용 예시이며 대응 동작은 임시 DB TestClient로 검증한다. 전체 예시의 실서버 재실행 결과가 아니다. 기존 파일 경로는 유지한다. 2026-09-28 재점검 충돌·승인 재전송 예시는 가짜 자료·가짜 배치 산출물을 이용한 TestClient 검증에 맞춘 설명용 예시이며 실제 웹서버/PDF 실행 결과가 아니다. 이하 기록은 과거 예시의 작성 조건이다. 프론트 전달용 계약 예시. contracts.md v1.1(contract_version 1.1, schema_version 1.0) 기준으로 백엔드 BE-01에서 손으로 작성했다. 실제 서버 응답이 아니며 모든 값은 가짜 데이터다. 실제 구현(BE-02 이후)에서 응답이 달라지면 이 파일을 먼저 갱신하고 프론트에 알린다. BE-08(2026-09-27) 예시는 실서버 응답(가상 자료) 기반. contracts.md 원본은 미수정, 계약 확인 ㉜~㊳ 참조. BE-09(2026-09-27): 세션 종료(DELETE)·종료/만료 세션 410·멱등 재전송 410 예시는 실서버 응답(가상 자료) 기반, 계약 확인 ㊵~㊸ 참조. DB v9(2026-09-27): 기존 예시는 demo/role/origin_kind/template_version 필드를 현재 모델에 맞춘 형식 참고이며 전체 재실행한 실응답이 아니다. DB v9 접두 예시는 별도 uvicorn·localhost TCP에서 가짜 자료로 받은 최신 실응답이다. 시연 자료 적재·조건 첨부 근거 제외·검증 warning 이후 PDF 배치 통과, 4쪽 미리보기, 승인 201, Export 202, 같은 키 재전송 202, ready 재사용 200, 다운로드 200을 확인했다. 모든 물리 쪽에 시연 footer가 있고 승인 artifact와 다운로드 바이트 SHA-256, 미리보기와 다운로드 PDF 페이지 렌더 SHA-256이 일치한다. 모드 OFF 접근 403·소유자 DELETE 200·종료 후 410도 실응답으로 기록했다. 이전 제한 실행 환경에서의 render_failed 관측은 task 기록에 구분하며 최신 성공 예시를 대체하지 않는다. 계약 제안 ㊹~㊿는 task_backend.md 6.17-6 참조. contracts.md 원본은 미수정.",
+  "_note": "2026-10-06 현재 인계 기준: 계약 1.9·DB v11·template_v7. 명시 설정한 LibreOffice로 실제 DOCX 검사·승인·원본 다운로드를 지원하며 엔진 없는 서버는 계속 차단. 프론트 DOCX 연결 후속. C-05 및 editorial_v1/v2 공개 모델 유지, 프론트 사본·타입·화면은 미반영. 아래 날짜별 설명과 템플릿 번호는 예시 작성 당시 기록이다. 2026-09-30 계약 1.8: editorial_v2 근거 연결 소제목·template_v5 배치. 기존 v1 기록 호환 유지. 이번 실제 호출은 크레딧 소진으로 추출에서 중단; 아래는 합성 준비 응답이며 실제 LLM 결과가 아니다. 2026-09-30 계약 1.7: 근거 선별 감사 기록·디자인 토큰·set_page_design 추가. 아래 editorial 예시는 합성 자료와 준비된 응답이며 실제 LLM 결과가 아니다. 프론트 사본 미갱신. 2026-09-30 계약 1.6: C-05 자료 변경 복귀 API 3개와 다른 입력 복원 차단을 추가. DB v11, 임시 DB TestClient 검증에 맞춘 가짜 설명용 예시. 프론트 사본/타입/화면은 미갱신. 당시 계약은 1.6이며 아래 1.5 이하는 당시 기록이다. 2026-09-29 계약 1.5: D-07 경고 확인은 input_revision/validation_id 필수, 승인 전에 개별 유효 확인 필요. 프론트 사본 미갱신. 아래 과거 실행 기록은 당시 동작이며 현재 승인 정책은 새 예시를 따른다. 2026-09-28 계약 1.4: S01 업로드 재전송·동시 저장·실패 정리 및 진행 중 점검/초안 Job 재사용 보완. 추가 예시는 임시 DB TestClient 검증에 맞춘 설명용 가짜 값이다. 당시 계약은 1.5, 데이터 schema_version은 1.0이다. 2026-09-28 계약 1.3: Pydantic 요청·응답 정리. 아래 추가 오류 사례는 가짜 값으로 작성한 설명용 예시이며 대응 동작은 임시 DB TestClient로 검증한다. 전체 예시의 실서버 재실행 결과가 아니다. 기존 파일 경로는 유지한다. 2026-09-28 재점검 충돌·승인 재전송 예시는 가짜 자료·가짜 배치 산출물을 이용한 TestClient 검증에 맞춘 설명용 예시이며 실제 웹서버/PDF 실행 결과가 아니다. 이하 기록은 과거 예시의 작성 조건이다. 프론트 전달용 계약 예시. contracts.md v1.1(contract_version 1.1, schema_version 1.0) 기준으로 백엔드 BE-01에서 손으로 작성했다. 실제 서버 응답이 아니며 모든 값은 가짜 데이터다. 실제 구현(BE-02 이후)에서 응답이 달라지면 이 파일을 먼저 갱신하고 프론트에 알린다. BE-08(2026-09-27) 예시는 실서버 응답(가상 자료) 기반. contracts.md 원본은 미수정, 계약 확인 ㉜~㊳ 참조. BE-09(2026-09-27): 세션 종료(DELETE)·종료/만료 세션 410·멱등 재전송 410 예시는 실서버 응답(가상 자료) 기반, 계약 확인 ㊵~㊸ 참조. DB v9(2026-09-27): 기존 예시는 demo/role/origin_kind/template_version 필드를 현재 모델에 맞춘 형식 참고이며 전체 재실행한 실응답이 아니다. DB v9 접두 예시는 별도 uvicorn·localhost TCP에서 가짜 자료로 받은 최신 실응답이다. 시연 자료 적재·조건 첨부 근거 제외·검증 warning 이후 PDF 배치 통과, 4쪽 미리보기, 승인 201, Export 202, 같은 키 재전송 202, ready 재사용 200, 다운로드 200을 확인했다. 모든 물리 쪽에 시연 footer가 있고 승인 artifact와 다운로드 바이트 SHA-256, 미리보기와 다운로드 PDF 페이지 렌더 SHA-256이 일치한다. 모드 OFF 접근 403·소유자 DELETE 200·종료 후 410도 실응답으로 기록했다. 이전 제한 실행 환경에서의 render_failed 관측은 task 기록에 구분하며 최신 성공 예시를 대체하지 않는다. 계약 제안 ㊹~㊿는 task_backend.md 6.17-6 참조. contracts.md 원본은 미수정.",
   "brochure_layout_proposal_20260929": {
     "status": "기존 layout_key의 표시 의미 제안. contracts.md 원본 미수정",
     "layout_keys": [
@@ -16,7 +16,97 @@
     "approval": "이전 템플릿의 검사·승인은 재검사·재승인 필요. 승인 artifact 자동 교체 없음",
     "limits": "캔버스는 실제 PDF 페이지 검사 증거가 아니며 DOCX 승인 제한 유지. 아래 과거 예시는 당시 템플릿 실행 기록"
   },
-  "contract_version": "1.8",
+  "contract_version": "1.9",
+  "docx_layout_approval_20261006": {
+    "_note": "계약 1.9 설명용 합성 예시. 실제 LLM 결과가 아니다. 최신 내용 검증·사진 공개 허가·명시 승인·버전/해시 조건도 충족해야 한다.",
+    "layout_check_request": {
+      "expected_revision": 1,
+      "input_revision": 2,
+      "format": "docx"
+    },
+    "checked_layout_fields": {
+      "format": "docx",
+      "status": "passed",
+      "layout_ok": true,
+      "actual_pages": 4,
+      "template_version": "template_v7",
+      "renderer": "python-docx/1.2.0;libreoffice/26.8.0.3",
+      "preview_basis": "pdf",
+      "checks": [
+        {
+          "check_key": "overflow",
+          "required": true,
+          "result": "ok",
+          "block_ids": [],
+          "page_ids": [],
+          "reason": null
+        },
+        {
+          "check_key": "broken_image",
+          "required": true,
+          "result": "ok",
+          "block_ids": [],
+          "page_ids": [],
+          "reason": null
+        },
+        {
+          "check_key": "placeholder_remaining",
+          "required": true,
+          "result": "ok",
+          "block_ids": [],
+          "page_ids": [],
+          "reason": null
+        }
+      ],
+      "warnings": [
+        "DOCX 미리보기와 배치 검사는 해당 DOCX를 LibreOffice로 변환한 PDF 기준입니다. Word 등 다른 열람 프로그램·글꼴에서는 쪽 나눔이 달라질 수 있습니다."
+      ]
+    },
+    "approval_format": "docx",
+    "export_request": {
+      "approval_id": "apr_example",
+      "format": "docx"
+    },
+    "download": {
+      "status": 200,
+      "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "body": "검사·승인된 동일 DOCX 바이트"
+    },
+    "engine_not_configured": {
+      "status": "failed",
+      "actual_pages": null,
+      "layout_ok": false,
+      "overflow": "not_checked",
+      "approval": "blocked"
+    }
+  },
+  "preflight_blocker_bridge_20261006": {
+    "_note": "계약1.9 유지·문서v1.26. 설명용 가상 예시, 실제 LLM 결과 아님. 초기 저장/재점검/재검증에 모두 적용.",
+    "preflight_issue": {
+      "issue_id": "iss_example",
+      "scope": "content",
+      "code": "UNSUPPORTED_CLAIM",
+      "severity": "blocker",
+      "status": "open",
+      "message": "야간 운영 여부는 자료 보완 후 확인해야 합니다.",
+      "source_ids": [
+        "source_selected"
+      ],
+      "fact_ids": [
+        "fact_night_unconfirmed"
+      ],
+      "block_ids": [],
+      "resolution": null
+    },
+    "fact_status": "needs_confirmation",
+    "body_references_fact": false,
+    "document_status": "review_required",
+    "document_issue_origin": "preflight",
+    "validation_status": "failed",
+    "approval": "blocked",
+    "resolution": "자료 보완·최신 점검 후 문서 재검증. 안내 삭제/확인/제외 버튼으로 해결하지 않음",
+    "warning_policy": "warning 수준 needs_confirmation을 자동 blocker로 승격하지 않음"
+  },
   "schema_version": "1.0",
   "base_path": "/api/v1",
   "written_at": "2026-09-25",
@@ -3656,6 +3746,7 @@
     "issues": "저장된 내부 field_key는 한국어로 표시한다. code/severity/status와 승인 조건은 유지한다.",
     "photo_review": "선택·허가된 사진의 등록 설명과 origin_kind를 내부 Agent images에 전달한다. 인증·성능 근거가 아니며 실제 이미지 검사는 유지한다.",
     "local_start": "scripts/run_llm.ps1 -Demo -ContentReview -TextProposals -RequestTimeoutSeconds 120 -MaxInputChars 40000 -MaxReviewInputChars 80000 -MaxOutputTokens 24000",
+    "local_start_note": "위 명령은 2026-09-30 당시 제한 실행 기록입니다. 현재 시연 실행은 README.md의 현재 PC의 시연 실행·인계를 따릅니다(runtime, 검증 기본 400000자).",
     "contracts_original": "변경 없음"
   },
   "editorial_design_patch_example": {
@@ -3686,5 +3777,69 @@
     "target_company": null,
     "required_fields": [],
     "brand_color": "#246A73"
+  },
+  "frontend_company_coverage_v1_9": {
+    "_note": "2026-10-06 설명용 합성 예시. 공개 자료 실제 수집은 미구현, 키/수집기 미설정 상태만 연결.",
+    "company_patch": {
+      "method": "PATCH",
+      "path": "/api/v1/sessions/{sid}/inputs",
+      "body": {
+        "expected_input_revision": 2,
+        "brief": {
+          "purpose": "회사소개",
+          "emphasis": [],
+          "direction": "balanced",
+          "target_pages": 4,
+          "photo_preference": "balanced",
+          "target_company": "예시 회사"
+        },
+        "selected_source_ids": []
+      }
+    },
+    "public_status": {
+      "status": "not_configured",
+      "providers": [
+        "dart",
+        "kipris",
+        "g2b"
+      ],
+      "message": "외부 API 키와 수집 연결을 아직 설정하지 않았습니다."
+    },
+    "public_import": {
+      "method": "POST",
+      "path": "/api/v1/sessions/{sid}/public-data/import",
+      "body": {
+        "expected_input_revision": 3
+      },
+      "response_status": 503,
+      "error_code": "PUBLIC_DATA_NOT_CONFIGURED",
+      "retryable": false
+    },
+    "sufficiency": {
+      "score": 25,
+      "categories": [
+        {
+          "key": "overview",
+          "label": "기업 개요·연혁",
+          "status": "supported"
+        },
+        {
+          "key": "process",
+          "label": "제조 공정·설비",
+          "status": "missing"
+        },
+        {
+          "key": "performance",
+          "label": "고객사·납품 실적",
+          "status": "missing"
+        },
+        {
+          "key": "certification",
+          "label": "품질·공인 인증",
+          "status": "missing"
+        }
+      ],
+      "has_blockers": false
+    }
   }
 }

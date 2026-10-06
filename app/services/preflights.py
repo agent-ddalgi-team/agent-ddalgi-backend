@@ -7,7 +7,7 @@ import uuid
 from app.db import Connection
 from app.agent_bridge import SegmentIn, SourceIn
 from app.errors import ApiError
-from app.models import Fact, Issue, PreflightOut, Recommendations
+from app.models import DataSufficiency, Fact, Issue, PreflightOut, Recommendations, SufficiencyCategory
 from app.services import db_history
 from app.services.sources import evidence_scope
 from app.timeutil import now, to_iso
@@ -98,16 +98,47 @@ def save(conn: Connection, session_id: str, input_revision: int, usable_source_i
     return preflight_id
 
 
+def assess_sufficiency(facts: list[Fact], issues: list[Issue]) -> DataSufficiency:
+    """Four UI categories measure evidence coverage, never approval or factual truth."""
+    groups = [
+        ("overview", "기업 개요·연혁", {"company_name", "company_summary", "business_areas", "history"}),
+        ("process", "제조 공정·설비", {"processes", "technology", "capabilities"}),
+        ("performance", "고객사·납품 실적", {"customers_markets"}),
+        ("certification", "품질·공인 인증", {"certifications"}),
+    ]
+    blockers = [issue for issue in issues if issue.status == "open" and issue.severity == "blocker"]
+    blocked_facts = {fid for issue in blockers for fid in issue.fact_ids}
+    blocked_sources = {sid for issue in blockers if issue.scope == "source" for sid in issue.source_ids}
+    categories = []
+    for key, label, fields in groups:
+        relevant = [fact for fact in facts if fact.field_key in fields]
+        if any(fact.status == "conflict" for fact in relevant):
+            status = "conflict"
+        elif any(fact.status == "needs_confirmation" or fact.fact_id in blocked_facts
+                 or any(ref.source_id in blocked_sources for ref in fact.evidence_refs) for fact in relevant):
+            status = "needs_confirmation"
+        elif any(fact.status == "supported" and fact.value and fact.value.strip()
+                 and fact.evidence_refs for fact in relevant):
+            status = "supported"
+        else:
+            status = "missing"
+        categories.append(SufficiencyCategory(key=key, label=label, status=status))
+    return DataSufficiency(score=25 * sum(c.status == "supported" for c in categories),
+                           categories=categories, has_blockers=bool(blockers))
+
+
 def get(conn: Connection, session_id: str, preflight_id: str) -> PreflightOut:
     row = conn.execute("SELECT * FROM preflights WHERE preflight_id=? AND session_id=?",
                        (preflight_id, session_id)).fetchone()
     if row is None:
         raise ApiError(404, "RESOURCE_NOT_FOUND", "요청한 자원을 찾을 수 없습니다.")
+    facts = [Fact.model_validate(f) for f in json.loads(row["facts_json"])]
+    issues = [Issue.model_validate(i) for i in json.loads(row["issues_json"])]
     return PreflightOut(
         preflight_id=row["preflight_id"], session_id=row["session_id"], input_revision=row["input_revision"],
         usable_source_ids=json.loads(row["usable_source_ids"]),
-        facts=[Fact.model_validate(f) for f in json.loads(row["facts_json"])],
-        issues=[Issue.model_validate(i) for i in json.loads(row["issues_json"])],
+        facts=facts, sufficiency=assess_sufficiency(facts, issues),
+        issues=issues,
         recommendations=Recommendations.model_validate_json(row["recommendations_json"]),
         can_generate=bool(row["can_generate"]), confirmed_at=row["confirmed_at"],
     )

@@ -270,16 +270,22 @@ def test_conflicting_fact_remains_blocker_without_open_blocker_issue(app, settin
         result = await original(self, request)
         if issue_state == "missing":
             result.issues = []
-        else:
+        elif issue_state == "warning":
             for issue in result.issues:
-                if issue_state == "warning":
-                    issue.severity = "warning"
-                else:
-                    issue.status = issue_state
+                issue.severity = "warning"
         return result
 
     monkeypatch.setattr(MockAgent, "analyze", analyze)
     ctx = Ctx(app, txt=CONFLICT_TXT, with_photo=False)
+    if issue_state in {"resolved", "excluded", "acknowledged"}:
+        # 새 Agent 응답의 임의 해결은 거부한다. 과거 저장 점검의 닫힌 Issue에도
+        # conflict Fact가 살아 있으면 blocker로 복구되는 기존 보호는 유지한다.
+        with connect(settings.db_path) as conn:
+            row = conn.execute("SELECT issues_json FROM preflights WHERE preflight_id=?", (ctx.pf,)).fetchone()
+            issues = json.loads(row[0])
+            for issue in issues:
+                issue["status"] = issue_state
+            conn.execute("UPDATE preflights SET issues_json=? WHERE preflight_id=?", (json.dumps(issues), ctx.pf))
     assert ctx.make_clean_and_validate(settings)["status"] == "failed"
     conflicts = ctx.open_issues("VALUE_CONFLICT")
     assert len(conflicts) == 1 and conflicts[0]["origin"] == "preflight"
@@ -435,6 +441,95 @@ def test_section_label_with_added_claim_stays_blocked_after_revalidation(app, cl
     ctx.validated()
     assert _first(ctx.issues(), issue_id=issue["issue_id"])["status"] == "resolved"
     assert _first(ctx.issues(), issue_id=warning["issue_id"])["status"] == "open"
+
+
+def test_preflight_confirmation_warning_is_not_promoted_and_source_blocker_is_preserved():
+    from types import SimpleNamespace
+    from app.models import Fact, Issue
+    fact = Fact(fact_id="f", field_key="lead_time", value="확인 필요", status="needs_confirmation")
+    warning = Issue(issue_id="warning", scope="content", code="LEAD_TIME_UNQUANTIFIED", severity="warning",
+                    message="납기 확인 필요", fact_ids=["f"])
+    ctx = SimpleNamespace(facts={"f": fact}, preflight_issues=[warning])
+    assert validation.preflight_conflicts(ctx) == []
+    ctx.preflight_issues.append(Issue(issue_id="source_blocker", scope="source", code="SOURCE_REVIEW_REQUIRED",
+                                     severity="blocker", message="자료 확인 필요", source_ids=["s"]))
+    problems = validation.preflight_conflicts(ctx)
+    assert len(problems) == 1 and problems[0].scope == "source" and problems[0].source_ids == ["s"]
+
+
+def _add_unconfirmed_preflight_blocker(monkeypatch):
+    from app.models import Fact, Issue
+    original = MockAgent.analyze
+
+    async def analyze(self, request):
+        result = await original(self, request)
+        source = next(source for source in request.sources if source.segments)
+        evidence = next(fact.evidence_refs for fact in result.facts if fact.evidence_refs)
+        result.facts.append(Fact(fact_id="fact_night_unconfirmed", field_key="night_operation",
+                                 value="야간 운영 확인 필요", status="needs_confirmation", evidence_refs=evidence))
+        result.issues.append(Issue(issue_id="preflight_night_blocker", scope="content", code="UNSUPPORTED_CLAIM",
+                                  severity="blocker", message="야간 운영 여부는 자료 보완 후 확인해야 합니다.",
+                                  fact_ids=["fact_night_unconfirmed"], source_ids=[source.source_id]))
+        return result
+
+    monkeypatch.setattr(MockAgent, "analyze", analyze)
+    return original
+
+
+@pytest.fixture(params=["legacy", "orm_v11"])
+def preflight_bridge_app(tmp_path, request):
+    from app.db import init_orm_db, ORM_SCHEMA_VERSION, SCHEMA_VERSION
+    settings = Settings(private_runs_dir=tmp_path / "runs", db_path=tmp_path / "runs" / "bridge.sqlite3",
+                        cleanup_sweep_interval_s=0)
+    if request.param == "orm_v11":
+        init_orm_db(settings.db_path, settings.private_runs_dir)
+    yield create_app(settings), settings
+    with connect(settings.db_path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == (ORM_SCHEMA_VERSION if request.param == "orm_v11" else SCHEMA_VERSION)
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_unreferenced_needs_confirmation_blocker_survives_initial_save_and_partial_validation(preflight_bridge_app, monkeypatch):
+    app, settings = preflight_bridge_app
+    original = _add_unconfirmed_preflight_blocker(monkeypatch)
+    ctx = Ctx(app, with_photo=False)
+    assert not any("fact_night_unconfirmed" in b["fact_ids"] for p in ctx.doc()["pages"] for b in p["blocks"])
+    issue = next(i for i in ctx.open_issues("UNSUPPORTED_CLAIM") if i["origin"] == "preflight")
+    assert issue["fact_ids"] == ["fact_night_unconfirmed"] and issue["block_ids"] == []
+    assert ctx.doc()["status"] == "review_required"
+    assert ctx.c.get(f"/api/v1/sessions/{ctx.sid}").json()["document_summary"]["status"] == "review_required"
+    checked = ctx.make_clean_and_validate(settings)
+    assert checked["status"] == "failed"
+    assert ctx.approve(checked["validation_id"], ctx.layout_row(settings)).status_code == 422
+    for action in ("resolved", "excluded", "acknowledged"):
+        assert ctx.resolve(issue["issue_id"], action).status_code == 422
+    paragraph = next(b for p in ctx.doc()["pages"] for b in p["blocks"] if b["type"] == "paragraph")
+    ctx.patch([{"op": "replace_block_content", "block_id": paragraph["block_id"],
+                "content": dict(paragraph["content"], text=paragraph["content"]["text"] + " ")}])
+    assert ctx.validated()["status"] == "failed"
+    assert _first(ctx.issues(), issue_id=issue["issue_id"])["status"] == "open"
+    # 최신 점검에서 원인이 사라져도 클릭으로 닫지 않고 문서 재검증을 거친다.
+    monkeypatch.setattr(MockAgent, "analyze", original)
+    ctx.preflight()
+    assert ctx.resolve(issue["issue_id"], "resolved").status_code == 422
+    assert ctx.validated()["status"] == "passed"
+    assert _first(ctx.issues(), issue_id=issue["issue_id"])["status"] == "resolved"
+
+
+def test_same_input_recheck_non_conflict_blocker_invalidates_current_approval(preflight_bridge_app, monkeypatch):
+    app, settings = preflight_bridge_app
+    ctx = Ctx(app)
+    checked = ctx.make_clean_and_validate(settings)
+    approved = ctx.approve(checked["validation_id"], ctx.layout_row(settings))
+    assert approved.status_code == 201
+    _add_unconfirmed_preflight_blocker(monkeypatch)
+    ctx.preflight()
+    assert ctx.get()["approval"] is None and ctx.doc()["status"] == "review_required"
+    assert any(i["origin"] == "preflight" for i in ctx.open_issues("UNSUPPORTED_CLAIM"))
+    with connect(settings.db_path) as conn:
+        assert conn.execute("SELECT status FROM approvals WHERE approval_id=?", (approved.json()["approval_id"],)).fetchone()[0] == "invalidated"
 
 
 def test_required_content_needs_real_text_not_only_fact_ids(app, settings):
@@ -853,6 +948,44 @@ def test_concurrent_approval_creates_single_row(app, settings):
 
 # ================= 리뷰 회귀 (Codex 리뷰 4건) =================
 
+def test_deleted_agent_targets_resolve_without_closing_surviving_or_document_issues(app, settings, monkeypatch):
+    from app.agent_bridge import ValidateResult
+    from app.models import Issue as IssueModel
+
+    ctx = Ctx(app)
+    ctx.patch([{"op": "insert_block", "page_id": "page_02", "after_block_id": None,
+                "block": {"block_id": bid, "type": "paragraph", "content": {"text": "가상 공정 소개"}}}
+               for bid in ("b_drop", "b_keep")])
+
+    async def review(self, request):
+        changed = set(request.changed_block_ids)
+        candidates = [("deleted", ["b_drop"]), ("mixed", ["b_drop", "b_keep"]), ("document", [])]
+        return ValidateResult(issues=[
+            IssueModel(issue_id=name, scope="content", code="REPETITION", severity="warning",
+                       message=name, block_ids=blocks)
+            for name, blocks in candidates if set(blocks) <= changed
+        ])
+
+    monkeypatch.setattr(MockAgent, "validate", review)
+    ctx.validated()
+    initial = {issue["message"]: issue["issue_id"] for issue in ctx.open_issues("REPETITION")}
+    assert set(initial) == {"deleted", "mixed", "document"}
+    original_revision = ctx.rev()
+    ctx.patch([{"op": "delete_block", "block_id": "b_drop"}])
+    result = ctx.validated()
+    assert result["agent_called"] is False
+    current = {issue["message"]: issue for issue in ctx.issues() if issue["code"] == "REPETITION"}
+    assert current["deleted"]["status"] == "resolved"
+    assert current["deleted"]["resolution"]["by"] == "server"
+    assert current["mixed"]["status"] == current["document"]["status"] == "open"
+    restored = ctx.c.post(f"/api/v1/sessions/{ctx.sid}/documents/{ctx.did}/restore",
+                          json={"expected_revision": ctx.rev(), "restore_from_revision": original_revision})
+    assert restored.status_code == 200, restored.text
+    ctx.validated()
+    reopened = _first(ctx.issues(), issue_id=initial["deleted"])
+    assert reopened["status"] == "open" and reopened["resolution"] is None
+
+
 def test_review1_resolved_issue_reopens_when_cause_returns(app, settings):
     """MOCK_VALUE → 블록 삭제 → 재검증으로 resolved → restore로 블록 복원 → validate → open blocker, failed."""
     registered.run(settings, BUNDLE_INGEST, with_mock=True)
@@ -1258,9 +1391,12 @@ def test_c05_same_input_new_preflight_can_be_confirmed_and_rebound_with_full_val
     ctx, settings = c05_ctx
     _c05_apply(ctx, _c05_review(ctx))
     ctx.make_clean_and_validate(settings)
+    assert ctx.get()["input_review_required"] is False
     previous_pf, unchanged_input = ctx.pf, ctx.rev_in
     ctx.preflight()
     assert ctx.pf != previous_pf and ctx.rev_in == unchanged_input
+    assert ctx.get()["input_review_required"] is True
+    assert ctx.get()["latest_preflight_id"] == ctx.pf
     # 적용 전에 새 점검으로 검증해도 명시 확인과 적용 후 전체 검증을 대신하지 않는다.
     prior_check = ctx.validated()
     assert prior_check["status"] == "passed"
@@ -1275,12 +1411,14 @@ def test_c05_same_input_new_preflight_can_be_confirmed_and_rebound_with_full_val
     assert review["from_input_revision"] == review["to_input_revision"] == unchanged_input
     assert review["preflight_id"] == ctx.pf and review["status"] == "pending"
     assert ctx.doc() == before
+    assert ctx.get()["input_review_required"] is True  # 명시 확인만으로 연결되지 않는다.
     calls_before_apply = MockAgent.validate_calls
     applied = _c05_apply(ctx, route + "/" + review["review_id"] + "/apply")
     assert applied["document_revision"] == before["document_revision"] + 1
     assert applied["input_revision"] == unchanged_input
     assert ctx.job(applied["validation_job_id"])["status"] == "succeeded"
     out = ctx.get()
+    assert out["input_review_required"] is False and out["latest_preflight_id"] == ctx.pf
     checked = out["validation"]
     assert out["document"]["pages"] == before["pages"]
     assert checked["validation_id"] != prior_check["validation_id"]
@@ -1331,3 +1469,37 @@ def test_c05_confirming_review_cannot_skip_apply_before_final_approval(c05_ctx, 
     approved = ctx.approve(after["validation"]["validation_id"], ctx.layout_row(settings))
     assert approved.status_code == 201, approved.text
     assert ctx.get()["approval"]["approval_id"] == approved.json()["approval_id"]
+
+
+@pytest.mark.parametrize("kind", ["validate", "layout_check"])
+def test_joined_active_check_remembers_new_idempotency_key(app, settings, monkeypatch, kind):
+    """A lost response joining an active job must replay after that job terminates."""
+    from app.services import ai_jobs, layout_check_jobs
+
+    ctx = Ctx(app, with_photo=False)
+    runner, method, endpoint = (
+        (ai_jobs, "run_validate_job", "validate") if kind == "validate"
+        else (layout_check_jobs, "run_layout_check_job", "layout-checks")
+    )
+    monkeypatch.setattr(runner, method, lambda *args: None)
+    url = f"/api/v1/sessions/{ctx.sid}/documents/{ctx.did}/{endpoint}"
+    body = {"expected_revision": ctx.rev()}
+    body.update({"input_revision": ctx.rev_in} if kind == "validate" else {"format": "pdf"})
+    first = ctx.c.post(url, json=body, headers={"Idempotency-Key": "first-check"})
+    joined = ctx.c.post(url, json=body, headers={"Idempotency-Key": "joined-check"})
+    assert first.status_code == joined.status_code == 202
+    assert first.json()["job_id"] == joined.json()["job_id"]
+    with connect(settings.db_path, immediate=True) as conn:
+        # Complete the orchestration fixture without invoking an AI or renderer.
+        conn.execute("UPDATE jobs SET status='succeeded' WHERE job_id=?", (first.json()["job_id"],))
+        count = conn.execute("SELECT count(*) FROM jobs WHERE session_id=? AND kind=?", (ctx.sid, kind)).fetchone()[0]
+    replay = ctx.c.post(url, json=body, headers={"Idempotency-Key": "joined-check"})
+    assert replay.status_code == 202
+    assert replay.json() == joined.json()
+    conflict = ctx.c.post(url, json={**body, "expected_revision": body["expected_revision"] + 1},
+                          headers={"Idempotency-Key": "joined-check"})
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "IDEMPOTENCY_KEY_CONFLICT"
+    with connect(settings.db_path) as conn:
+        assert conn.execute("SELECT count(*) FROM jobs WHERE session_id=? AND kind=?", (ctx.sid, kind)).fetchone()[0] == count
+    ctx.c.close()

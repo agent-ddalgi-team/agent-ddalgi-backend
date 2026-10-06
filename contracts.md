@@ -1,6 +1,40 @@
 # 공통 데이터·API 계약
 
-기준일: 2026-10-01 · 문서 v1.23 · contract_version: 1.8 · 데이터 schema_version: 1.0
+기준일: 2026-10-06 · 문서 v1.33 · contract_version: 1.9 · 데이터 schema_version: 1.0
+
+**2026-10-06 프론트 회사 선택·충족도 연결(호환 확장):** 기존 Brief.target_company를 회사 선택 UI와 연결한다. 값은 앞뒤 공백을 정리하며 공백뿐인 값·제어 문자는 400이다. 프론트는 회사 변경 시 PATCH /sessions/{sid}/inputs에 새 brief와 selected_source_ids: []를 함께 보내 입력 revision을 올린다. 원자료·기존 문서는 보존하고 최신 점검/C-05 복귀가 필요하다. 회사명 입력 자체는 사실 근거가 아니다.
+
+GET /sessions/{sid}/preflights/{pid}에 sufficiency: {score, categories, has_blockers}를 추가한다. categories는 overview/process/performance/certification의 4개이며 각 항목은 {key,label,status}다. status는 supported|needs_confirmation|conflict|missing; 값·근거가 있는 supported 사실을 포함한 분야당 25점이다. 같은 분야의 충돌/확인 필요 또는 연결된 열린 blocker는 supported보다 우선한다. score는 근거 분야 포함 비율이며 생성 가능 여부·필수 항목 충족·승인 통과를 대체하지 않는다. 구버전 응답이나 최신 입력과 다른 점검은 프론트에서 '점검 필요'로 표시한다.
+
+GET /sessions/{sid}/public-data는 현재 {status:"not_configured",providers:["dart","kipris","g2b"],message}를 반환한다. POST /sessions/{sid}/public-data/import는 {expected_input_revision}를 받고 최신 버전을 검사한 뒤 회사 미선택이면 422 COMPANY_REQUIRED, 외부 키/수집기가 없는 현재 단계에서는 503 PUBLIC_DATA_NOT_CONFIGURED(retryable=false)다. 두 API 모두 기존 소유자·세션 활성 정책(401/404/410/403)을 따른다. 실패 시 자료·Job·revision을 만들거나 바꾸지 않는다. 실제 외부 수집·키 설정·원문 저장 연결은 다음 구현이며 키를 넣는 것만으로 수집이 활성화되지 않는다. API 계약1.9 호환 확장, DB v11 유지.
+
+**2026-10-06 형식별 승인 조회:** 문서 GET에 `approvals_by_format: {pdf: Approval|null, docx: Approval|null}`을 호환 가능한 조회 필드로 추가한다. 현재 문서·입력 버전의 active 승인만 형식별로 반환하며 문서/입력 변경 또는 승인 무효화 후에는 null이다. 기존 `approval`은 어느 형식이든 최신 active 승인이라는 의미를 유지한다. 프론트는 새 필드가 있으면 선택 형식의 승인을 사용하고, 구버전 응답/가상 미리보기에서는 기존 필드를 사용한다. 승인·출력 조건·자동 생성/승인 정책·DB 스키마는 변경하지 않는다.
+
+**2026-10-06 DOCX 사진 확대 제한:** template_v10은 기존 출력 영역과 원본 픽셀/150ppi 크기 중 작은 크기로 사진을 표시한다. 원본 비율·중앙 정렬·임베드 처리를 유지하며 작은 원본을 과도하게 확대하지 않는다. 150ppi는 출력 크기 상한이며 사진의 인쇄 품질 인증이나 새 승인 blocker가 아니다. PDF 사진 크기 정책은 유지한다. API 계약1.9·DB v11은 유지하며 이전 PDF/DOCX 배치·승인은 새 템플릿에서 재검사·재승인이 필요하다. 과거 출력 파일은 자동 교체하지 않는다. 아래 문단 간격 보완은 template_v9 도입 이력이며 사진 표시 크기는 이번 정책을 따른다.
+
+**2026-10-06 DOCX 문단 간격·추출 대조 보완:** 현재 템플릿은 `template_v10`이다. 단일 열 DOCX의 문단 전0pt/후1pt/줄 간격1.0을 명시해 기본 서식의 추가 여백으로 사진·캡션이 다음 쪽에 밀리는 것을 줄인다. 해당 보완 당시 본문·폰트 크기·사진 바이트·표시 크기·순서는 유지하며 과도한 내용은 기존 실제 넘침 검사로 계속 차단한다. PDFium이 줄 끝 하이픈을 잘못 추출하면 기존 pypdf로 같은 실제 쪽의 전체 원문 문자·수치·순서를 다시 대조하며, 정확히 일치한 경우에만 본문 검사를 통과한다. 쪽수·사진수·인쇄 영역 검사는 그대로다. 새 API·DB 변경은 없으며 기존 PDF/DOCX 배치·승인은 템플릿 변경으로 재검사·재승인이 필요하다. 과거 저장 산출물과 사용자 승인/문제 행을 자동 교체하지 않는다.
+
+**2026-10-06 C-05 화면 연결:** 문서 GET은 호환 가능한 조회 필드 `input_review_required: boolean`(기본false), `latest_preflight_id: string|null`(기본null)를 추가 제공한다. 앞 필드는 입력 버전 차이 또는 DB v11의 연결 점검/최신 점검 차이를 뜻하며 사용자 확인만으로 false가 되지 않는다. 최신 점검 확인·유효한 영향 검토 적용 후 false가 된다. 진행 중 점검의 완료 여부와 적용 가능 여부는 기존 Job/ImpactReview 조회와 적용 가드에서 다시 확인한다. C:\frontend의 기존 API 타입·자료 변경 배너·영향 선택 화면에 연결하며 브라우저에는 생성 요청 ID/버전/키와 적용 키/검토 ID/해시만 저장한다. 문서 본문·근거 인용·유지 사유·사용자 확인은 저장하지 않는다. 정상 적용은 반환한 전체 검증 Job을 조회하고, 적용 응답 유실은 applied 검토/문서 GET으로 복구한다. 실자료 의미 검증·사진별 공개 허가·사용자 최종 승인은 후속이다. 계약1.9·DB v11·template_v8 유지.
+
+**2026-10-06 DOCX 빈 페이지 보완:** 현재 출력 템플릿은 `template_v8`이다. DOCX의 독립 쪽 나눔 문단을 제거하고 다음 논리 쪽의 라벨에 page_break_before를 지정한다. 본문·사진·캡션·글꼴·그림 크기·순서는 유지하며 출력 중 문서를 재작성하거나 내용을 삭제하지 않는다. 이전 템플릿 검사는 재검사·재승인이 필요하다(PDF/DOCX 공통 템플릿 식별값). 기존 문서 revision·내용 검증·DB v11·계약1.9는 유지한다. 실제 넘침·내용 누락·사진 누락 검사와 승인 차단은 그대로 적용한다.
+
+**2026-10-06 DOCX 화면 연결 후속:** 출력 형식별 배치 검사·미리보기·승인·다운로드를 선택한다. 형식 변경 시 동의 체크는 해제하며 다른 형식의 검사/승인으로 다운로드하지 않는다. 문서 전체 쪽수 불일치 Finding은 특정 논리 쪽을 지정할 수 없으므로 `findings[].page_id`가 null일 수 있다. 형식별 실패는 조회 가능한 검사 결과와 미해결 필수 문제로 반환하며 승인할 수 없다. 헤드리스 변환 자식은 서버의 열린 표준 입력을 상속하지 않는다. DB v11·template_v7은 유지한다.
+
+**2026-10-06 점검 문제의 문서 연결 보완(BE-04/06):** 최신 Preflight의 열린 content/source blocker는 필수 내용 누락을 제외하고 VALUE_CONFLICT 외의 코드도 본문 참조 여부와 무관하게 문서 Issue(origin=preflight)에 보존한다. needs_confirmation 사실에 연결된 UNSUPPORTED_CLAIM blocker도 초안 최초 저장·조회/세션 요약·재검증·승인 차단에 연결한다. REQUIRED_MISSING은 문서 전체의 기존 필수 내용 검사에서 대체 사업 설명·사용자 지정 필수 항목을 함께 재판정한다. warning 수준의 미확인 사실은 임의 blocker로 승격하지 않는다. Agent가 확인/해결 상태·resolution을 반환하거나 선택 밖 자료/사실, 중복 Issue ID, 생성 전 블록/배치를 참조하면 AGENT_OUTPUT_INVALID로 점검 전체를 저장하지 않는다. 점검의 필수 문제는 안내 삭제·확인/제외 버튼으로 해결할 수 없으며 자료 보완·최신 점검·문서 재검증이 필요하다. 재점검은 다른 문제를 닫지 않고, 실제 문서 재검증에서 원인이 사라진 문제만 해결한다. 기존 preflight_conflicts 검사 키와 preflight_conflict 승인 무효화 사유는 호환을 위해 유지하며 이번 보완 이후 점검 필수 문제 전체를 포함한다. API 필드·계약1.9·DB v11·template_v7은 유지한다. 프론트는 문서 Issue와 review_required를 표시하며 최종 통합 검수는 후속이다.
+
+**연결 대조 이력(2026-10-06, BE-01/10):** 현재 계약 1.9·데이터 1.0·DB v11·template_v10가 기준이며 아래 연결 대조 당시 템플릿은 v8이었다. 아래 1.5/1.6/1.7/1.8 설명은 각 기능의 도입 이력이며 현재 계약을 낮춰 연결하지 않는다. 백엔드 `test` 0ad3eb2와 프론트 `C:\frontend` develop 0771d54를 대조했다. 대조 당시 프론트에는 계약 사본이 없고 C-05/생성 계획 타입·화면이 미연결이었다. C-05 API 타입·화면의 현재 연결은 이 문서 첫 C-05 화면 연결 규칙과 task_backend.md의 c05-ui-20261006 기록을 따른다. 생성 계획 타입/화면과 새 계약 사본은 추가하지 않았다. `D:\frontend`는 다른 커밋(15289fb)이므로 같은 작업본으로 취급하지 않는다. 현재 DOCX 검사·승인 규격은 아래 계약 1.9를 따른다. 프론트 반영 완료를 뜻하지 않는다.
+
+| 연결 영역 | 백엔드 제공·보존 규칙 | 프론트 후속 |
+|---|---|---|
+| 자료 변경 복귀(C-05) | 영향 검토 생성/조회/적용. 적용 전 문서 보존, 정확히 같은 사실만 자동 연결. 적용 결과의 `validation_job_id`로 전체 재검증 조회 | 자료 변경 배너·최신 점검 명시 확인·영향/선택 수정·근거 연결·유지 사유·문서/Job 재조회 연결/가상 확인 완료. 실자료 의미 검수 후속 |
+| 작성 조건·초안 기록 | Brief의 audience/usage_context/tone/target_company/required_fields/brand_color, nullable Document.editorial, editorial_v1/v2 호환 | 타입·입력·생성 사유·보완/제외 사유 표시. 생성 감사 기록을 현재 검증 완료 표시로 쓰지 않음 |
+| 분량·배치 | 새 초안의 target_pages는 최소 분량. generated_pages는 생성 당시 논리 쪽수, 현재 pages와 LayoutCheck.actual_pages는 각각 별도 값 | 선택 최소 분량·현재 논리 쪽수·검사한 출력 쪽수와 차이 사유 구분 |
+| 편집·승인 | Page.design·set_page_design 및 level 2 heading 유지. 버전/내용 변경에 따른 검사·승인 무효화 | 디자인/소제목 표시, 재검사 안내, 최신 검사·개별 경고 확인 후 명시 승인 |
+| DOCX | 명시 설정한 LibreOffice로 검사 대상 DOCX를 PDF로 변환해 실제 쪽수·쪽별 본문 순서/사진 수·인쇄 영역 검사. 필수 검사 통과 후 같은 DOCX를 승인·다운로드 | format=docx의 최신 검사·승인 연결. warnings 표시. 엔진 미설정/미측정은 계속 차단 |
+
+인계 예시는 기존 `handoff/api_examples_v1.1.json`을 유지하며 최상위 `contract_version=1.9`를 따른다. 예시의 가짜 값과 실제 HTTP·실제 모델 검증은 구분한다.
+
+**계약 1.9 — DOCX 실제 검사·승인·출력(2026-10-06):** 현재 템플릿은 `template_v10`, 데이터 1.0·DB v11·공개 API 필드는 유지한다. 서버의 `EXPORT_LIBREOFFICE_PATH`가 절대 실행 파일 경로로 설정되면 DOCX 자체를 변환한 PDF에서 `actual_pages`를 측정하고 필수 검사 3종을 수행한다. `preview_basis=pdf`의 PNG는 이 변환본 기준이며 경고에 LibreOffice 검사 기준을 명시한다. 엔진 미설정/경로 오류는 `overflow=not_checked`, 변환/측정 실패는 실패 Job으로 남아 승인할 수 없다. 엔진 없는 경우의 별도 HTML/PDF 미리보기는 DOCX 검사 증거가 아니다. 실제 검사 통과·최신 내용 검증·명시 확인·사진 공개 허가·버전/해시 일치가 모두 충족되면 검사 때 만든 편집 가능한 DOCX를 그대로 내려준다. Word 등 다른 프로그램이나 글꼴에서 같은 쪽 나눔을 보장하지 않는다. DOCX는 기존 단일 열 배치이며 PDF 브로슈어 디자인과 동일 배치를 보장하지 않는다. 이전 템플릿의 PDF/DOCX 검사·승인은 재검사·재승인이 필요하고 과거 산출물을 자동 교체하지 않는다. 프론트 사본·DOCX 화면 연결은 별도 후속이다.
 
 **2026-10-01 내부 작성 응답 보완:** 새 AI 응답의 `fact_notes`는 모든 사실 ID를 필수 키로 받는 객체다. 사용 사실은 null, 미사용 사실은 분류·160자 이내 사유를 기록한다. 전체 키·null 사용 범위·정책을 서버에서도 검사하며 옛 목록 응답은 재생 호환한다. 복합 인증을 소개하는 heading/lead는 해당 인증 ID를 참조하고 상세 수치·조건은 전체 문구 point에 보존한다. 묶음 `fact_notes`에서 실제 본문에 사용한 supported 사실(회사명은 페이지 제목 포함)의 중복 사유만 생략된 경우 포함 감사 기록을 서버가 계산한다. 미사용·제외·보완 사유 누락과 중복·외부 ID, 본문·수치 누락은 계속 거부한다. history 원문에 있는 `연도 | 사건`도 연혁 시점으로 인식하되 공정 순서 근거로는 쓰지 않는다. processes 원문에서 설명이 있는 한글 단계 번호가 두 개 이상 증가하는 경우도 명시된 순서로 인식한다. 공개 입출력·상태·계약1.8·DB v11은 유지한다. [결정과 범위](plan.md#458-실제-설정별-생성에서-확인한-근거연혁-처리-보완-2026-10-01-ag-0304). 프론트 계약 사본은 미갱신이다.
 
@@ -382,7 +416,7 @@ HTTP 필드·상태·DB 스키마는 그대로여서 contract_version 1.5/schema
 
 source 업로드만으로 자동 선택하지 않는 UI를 택하면 사용자가 선택할 때 input_revision을 갱신한다. 단, 선택된 기존 원자료를 수정·삭제하거나 문서가 참조하는 자산을 바꾸면 즉시 영향 상태를 갱신한다.
 
-`DocumentChangeOut`은 `{document_id, document_revision, input_revision, status, validation_job_id}`이며 전체 문서 본문이 아니다. `validation_job_id`는 C-05 영향 적용에서 예약한 전체 검증 Job ID다. 일반 직접 수정/Proposal 적용/복원에서는 null이며 필요하면 validate API를 호출한다. 문서 GET은 `{demo, document, validation, approval, layout_checks}`이며 `layout_checks`는 `{pdf: LayoutCheck|null, docx: LayoutCheck|null}`다. `document_summary.status`, 문서 변경의 `status`, `document_status`는 Document의 4종 상태를 공유한다. 다운로드 성공은 PDF 또는 DOCX 바이트이며 JSON 오류는 아래 공통 봉투다.
+`DocumentChangeOut`은 `{document_id, document_revision, input_revision, status, validation_job_id}`이며 전체 문서 본문이 아니다. `validation_job_id`는 C-05 영향 적용에서 예약한 전체 검증 Job ID다. 일반 직접 수정/Proposal 적용/복원에서는 null이며 필요하면 validate API를 호출한다. 문서 GET은 `{demo, document, input_review_required, latest_preflight_id, validation, approval, approvals_by_format, layout_checks}`이며 새 조회 필드는 위 C-05·형식별 승인 조회 규칙을 따른다. `layout_checks`는 `{pdf: LayoutCheck|null, docx: LayoutCheck|null}`다. `document_summary.status`, 문서 변경의 `status`, `document_status`는 Document의 4종 상태를 공유한다. 다운로드 성공은 PDF 또는 DOCX 바이트이며 JSON 오류는 아래 공통 봉투다.
 
 ### Job — 진행 상태와 결과 조회
 
@@ -496,10 +530,10 @@ HTTP 오류의 `request_id`는 필수 문자열이고 `X-Request-Id` 헤더와 �
 
 | ID | 우선순위 | 현재 상태 | 합의·구현할 것 |
 |---|---|---|---|
-| C-05 | P0 | 계약 1.6: DB v11에서 재점검 확인·영향 조회·선택 수정/유지 사유·최신 입력 연결·전체 재검증 API 구현. 다른 입력 복원 우회 차단 | 프론트 계약 사본/타입/화면 연결, 실제 모델의 변경 자료 의미 검증과 사용자 통합 확인. 자동 의미 수정안 생성은 별도 |
+| C-05 | P0 | 계약 1.6: DB v11에서 재점검 확인·영향 조회·선택 수정/유지 사유·최신 입력 연결·전체 재검증 API 구현. 다른 입력 복원 우회 차단 | 2026-10-06 기존 프론트 타입/화면 연결·가상 PDF/DOCX 완주 완료. 새 계약 사본 미생성. 실제 모델의 변경 자료 의미 검증·사용자 실자료 확인은 후속. 자동 의미 수정안 생성은 별도 |
 | C-06 | P0 | 서버 시작·최종 저장 가드 유지. 최초 초안의 LangGraph 대기·재개도 세션·입력 버전·현재 preflight·DB의 사용자 확인을 검사하고 소비한 확인의 중복 호출을 거부함. 세션 폴더 체크포인트 삭제 연결 검사 완료(task_agent.md 6.22절) | 실제 모델을 붙인 그래프·편집 단계·프로세스 장애 복구 확인. 별도 SQLite 커밋 사이 장애는 재점검 필요(plan.md 4.7절) |
 | C-08 | P1 | 계약 1.5에서 D-07 서버 확인 기록·최신 검증/버전 검사·승인/출력 차단 구현. 기존 정확성 blocker 유지 | 프론트 확인 UI·계약 사본 연결, 실제 Agent/화면 통합 검증은 후속. 시연 warning도 명시 확인하며 일반 문서의 정확성 기준은 완화하지 않음 |
-| C-09 | P1 | PDF 배치·미리보기·승인·Export·다운로드와 형식·버전 일치 검사 구현. DOCX 파일 생성과 PDF 기준 미리보기는 있으나 DOCX의 `actual_pages=null`·`overflow=not_checked`로 승인·Export·다운로드는 차단됨 | DOCX 배치 검증 방법과 승인 보장 범위를 별도 합의한 뒤 후속 구현. 기존 PDF 검사·미리보기·승인/출력 규격은 프론트와 맞추며 PDF 검사만으로 DOCX 검증 완료로 표시하지 않음 |
+| C-09 | P1 | 계약 1.9: PDF와 명시 설정한 LibreOffice 기반 DOCX 실제 검사·미리보기·승인·Export·다운로드. 실제 측정/필수 검사 증거 없는 DOCX는 차단 | 프론트 형식별 검사·승인 연결, LibreOffice 검사 기준/다른 열람 환경의 배치 차이 경고 표시. 실자료·실제 화면 품질 확인 후속 |
 | C-10 | P1 | 보완 메모가 근거·수명 정책에 등장하지만 전용 API/모델은 없음 | 지원 여부부터 결정. 지원하면 원자료 버전·근거 위치·수명 연결, 미지원이면 텍스트 파일 첨부로 안내 |
 | C-11 | P1 | 직접 삽입 ID는 클라이언트가 전달하고 서버가 중복 검사. 초안 ID는 Agent 결과에 포함. 페이지 구조 제안의 범위가 불명확함 | ID 발급 책임과 블록/페이지 구조 편집 범위. 빈 페이지·페이지 단독 요청 표현도 합의 후 모델·검사와 맞춤 |
 
@@ -536,7 +570,7 @@ C-05의 사용자 흐름은 [prd.md BR-05](prd.md)를 따른다. 현재 서버�
 | E05 편집 중 자료 추가 | 선택 변경 시 `input_revision` 증가; 현재 입력이 오래된 문서는 편집 차단 | 업로드와 자료 선택을 구분한다. 계약 1.6의 재점검 확인→영향 조회→선택 수정/유지 사유→적용→검증 Job 조회에 프론트를 연결한다. 화면 연결은 미완료다. |
 | E06 수정안 기준 버전 충돌 | `Proposal.status=stale`, `base_document_revision`, `base_input_revision`; `PROPOSAL_STALE` 등 | 오래된 제안의 적용을 막고 최신 문서에서 재요청하도록 안내한다. 현재 stale 기록을 실제 삭제로 해석하지 않는다. 늦은 결과·만료는 C-06, 오류 구분은 C-07에 연결한다. |
 | E07 필수 문제 미해결 | `Issue.severity/status/resolution`, Validation·LayoutCheck·Approval, 3절 승인 조건 | D-07 서버는 미확인/무효 경고 확인을 차단한다. 허용 경고 확인 후에도 필수 문제·배치·최종 동의를 별도로 검사한다. 프론트 연결은 후속이다. |
-| E08 출력 실패 | `Export.status/error`, 승인 스냅샷·형식·버전·재사용 규칙 | PDF는 유효한 승인·세션을 확인하고 출력만 재시도하는 경로까지 구현되어 있다. AI 초안을 다시 생성하지 않는다. 가짜 자료 실서버 검증 범위이며 DOCX 승인·Export·다운로드는 C-09 후속 작업이다. |
+| E08 출력 실패 | `Export.status/error`, 승인 스냅샷·형식·버전·재사용 규칙 | PDF는 유효한 승인·세션을 확인하고 출력만 재시도하는 경로까지 구현되어 있다. AI 초안을 다시 생성하지 않는다. 가상 자료로 확인한 서버 범위이며 실제 DOCX 검사 통과본도 같은 재사용 규칙을 따른다. 실자료·프론트 품질 검수는 후속이다. |
 | E09 세션 만료 예고 | `Session.expires_at`; 현재 무활동 120분과 생성 후 24시간 중 빠른 때 | 서버 만료 시각으로 남은 시간을 표시한다. 10분 전 알림·명시적 연장은 합의 대기다. 현재 연장 전용 API는 없고 GET·폴링은 활동으로 세지 않는다. |
 | E10 세션 종료·만료 | `Session.status`, `410 SESSION_EXPIRED`, 종료·정리 상태 | BE-09 내용 제거·폴더 삭제·재시도에 최초 초안의 LangGraph 체크포인트를 연결했다(C-06). 접근 차단과 `cleanup=done/pending`을 구분한다. 등록 원본과 내용 제거 후 감사용 메타 기록은 보존하며 편집 단계 그래프·실제 운영 검증은 후속이다. |
 

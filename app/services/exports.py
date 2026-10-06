@@ -1,6 +1,6 @@
 """출력(Export) — BE-08. 승인이 참조한 불변 artifact를 그대로 발행한다. 렌더·AI 호출이 없다.
 
-- 생성 조건: Approval active, 문서가 현재 최신 revision·input_revision(아니면 409), format이 Approval과 같음(DOCX는 이 범위에서 불가),
+- 생성 조건: Approval active, 문서가 현재 최신 revision·input_revision(아니면 409), format이 Approval과 같음(DOCX는 실제 검사 증거 필요),
   공개 허가 현재 통과, artifact 무결성.
 - 재사용 키 = approval_id|format|template_version|render_options_hash|asset_manifest_hash|demo. 같은 키의 queued/generating/ready(미만료)를
   재사용한다(부분 UNIQUE + BEGIN IMMEDIATE). ready라도 만료면 failed(expired)로 확정하고 ID·만료 시각을 보존한 뒤 새 행을 만든다.
@@ -26,7 +26,7 @@ from app.timeutil import from_iso, now, plus, to_iso
 
 logger = logging.getLogger(__name__)
 ACTIVE = ("queued", "generating", "ready")
-DOCX_WARNING = "DOCX는 이 범위에서 승인·출력이 열리지 않습니다(overflow not_checked)."
+DOCX_WARNING = "DOCX 배치 검사는 LibreOffice 변환 기준입니다. Word 등 다른 열람 프로그램·글꼴에서는 쪽 나눔이 달라질 수 있습니다."
 
 
 @dataclass(frozen=True)
@@ -86,6 +86,9 @@ def identity_mismatch(conn: Connection, approval: Row, manifest_now: str) -> str
     lc = conn.execute("SELECT * FROM layout_checks WHERE layout_check_id=?", (approval["layout_check_id"],)).fetchone()
     if lc is None:
         return "layout_check_not_found"
+    docx_reason = layout_checks.docx_evidence_reason(lc)
+    if docx_reason is not None:
+        return docx_reason
     if (lc["format"] != approval["format"] or lc["template_version"] != approval["template_version"]
             or bool(lc["demo"]) != bool(approval["demo"])
             or lc["render_options_hash"] != approval["render_options_hash"] or lc["asset_manifest_hash"] != approval["asset_manifest_hash"]
@@ -118,14 +121,12 @@ def approval_validity(conn: Connection, settings: Settings, session_row: Row, ap
     if approval["status"] != "active":
         message = "승인이 무효화되었습니다. 배치 검사와 승인을 다시 진행해 주세요."
         if approval["invalidated_reason"] == "preflight_conflict":
-            message = "자료 충돌로 승인이 무효화되었습니다. 문제를 해결하고 문서 검증을 다시 실행한 뒤 새로 승인해 주세요."
+            message = "사전 점검의 필수 문제로 승인이 무효화되었습니다. 문제를 해결하고 문서 검증을 다시 실행한 뒤 새로 승인해 주세요."
         return Verdict(False, 409, "APPROVAL_NOT_ACTIVE", message,
                        details={"approval_id": approval["approval_id"], "invalidated_reason": approval["invalidated_reason"]})
     if fmt is not None and approval["format"] != fmt:
         return Verdict(False, 422, "EXPORT_NOT_ALLOWED", "승인된 형식과 다른 형식은 출력할 수 없습니다.",
                        details={"approved_format": approval["format"], "requested_format": fmt})
-    if approval["format"] == "docx":
-        return Verdict(False, 422, "EXPORT_NOT_ALLOWED", DOCX_WARNING, details={"format": "docx", "reason": "overflow_not_checked"})
     head = conn.execute("SELECT current_revision FROM documents WHERE document_id=? AND session_id=?",
                         (approval["document_id"], session_row["session_id"])).fetchone()
     if head is None:

@@ -70,6 +70,9 @@ class Settings:
     # 렌더 옵션(용지·여백·폰트)은 설정이 아니라 app/services/layout_checks.py의 DEFAULT_RENDER_OPTIONS(해시 대상)다.
     export_browser_path: str | None = None
     export_render_timeout_s: int = 90
+    # DOCX 실배치 검사 opt-in. 운영자가 설치한 LibreOffice 실행 파일의 절대 경로.
+    # 미지정/설치 누락 시 DOCX overflow=not_checked로 승인 차단을 유지한다.
+    export_libreoffice_path: str | None = None
     # BE-08: Export 만료(분). 세션 만료와 같거나 그 이전으로 잘린다.
     export_ttl_minutes: int = 120
     # BE-09: 세션 종료·만료 정리. 배경 sweep 주기(초, 0이면 배경 스레드 없음 — 테스트·CLI 전용), 삭제 재시도 상한, 처리 중 점유 유효시간(초).
@@ -103,6 +106,7 @@ def load_settings() -> Settings:
         demo_mode=os.environ.get("DEMO_MODE", "").strip().lower() in {"1", "true", "yes"},
         export_browser_path=(os.environ.get("EXPORT_BROWSER_PATH") or "").strip() or None,
         export_render_timeout_s=_env_int("EXPORT_RENDER_TIMEOUT_S", 90),
+        export_libreoffice_path=(os.environ.get("EXPORT_LIBREOFFICE_PATH") or "").strip() or None,
         export_ttl_minutes=_env_int("EXPORT_TTL_MINUTES", 120),
         cleanup_sweep_interval_s=_env_int("CLEANUP_SWEEP_INTERVAL_S", 60),
         cleanup_max_attempts=_env_int("CLEANUP_MAX_ATTEMPTS", 10),

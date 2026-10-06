@@ -1994,6 +1994,7 @@ class LlmAgent:
         seen_texts: dict[str, frozenset[str]] = {}
         used_photos, pages = set(), []
         removed_duplicates = 0
+        removed_labels = 0
         origins = {s.source_id: s.origin_kind for s in request.sources}
 
         def claim(item: _EditorialText, kind: str, *, level: int = 1) -> Block | None:
@@ -2065,7 +2066,15 @@ class LlmAgent:
                 body = claim(item, "paragraph")
                 if body is not None:
                     assert label is not None
-                    blocks.extend([label, body])
+                    # Both claims have already passed evidence/number checks.
+                    # Keep the complete editable body and its references when
+                    # the adjacent point label supplies exactly the same text.
+                    if (" ".join(label.content["text"].split()) == " ".join(body.content["text"].split())
+                            and label.fact_ids == body.fact_ids and label.evidence_refs == body.evidence_refs):
+                        blocks.append(body)
+                        removed_labels += 1
+                    else:
+                        blocks.extend([label, body])
             if not any(block.type == "paragraph" for block in blocks):
                 logger.warning("Editorial draft rejected: rule=duplicate_only_page")
                 raise AgentError("AGENT_OUTPUT_INVALID", "반복된 본문을 정리하면 내용이 없는 페이지가 생깁니다. 작성 범위와 자료를 확인하고 다시 생성해 주세요.")
@@ -2101,6 +2110,9 @@ class LlmAgent:
                         and facts[selection.fact_id].field_key == "company_name"))
                     for block in page.blocks)]
                 selection.reason = "중복 정리 후 실제 본문(회사명은 페이지 제목 포함)에 연결된 위치: " + ", ".join(locations) + "쪽."
+        if removed_labels:
+            logger.info("Editorial draft normalized: duplicate_label_count=%s", removed_labels)
+            count_reason += f" 본문과 문구·근거가 동일한 중복 항목 제목 {removed_labels}개를 생략했습니다."
         original_count = len(response["pages"])
         if len(pages) != original_count:
             count_reason += (f" 선택한 {request.brief.target_pages}쪽에 맞추기 위해 기존 {original_count}쪽의 독립 본문을 "

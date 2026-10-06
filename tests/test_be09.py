@@ -1,6 +1,9 @@
-"""BE-09 세션 종료·만료 정리 테스트 — 브라우저·실제 AI 없이 실행된다(배치 검사 행·artifact는 가짜 바이트로 직접 만든다).
+"""BE-09 세션 종료·만료 정리 테스트 — 기본 실행에는 실제 AI 호출이 없다.
+
+일반 검사는 브라우저 없이, 실제 Chrome 프로필/서버 재시작 검사는 Windows+Chromium에서만 실행한다.
 
 배경 sweep 스레드는 끄고(cleanup_sweep_interval_s=0) sweeper.sweep_once를 직접 부른다. 실제 회사 자료 없음.
+BE09_LIVE_AI=1을 명시한 경우에만 격리 HTTP 서버에서 실제 유료 AI 중단 검사를 실행한다.
 """
 from __future__ import annotations
 
@@ -22,7 +25,7 @@ from fastapi.testclient import TestClient
 from app import create_app
 from app.config import Settings
 from app.db import SCHEMA_VERSION, connect, init_db
-from app.services import ai_jobs, artifacts, cleanup, jobs, layout_check_jobs, layout_checks, reading, registered, sessions, sources, sweeper
+from app.services import ai_jobs, artifacts, cleanup, export_render, jobs, layout_check_jobs, layout_checks, reading, registered, sessions, sources, sweeper
 from app.services.documents import get_current
 from app.timeutil import from_iso, now, to_iso
 
@@ -51,6 +54,253 @@ def settings(tmp_path):
 @pytest.fixture
 def app(settings):
     return create_app(settings)
+
+
+@pytest.fixture(params=["legacy", "orm_v11"])
+def restart_db(request, settings):
+    from app.db import ORM_SCHEMA_VERSION, init_orm_db
+
+    if request.param == "orm_v11":
+        init_orm_db(settings.db_path, settings.private_runs_dir)
+    yield create_app(settings), settings
+    with connect(settings.db_path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == (ORM_SCHEMA_VERSION if request.param == "orm_v11" else SCHEMA_VERSION)
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def _lock_windows_file(path):
+    """실제 Windows 공유 삭제 금지 핸들. 오류나 assertion에도 호출자가 finally로 닫는다."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                                  wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    handle = kernel.CreateFileW(str(path), 0x80000000, 1, None, 3, 0x80, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return kernel, handle
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="실제 Windows 파일 잠금 검사")
+def test_windows_locked_long_profile_close_and_restart_recovery(restart_db):
+    app, settings = restart_db
+    flow = Flow(app, settings)
+    root = settings.private_runs_dir / flow.sid
+    # Chrome/Office가 남기는 MAX_PATH 초과 프로필 + 실제 읽기 전용 파일.
+    profile = Path("\\\\?\\" + str(root.absolute())) / "chrome_profile"
+    for index in range(5):
+        profile /= f"component_{index}_" + "x" * 45
+    profile.mkdir(parents=True)
+    locked = profile / "LOCK"
+    locked.write_bytes(b"synthetic browser lock")
+    readonly = profile / "readonly.bin"
+    readonly.write_bytes(b"synthetic component")
+    readonly.chmod(0o444)
+    assert len(str(locked)) > 260
+    registered_file = settings.private_runs_dir / "registered" / "keep.txt"
+    registered_file.parent.mkdir()
+    registered_file.write_bytes(b"registered original")
+    kernel, handle = _lock_windows_file(locked)
+    try:
+        response = flow.c.delete(f"/api/v1/sessions/{flow.sid}")
+        assert response.json() == {"session_id": flow.sid, "status": "closed", "cleanup": "pending"}
+        assert locked.exists() and MARK not in _db_text(settings)
+        task = _row(settings, "SELECT * FROM cleanup_queue WHERE session_id=?", flow.sid)
+        assert (task["status"], task["attempt"], task["last_error"]) == ("pending", 1, "remove_failed")
+        # 이전 프로세스가 점유만 하고 사라진 실제 DB 상태에서 앱 시작 경로 실행.
+        with connect(settings.db_path, immediate=True) as conn:
+            claimed = cleanup.claim(conn, "interrupted-process", session_id=flow.sid, ignore_schedule=True)
+            assert len(claimed) == 1
+        restarted = TestClient(create_app(settings))
+        restarted.cookies.update(flow.c.cookies)
+        task = _row(settings, "SELECT * FROM cleanup_queue WHERE session_id=?", flow.sid)
+        assert (task["status"], task["attempt"], task["claim_token"], task["last_error"]) == ("pending", 1, None, "stale_claim")
+        response = restarted.get(f"/api/v1/sessions/{flow.sid}")
+        assert response.status_code == 410 and response.json()["error"]["details"]["cleanup"] == "pending"
+    finally:
+        assert kernel.CloseHandle(handle)
+    assert sweeper.sweep_once(settings)["done"] == 1
+    assert not root.exists()
+    assert restarted.get(f"/api/v1/sessions/{flow.sid}").json()["error"]["details"]["cleanup"] == "done"
+    assert registered_file.read_bytes() == b"registered original"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="실제 Windows 파일 잠금 검사")
+def test_windows_locked_job_temp_survives_startup_then_sweep_removes_it(restart_db):
+    app, settings = restart_db
+    flow = Flow(app, settings)
+    with connect(settings.db_path) as conn:
+        job = jobs.create(conn, flow.sid, "layout_check", "interrupted render")
+        jobs.set_progress(conn, job.job_id, "rendering", "interrupted render")
+    temp = artifacts.temp_dir(settings, flow.sid, job.job_id)
+    locked = temp / "LOCK"
+    locked.write_bytes(b"synthetic browser lock")
+    kernel, handle = _lock_windows_file(locked)
+    try:
+        restarted = TestClient(create_app(settings))
+        restarted.cookies.update(flow.c.cookies)
+        assert temp.exists()
+        assert _row(settings, "SELECT status FROM jobs WHERE job_id=?", job.job_id)["status"] == "failed"
+        assert restarted.get(f"/api/v1/sessions/{flow.sid}").status_code == 200
+        old = time.time() - cleanup.ORPHAN_TMP_MIN_AGE_S - 10
+        os.utime(temp, (old, old))
+        counts = sweeper.sweep_once(settings)
+        assert counts["orphan_tmp"] == 1 and counts["retry"] == 1
+    finally:
+        assert kernel.CloseHandle(handle)
+    with connect(settings.db_path) as conn:
+        conn.execute("UPDATE cleanup_queue SET next_retry_at=? WHERE session_id=?", (PAST, flow.sid))
+    assert sweeper.sweep_once(settings)["done"] == 1
+    assert not temp.exists()
+    assert restarted.get(f"/api/v1/sessions/{flow.sid}").status_code == 200
+    assert (settings.private_runs_dir / flow.sid).exists()
+
+
+def _windows_child_pids(pid):
+    """Toolhelp 스냅샷으로 이 테스트가 실행한 프로세스의 자손만 식별한다."""
+    import ctypes
+    from ctypes import wintypes
+
+    class Entry(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                    ("pid", wintypes.DWORD), ("heap", ctypes.c_size_t),
+                    ("module", wintypes.DWORD), ("threads", wintypes.DWORD),
+                    ("parent", wintypes.DWORD), ("priority", wintypes.LONG),
+                    ("flags", wintypes.DWORD), ("name", wintypes.WCHAR * 260)]
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel.Process32FirstW.argtypes = kernel.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(Entry)]
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel.CreateToolhelp32Snapshot(2, 0)
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    parents = {}
+    try:
+        entry = Entry(dwSize=ctypes.sizeof(Entry))
+        more = kernel.Process32FirstW(handle, ctypes.byref(entry))
+        while more:
+            parents[entry.pid] = entry.parent
+            more = kernel.Process32NextW(handle, ctypes.byref(entry))
+    finally:
+        kernel.CloseHandle(handle)
+    family = {pid}
+    while True:
+        found = {child for child, parent in parents.items() if parent in family} - family
+        if not found:
+            return family - {pid}, set(parents)
+        family.update(found)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="실제 Windows Chrome 프로세스 검사")
+@pytest.mark.parametrize("close_session", [True, False], ids=["closed_session", "active_orphan"])
+def test_actual_chrome_profile_close_process_restart_and_cleanup(restart_db, close_session):
+    import socket
+    from urllib.error import URLError
+    from urllib.request import urlopen
+
+    browser = export_render.find_browser()
+    if browser is None:
+        pytest.skip("Chromium 없음 — 실제 프로세스 정리 미실행")
+    application, settings = restart_db
+    flow = Flow(application, settings)
+    live = Flow(application, settings)
+    live_files = {p: p.read_bytes() for p in (settings.private_runs_dir / live.sid).rglob("*") if p.is_file()}
+    registered_file = settings.private_runs_dir / "registered" / "keep.txt"
+    registered_file.parent.mkdir()
+    registered_file.write_bytes(b"registered original")
+    with connect(settings.db_path) as conn:
+        job = jobs.create(conn, flow.sid, "layout_check", "interrupted Chrome")
+        jobs.set_progress(conn, job.job_id, "rendering", "interrupted Chrome")
+    temp = artifacts.temp_dir(settings, flow.sid, job.job_id)
+    profile = temp / "profile"
+    args = export_render._browser_args(browser, profile) + ["--remote-debugging-port=0", "about:blank"]
+    proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+    child_pids = set()
+    try:
+        deadline = time.monotonic() + 25
+        while not (profile / "DevToolsActivePort").is_file() and time.monotonic() < deadline:
+            assert proc.poll() is None, "Chrome exited before profile initialization"
+            time.sleep(0.05)
+        assert (profile / "DevToolsActivePort").is_file(), "Chrome profile initialization timed out"
+        child_pids, _ = _windows_child_pids(proc.pid)
+        assert child_pids, "Chrome must have real child processes"
+        os.utime(temp, (time.time() - cleanup.ORPHAN_TMP_MIN_AGE_S - 10,) * 2)
+        if close_session:
+            response = flow.c.delete(f"/api/v1/sessions/{flow.sid}")
+            assert response.status_code == 200 and response.json()["cleanup"] == "pending"
+            assert _count(settings, "SELECT COUNT(*) FROM sources WHERE session_id=? AND deleted_at IS NULL", flow.sid) == 0
+            assert _row(settings, "SELECT brief_json FROM sessions WHERE session_id=?", flow.sid)[0] == "{}"
+            assert all(_row(settings, "SELECT name FROM sources WHERE source_id=?", sid)[0] == "" for sid in flow.source_ids)
+            with connect(settings.db_path, immediate=True) as conn:
+                assert len(cleanup.claim(conn, "interrupted-process", session_id=flow.sid, ignore_schedule=True)) == 1
+        else:
+            assert sweeper.sweep_once(settings)["orphan_tmp"] == 0
+            assert temp.exists() and flow.c.get(f"/api/v1/sessions/{flow.sid}").status_code == 200
+        # 별도 Uvicorn 프로세스에서 앱 시작/작업 복구 후 실제 HTTP 응답까지 확인한다.
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            port = listener.getsockname()[1]
+        server = subprocess.Popen([sys.executable, "-X", "utf8", "-B", "-c",
+            "import sys,uvicorn; from pathlib import Path; from app import create_app; from app.config import Settings; "
+            "app=create_app(Settings(private_runs_dir=Path(sys.argv[1]),db_path=Path(sys.argv[2]),cleanup_sweep_interval_s=0)); "
+            "uvicorn.run(app,host='127.0.0.1',port=int(sys.argv[3]),log_level='error')",
+            str(settings.private_runs_dir), str(settings.db_path), str(port)], cwd=ROOT,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+        try:
+            deadline = time.monotonic() + 25
+            while True:
+                assert server.poll() is None, "Isolated server exited before HTTP recovery"
+                try:
+                    with urlopen(f"http://127.0.0.1:{port}/", timeout=1) as response:
+                        assert response.status == 200 and json.load(response)["api"] == "/api/v1"
+                    break
+                except (URLError, TimeoutError):
+                    assert time.monotonic() < deadline, "Isolated HTTP restart timed out"
+                    time.sleep(0.05)
+        finally:
+            server.terminate()
+            server.wait(timeout=15)
+        if close_session:
+            task = _row(settings, "SELECT * FROM cleanup_queue WHERE session_id=?", flow.sid)
+            assert task["status"] == "pending" and task["claim_token"] is None and task["last_error"] == "stale_claim"
+        else:
+            assert _row(settings, "SELECT status FROM jobs WHERE job_id=?", job.job_id)["status"] == "failed"
+            assert temp.exists()
+            counts = sweeper.sweep_once(settings)
+            assert counts["orphan_tmp"] == 1 and counts["retry"] == 1
+        assert proc.poll() is None and temp.exists()
+    finally:
+        child_pids.update(_windows_child_pids(proc.pid)[0])
+        export_render._kill_tree(proc)
+        proc.wait(timeout=15)
+        deadline = time.monotonic() + 10
+        while child_pids & _windows_child_pids(proc.pid)[1] and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not (child_pids & _windows_child_pids(proc.pid)[1]), "Chrome children survived tree termination"
+    with connect(settings.db_path) as conn:
+        conn.execute("UPDATE cleanup_queue SET next_retry_at=? WHERE session_id=?", (PAST, flow.sid))
+    assert sweeper.sweep_once(settings)["done"] == 1
+    assert not temp.exists()
+    response = flow.c.get(f"/api/v1/sessions/{flow.sid}")
+    if close_session:
+        assert response.status_code == 410 and response.json()["error"]["details"]["cleanup"] == "done"
+        assert not (settings.private_runs_dir / flow.sid).exists()
+    else:
+        assert response.status_code == 200 and (settings.private_runs_dir / flow.sid).exists()
+        assert _count(settings, "SELECT COUNT(*) FROM sources WHERE session_id=?", flow.sid) == 2
+    assert live.c.get(f"/api/v1/sessions/{live.sid}").status_code == 200
+    assert all(p.read_bytes() == content for p, content in live_files.items())
+    assert registered_file.read_bytes() == b"registered original"
 
 
 def _row(settings, sql, *params):
@@ -466,6 +716,204 @@ def test_idempotent_replay_after_expiry_or_close_returns_410_not_content(app, se
 
 
 # ================= 5. 늦은 Job 결과·재시작 복구 =================
+
+# 통신은 실제 SDK/HTTP를 그대로 사용한다. 요청 본문 전송 완료와 Job 종료만 관측하며
+# 비밀값·요청/응답 본문은 기록하지 않는다. 별도 프로세스의 패치는 제품 서버에 영향이 없다.
+_LIVE_AI_SERVER = r'''
+import sys
+sys.path.insert(0, sys.argv[1])
+import json
+from pathlib import Path
+from dataclasses import replace
+import httpx
+import uvicorn
+from app import create_app
+from app.config import load_settings
+from app.db import init_orm_db
+from app import agent_llm
+from app.services import ai_jobs
+
+root, phase, port = Path(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+def mark(suffix, value):
+    (root / (phase + '-' + suffix)).write_text(json.dumps(value), encoding='utf-8')
+
+def trace(event, info):
+    if event.endswith('send_request_body.complete'):
+        mark('sent', True)
+
+def request_hook(request):
+    request.extensions['trace'] = trace
+
+real_openai = agent_llm.OpenAI
+def observed_openai(**kwargs):
+    kwargs['http_client'] = httpx.Client(event_hooks={'request': [request_hook]})
+    return real_openai(**kwargs)
+agent_llm.OpenAI = observed_openai
+
+real_validate = ai_jobs.validate_analyze
+def observed_validate(*args):
+    problem = real_validate(*args)
+    mark('validated', {'valid': problem is None})
+    return problem
+ai_jobs.validate_analyze = observed_validate
+
+real_run = ai_jobs.run_preflight_job
+def observed_run(*args):
+    try:
+        return real_run(*args)
+    finally:
+        mark('done', agent_llm.trial_report())
+ai_jobs.run_preflight_job = observed_run
+
+settings = replace(load_settings(), private_runs_dir=root / 'runs',
+                   db_path=root / 'runs' / 'live.sqlite3', agent_mode='llm',
+                   demo_mode=False, cleanup_sweep_interval_s=0)
+if not settings.db_path.exists():
+    init_orm_db(settings.db_path, settings.private_runs_dir)
+uvicorn.run(create_app(settings), host='127.0.0.1', port=port, log_level='error')
+'''
+
+
+@pytest.mark.skipif(os.environ.get("BE09_LIVE_AI") != "1", reason="실제 유료 AI: BE09_LIVE_AI=1 명시 필요")
+@pytest.mark.parametrize("interruption", ["session_close", "server_restart"])
+def test_live_ai_interruption_and_explicit_retry(tmp_path, interruption):
+    """가상 TXT만 전송. 실제 전송 중 종료/강제 중단 및 명시적 재시도 저장을 확인한다."""
+    import socket
+    import httpx
+
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    env = os.environ.copy()
+    env.pop("PYTHON_DOTENV_DISABLED", None)
+    env.update(AGENT_MODE="llm", OPENAI_EXECUTION_MODE="runtime", PYTHONDONTWRITEBYTECODE="1",
+               PRIVATE_RUNS_DIR=str(tmp_path / "runs"), DB_PATH=str(tmp_path / "runs" / "live.sqlite3"))
+    settings = Settings(private_runs_dir=tmp_path / "runs", db_path=tmp_path / "runs" / "live.sqlite3")
+    process = None
+
+    def wait_until(check, timeout=35):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            result = check()
+            if result:
+                return result
+            time.sleep(0.1)
+        pytest.fail("격리 실제 AI 검사 대기 시간 초과")
+
+    def stop():
+        nonlocal process
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait(timeout=15)
+
+    def start(phase):
+        nonlocal process
+        # Windows venv redirector 대신 실제 서버 PID를 갖는 기반 Python을 사용한다.
+        libraries = Path(sys.prefix) / ("Lib/site-packages" if os.name == "nt" else
+                                        f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages")
+        process = subprocess.Popen([getattr(sys, "_base_executable", sys.executable), "-X", "utf8", "-B", "-c",
+                                    _LIVE_AI_SERVER, str(libraries), str(tmp_path), phase, str(port)],
+                                   cwd=ROOT, env=env, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        def ready():
+            assert process.poll() is None, "격리 서버 시작 실패"
+            try:
+                return client.get("/openapi.json").status_code == 200
+            except httpx.TransportError:
+                return False
+        wait_until(ready)
+
+    def job(jid):
+        response = client.get(f"/api/v1/sessions/{sid}/jobs/{jid}")
+        assert response.status_code == 200
+        return response.json()
+
+    def terminal(jid):
+        current = job(jid)
+        return current if current["status"] in {"succeeded", "failed", "cancelled"} else None
+
+    def empty_results():
+        with connect(settings.db_path) as conn:
+            for table in ("preflights", "documents", "proposals", "approvals", "exports"):
+                assert conn.execute(f"SELECT COUNT(*) FROM {table} WHERE session_id=?", (sid,)).fetchone()[0] == 0
+
+    try:
+        with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=10, trust_env=False) as client:
+            start("before")
+            created = client.post("/api/v1/sessions", json={"brief": BRIEF})
+            assert created.status_code == 201
+            sid = created.json()["session_id"]
+            control = client.post("/api/v1/sessions", json={"brief": BRIEF}).json()["session_id"]
+            uploaded = client.post(f"/api/v1/sessions/{sid}/sources", files=[("files", ("virtual.txt", TXT, "text/plain"))])
+            assert uploaded.status_code == 202
+            upload = uploaded.json()
+            assert wait_until(lambda: terminal(upload["job_id"]))["status"] == "succeeded"
+            selected = client.patch(f"/api/v1/sessions/{sid}/inputs", json={"expected_input_revision": 1,
+                                   "selected_source_ids": [item["source_id"] for item in upload["items"]]})
+            assert selected.status_code == 200
+            body = {"expected_input_revision": selected.json()["input_revision"]}
+            path = f"/api/v1/sessions/{sid}/preflights"
+            headers = {"Idempotency-Key": "inflight-preflight"}
+            requested = client.post(path, json=body, headers=headers)
+            assert requested.status_code == 202
+            jid = requested.json()["job_id"]
+            wait_until(lambda: (tmp_path / "before-sent").exists(), timeout=60)
+            assert not (tmp_path / "before-done").exists(), "AI 완료 전에 중단해야 한다"
+            assert job(jid)["status"] == "running"
+            empty_results()
+
+            if interruption == "session_close":
+                closed = client.delete(f"/api/v1/sessions/{sid}")
+                assert closed.status_code == 200 and closed.json()["cleanup"] == "done"
+                wait_until(lambda: (tmp_path / "before-done").exists(), timeout=240)
+                assert json.loads((tmp_path / "before-validated").read_text())["valid"]
+                report = json.loads((tmp_path / "before-done").read_text())
+                assert report["calls_started"] == 1 and report["records"][0]["outcome"] == "json_received"
+                assert not report["in_flight"]
+                current = _row(settings, "SELECT status, error_json FROM jobs WHERE job_id=?", jid)
+                assert current["status"] == "cancelled" and json.loads(current["error_json"]) == jobs.CANCELLED_ERROR
+                assert client.get(f"/api/v1/sessions/{sid}").status_code == 410
+                assert not (settings.private_runs_dir / sid).exists()
+                assert MARK not in _row(settings, "SELECT brief_json FROM sessions WHERE session_id=?", sid)[0]
+                empty_results()
+            else:
+                stop()
+                assert not (tmp_path / "before-done").exists()
+                empty_results()
+                start("after")
+                recovered = job(jid)
+                assert recovered["status"] == "failed"
+                assert recovered["error"]["code"] == "SERVICE_TEMPORARY_FAILURE" and recovered["error"]["retryable"]
+                assert client.get(f"/api/v1/sessions/{sid}").status_code == 200
+                assert client.get(f"/api/v1/sessions/{sid}/sources").json()["items"][0]["parse_status"] == "complete"
+                replay = client.post(path, json=body, headers=headers)
+                assert replay.status_code == requested.status_code and replay.json() == requested.json()
+                assert not (tmp_path / "after-sent").exists()
+                empty_results()
+                retry_headers = {"Idempotency-Key": "explicit-retry"}
+                retry = client.post(path, json=body, headers=retry_headers)
+                assert retry.status_code == 202 and retry.json()["job_id"] != jid
+                finished = wait_until(lambda: terminal(retry.json()["job_id"]), timeout=240)
+                assert finished["status"] == "succeeded", finished
+                wait_until(lambda: (tmp_path / "after-done").exists())
+                report = json.loads((tmp_path / "after-done").read_text())
+                assert report["calls_started"] == 1 and report["records"][0]["outcome"] == "json_received"
+                assert json.loads((tmp_path / "after-validated").read_text())["valid"]
+                assert client.post(path, json=body, headers=retry_headers).json() == retry.json()
+                with connect(settings.db_path) as conn:
+                    assert conn.execute("SELECT COUNT(*) FROM preflights WHERE session_id=?", (sid,)).fetchone()[0] == 1
+                    assert conn.execute("SELECT COUNT(*) FROM jobs WHERE session_id=? AND kind='preflight'", (sid,)).fetchone()[0] == 2
+                    assert conn.execute("SELECT COUNT(*) FROM documents WHERE session_id=?", (sid,)).fetchone()[0] == 0
+                assert job(jid)["status"] == "failed"
+            assert client.get(f"/api/v1/sessions/{control}").status_code == 200
+            with connect(settings.db_path) as conn:
+                assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+                assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+            print(json.dumps({"interruption": interruption, "calls_completed": report["calls_started"],
+                              "known_estimated_cost_usd": report["known_estimated_cost_usd"],
+                              "interrupted_call_cost_unknown": interruption == "server_restart"}))
+    finally:
+        stop()
 
 def _close_during(settings, sid, real):
     def wrapper(*args, **kwargs):

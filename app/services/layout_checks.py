@@ -21,7 +21,7 @@ from collections.abc import Iterable
 from app.db import Connection, Row
 from app.models import Document
 
-TEMPLATE_VERSION = "template_v6"
+TEMPLATE_VERSION = "template_v10"
 # 기존 자유 문자열은 계속 읽되, 실제 배치는 아래 허용 목록만 사용한다. 임의 CSS로 사용하지 않는다.
 BROCHURE_LAYOUTS = frozenset({"cover_photo", "text_photo", "process_steps", "product_grid", "contact_photo",
                              "cover_text", "fact_sheet", "timeline", "certification_summary"})
@@ -65,6 +65,24 @@ def asset_manifest_hash(conn: Connection, document: Document) -> str:
     return manifest_hash(items)
 
 
+def docx_evidence_reason(row: Row) -> str | None:
+    """DOCX 승인·발행에 필요한 실제 출력 엔진의 검사 기록. 미측정 옛 행은 차단한다."""
+    if row["format"] != "docx":
+        return None
+    if row["status"] != "passed" or not row["layout_ok"] or row["actual_pages"] is None or row["actual_pages"] <= 0:
+        return "docx_layout_not_measured"
+    if ";libreoffice/" not in (row["renderer"] or ""):
+        return "docx_layout_engine_unverified"
+    try:
+        checks = json.loads(row["checks_json"] or "[]")
+        outcomes = {check["check_key"]: check["result"] for check in checks if check.get("required")}
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return "docx_required_checks_missing"
+    if any(outcomes.get(key) != "ok" for key in ("overflow", "broken_image", "placeholder_remaining")):
+        return "docx_required_checks_missing"
+    return None
+
+
 def matching_passed(conn: Connection, layout_check_id: str, document: Document, input_revision: int,
                     fmt: str, manifest_hash_value: str) -> tuple[Row | None, str | None]:
     """(행, 불일치 사유). 사유가 None이면 조건 ⑥ 통과."""
@@ -86,4 +104,4 @@ def matching_passed(conn: Connection, layout_check_id: str, document: Document, 
     for ok, reason in checks:
         if not ok:
             return row, reason
-    return row, None
+    return row, docx_evidence_reason(row)

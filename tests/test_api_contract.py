@@ -61,6 +61,7 @@ def _invalid(response, field=None):
 
 # Every public JSON request with a revision participates in the same rule.
 REVISION_REQUESTS = [
+    (models.PublicDataImport, {"expected_input_revision": 1}),
     (models.InputsPatch, {"expected_input_revision": 1, "selected_source_ids": []}),
     (models.PreflightCreate, {"expected_input_revision": 1}),
     (models.DraftCreate, {"preflight_id": "pf_example", "input_revision": 1, "confirmed": True}),
@@ -363,7 +364,9 @@ def test_openapi_describes_common_errors_export_statuses_and_binary_responses(ap
     schema = app.openapi()
     operations = [operation for path, item in schema["paths"].items() if path.startswith("/api/v1/")
                   for method, operation in item.items() if method in {"get", "post", "patch", "delete"}]
-    assert len(operations) == 30
+    assert len(operations) == 32
+    assert "get" in schema["paths"]["/api/v1/sessions/{sid}/public-data"]
+    assert "post" in schema["paths"]["/api/v1/sessions/{sid}/public-data/import"]
     assert "HTTPValidationError" not in schema["components"]["schemas"]
     for operation in operations:
         for status in ("400", "422"):

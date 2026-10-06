@@ -1169,6 +1169,49 @@ def test_editorial_exact_body_repeat_is_removed_without_losing_evidence(duplicat
     assert calls == ["draft_sections"]
 
 
+@pytest.mark.parametrize("label_kind", ["same", "whitespace", "different"])
+def test_editorial_repeated_point_label_keeps_body_and_provenance(label_kind):
+    request = build_editorial_request("manufacturing")
+    original = copy.deepcopy(request)
+    baseline = llm.LlmAgent(lambda instructions, payload, schema, name: editorial_response(payload)).draft(request)
+    captured = {}
+
+    def responder(instructions, payload, schema, name):
+        result = editorial_response(payload)
+        point = result["pages"][0]["points"][0]
+        label = point["text"] if label_kind != "different" else "제품과 서비스 설명"
+        if label_kind == "whitespace":
+            label = "  " + label.replace(" ", "  ") + "  "
+        point["label"] = label
+        captured["label"] = " ".join(label.split())
+        return result
+
+    result = llm.LlmAgent(responder).draft(request)
+    paragraphs = lambda draft: [(b.content, b.fact_ids, b.evidence_refs)
+                               for page in draft.pages for b in page.blocks if b.type == "paragraph"]
+    assert paragraphs(result) == paragraphs(baseline)
+    headings = [" ".join(b.content["text"].split()) for page in result.pages
+                for b in page.blocks if b.type == "heading"]
+    assert (captured["label"] in headings) is (label_kind == "different")
+    assert ("중복 항목 제목 1개" in result.editorial.page_count_reason) is (label_kind != "different")
+    assert len(result.pages) == len(baseline.pages)
+    assert validate_draft(result, request.sources, {f.fact_id for f in request.preflight.facts}, request.preflight) is None
+    assert request == original
+
+
+def test_editorial_identical_label_and_body_still_reject_unsupported_number():
+    request = build_editorial_request("manufacturing")
+
+    def responder(instructions, payload, schema, name):
+        result = editorial_response(payload)
+        point = result["pages"][0]["points"][0]
+        point["label"] = point["text"] = "설비 987대"
+        return result
+
+    with pytest.raises(AgentError, match="수치·단위·날짜"):
+        llm.LlmAgent(responder).draft(request)
+
+
 @pytest.mark.parametrize("damage,message", [
     ("different_refs", "서로 다른 사실"), ("duplicate_refs", "중복 연결"),
     ("blank_label", "비어 있는"), ("numeric_label", "수치·단위·날짜"),
@@ -1800,6 +1843,10 @@ def test_extract_restores_source_version_location_and_keeps_conditions():
     ("예시 수량 1200개", "예시 수량 1,200개", "supported"),
     ("만료일 2027.02.15", "만료일 2027년 2월 15일", "supported"),
     ("Issue date: 25 September 2025", "발행일 2025년 9월 25일", "supported"),
+    ("2017 | 가상 기관 공정 승인", "연혁에는 가상 기관 공정 승인(2017년)이 기재되어 있다.", "supported"),
+    ("2017 | 가상 기관 공정 승인", "연혁에는 가상 기관 공정 승인(2017)이 기재되어 있다.", "needs_confirmation"),
+    ("2017 | 가상 기관 공정 승인", "가상 기관 공정 승인(2018년)", "needs_confirmation"),
+    ("수량 2017개", "가상 기관 공정 승인(2017년)", "needs_confirmation"),
     ("후보 9행, 월 20영업일", "P01~P09, 월 20영업일", "needs_confirmation"),
     ("길이 200mm", "길이 200cm", "needs_confirmation"),
     ("만료일 2027.02.15", "만료일 2027년 2월 16일", "needs_confirmation"),
@@ -1826,6 +1873,63 @@ def test_extraction_numeric_evidence_is_checked_before_draft(source, value, expe
         assert llm._editorial_selection_policy({fact.fact_id: fact}, set(), set())[fact.fact_id] == ("review",)
     assert validate_analyze(result, selected) is None
     assert calls == ["company_info"]
+
+
+@pytest.mark.parametrize("include_header", [False, True])
+def test_certificate_scope_requires_evidence_for_standard_numbers(include_header):
+    header = "가상 인증서: AS9100D, ISO 9001:2015"
+    scope = "승인 범위: 금속 부품 표면처리 제공"
+    selected = [SourceIn("src_certificate", 1, "company", "가상 인증서", "complete", [
+        SegmentIn("seg_header", {"page": 1}, header),
+        SegmentIn("seg_scope", {"page": 1}, scope)])]
+
+    def responder(instructions, payload, schema, name):
+        units = payload["source_units"]
+        chosen = units if include_header else units[1:]
+        info = {key: {"status": "not_found", "facts": []} for key in legacy.COMPANY_INFO_KEYS}
+        info["certifications"] = {"status": "supported", "facts": [{
+            "text": "AS9100D·ISO 9001 승인 범위는 금속 부품 표면처리 제공이다.",
+            "evidence": [{"source_id": unit["source_id"], "locator": unit["locator"],
+                          "quote": unit["text"]} for unit in chosen]}]}
+        return info
+
+    result = llm.LlmAgent(responder).analyze(AnalyzeRequest("ses_certificate", 1, BRIEF, selected))
+    fact = next(f for f in result.facts if f.field_key == "certifications")
+    assert fact.status == ("supported" if include_header else "needs_confirmation")
+    assert {ref.segment_id for ref in fact.evidence_refs} == (
+        {"seg_header", "seg_scope"} if include_header else {"seg_scope"})
+    assert any(i.code == "UNSUPPORTED_CLAIM" and fact.fact_id in i.fact_ids
+               for i in result.issues) is (not include_header)
+
+
+@pytest.mark.parametrize("identifier,include_header,expected", [
+    ("Q-P07", False, "needs_confirmation"),
+    ("Q-P07", True, "supported"),
+    ("Q-P08", True, "needs_confirmation"),
+])
+def test_measurement_fact_requires_its_record_identifier_evidence(identifier, include_header, expected):
+    header = "[시연] 가상 기록 식별: 품목 Q-P07 브래킷 예시"
+    measurement = "[시연] 가상 치수: 명목 외형 100×60×15 mm, 측정값 100.0×60.1×15.0 mm. 공차 적합 판정은 하지 않았다."
+    selected = [SourceIn("src_record", 1, "company", "가상 측정 기록", "complete", [
+        SegmentIn("seg_identity", {"line_start": 2, "line_end": 2}, header),
+        SegmentIn("seg_measurement", {"line_start": 4, "line_end": 4}, measurement)])]
+
+    def responder(instructions, payload, schema, name):
+        units = payload["source_units"]
+        chosen = units if include_header else units[1:]
+        info = {key: {"status": "not_found", "facts": []} for key in legacy.COMPANY_INFO_KEYS}
+        info["processes"] = {"status": "supported", "facts": [{
+            "text": f"[시연] {identifier} 예시의 명목 외형 100×60×15 mm와 측정값 100.0×60.1×15.0 mm를 기록했으며 공차 적합 판정은 하지 않았다.",
+            "evidence": [{"source_id": u["source_id"], "locator": u["locator"], "quote": u["text"]} for u in chosen]}]}
+        return info
+
+    result = llm.LlmAgent(responder).analyze(AnalyzeRequest("ses_record", 1, BRIEF, selected))
+    fact = next(f for f in result.facts if f.field_key == "processes")
+    assert fact.status == expected
+    assert {r.segment_id for r in fact.evidence_refs} == (
+        {"seg_identity", "seg_measurement"} if include_header else {"seg_measurement"})
+    assert any(i.code == "UNSUPPORTED_CLAIM" and fact.fact_id in i.fact_ids
+               for i in result.issues) is (expected == "needs_confirmation")
 
 
 def test_multiple_facts_conflict_candidates_and_uncertain_text_are_preserved():
@@ -2663,14 +2767,12 @@ def test_draft_condition_preserves_review_facts_and_server_conflict(target_pages
         fact = next(f for f in facts.values() if f.status == status)
         assert any(issue.code == code and issue.severity == "blocker" and fact.fact_id in issue.fact_ids
                    for issue in request.preflight.issues)
-        if status == "conflict":
-            assert any(issue.code == code and issue.severity == "blocker" and fact.fact_id in issue.fact_ids
-                       for issue in issues)
+        assert any(issue.code == code and issue.severity == "blocker" and fact.fact_id in issue.fact_ids
+                   for issue in issues)
         assert not any(fact.fact_id in b.fact_ids for p in result.pages for b in p.blocks)
         assert any(b.content.get("text") == legacy.SECTION_TITLES[fact.field_key] for p in result.pages for b in p.blocks)
     assert sum(b.content.get("text") == "추가 확인 필요" for p in result.pages for b in p.blocks) == 2
-    # 서버 일반 검사의 미참조 needs_confirmation 전달은 이번 준비의 통과 범위가 아니다.
-    # 사전 점검 보존과 VALUE_CONFLICT의 서버 전달을 구분한다(task_agent.md 준비 기록 참조).
+    # 본문에서 제외된 미확인 사실의 점검 blocker도 서버 문서 검사에 보존한다.
     assert request == before
 
 
@@ -6385,12 +6487,16 @@ def test_stopped_trial_preserves_existing_document_through_server(tmp_path, monk
         for input_revision in (rev, changed["input_revision"]):
             stale = client.post(base + "/drafts", json=draft_body | {"input_revision": input_revision})
             assert stale.status_code == 409 and stale.json()["error"]["code"] == "INPUT_REVISION_CONFLICT"
+        changed_view = client.get(document_url).json()
+        assert changed_view["document"] == saved["document"]
+        assert changed_view["input_review_required"] is True
+        assert changed_view["latest_preflight_id"] is None
         cookies = dict(client.cookies)
         assert len(calls) == 4 and llm.trial_report()["calls_started"] == 2
-    # 같은 임시 DB를 새 앱 인스턴스로 열어 영속 저장을 확인한다. 프로세스·ledger는 유지한다.
+    # 본문은 보존하되, 변경된 입력의 재점검 필요 상태도 재시작 뒤 유지한다.
     with TestClient(create_app(settings)) as reopened:
         reopened.cookies.update(cookies)
-        assert reopened.get(document_url).json() == saved
+        assert reopened.get(document_url).json() == changed_view
         assert reopened.get(preflight_url).json() == confirmed
         assert len(calls) == 4 and llm.trial_report()["calls_started"] == 2
 

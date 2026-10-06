@@ -53,6 +53,15 @@ class Brief(BaseModel):
                 payload.pop(name)
         return payload
 
+    @field_validator("target_company")
+    @classmethod
+    def normalized_target_company(cls, value):
+        if value is None:
+            return None
+        if not value.strip() or any(ord(c) < 32 or ord(c) == 127 for c in value):
+            raise ValueError("target_company must be nonblank without control characters")
+        return value.strip()
+
     @field_validator("required_fields")
     @classmethod
     def known_required_fields(cls, value):
@@ -312,11 +321,35 @@ class PreflightCreate(BaseModel):
     expected_input_revision: RequestRevision
 
 
+class SufficiencyCategory(BaseModel):
+    key: str
+    label: str
+    status: Literal["supported", "needs_confirmation", "conflict", "missing"]
+
+
+class DataSufficiency(BaseModel):
+    score: int = Field(ge=0, le=100)
+    categories: list[SufficiencyCategory]
+    has_blockers: bool
+
+
+class PublicDataImport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_input_revision: RequestRevision
+
+
+class PublicDataStatus(BaseModel):
+    status: Literal["not_configured"] = "not_configured"
+    providers: list[str] = Field(default_factory=lambda: ["dart", "kipris", "g2b"])
+    message: str = "외부 API 키와 수집 연결을 아직 설정하지 않았습니다."
+
+
 class PreflightOut(BaseModel):
     preflight_id: str
     session_id: str
     input_revision: int
     usable_source_ids: list[str]
+    sufficiency: DataSufficiency | None = None
     facts: list[Fact]
     issues: list[Issue]
     recommendations: Recommendations
@@ -514,7 +547,7 @@ class LayoutCheckRecordOut(BaseModel):
 
 class FindingOut(BaseModel):
     kind: Literal["overflow", "broken_image", "placeholder_remaining"]
-    page_id: str
+    page_id: str | None
     block_id: str | None = None
     message: str
     details: dict[str, Any] = Field(default_factory=dict)
@@ -548,7 +581,7 @@ class LayoutCheckOut(BaseModel):
     renderer: str | None = None
     artifact_id: str | None = None
     preview_asset_ids: list[str] = Field(default_factory=list)
-    preview_basis: Literal["pdf"] | None = None    # DOCX도 같은 스냅샷의 PDF 렌더로 미리보기(검사 증거 아님)
+    preview_basis: Literal["pdf"] | None = None    # DOCX는 설정된 엔진의 실제 변환본 또는 검사 미완료 시 참고 PDF. warnings로 구분.
     warnings: list[str] = Field(default_factory=list)
     created_at: str
 
@@ -561,8 +594,11 @@ class LayoutChecksByFormat(TypedDict):
 class DocumentOut(BaseModel):
     demo: bool = False
     document: Document
+    input_review_required: bool = False  # 현재 입력/최신 점검을 문서에 연결해야 하는지
+    latest_preflight_id: str | None = None
     validation: ValidationOut | None = None   # 현재 문서·입력 버전의 최신 검증. 없으면 null
     approval: ApprovalOut | None = None       # 현재 문서·입력 버전의 active 승인(어느 형식이든). 없으면 null
+    approvals_by_format: dict[Literal["pdf", "docx"], ApprovalOut | None] = Field(default_factory=lambda: {"pdf": None, "docx": None})
     layout_checks: LayoutChecksByFormat = Field(default_factory=lambda: {"pdf": None, "docx": None})
 
 
