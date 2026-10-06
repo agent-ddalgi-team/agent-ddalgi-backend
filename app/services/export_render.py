@@ -55,6 +55,7 @@ REQUIRED_CHECKS: dict[str, frozenset[str]] = {"pdf": frozenset(CHECK_KEYS), "doc
 # 템플릿 v1 배치 상수(형식 공통). 바꾸면 TEMPLATE_VERSION을 올린다(가드 테스트가 아래 값도 해시에 넣는다).
 PAGE_W_MM, PAGE_H_MM = 210, 297
 IMAGE_MAX_H_MM = 120          # contain: 폭 180mm·높이 120mm 안에 비율 유지
+DOCX_IMAGE_MIN_PPI = 150      # 원본 픽셀 기준 확대 상한; 새 픽셀/세부를 만들어 내지 않는다.
 IMAGE_CROP_H_MM = 100         # crop(PDF): 180mm × 100mm 상자에 object-fit: cover. DOCX는 contain으로 대체(제한 기록)
 HEADING_PT = {1: 20, 2: 14, 3: 12}
 LABEL_PT, CAPTION_PT = 8, 9
@@ -65,6 +66,7 @@ DEMO_FOOTER_MM = 9
 DOCX_PARAGRAPH_SPACING = {"before_pt": 0, "after_pt": 1, "line_spacing": 1.0}
 DOCX_COLORS = {"text": "111111", "label": "8A8A8A", "caption": "555555", "box": "666666", "broken": "A93226"}
 DOCX_LAYOUT_CONSTANTS = {"page_mm": [PAGE_W_MM, PAGE_H_MM], "image_max_h_mm": IMAGE_MAX_H_MM, "image_max_px": IMAGE_MAX_PX,
+                         "image_min_ppi": DOCX_IMAGE_MIN_PPI,
                          "paragraph_spacing": DOCX_PARAGRAPH_SPACING, "heading_pt": HEADING_PT, "label_pt": LABEL_PT, "caption_pt": CAPTION_PT, "page_break": "before_logical_page_label",
                          "box": "table_grid_1x1", "box_space_pt": DOCX_BOX_SPACE_PT, "colors": DOCX_COLORS, "crop": "contain_fallback",
                          "exif_orientation": "apply_before_embed", "image_decode": "full_pixels",
@@ -1183,7 +1185,9 @@ def _build_docx(snapshot: RenderSnapshot, family: str, base_pt: float, content_w
                 for item in b["list_items"]:
                     doc.add_paragraph(item, style="List Bullet")
             elif b["type"] == "image":
-                w_mm, h_mm = _fit_mm(b["width"], b["height"], content_w, IMAGE_MAX_H_MM)
+                w_mm, h_mm = _fit_mm(b["width"], b["height"],
+                                    min(content_w, b["width"] * 25.4 / DOCX_IMAGE_MIN_PPI),
+                                    min(IMAGE_MAX_H_MM, b["height"] * 25.4 / DOCX_IMAGE_MIN_PPI))
                 picture = doc.add_picture(io.BytesIO(b["embed"]), width=Mm(w_mm), height=Mm(h_mm))
                 for distance in ("distT", "distB", "distL", "distR"):
                     picture._inline.set(distance, "0")

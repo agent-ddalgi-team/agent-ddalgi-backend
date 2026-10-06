@@ -35,6 +35,7 @@ BANNED = ("거산", "케미칼", "Geosan")
 
 # 템플릿·폰트·DOCX 배치 상수·PDF 렌더 상수의 sha256(줄바꿈 정규화). 이 중 하나라도 바꾸면 TEMPLATE_VERSION을 올리고 여기 값을 갱신한다.
 TEMPLATE_FINGERPRINTS = {
+    "template_v10": "c002f3bb5cf786bf59e3d0d05bb18079b6832cd82701dbe64e9514fc40b062fb",
     "template_v9": "576799643934d2178e3a03e6e569604c36e6859a51fa3e498caa1be15a8edad1",
     "template_v8": "77bee728ad40c81e24e5abb5b12c24fcaa282399a7da8224f14a9ec9bf82ac88",
     "template_v7": "4be75f1522c12f656c964872f89797c24e5b3396138ed237eeabaa2757562134",
@@ -377,7 +378,7 @@ def test_draft_pagination_bounds_repeated_overflow_without_losing_content(out_di
 
 def test_identity_values_come_from_layout_checks(out_dir):
     r = er.render(_fixture_snapshot("1pages"), "docx", out_dir)
-    assert r.template_version == layout_checks.TEMPLATE_VERSION == "template_v9"
+    assert r.template_version == layout_checks.TEMPLATE_VERSION == "template_v10"
     assert r.render_options_hash == layout_checks.RENDER_OPTIONS_HASH == layout_checks.render_options_hash(layout_checks.DEFAULT_RENDER_OPTIONS)
     assert len(r.render_options_hash) == 16 and int(r.render_options_hash, 16) >= 0
     changed = dict(layout_checks.DEFAULT_RENDER_OPTIONS, margin_mm=20)
@@ -527,6 +528,26 @@ def test_embed_bytes_downscales_only_large_images():
 
 
 # ================= DOCX =================
+
+@pytest.mark.parametrize("size,expected_mm", [((441, 236), (74.676, 39.9626667)),
+                                             ((236, 441), (39.9626667, 74.676)),
+                                             ((1600, 1000), (180, 112.5))])
+def test_docx_picture_size_preserves_source_bytes_and_limits_enlargement(out_dir, size, expected_mm):
+    import zipfile
+    import docx
+
+    source = _png(*size)
+    page = Page(page_id="p", title="사진", layout_key="text_photo",
+                blocks=[_blk("photo", "image", asset_id="image", caption="원자료의 시험장비", fit="contain")])
+    snapshot = er.snapshot_from_document(_doc([page]), {"image": er.asset_from_bytes("image", source)})
+    result = er.render(snapshot, "docx", out_dir)
+    shape = docx.Document(result.file_path).inline_shapes[0]
+    assert shape.width.mm == pytest.approx(expected_mm[0], abs=0.01)
+    assert shape.height.mm == pytest.approx(expected_mm[1], abs=0.01)
+    assert shape.width / shape.height == pytest.approx(size[0] / size[1], rel=1e-4)
+    with zipfile.ZipFile(result.file_path) as archive:
+        media = [name for name in archive.namelist() if name.startswith("word/media/")]
+        assert len(media) == 1 and archive.read(media[0]) == source
 
 def test_docx_render_structure_checks_and_font(out_dir):
     snap = _fixture_snapshot("10pages")
@@ -751,10 +772,10 @@ def test_docx_dense_photo_pages_have_no_blank_break_pages(settings, out_dir, pag
     assert result.actual_pages == pages and result.layout_ok is True, result.findings
     assert result.details["images_per_page"] == [1] * pages
     editable = docx.Document(str(result.file_path))
-    # All editable text, repeated picture instances and their original maximum size survive.
+    # Text and picture instances survive; the 320x210 source is no longer enlarged below 150ppi.
     text = "\n".join(p.text for p in editable.paragraphs)
     assert text.count(body) == pages * 5 and len(editable.inline_shapes) == pages
-    assert all(abs(shape.height.mm - 118.125) < 0.01 for shape in editable.inline_shapes)
+    assert all(abs(shape.height.mm - 35.56) < 0.01 for shape in editable.inline_shapes)
 
 
 # ================= HTML(템플릿) 안전성 — 브라우저 없이 확인 =================
@@ -1305,4 +1326,4 @@ def test_docx_long_process_page_keeps_photo_caption_and_address(settings, out_di
     assert full_text.count("Town-si, Example-gu") == 6
     assert "확인한 가상 시설 사진" in full_text
     assert len(editable.inline_shapes) == 1
-    assert abs(editable.inline_shapes[0].height.mm - 118.125) < 0.01
+    assert abs(editable.inline_shapes[0].height.mm - 35.56) < 0.01
