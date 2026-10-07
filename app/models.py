@@ -322,6 +322,21 @@ class PreflightCreate(BaseModel):
     expected_input_revision: RequestRevision
 
 
+class PreflightReviewCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_input_revision: RequestRevision
+    action: Literal["exclude", "restore"]
+    fact_ids: list[str] = Field(min_length=1, max_length=50)
+    reason: NonBlankText = Field(max_length=300)
+
+    @field_validator("fact_ids")
+    @classmethod
+    def unique_fact_ids(cls, value):
+        if any(not item.strip() for item in value) or len(set(value)) != len(value):
+            raise ValueError("fact_ids must be nonblank and unique")
+        return value
+
+
 class SufficiencyCategory(BaseModel):
     key: str
     label: str
@@ -364,6 +379,8 @@ class PreflightOut(BaseModel):
     usable_source_ids: list[str]
     sufficiency: DataSufficiency | None = None
     facts: list[Fact]
+    excluded_facts: list[Fact] = Field(default_factory=list)
+    reviewable_fact_ids: list[str] = Field(default_factory=list)
     issues: list[Issue]
     recommendations: Recommendations
     can_generate: bool

@@ -565,9 +565,11 @@ def server_checks(document: Document, ctx: Context) -> tuple[list[IssueDraft], l
                     [page.model_copy(update={"blocks": [block]})], current_sources, current_preflight)
                     if current_preflight is not None else "현재 입력에 해당하는 사전 점검이 없습니다.")
             if selected_problem:
-                drafts.append(IssueDraft("content", "EVIDENCE_INVALID", "blocker",
-                                         "현재 선택 자료와 최신 점검에서 사용할 수 없는 참조입니다. " + selected_problem,
-                                         block_ids=[bid]))
+                excluded_ids = {fact.fact_id for fact in current_preflight.excluded_facts} if current_preflight else set()
+                message = ("이번 문서에서 제외한 항목이 본문에 남아 있습니다. 해당 내용을 삭제하거나 자료 점검에서 항목을 복원해 주세요."
+                           if excluded_ids.intersection(block.fact_ids) else
+                           "현재 선택 자료와 최신 점검에서 사용할 수 없는 참조입니다. " + selected_problem)
+                drafts.append(IssueDraft("content", "EVIDENCE_INVALID", "blocker", message, block_ids=[bid]))
             elif any(fid not in ctx.refs.fact_ids for fid in block.fact_ids):
                 drafts.append(IssueDraft("content", "EVIDENCE_INVALID", "blocker",
                                          "현재 세션에서 근거로 사용할 수 없는 사실 참조입니다.", block_ids=[bid]))

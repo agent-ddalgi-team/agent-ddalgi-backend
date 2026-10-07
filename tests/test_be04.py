@@ -627,3 +627,109 @@ def test_older_same_input_preflight_is_not_offered_or_consumed(client, settings)
     with connect(settings.db_path) as conn:
         assert preflights.get(conn,sid,first['preflight_id']).confirmed_at is None
         assert conn.execute("SELECT count(*) FROM jobs WHERE session_id=?",(sid,)).fetchone()[0] == count
+
+
+@pytest.mark.parametrize("orm", [False, True])
+def test_preflight_review_exclude_restore_replay_and_required_guards(settings, orm):
+    if orm:
+        init_orm_db(settings.db_path, settings.private_runs_dir)
+    with TestClient(create_app(settings)) as client:
+        sid = _session(client)
+        src = _upload(client, sid, ("a.txt", SOURCE_A))
+        rev = _select(client, sid, src)
+        original = _preflight(client, sid, rev)
+        base = f"/api/v1/sessions/{sid}/preflights/"
+        optional = next(fact for fact in original["facts"] if fact["field_key"] == "process_count")
+        body = {"expected_input_revision": rev, "action": "exclude", "fact_ids": [optional["fact_id"]], "reason": "이번 문서에서 사용하지 않음"}
+        url = base + original["preflight_id"] + "/reviews"
+        headers = {"Idempotency-Key": "review-exclude"}
+        response = client.post(url, json=body, headers=headers)
+        assert response.status_code == 200, response.text
+        reviewed = response.json()
+        assert reviewed["preflight_id"] != original["preflight_id"] and reviewed["confirmed_at"] is None
+        assert optional not in reviewed["facts"] and reviewed["excluded_facts"] == [optional]
+        assert client.post(url, json=body, headers=headers).json() == reviewed
+        assert client.get(base + original["preflight_id"]).json()["facts"] == original["facts"]
+        stale = client.post(url, json=body)
+        assert stale.status_code == 409
+        latest_url = base + reviewed["preflight_id"] + "/reviews"
+        company = next(fact for fact in reviewed["facts"] if fact["field_key"] == "company_name")
+        rejected = client.post(latest_url, json={**body, "fact_ids": [company["fact_id"]]})
+        assert rejected.status_code == 422 and rejected.json()["error"]["code"] == "RESOLUTION_NOT_ALLOWED"
+        businesses = [fact["fact_id"] for fact in reviewed["facts"] if fact["status"] == "supported" and fact["field_key"] in {"company_summary", "business_areas", "products_services", "technology", "processes"}]
+        assert client.post(latest_url, json={**body, "fact_ids": businesses}).status_code == 422
+        assert client.post(latest_url, json={**body, "fact_ids": ["foreign_fact"]}).status_code == 422
+        restored = client.post(latest_url, json={**body, "action": "restore"})
+        assert restored.status_code == 200, restored.text
+        assert restored.json()["excluded_facts"] == [] and restored.json()["facts"] == original["facts"]
+        other = TestClient(create_app(settings))
+        other.post("/api/v1/sessions", json={"brief": BRIEF})
+        assert other.post(base + restored.json()["preflight_id"] + "/reviews", json=body).status_code == 404
+
+
+@pytest.mark.parametrize("orm", [False, True])
+def test_excluded_preflight_fact_is_absent_from_draft_and_invalid_when_reintroduced(settings, orm):
+    from app.models import Document
+    from app.services import preflights, validation
+    if orm:
+        init_orm_db(settings.db_path, settings.private_runs_dir)
+    with TestClient(create_app(settings)) as client:
+        sid = _session(client); src = _upload(client, sid, ("a.txt", SOURCE_A)); rev = _select(client, sid, src)
+        pf = _preflight(client, sid, rev)
+        optional = next(fact for fact in pf["facts"] if fact["field_key"] == "process_count")
+        base = f"/api/v1/sessions/{sid}"
+        reviewed = client.post(base + f"/preflights/{pf['preflight_id']}/reviews", json={
+            "expected_input_revision": rev, "action": "exclude", "fact_ids": [optional["fact_id"]], "reason": "제외"}).json()
+        accepted = client.post(base + "/drafts", json={"input_revision": rev, "preflight_id": reviewed["preflight_id"], "confirmed": True})
+        assert accepted.status_code == 202, accepted.text
+        job = client.get(base + "/jobs/" + accepted.json()["job_id"]).json(); assert job["status"] == "succeeded", job
+        doc = client.get(base + "/documents/" + job["result_ref"]["document_id"]).json()["document"]
+        assert all(optional["fact_id"] not in block["fact_ids"] for page in doc["pages"] for block in page["blocks"])
+        with connect(settings.db_path) as conn:
+            result = preflights.get(conn, sid, reviewed["preflight_id"])
+            ctx = validation.load_context(conn, sid, result)
+            document = Document.model_validate(doc)
+            block = document.pages[0].blocks[0]
+            block.fact_ids = [optional["fact_id"]]
+            block.evidence_refs = [EvidenceRef.model_validate(ref) for ref in optional["evidence_refs"]]
+            findings, _ = validation.server_checks(document, ctx)
+            assert any(issue.code == "EVIDENCE_INVALID" and block.block_id in issue.block_ids for issue in findings)
+
+
+@pytest.mark.parametrize("orm", [False, True])
+def test_optional_conflict_exclusion_closes_only_related_issue_and_restore_reopens(settings, orm):
+    from app.services import preflights, validation, jobs
+    if orm:
+        init_orm_db(settings.db_path, settings.private_runs_dir)
+    with TestClient(create_app(settings)) as client:
+        sid = _session(client)
+        src = _upload(client, sid, ("a.txt", SOURCE_A), ("b.txt", "회사명: 예시 회사\n납기 표현: 느린 납기\n".encode()))
+        rev = _select(client, sid, src)
+        pf = _preflight(client, sid, rev)
+        fact = next(fact for fact in pf["facts"] if fact["field_key"] == "lead_time")
+        assert fact["status"] == "conflict"
+        base = f"/api/v1/sessions/{sid}/preflights/"
+        body = {"expected_input_revision": rev, "action": "exclude", "fact_ids": [fact["fact_id"]], "reason": "선택 항목 제외"}
+        changed = client.post(base + pf["preflight_id"] + "/reviews", json=body)
+        assert changed.status_code == 200, changed.text
+        changed = changed.json()
+        assert not any(issue["status"] == "open" and fact["fact_id"] in issue["fact_ids"] for issue in changed["issues"])
+        assert changed["excluded_facts"][0]["status"] == "conflict"
+        with connect(settings.db_path) as conn:
+            ctx = validation.load_context(conn, sid, preflights.get(conn, sid, changed["preflight_id"]))
+            assert not any(fact["fact_id"] in issue.fact_ids for issue in validation.preflight_conflicts(ctx))
+        restored = client.post(base + changed["preflight_id"] + "/reviews", json={**body, "action": "restore"}).json()
+        assert any(issue["status"] == "open" and fact["fact_id"] in issue["fact_ids"] for issue in restored["issues"])
+        with connect(settings.db_path, immediate=True) as conn:
+            active = jobs.create(conn, sid, "draft", "진행 중", input_revision=rev)
+        rejected = client.post(base + restored["preflight_id"] + "/reviews", json=body)
+        assert rejected.status_code == 409
+        with connect(settings.db_path, immediate=True) as conn:
+            conn.execute("UPDATE jobs SET status='cancelled' WHERE job_id=?", (active.job_id,))
+        changed_rev = client.patch(f"/api/v1/sessions/{sid}/inputs", json={"expected_input_revision": rev,
+            "brief": {**BRIEF, "required_fields": ["lead_time"]}}).json()["input_revision"]
+        assert client.post(base + restored["preflight_id"] + "/reviews", json=body).status_code == 409
+        latest = _preflight(client, sid, changed_rev)
+        fact = next(fact for fact in latest["facts"] if fact["field_key"] == "lead_time")
+        assert client.post(base + latest["preflight_id"] + "/reviews", json={**body,
+            "expected_input_revision": changed_rev, "fact_ids": [fact["fact_id"]]}).status_code == 422
