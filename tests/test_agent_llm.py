@@ -58,6 +58,10 @@ def legacy_contract_view(value):
         if "purpose" in result and "target_pages" in result:
             for key in ("audience", "usage_context", "tone", "target_company", "required_fields", "brand_color"):
                 assert result.pop(key) == Brief.model_fields[key].get_default(call_default_factory=True)
+        if result.get("latest_preflight_id", "absent") is None:
+            result.pop("latest_preflight_id")
+        if result.get("sufficiency", "absent") is None:
+            result.pop("sufficiency")  # New optional coverage metadata is outside the frozen pre-1.7 inputs.
         if result.get("design", "absent") is None:
             result.pop("design")
         if result.get("editorial", "absent") is None:
@@ -164,7 +168,8 @@ def editorial_response(payload):
                   "certifications": "인증 범위·기간", "lead_time": "일정·협의 조건", "history": "시작 이력"}
         return {**item(f), "label": labels.get(f["field_key"], "세부 정보")}
     name = next(f for f in included if f["field_key"] == "company_name")
-    opening = next(f for f in included if f["field_key"] == "company_summary")
+    opening = next((f for f in included if f["field_key"] == "company_summary"),
+                   next((f for f in included if f["field_key"] in llm._BUSINESS_KEYS), name))
     details = [f for f in included if f not in [name, opening]]
     if payload["brief"]["audience"] == "기술 검토자":
         details.sort(key=lambda f: f["field_key"] not in {"capabilities", "processes"})
@@ -1340,6 +1345,29 @@ def test_editorial_missing_required_is_internal_supplement_not_invented_body():
     result = llm.LlmAgent(lambda i, p, s, n: editorial_response(p)).draft(request)
     assert result.editorial.supplement_requests and "certifications" in result.editorial.supplement_requests[0]
     assert not any("추가 확인" in t for p in result.pages for b in p.blocks for t in validation.block_texts(b))
+
+
+def test_editorial_excluded_opening_uses_another_grounded_business_fact():
+    request = build_editorial_request("manufacturing")
+    request.brief.emphasis = ["회사 개요 제외"]
+    assert llm.draft_input_problem(request.brief, request.preflight.facts) is None
+    result = llm.LlmAgent(lambda i,p,s,n: editorial_response(p)).draft(request)
+    summary = next(f.fact_id for f in request.preflight.facts if f.field_key == "company_summary")
+    assert next(s.disposition for s in result.editorial.selections if s.fact_id == summary) == "excluded"
+    assert not any(summary in b.fact_ids for p in result.pages for b in p.blocks)
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_draft_readiness_required_excluded_conflict_is_detected_without_model(missing):
+    request = build_editorial_request("manufacturing")
+    request.brief.required_fields = ["certifications"]
+    request.brief.emphasis = ["인증 제외"]
+    if missing:
+        request.preflight.facts = [f for f in request.preflight.facts if f.field_key != "certifications"]
+    problem = llm.draft_input_problem(request.brief, request.preflight.facts)
+    assert problem and problem[0] == "INVALID_REQUEST"
+    with pytest.raises(AgentError, match="INVALID_REQUEST"):
+        llm.LlmAgent(lambda *a: pytest.fail("Input rejection must not call AI")).draft(request)
 
 
 def test_editorial_company_scope_and_target_company_are_checked_before_call():
@@ -6280,8 +6308,8 @@ def test_graph_rejects_old_preflight_after_new_analysis_at_same_revision(graph_f
     flow = graph_flow
     new_job = graph_job(flow, flow.client.post(flow.base + "/preflights", json={"expected_input_revision": flow.rev}))
     assert new_job["status"] == "succeeded", new_job
-    rejected = graph_job(flow, flow.client.post(flow.base + "/drafts", json=flow.body))
-    assert rejected["status"] == "failed" and rejected["error"]["code"] == "INPUT_REVISION_CONFLICT"
+    rejected = flow.client.post(flow.base + "/drafts", json=flow.body)
+    assert rejected.status_code == 409 and rejected.json()["error"]["code"] == "INPUT_REVISION_CONFLICT"
     assert len(flow.model.calls) == 2
     current = flow.body | {"preflight_id": new_job["result_ref"]["preflight_id"]}
     assert graph_job(flow, flow.client.post(flow.base + "/drafts", json=current))["status"] == "succeeded"
@@ -7488,8 +7516,9 @@ def test_failed_draft_retry_rejects_unsafe_confirmation_reuse(graph_flow, monkey
         flow.client.post(flow.base + "/preflights", json={"expected_input_revision": flow.rev})
     calls = len(flow.model.calls)
     retried = flow.client.post(flow.base + "/drafts", json=flow.body)
-    if state == "changed_input":
+    if state in {"changed_input", "new_preflight"}:
         assert retried.status_code == 409
+        assert retried.json()["error"]["code"] == "INPUT_REVISION_CONFLICT"
     elif state == "running":
         assert retried.json()["job_id"] == jid
     else:

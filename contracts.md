@@ -1,6 +1,8 @@
 # 공통 데이터·API 계약
 
-기준일: 2026-10-07 · 문서 v1.36 · contract_version: 1.9 · 데이터 schema_version: 1.0
+기준일: 2026-10-07 · 문서 v1.37 · contract_version: 1.9 · 데이터 schema_version: 1.0
+
+**2026-10-07 초안 진입 조건 대조:** 최신 입력의 Preflight GET은 LLM 초안과 같은 결정적 입력 검사를 적용한다. 대상 회사명 미확인/불일치, 필수·제외 충돌, 사용할 supported 사실 없음은 can_generate=false와 recommendations.needed로 안내한다. 조회는 저장된 사실/확인/점검을 바꾸지 않는다. 공개 읽기 필드 latest_preflight_id:string|null을 추가해 같은 입력의 최신 점검을 알려준다. 오래된 점검은 can_generate=false이고 POST drafts는 Job/확인 지점 소비 전에 409 INPUT_REVISION_CONFLICT(latest_preflight_id 포함)로 거부한다. 자료/조건 문제도 422 INVALID_REQUEST 또는 NO_USABLE_TEXT로 접수 전에 거부한다. 일부 필수 사실 누락이나 열린 문제 자체는 검토용 초안을 일괄 차단하지 않으며 최종 승인 검사는 유지한다. 자동으로 필수가 되는 사업 설명은 명시 제외하지 않은 항목에서 선택한다. 프론트는 같은 입력의 최신 점검을 GET으로 복원하고 확인을 다시 받는다. 입력 revision이 달라지면 이전 점검/확인을 버리고 상태 새로고침을 안내한다. API 계약1.9 호환 확장·DB v11·template_v11 유지.
 
 **2026-10-07 대상 회사명 비교:** 초안 전 supported 회사명 근거와 대상 이름은 전체 이름 기준으로 비교한다. 공백·대소문자·NFKC 및 앞/뒤의 ㈜/(주)/주식회사 표기만 정규화하며 영문 번역/약칭은 기존 운영자 확인 별칭 그룹만 허용한다. 부분 이름/다른 회사/빈 법인 표기와 미확인 사실은 통과시키지 않는다. 원문·사실·인용·점검 결과와 계약1.9/DB v11을 유지한다.
 
@@ -282,7 +284,7 @@ after 값이 null이면 맨 앞이다. 존재하지 않는 대상, 자신 뒤로
 필수: `preflight_id`, `session_id`, `input_revision`, `usable_source_ids`, `facts`, `issues`, `recommendations`, `can_generate`, `confirmed_at`.
 
 - recommendations는 `{suggested_pages: 1/4/6/8/10, reason: string, needed: string[]}`다. 필요한 사진/인증/보완자료 설명이 없으면 needed는 빈 목록이다. 새 고정 분류 코드는 추가하지 않는다.
-- can_generate는 읽기·최소 텍스트 근거 등 생성 조건을 뜻한다. 사용자 확인은 별도로 필요하다.
+- can_generate는 읽기·최소 텍스트 근거·최신 점검 및 위 결정적 초안 입력 조건을 뜻한다. 사용자 확인은 별도로 필요하다. latest_preflight_id는 같은 최신 입력의 최신 점검 ID이며 이전 입력을 조회할 때는 null이다.
 - 필수 내용 누락과 읽기 실패를 동일하게 처리하지 않는다. 읽을 근거가 있고 필수 내용 일부가 빠진 경우 검토용 초안은 가능하다.
 
 ### Issue — 확인할 내용

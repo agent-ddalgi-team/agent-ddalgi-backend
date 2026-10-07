@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from app.access import require_owner, settings_of
 from app.db import connect
 from app.errors import ApiError
-from app.models import JobAccepted, PreflightCreate, PreflightOut
+from app.models import Brief, JobAccepted, PreflightCreate, PreflightOut
 from app.services import ai_jobs, idempotency, jobs, preflights, sessions
 
 router = APIRouter(prefix="/sessions/{sid}/preflights", tags=["preflights"])
@@ -49,5 +49,13 @@ def get_preflight(request: Request, sid: str, pid: str):
     settings = settings_of(request)
     owner = require_owner(request)
     with connect(settings.db_path) as conn:
-        sessions.load_active(conn, owner, sid, settings)
-        return preflights.get(conn, sid, pid)
+        row = sessions.load_active(conn, owner, sid, settings)
+        result = preflights.get(conn, sid, pid)
+        if result.input_revision == row["input_revision"]:
+            result = preflights.apply_draft_readiness(result, Brief.model_validate_json(row["brief_json"]), settings.agent_mode)
+            result.latest_preflight_id = preflights.latest_id(conn, sid, row["input_revision"])
+            if result.latest_preflight_id != pid:
+                result = result.model_copy(deep=True)
+                result.can_generate = False
+                result.recommendations.needed.append("새로운 점검 결과가 있습니다. 상태를 새로고침하고 최신 점검을 확인해 주세요.")
+        return result

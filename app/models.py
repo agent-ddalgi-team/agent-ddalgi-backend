@@ -345,6 +345,7 @@ class PublicDataStatus(BaseModel):
 
 
 class PreflightOut(BaseModel):
+    latest_preflight_id: str | None = None
     preflight_id: str
     session_id: str
     input_revision: int

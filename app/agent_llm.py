@@ -1248,10 +1248,15 @@ def _editorial_body_gaps(facts: dict[str, Fact], used: dict[str, list[str]]) -> 
 
 
 def _editorial_required(request: DraftRequest, facts: dict[str, Fact]) -> tuple[set[str], list[str]]:
-    required_fields = {"company_name", *request.brief.required_fields}
+    return _editorial_required_for_brief(request.brief, facts)
+
+
+def _editorial_required_for_brief(brief: Brief, facts: dict[str, Fact]) -> tuple[set[str], list[str]]:
+    required_fields = {"company_name", *brief.required_fields}
     supported = [f for f in facts.values() if f.status == "supported"]
     required = {f.fact_id for f in supported if f.field_key in required_fields}
-    business = [f for f in supported if f.field_key in _BUSINESS_KEYS]
+    excluded = _section_preferences(brief)[2]
+    business = [f for f in supported if f.field_key in _BUSINESS_KEYS and f.field_key not in excluded]
     if business:
         # One grounded opening is always required; remaining facts can be selected by purpose.
         required.add(business[0].fact_id)
@@ -1259,6 +1264,25 @@ def _editorial_required(request: DraftRequest, facts: dict[str, Fact]) -> tuple[
     if not business:
         missing.append("주요 사업/제품 설명")
     return required, missing
+
+
+def draft_input_problem(brief: Brief, fact_list: list[Fact]) -> tuple[str, str] | None:
+    """Predict only deterministic editorial input rejections; never perform an AI call."""
+    from app.config import company_names_match
+    facts = {f.fact_id: f for f in fact_list}
+    excluded = _section_preferences(brief)[2]
+    required, _ = _editorial_required_for_brief(brief, facts)
+    if set(brief.required_fields) & excluded or any(facts[fid].field_key in excluded for fid in required):
+        return "INVALID_REQUEST", "필수 내용과 제외 요청이 겹칩니다. 작성 조건을 정리해 주세요."
+    names = [f for f in fact_list if f.field_key == "company_name" and f.status == "supported"]
+    if brief.target_company:
+        if names and not any(company_names_match(brief.target_company, _company_name_title(f)) for f in names):
+            return "INVALID_REQUEST", "대상 회사명과 확인된 회사명 근거가 일치하지 않습니다. 자료를 보완해 주세요."
+        if not names:
+            return "INVALID_REQUEST", "선택한 대상 회사명을 확인할 근거가 없습니다. 회사명이 명시된 자료를 보완해 주세요."
+    if not any(f.status == "supported" and f.field_key not in excluded for f in fact_list):
+        return "NO_USABLE_TEXT", "초안 본문에 사용할 확정 근거가 없습니다. 자료나 제외 조건을 보완해 주세요."
+    return None
 
 
 def _editorial_selection_policy(facts: dict[str, Fact], required: set[str],
@@ -1945,13 +1969,9 @@ class LlmAgent:
         """Compose atomic claims; the caller may allow one diagnosed live rewrite."""
         from app.services.validation import is_label, numeric_evidence_tokens, sequence_evidence_supported
         required, missing = _editorial_required(request, facts)
-        if any(facts[fid].field_key in excluded for fid in required):
-            raise AgentError("INVALID_REQUEST", "필수 내용과 제외 요청이 겹칩니다. 작성 조건을 정리해 주세요.")
+        if problem := draft_input_problem(request.brief, list(facts.values())):
+            raise AgentError(*problem)
         names = [f for f in facts.values() if f.field_key == "company_name" and f.status == "supported"]
-        from app.config import company_names_match
-        if request.brief.target_company and not any(
-                company_names_match(request.brief.target_company, _company_name_title(f)) for f in names):
-            raise AgentError("INVALID_REQUEST", "대상 회사명과 확인된 회사명 근거가 일치하지 않습니다. 자료를 보완해 주세요.")
         photos = self._brochure_photos(request, excluded)
         selection_policy = _editorial_selection_policy(facts, required, excluded)
         payload = {
