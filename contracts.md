@@ -1,6 +1,8 @@
 # 공통 데이터·API 계약
 
-기준일: 2026-10-07 · 문서 v1.40 · contract_version: 1.9 · 데이터 schema_version: 1.0
+기준일: 2026-10-07 · 문서 v1.41 · contract_version: 1.9 · 데이터 schema_version: 1.0
+
+**2026-10-07 숫자·날짜 표기 동등성:** 사실 추출·초안 수치 보존·서버 내용 검사에서 공유하는 숫자 비교는 명시된 날짜 항목의 YYYYMMDD, 같은 연도의 명확한 날짜 범위, 원화 조/억/만 단위의 정확한 Decimal 환산, 인용 표의 (원)/(%), 숫자 괄호 밖의 원/%를 정규화한다. 원문·인용 위치·저장 사실·문서는 바꾸지 않는다. 금액/백분율의 부호·실제 값 변경, 다른 통화/길이 단위, 문서 코드의 날짜 오인, 불명확한 연도 전환은 허용하지 않는다. 주체·조건·인증 범위는 별도의 의미 검사 대상으로 유지한다. 기존 저장된 needs_confirmation/Issue는 자동 해제하지 않으며 새 자료 점검이 필요하다. API 계약1.9·DB v11·template_v11 유지.
 
 **2026-10-07 초안 진입 조건 대조:** 최신 입력의 Preflight GET은 LLM 초안과 같은 결정적 입력 검사를 적용한다. 대상 회사명 미확인/불일치, 필수·제외 충돌, 사용할 supported 사실 없음은 can_generate=false와 recommendations.needed로 안내한다. 조회는 저장된 사실/확인/점검을 바꾸지 않는다. 공개 읽기 필드 latest_preflight_id:string|null을 추가해 같은 입력의 최신 점검을 알려준다. 오래된 점검은 can_generate=false이고 POST drafts는 Job/확인 지점 소비 전에 409 INPUT_REVISION_CONFLICT(latest_preflight_id 포함)로 거부한다. 자료/조건 문제도 422 INVALID_REQUEST 또는 NO_USABLE_TEXT로 접수 전에 거부한다. 일부 필수 사실 누락이나 열린 문제 자체는 검토용 초안을 일괄 차단하지 않으며 최종 승인 검사는 유지한다. 자동으로 필수가 되는 사업 설명은 명시 제외하지 않은 항목에서 선택한다. 프론트는 같은 입력의 최신 점검을 GET으로 복원하고 확인을 다시 받는다. 입력 revision이 달라지면 이전 점검/확인을 버리고 상태 새로고침을 안내한다. API 계약1.9 호환 확장·DB v11·template_v11 유지.
 

@@ -435,6 +435,43 @@ def test_editorial_production_path_atomic_claims_selection_and_original_sources(
     ("코드 2020-12-28X", "2020년 12월 28일", False),
     ("만료일 2027-02-28", "만료일 2027년 2월 30일", False),
     ("후보 9행, 월 20영업일", "P01~P09, 월 20영업일", False),
+    ("설립일: 19990602", "설립일은 1999년 6월 2일이다.", True),
+    ("설립일: 19990602", "설립일은 1999년 6월 3일이다.", False),
+    ("문서번호: 19990602", "설립일 1999년 6월 2일", False),
+    ("코드 A19990602", "설립일 1999년 6월 2일", False),
+    ("설립일: 20270230", "설립일 2027년 2월 28일", False),
+    ("시작일 2027년 02월 26일 종료일 2027년 03월 18일",
+     "2027년 2월 26일부터 3월 18일까지", True),
+    ("시작일 2027년 02월 26일 종료일 2027년 03월 18일",
+     "2027년 2월 26일부터 3월 19일까지", False),
+    ("시작일 2027년 12월 26일 종료일 2028년 01월 18일",
+     "2027년 12월 26일부터 1월 18일까지", False),
+    ("금액 1,200,000,000,000원", "금액 1조 2,000억 원", True),
+    ("금 일조이천억(1,200,000,000,000)원 이상", "1조 2,000억 원 이상", True),
+    ("금 일조이천억(1,200,000,000,000)원 이상", "1조 2,001억 원 이상", False),
+    ("금 일조이천억(1,200,000,000,000)달러", "1조 2,000억 원", False),
+    ("비율(%) -10.21", "비율 10.21%", False),
+    ("비율(%) 10.21", "비율 -10.21%", False),
+    ("비율(%) -10.21", "비율 -10.21%", True),
+    ("금액 1조 2,000억 원", "금액 1,200,000,000,000원", True),
+    ("금액 1.2조원", "금액 1조 2,000억원", True),
+    ("금액 1,200,000,000,000원", "금액 1조 2,001억원", False),
+    ("금액 1,200,000,000,000원", "금액 1조 2,000억달러", False),
+    ("금액 3,000원", "금액 0.3만원", True),
+    ("금액 -3,000원", "금액 0.3만원", False),
+    ("금액 3,000원", "금액 -0.3만원", False),
+    ("금액 -3,000원", "금액 -0.3만원", True),
+    ("금액 1,200원", "금액 12,00원", False),
+    ("금액 1,200원", "금액 12,00만원", False),
+    ("금액 300,000,000원", "금액 1억 2억원", False),
+    ("종속회사의 자산총액(원) 3,897,940,444,850",
+     "종속회사 자산총액은 3,897,940,444,850원이다.", True),
+    ("지배회사의 연결 자산총액(원) 38,167,876,036,020",
+     "연결 자산총액은 38,167,876,036,020원이다.", True),
+    ("지배회사의 연결 자산총액 대비(%) 10.21", "비율은 10.21%다.", True),
+    ("지배회사의 연결 자산총액 대비(%) 10.21", "비율은 10.22%다.", False),
+    ("자산총액(달러) 3,000", "자산총액은 3,000원이다.", False),
+    ("자산총액 3,000", "자산총액은 3,000원이다.", False),
 ])
 def test_numeric_evidence_accepts_format_only_and_rejects_changed_values(source, claim, allowed):
     assert (not (validation.numeric_evidence_tokens(claim) -
@@ -455,6 +492,12 @@ def numeric_editorial_request(source, value):
     ("Issue date: 25 September 2025", "발행일 2025년 9월 25일", "발행일 2025.09.25"),
     ("2020 | 시범 검사", "2020년 시범 검사", "2020년 시범 검사"),
     ("검사 예시 1200개", "검사 예시 1,200개", "검사 예시 1200개"),
+    ("설립일: 19990602", "설립일 1999년 6월 2일", "설립일 1999년 6월 2일"),
+    ("자산총액(원) 3,897,940,444,850", "자산총액 3,897,940,444,850원",
+     "자산총액 3,897,940,444,850원"),
+    ("금액 1,200,000,000,000원", "금액 1조 2,000억원", "금액 1조 2,000억원"),
+    ("기간 2027년 2월 26일 ~ 2027년 3월 18일", "기간 2027년 2월 26일부터 3월 18일까지",
+     "기간 2027년 2월 26일부터 3월 18일까지"),
 ])
 def test_editorial_numeric_format_survives_draft_and_server_checks(source, value, body):
     request, fid = numeric_editorial_request(source, value)
@@ -1919,6 +1962,15 @@ def test_extract_restores_source_version_location_and_keeps_conditions():
     ("후보 9행, 월 20영업일", "P01~P09, 월 20영업일", "needs_confirmation"),
     ("길이 200mm", "길이 200cm", "needs_confirmation"),
     ("만료일 2027.02.15", "만료일 2027년 2월 16일", "needs_confirmation"),
+    ("설립일: 19990602", "설립일 1999년 6월 2일", "supported"),
+    ("설립일: 19990602", "설립일 1999년 6월 3일", "needs_confirmation"),
+    ("금 일조이천억(1,200,000,000,000)원 이상", "1조 2,000억 원 이상", "supported"),
+    ("금 일조이천억(1,200,000,000,000)원 이상", "1조 2,001억 원 이상", "needs_confirmation"),
+    ("자산총액(원) 3,897,940,444,850", "자산총액 3,897,940,444,850원", "supported"),
+    ("자산총액(원) 3,897,940,444,850", "자산총액 3,897,940,444,851원", "needs_confirmation"),
+    ("비율(%) 10.21", "비율 10.21%", "supported"),
+    ("비율(%) 10.21", "비율 10.22%", "needs_confirmation"),
+    ("기간 2027년 2월 26일 ~ 2027년 3월 18일", "기간 2027년 2월 26일부터 3월 18일까지", "supported"),
 ])
 def test_extraction_numeric_evidence_is_checked_before_draft(source, value, expected_status):
     selected = [SourceIn("src_numbers", 1, "company", "가상 숫자 자료", "complete", [
@@ -6564,13 +6616,18 @@ def test_stopped_trial_preserves_existing_document_through_server(tmp_path, monk
         assert changed_view["document"] == saved["document"]
         assert changed_view["input_review_required"] is True
         assert changed_view["latest_preflight_id"] is None
+        changed_preflight = client.get(preflight_url).json()
+        assert changed_preflight["facts"] == confirmed["facts"]
+        assert changed_preflight["confirmed_at"] == confirmed["confirmed_at"]
+        assert changed_preflight["input_revision"] == rev
+        assert changed_preflight["latest_preflight_id"] is None
         cookies = dict(client.cookies)
         assert len(calls) == 4 and llm.trial_report()["calls_started"] == 2
     # 본문은 보존하되, 변경된 입력의 재점검 필요 상태도 재시작 뒤 유지한다.
     with TestClient(create_app(settings)) as reopened:
         reopened.cookies.update(cookies)
         assert reopened.get(document_url).json() == changed_view
-        assert reopened.get(preflight_url).json() == confirmed
+        assert reopened.get(preflight_url).json() == changed_preflight
         assert len(calls) == 4 and llm.trial_report()["calls_started"] == 2
 
 

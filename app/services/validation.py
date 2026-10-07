@@ -20,6 +20,7 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import date
+from decimal import Decimal, localcontext
 from typing import Any
 
 from app.agent_bridge import SourceIn
@@ -135,14 +136,93 @@ _DATE_PATTERNS = (
 _CALENDAR_YEAR = re.compile(r"(?<![\dA-Za-z.-])([12]\d{3})(?:\s*년|(?=\s*\|))")
 
 
+# Normalize only explicit formatting relationships inside the cited text. This
+# does not establish company identity, date role, subject or contract conditions.
+_NUMBER_FORM = r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
+_COMPACT_DATE = re.compile(
+    r"(?<![A-Za-z가-힣])(?P<label>(?:설립일자?|발행일자?|만료일자?|기준일자?|공시일자?|"
+    r"접수일자?|시작일|종료일|[Dd]ate)\s*[:：]?\s*)"
+    r"(?P<y>[12]\d{3})(?P<m>\d{2})(?P<d>\d{2})(?![\dA-Za-z])")
+_KOREAN_DATE_RANGE = re.compile(
+    r"(?<![\dA-Za-z])(?P<y>[12]\d{3})\s*년\s*(?P<m>\d{1,2})\s*월\s*(?P<d>\d{1,2})\s*일"
+    r"(?P<join>\s*(?:부터|에서|[~∼–-])\s*)(?P<end_m>\d{1,2})\s*월\s*(?P<end_d>\d{1,2})\s*일")
+_TABLE_UNIT = re.compile(
+    r"(?P<label>[가-힣A-Za-z][가-힣A-Za-z \t]{0,40})[（(]\s*(?P<unit>원|%)\s*[)）]"
+    r"\s*[:：]?\s*(?P<number>[+-]?" + _NUMBER_FORM + r")(?![\d.,])")
+_PARENTHESIZED_UNIT = re.compile(
+    r"[（(](?P<number>[+-]?" + _NUMBER_FORM + r")[)）]\s*(?P<unit>원|%)")
+_WON_AMOUNT = re.compile(
+    r"(?<![\w.,+-])(?P<sign>[+-]?)(?P<parts>(?:" + _NUMBER_FORM + r"\s*[조억만]\s*)*"
+    r"(?:" + _NUMBER_FORM + r"\s*)?)원(?![A-Za-z])")
+_WON_PART = re.compile(r"(?P<number>" + _NUMBER_FORM + r")\s*(?P<scale>[조억만]?)")
+_WON_SCALES = {"조": 10**12, "억": 10**8, "만": 10**4, "": 1}
+
+
+def _numeric_format_text(text: str) -> str:
+    def compact(match: re.Match) -> str:
+        try:
+            value = date(int(match['y']), int(match['m']), int(match['d']))
+        except ValueError:
+            return match[0]
+        return match['label'] + value.isoformat()
+
+    def date_range(match: re.Match) -> str:
+        try:
+            start = date(int(match['y']), int(match['m']), int(match['d']))
+            end = date(start.year, int(match['end_m']), int(match['end_d']))
+        except ValueError:
+            return match[0]
+        if end < start:  # A year crossing cannot be inferred from the omission.
+            return match[0]
+        # Preserve Korean suffix boundaries (e.g. '일부터', '일까지').
+        return (f"{start.year}년 {start.month}월 {start.day}일{match['join']}"
+                f"{end.year}년 {end.month}월 {end.day}일")
+
+    def table_unit(match: re.Match) -> str:
+        return f"{match['label']}({match['unit']}) {match['number']}{match['unit']}"
+
+    def won(match: re.Match) -> str:
+        parts = list(_WON_PART.finditer(match['parts']))
+        if not parts or len(parts) > 4:
+            return match[0]
+        previous = 10**13
+        with localcontext() as context:
+            context.prec = 140
+            total = Decimal(0)
+            for part in parts:
+                number, scale = part['number'], _WON_SCALES[part['scale']]
+                if scale >= previous or len(number) > 40:
+                    return match[0]
+                previous = scale
+                total += Decimal(number.replace(',', '')) * scale
+            number = format(total, 'f')
+            if '.' in number:
+                number = number.rstrip('0').rstrip('.')
+        return ('-' if match['sign'] == '-' else '') + number + '원'
+
+    text = _COMPACT_DATE.sub(compact, text)
+    text = _KOREAN_DATE_RANGE.sub(date_range, text)
+    text = _TABLE_UNIT.sub(table_unit, text)
+    text = _PARENTHESIZED_UNIT.sub(lambda m: f"({m['number']}{m['unit']})", text)
+    return _WON_AMOUNT.sub(won, text)
+
+
 def numeric_evidence_tokens(text: str) -> set[tuple[str, str]]:
-    """Compare literal quantities and unambiguous calendar dates, without unit conversion.
+    """Compare quantities and dates after explicit, exact format normalization.
+
+    Korean won scales are converted exactly; other unit conversions stay unsupported.
 
     Dates stay atomic: matching year/month/day digits in different dates is not evidence.
     Their year can support a year-only history statement; a year cannot support a full date.
     This is a formatting check, not proof of subject, date role, conditions or causality.
     """
+    text = _numeric_format_text(text)
     tokens: set[tuple[str, str]] = set()
+    # Monetary sign is part of the amount, including after exact scale conversion.
+    for amount in re.findall(r"(?<![\d.,A-Za-z])([+-]?" + _NUMBER_FORM + r")\s*원", text):
+        tokens.add(("currency", amount.replace(',', '').lstrip('+')))
+    for amount in re.findall(r"(?<![\d.,A-Za-z])([+-]?" + _NUMBER_FORM + r")\s*%", text):
+        tokens.add(("percent", amount.replace(',', '').lstrip('+')))
 
     def calendar(match: re.Match) -> str:
         month = match["m"].lower().rstrip(".")
