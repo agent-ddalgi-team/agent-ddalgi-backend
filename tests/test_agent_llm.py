@@ -1955,6 +1955,18 @@ def test_extract_restores_source_version_location_and_keeps_conditions():
 
 
 @pytest.mark.parametrize("source,value,expected_status", [
+    ("거래업체:350여 업체", "거래업체가 약 350개 업체라고 기재되어 있다.", "supported"),
+    ("거래업체 약 350개 업체", "거래업체 350여 업체", "supported"),
+    ("거래업체:1,350여 업체", "거래업체 약 1350개 업체", "supported"),
+    ("거래업체:350여 업체", "거래업체 약 351개 업체", "needs_confirmation"),
+    ("거래업체:350여 업체", "거래업체 350업체", "needs_confirmation"),
+    ("거래업체 350업체", "거래업체 350개 업체", "supported"),
+    ("거래업체 350업체", "거래업체 약 350개 업체", "needs_confirmation"),
+    ("거래업체:350여 업체", "거래업체 350개 업체", "needs_confirmation"),
+    ("거래업체:350여 업체", "거래업체 약 350명", "needs_confirmation"),
+    ("거래업체:350여 업체", "설비 약 350개", "needs_confirmation"),
+    ("거래업체 약 350개 업체", "거래업체 350개 업체", "needs_confirmation"),
+    ("01. 아연도금 02. 아노다이징 03. 흑착", "공정 9종", "needs_confirmation"),
     ("예시 수량 1200개", "예시 수량 1,200개", "supported"),
     ("만료일 2027.02.15", "만료일 2027년 2월 15일", "supported"),
     ("Issue date: 25 September 2025", "발행일 2025년 9월 25일", "supported"),

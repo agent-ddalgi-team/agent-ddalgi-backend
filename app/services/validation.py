@@ -218,6 +218,22 @@ def numeric_evidence_tokens(text: str) -> set[tuple[str, str]]:
     """
     text = _numeric_format_text(text)
     tokens: set[tuple[str, str]] = set()
+    # Keep approximate organization counts distinct from exact counts and other units.
+    # Both '350여 업체' and '약 350개 업체' retain the approximation qualifier.
+    count = r"(?:\d{1,3}(?:,\d{3})+|\d+)"
+    organization_count = re.compile(
+        r"(?<![\d.,A-Za-z])(?:약\s*(?P<prefix>" + count + r")\s*(?:개\s*)?업체"
+        r"|(?P<suffix>" + count + r")\s*여\s*(?:개\s*)?업체"
+        r"|(?P<exact>" + count + r")\s*(?:개\s*)?업체)")
+
+    def approximate_organizations(match: re.Match) -> str:
+        number = (match['prefix'] or match['suffix'] or match['exact']).replace(',', '')
+        qualifier = 'exact_organizations' if match['exact'] else 'approximate_organizations'
+        tokens.add(('number', number))
+        tokens.add(('quantity', number + '|' + qualifier))
+        return ' ' * len(match[0])
+
+    text = organization_count.sub(approximate_organizations, text)
     # Monetary sign is part of the amount, including after exact scale conversion.
     for amount in re.findall(r"(?<![\d.,A-Za-z])([+-]?" + _NUMBER_FORM + r")\s*원", text):
         tokens.add(("currency", amount.replace(',', '').lstrip('+')))
