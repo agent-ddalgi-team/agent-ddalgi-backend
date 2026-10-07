@@ -396,9 +396,9 @@ def search_dart_companies(settings: Settings, query: str) -> list[dict]:
     needle = normalized(query)
     if len(needle) < 2:
         return []
-    # Verified search alias only: https://navercorp.com/company/about
-    # It changes discovery, never the canonical name saved or used to import.
-    verified = {"00266961": ("NAVER", "네이버")}
+    # Confirmed official aliases also serve the full-name comparison; never infer translations.
+    from app.config import VERIFIED_DART_COMPANY_NAMES
+    verified = VERIFIED_DART_COMPANY_NAMES
     matches = []
     for code, name in _dart_company_records(settings):
         alias = verified.get(code)
@@ -469,9 +469,12 @@ def _dart_documents(settings: Settings, target: str, corp_code: str | None = Non
     code = _dart_company_code(settings, target, corp_code)
     raw = _dart_download(settings, "company.json", {"corp_code": code})
     company = json.loads(raw)
-    if company.get("corp_code") != code or not company_names_match(target, company.get("corp_name", "")):
+    # DART master uses a disclosure/stock name, company.json may use a legal name.
+    # The code must match and at least one provider-supplied name must match in full.
+    if company.get("corp_code") != code or not any(
+            company_names_match(target, company.get(field) or "") for field in ("corp_name", "stock_name")):
         raise ApiError(422, "DART_COMPANY_MISMATCH", "DART 기업개황의 회사 정보가 선택한 회사와 다릅니다.")
-    labels = {"corp_name": "회사명", "corp_name_eng": "영문 회사명", "ceo_nm": "대표자", "adres": "주소",
+    labels = {"corp_name": "회사명", "stock_name": "공시 등록명", "corp_name_eng": "영문 회사명", "ceo_nm": "대표자", "adres": "주소",
               "est_dt": "설립일", "hm_url": "홈페이지", "phn_no": "전화번호", "induty_code": "업종 코드"}
     lines = [f"금융감독원 DART 기업개황 · 조회일 {now().date().isoformat()}"]
     lines += [f"{label}: {company[field]}" for field, label in labels.items() if company.get(field)]

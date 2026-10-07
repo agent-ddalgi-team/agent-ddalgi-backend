@@ -777,3 +777,38 @@ def test_dart_naver_search_alias_preserves_canonical_identity_and_limit(dart_cli
     assert items[0] == {"corp_code":"00266961","corp_name":"NAVER","display_name":"NAVER (네이버)"}
     assert len(items) == 20
     assert client.get("/api/v1/companies",params={"query":"naver"}).json()["items"][0]["corp_name"] == "NAVER"
+
+
+@pytest.mark.parametrize("mode", ["legal_stock_names", "naver_names", "wrong_code", "wrong_names"])
+def test_dart_master_stock_name_and_legal_name_use_verified_identity(dart_client, monkeypatch, mode):
+    import json, hashlib, time
+    from app.services import sources
+    client, settings, session, calls, original = dart_client
+    target = "NAVER" if mode == "naver_names" else "공시등록명"
+    master_code = "00266961" if mode == "naver_names" else "00123456"
+    legal = "네이버(주)" if mode == "naver_names" else "정식법인(주)"
+    monkeypatch.setattr(sources, "_DART_COMPANY_CACHE", (hashlib.sha256(settings.dart_api_key.encode()).hexdigest(),time.monotonic()+100,[(master_code,target)]))
+    def download(current, endpoint, params, limit=10*1024*1024):
+        if endpoint == "company.json":
+            return json.dumps({"status":"000", "corp_code":"00987654" if mode == "wrong_code" else master_code,
+                "corp_name":legal, "stock_name":"다른공시등록명" if mode == "wrong_names" else target},ensure_ascii=False).encode()
+        if endpoint == "list.json":
+            from app.errors import ApiError
+            raise ApiError(404,"DART_DATA_NOT_FOUND","공시 없음")
+        return original(current, endpoint, params, limit)
+    monkeypatch.setattr(sources, "_dart_download", download)
+    root=f"/api/v1/sessions/{session['session_id']}"
+    body={"expected_input_revision":1,"brief":{**BRIEF,"target_company":target,"dart_corp_code":master_code},"selected_source_ids":[]}
+    assert client.patch(root+"/inputs",json=body).status_code == 200
+    accepted=client.post(root+"/public-data/import",json={"expected_input_revision":2}).json()
+    job=client.get(root+"/jobs/"+accepted["job_id"]).json()
+    items=client.get(root+"/sources").json()["items"]
+    if mode in {"wrong_code","wrong_names"}:
+        assert job["status"] == "failed" and job["error"]["code"] == "DART_COMPANY_MISMATCH"
+        assert items == [] and not list(settings.private_runs_dir.glob(session["session_id"]+"/*"))
+    else:
+        assert job["status"] == "succeeded" and len(items) == 1
+        from app.db import connect
+        with connect(settings.db_path) as conn:
+            text="\n".join(row[0] for row in conn.execute("SELECT text FROM segments WHERE source_id=? ORDER BY ordinal",(items[0]["source_id"],)))
+        assert f"회사명: {legal}" in text and f"공시 등록명: {target}" in text

@@ -16,6 +16,9 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 
+# Same provider identity verified in DART corpCode.xml/company.json and official company site.
+VERIFIED_DART_COMPANY_NAMES = {"00266961": ("NAVER", "네이버")}
+
 
 def company_name_aliases(value: str | None) -> tuple[str, ...]:
     """운영자가 동일 회사로 확인한 정확한 이름만 연결한다. 실명 목록은 로컬 설정에 둔다."""
@@ -47,10 +50,10 @@ def company_names_match(target: str, grounded: str) -> bool:
         return False
     if target_name == grounded_name:
         return True
-    # Translations are never inferred: the operator must have confirmed the group.
+    # Only explicit provider-verified names or operator-confirmed groups are aliases.
     return any(target_name in {normalize(alias) for alias in group}
                and grounded_name in {normalize(alias) for alias in group}
-               for group in (company_name_aliases(target), company_name_aliases(grounded)) if group)
+               for group in (*VERIFIED_DART_COMPANY_NAMES.values(), company_name_aliases(target), company_name_aliases(grounded)) if group)
 
 
 def _env_int(name: str, default: int) -> int:

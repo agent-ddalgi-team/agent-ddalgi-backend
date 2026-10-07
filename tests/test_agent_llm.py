@@ -1389,6 +1389,7 @@ def test_editorial_company_scope_and_target_company_are_checked_before_call():
     ("예시정공", "㈜예시정공"), ("예시정공", "(주) 예시정공"),
     ("예시 정공", "주식회사 예시정공"), ("예시정공", "예시정공 주식회사"),
     ("㈜예시정공", "예시정공"), ("ＥＸＡＭＰＬＥ", "example"),
+    ("NAVER", "네이버(주)"), ("네이버", "NAVER"),
 ])
 def test_editorial_target_company_accepts_notation_without_reextracting(target, grounded):
     request = build_editorial_request("manufacturing")
@@ -1410,6 +1411,7 @@ def test_editorial_target_company_accepts_notation_without_reextracting(target, 
     ("예시정공", "다른예시정공"), ("예시정공", "예시정공테크"),
     ("예시정공", "EXAMPLE MACHINING"), ("㈜", "(주)"),
     ("예시정공", "유한회사 예시정공"),
+    ("NAVER", "네이버랩스"), ("네이버", "네이버클라우드"),
 ])
 def test_company_name_match_does_not_infer_other_companies(monkeypatch, target, grounded):
     from app.config import company_names_match
