@@ -1,6 +1,6 @@
 # 공통 데이터·API 계약
 
-기준일: 2026-10-07 · 문서 v1.39 · contract_version: 1.9 · 데이터 schema_version: 1.0
+기준일: 2026-10-07 · 문서 v1.40 · contract_version: 1.9 · 데이터 schema_version: 1.0
 
 **2026-10-07 초안 진입 조건 대조:** 최신 입력의 Preflight GET은 LLM 초안과 같은 결정적 입력 검사를 적용한다. 대상 회사명 미확인/불일치, 필수·제외 충돌, 사용할 supported 사실 없음은 can_generate=false와 recommendations.needed로 안내한다. 조회는 저장된 사실/확인/점검을 바꾸지 않는다. 공개 읽기 필드 latest_preflight_id:string|null을 추가해 같은 입력의 최신 점검을 알려준다. 오래된 점검은 can_generate=false이고 POST drafts는 Job/확인 지점 소비 전에 409 INPUT_REVISION_CONFLICT(latest_preflight_id 포함)로 거부한다. 자료/조건 문제도 422 INVALID_REQUEST 또는 NO_USABLE_TEXT로 접수 전에 거부한다. 일부 필수 사실 누락이나 열린 문제 자체는 검토용 초안을 일괄 차단하지 않으며 최종 승인 검사는 유지한다. 자동으로 필수가 되는 사업 설명은 명시 제외하지 않은 항목에서 선택한다. 프론트는 같은 입력의 최신 점검을 GET으로 복원하고 확인을 다시 받는다. 입력 revision이 달라지면 이전 점검/확인을 버리고 상태 새로고침을 안내한다. API 계약1.9 호환 확장·DB v11·template_v11 유지.
 
@@ -99,6 +99,8 @@ GET /sessions/{sid}/public-data는 {status:ready|not_configured,providers:[dart,
 **S02/S03 프론트 연결(2026-09-28, 문서 v1.9):** 직접 문구/페이지/블록 편집·저장, 기존 자료의 사진 교체, AI 수정안 비교·명시 적용/거절, 내용 검증·PDF 배치 미리보기·최종 승인·출력/다운로드를 기존 API에 연결한다. 요청은 편집 시작 문서 버전을 사용하며 충돌 때 로컬 편집을 유지한다. 미저장 변경·검사 실패·미확인 경고는 화면에서 승인을 막고, 검사/문서가 바뀌거나 새로고침하면 최종 동의를 다시 받는다. 화면은 `Validation.status=passed`이고 현재 PDF 검사와 미해결 문제가 없는 경우만 승인한다. 이는 미구현 D-07 서버 강제를 대체하지 않는다. 실제 LLM 수정안·검증, C-05 자료 변경 복귀, DOCX 승인/출력, 저장본 이력 복원 UI는 후속이다. API/계약 버전은 1.4로 유지한다.
 
 **계약 1.5(2026-09-29, D-07 백엔드):** 개별 경고 확인과 승인 검사를 연결한다. `acknowledged` 요청에는 기존 문서 버전·사유에 `input_revision`, `validation_id`가 필수이며, 완료된 최신 검증과 일치해야 한다. 확인 기록을 `confirmations(kind=warning_ack)`에 저장하고 승인·승인 재전송·출력/다운로드에서 유효성을 검사한다. 미확인 경고는 `422 WARNING_ACKNOWLEDGEMENT_REQUIRED`로 거부한다. 원문·입력·관련 블록·경고 설명/심각도가 바뀌면 재확인하고, 무관한 변경은 재검증 후 원 확인자/시각을 보존한 연결 기록을 남긴다. 프론트 계약 사본·확인 버튼/요청/오류 표시는 아직 갱신하지 않았다. 이전 절의 D-07 미구현 표기는 당시 상태다. 데이터 schema_version은 1.0, DB는 v11을 유지한다.
+
+**2026-10-07 자료 종류별 AI 점검 활성화:** 등록 자료 선택은 필수가 아니다. 공개 연동 자료 또는 이번 작업 첨부만 선택한 경우에도 role=evidence/use_as_company_evidence=true이고 complete|partial 상태의 읽을 수 있는 텍스트가 하나 이상 있으면 점검을 실행할 수 있다. 선택한 자료가 queued|reading이면 완료를 기다리며 선택하지 않은 자료의 읽기 상태는 실행을 막지 않는다. 미저장 조건/진행 중 요청/업로드 응답 유실/C-05/사진만 선택한 상태의 제한은 유지한다. 서버는 기존 선택 자료·소유·버전 정책을 유지하며 별도의 등록자료 필수 조건을 추가하지 않는다. API/DB 형식 변경 없음.
 
 ## 1. 공통 규칙
 

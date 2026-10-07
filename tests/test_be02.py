@@ -812,3 +812,21 @@ def test_dart_master_stock_name_and_legal_name_use_verified_identity(dart_client
         with connect(settings.db_path) as conn:
             text="\n".join(row[0] for row in conn.execute("SELECT text FROM segments WHERE source_id=? ORDER BY ordinal",(items[0]["source_id"],)))
         assert f"회사명: {legal}" in text and f"공시 등록명: {target}" in text
+
+
+def test_preflight_with_only_imported_dart_sources(dart_client):
+    client, settings, session, _, _ = dart_client
+    root=f"/api/v1/sessions/{session['session_id']}"
+    accepted=client.post(root+"/public-data/import",json={"expected_input_revision":1}).json()
+    assert client.get(root+"/jobs/"+accepted["job_id"]).json()["status"] == "succeeded"
+    items=client.get(root+"/sources").json()["items"]
+    source_ids=[item["source_id"] for item in items]
+    assert len(source_ids) == 2
+    assert all(item["scope"] == "session" for item in items)
+    assert client.patch(root+"/inputs",json={"expected_input_revision":1,"selected_source_ids":source_ids}).status_code == 200
+    accepted=client.post(root+"/preflights",json={"expected_input_revision":2}).json()
+    job=client.get(root+"/jobs/"+accepted["job_id"]).json()
+    assert job["status"] == "succeeded", job
+    pf=client.get(root+"/preflights/"+job["result_ref"]["preflight_id"]).json()
+    assert set(pf["usable_source_ids"]) == set(source_ids)
+    assert all(ref["source_id"] in source_ids for fact in pf["facts"] for ref in fact["evidence_refs"])
