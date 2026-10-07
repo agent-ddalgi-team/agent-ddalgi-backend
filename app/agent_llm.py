@@ -1948,8 +1948,9 @@ class LlmAgent:
         if any(facts[fid].field_key in excluded for fid in required):
             raise AgentError("INVALID_REQUEST", "필수 내용과 제외 요청이 겹칩니다. 작성 조건을 정리해 주세요.")
         names = [f for f in facts.values() if f.field_key == "company_name" and f.status == "supported"]
+        from app.config import company_names_match
         if request.brief.target_company and not any(
-                request.brief.target_company == _company_name_title(f) for f in names):
+                company_names_match(request.brief.target_company, _company_name_title(f)) for f in names):
             raise AgentError("INVALID_REQUEST", "대상 회사명과 확인된 회사명 근거가 일치하지 않습니다. 자료를 보완해 주세요.")
         photos = self._brochure_photos(request, excluded)
         selection_policy = _editorial_selection_policy(facts, required, excluded)

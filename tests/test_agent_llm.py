@@ -1357,6 +1357,45 @@ def test_editorial_company_scope_and_target_company_are_checked_before_call():
     assert not calls
 
 
+@pytest.mark.parametrize("target,grounded", [
+    ("예시정공", "㈜예시정공"), ("예시정공", "(주) 예시정공"),
+    ("예시 정공", "주식회사 예시정공"), ("예시정공", "예시정공 주식회사"),
+    ("㈜예시정공", "예시정공"), ("ＥＸＡＭＰＬＥ", "example"),
+])
+def test_editorial_target_company_accepts_notation_without_reextracting(target, grounded):
+    request = build_editorial_request("manufacturing")
+    request.brief.target_company = target
+    fact = next(f for f in request.preflight.facts if f.field_key == "company_name")
+    segment = next(s for s in request.sources[0].segments if s.segment_id == fact.evidence_refs[0].segment_id)
+    fact.value = segment.text = fact.evidence_refs[0].excerpt = grounded
+    before = request.preflight.model_copy(deep=True)
+    calls = []
+    def compose(i, payload, s, n):
+        calls.append(n)
+        return editorial_response(payload)
+    result = llm.LlmAgent(compose).draft(request)
+    assert result.title == grounded
+    assert len(calls) == 1 and request.preflight == before
+
+
+@pytest.mark.parametrize("target,grounded", [
+    ("예시정공", "다른예시정공"), ("예시정공", "예시정공테크"),
+    ("예시정공", "EXAMPLE MACHINING"), ("㈜", "(주)"),
+    ("예시정공", "유한회사 예시정공"),
+])
+def test_company_name_match_does_not_infer_other_companies(monkeypatch, target, grounded):
+    from app.config import company_names_match
+    monkeypatch.delenv("COMPANY_NAME_ALIASES", raising=False)
+    assert not company_names_match(target, grounded)
+
+
+def test_editorial_target_company_accepts_only_confirmed_translation(monkeypatch):
+    from app.config import company_names_match
+    monkeypatch.setenv("COMPANY_NAME_ALIASES", json.dumps([["예시정공", "EXAMPLE MACHINING"]]))
+    assert company_names_match("㈜예시정공", "EXAMPLE MACHINING")
+    assert not company_names_match("예시정공테크", "EXAMPLE MACHINING")
+
+
 def test_editorial_audience_is_forwarded_and_design_proposal_keeps_document_unchanged():
     results = []
     for audience in ("구매 담당자", "기술 검토자"):

@@ -7,6 +7,8 @@
 
 ## 1. Quick Status
 
+- **2026-10-07 [F-03·08 / BE-04·10] 대상 회사명 법인 표기 오류 수정:** 전체 회사명 정규화·13건 통과·관련1,241건 통과/기존 해시 실패2건 재현·BE-10 진행중 유지. [기록](#target-company-notation-20261007).
+
 - **2026-10-07 [F-06·08 / BE-07·08·10] PDF/DOCX 글꼴 통일:** Pretendard Regular/Bold 전체 임베딩·관련39건 통과/1skip·현재 실문서6쪽 렌더/시각 검수 완료. 기존 배치 재검사·재승인 필요. [기록](#docx-font-parity-20261007).
 
 - **2026-10-06 [F-08 · BE-10] 유사 표현 의미 검수 3건 완료:** 실제 AI 직접 검증에서 추가 정보는 경고 없음·수량4→5는 VALUE_MISMATCH blocker·유사 제목/본문은 반복 경고 없음. 마지막 사례는 제목 요약의 허용 기준 판단이 필요하며 전체 품질 통과로 표시하지 않는다. [기록](#semantic-repetition-cases-20261006).
@@ -1054,3 +1056,15 @@
 - 검증: 원본 TTF 복원 바이트 일치/전체 글리프/설정/지문 집중3건 통과. BE-07/08 DOCX·템플릿·식별값 관련39 passed/1 skipped/93 deselected(115.11초); 실제 쪽수·사진·편집·캐시·승인·다운로드 회귀 포함. 전체 pytest는 미실행이다.
 - 현재 시연 DB의 doc_4256086563a5497d revision2를 읽기 전용으로 렌더했다. 실제6쪽 PDF에서 Pretendard-Regular/Bold만 확인했고 문서 스킬 렌더6쪽 전체 시각 검수에서 누락/겹침/잘림 없음. Word 직접 렌더는 미실행이다. 산출물은 OS 임시폴더이며 원본 DB를 변경하지 않았다. 첫 진단 출력의 함수/속성명 오류는 수정하여 기존 렌더 결과를 확인했고, 스킬의 cp949 출력 디코딩 경고에도 PNG6개/종료0을 확인했다.
 - 사용자 추가 요청으로 프론트 develop(ad853a1)을 재구동하고 HTTP200을 확인했다. 백엔드도 새 글꼴 코드로 재구동해 /docs HTTP200을 확인했다. 사전 조회에는 queued/running이 없었지만 재구동 사이에 새 점검 요청이 들어와 1건이 SERVICE_TEMPORARY_FAILURE로 중단 정리됐다. 이후 새 preflight 실행을 확인했고 추가 재시작은 하지 않는다. 이는 글꼴 렌더 테스트 실패가 아니다. 기존 .claude/ 보존. BE-10/F-08 전체 품질 진행중 상태는 유지한다.
+
+
+<a id="target-company-notation-20261007"></a>
+
+### [F-03·08 / BE-04·10] 대상 회사명 법인 표기 오류 수정 (2026-10-07)
+
+- 실제 화면의 draft job_65546830e6b94328은 INVALID_REQUEST였다. brief.target_company=거산케미칼과 supported fact.value=㈜거산케미칼을 완전 문자열 비교하여 정상 자료를 막았다. AI 통신·추출 실패가 아니라 초안 진입 조건의 표기 처리 결함이다.
+- app.config.company_names_match에서 NFKC·공백·대소문자·앞/뒤의 ㈜/(주)/주식회사만 정규화하고 초안 guard에서 사용한다. 영문 번역은 기존 명시 확인 별칭 그룹만 허용하며 부분 이름/다른 회사/빈 법인표기/미확인 사실을 허용하지 않는다. 원문·facts·근거·점검·.env·API/DB는 변경하지 않았다. prompts/모델 설정/Agent 담당 상태도 유지한다.
+- 가상 모델 검사13건 통과: 회사명 표기 차이에서 초안 성공·단일 작성 호출·점검 원본 보존, 다른 회사/부분 문자열/번역 추정 거부, 명시 별칭만 허용. BE-04/06 및 Agent LLM 관련 전체는 1,241 passed/2 failed/경고1(141.51초). 실패는 test_paraphrase_trial_preserves_legacy_inputs_and_answers, test_holdout_review_trial_freezes_cases_and_preserves_previous_evaluations의 고정 입력 해시이며 HEAD의 커밋된 테스트 모듈로도 같은 assertion 실패를 재현했다. 기대 해시/정답을 임의 갱신하지 않았다. 전체 pytest는 미실행이며 이 해시 실패2건은 후속이다.
+- 실제 저장 점검 pf_aa5ba2c8ddf44a4d를 읽기 전용으로 비교해 거산케미칼↔㈜거산케미칼=True, 임의 영문 번역=False를 확인했다. 유료 AI/초안 재생성은 수행하지 않았다. 진행중 queued/running=0 확인 직후 백엔드를 재구동하여 HTTP200을 확인했다. 프론트 develop(ad853a1)·HTTP200 유지.
+- 이미 저장된 INVALID_REQUEST 실패는 자동 수정/실행하지 않는다. 소비된 확인 지점은 기존 정책에 따라 새 점검·명시 확인이 필요하다. 수정 이후에는 이 법인 표기 차이가 차단하지 않는다. 점검의 기술 근거 부족 blocker는 별개로 보존한다.
+- 사용자 질문에 따른 다음 검토 순서: 프론트 다음 단계 버튼 조건과 서버 guard/오류를 전수 대조→경계값/저장 AI 응답 변형→전체 UI 완주→유료 반복은 별도 예산 확정. 이번 단위에서 전수 검토나 모든 AI 오류 해결을 완료했다고 표시하지 않는다. BE-10/F-08 진행중 유지.
