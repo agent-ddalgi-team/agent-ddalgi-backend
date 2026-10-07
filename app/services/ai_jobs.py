@@ -132,11 +132,16 @@ def validate_draft(result: DraftResult, sources: list[SourceIn], fact_ids: set[s
     return None
 
 
-def _fail_agent(conn, job_id: str, exc: Exception, *, requires_reanalysis: bool = False) -> None:
-    if requires_reanalysis:
-        code = exc.code if isinstance(exc, AgentError) else "SERVICE_TEMPORARY_FAILURE"
-        message = exc.message if isinstance(exc, AgentError) else "AI 초안 작업이 실패했습니다."
-        exc = AgentError(code, message + " 원인을 확인한 뒤 사전 점검부터 다시 진행해 주세요.", False)
+def _fail_agent(conn, job_id: str, exc: Exception, *, draft_failure: bool = False) -> None:
+    if draft_failure:
+        code = exc.code if isinstance(exc, AgentError) else "INTERNAL_ERROR"
+        message = exc.message if isinstance(exc, AgentError) else "초안 생성 작업이 실패했습니다."
+        retry = code in jobs.DRAFT_RETRY_CODES
+        if retry:
+            message += " 완료된 자료 점검은 유지됩니다. 확인 후 초안만 다시 생성할 수 있습니다."
+        jobs.fail(conn, job_id, code, message, retry,
+                  details={"recovery_action": "retry_draft" if retry else "review_inputs"})
+        return
     if isinstance(exc, AgentError):
         jobs.fail(conn, job_id, exc.code, exc.message, exc.retryable)
     elif isinstance(exc, AgentUnavailable):
@@ -523,7 +528,7 @@ def run_draft_job(settings: Settings, session_id: str, job_id: str, input_revisi
             with connect(settings.db_path, immediate=True) as conn:
                 if _policy_failure(conn, settings, session_id, job_id):
                     return
-                _fail_agent(conn, job_id, exc, requires_reanalysis=resumed)
+                _fail_agent(conn, job_id, exc, draft_failure=True)
             return
         problem = validate_draft(result, sources, {f.fact_id for f in preflight.facts}, preflight)
         layout_review_required = False
@@ -538,10 +543,8 @@ def run_draft_job(settings: Settings, session_id: str, job_id: str, input_revisi
                 return
             if problem:
                 logger.error("agent draft output rejected (%s): %s", job_id, problem)
-                message = "AI 초안이 자료와 맞지 않아 저장하지 않았습니다."
-                if resumed:
-                    message += " 사전 점검부터 다시 진행해 주세요."
-                jobs.fail(conn, job_id, "AGENT_OUTPUT_INVALID", message, not resumed)
+                _fail_agent(conn, job_id, AgentError("AGENT_OUTPUT_INVALID",
+                            "AI 초안이 자료와 맞지 않아 저장하지 않았습니다."), draft_failure=True)
                 return
             _, err = _load_session_for_job(conn, session_id, input_revision, settings)
             if err:
@@ -567,7 +570,5 @@ def run_draft_job(settings: Settings, session_id: str, job_id: str, input_revisi
         with connect(settings.db_path, immediate=True) as conn:
             if _policy_failure(conn, settings, session_id, job_id):
                 return
-            message = "초안 생성 작업이 실패했습니다."
-            if resumed:
-                message += " 사전 점검부터 다시 진행해 주세요."
-            jobs.fail(conn, job_id, "INTERNAL_ERROR", message, not resumed)
+            _fail_agent(conn, job_id, AgentError("INTERNAL_ERROR", "초안 생성 작업이 실패했습니다."),
+                        draft_failure=True)

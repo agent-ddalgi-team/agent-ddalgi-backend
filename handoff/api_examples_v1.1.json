@@ -3841,5 +3841,29 @@
       ],
       "has_blockers": false
     }
+  },
+  "draft_retry_v1_9": {
+    "failed_job_error": {
+      "code": "AGENT_OUTPUT_INVALID",
+      "message": "포함하기로 한 사실 또는 수치·단위가 본문에서 빠졌습니다. 완료된 자료 점검은 유지됩니다. 확인 후 초안만 다시 생성할 수 있습니다.",
+      "retryable": true,
+      "details": {
+        "recovery_action": "retry_draft"
+      },
+      "request_id": null
+    },
+    "explicit_retry": {
+      "method": "POST",
+      "path": "/api/v1/sessions/sess_example/drafts",
+      "headers": {
+        "Idempotency-Key": "new-user-confirmed-draft-attempt"
+      },
+      "body": {
+        "preflight_id": "pf_example",
+        "input_revision": 2,
+        "confirmed": true
+      }
+    },
+    "same_key_behavior": "기존 실패 Job 응답 재사용; 새 분석/초안 호출 없음"
   }
 }
