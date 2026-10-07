@@ -3,15 +3,22 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Header, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Header, Query, Request, Response
+from fastapi.responses import JSONResponse
 
 from app.access import ensure_owner, require_owner, settings_of
 from app.db import connect
 from app.errors import ApiError
-from app.models import InputsOut, InputsPatch, SessionCreate, SessionDeleteOut, SessionOut, PublicDataImport, PublicDataStatus
-from app.services import cleanup, idempotency, sessions, sources
+from app.models import InputsOut, InputsPatch, SessionCreate, SessionDeleteOut, SessionOut, PublicDataImport, PublicDataStatus, JobAccepted, CompanySearchOut
+from app.services import cleanup, idempotency, jobs, sessions, sources
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
+company_router = APIRouter(prefix="/companies", tags=["companies"])
+
+
+@company_router.get("", response_model=CompanySearchOut, response_model_exclude_none=True)
+def search_companies(request: Request, query: str = Query(min_length=2, max_length=50)):
+    return CompanySearchOut(items=sources.search_dart_companies(settings_of(request), query))
 
 
 @router.post("", status_code=201, response_model=SessionOut)
@@ -100,20 +107,39 @@ def public_data_status(request: Request, sid: str):
     settings = settings_of(request)
     with connect(settings.db_path) as conn:
         sessions.load_active(conn, require_owner(request), sid, settings)
-    return PublicDataStatus()
+    return sources.dart_status(settings)
 
 
-@router.post("/{sid}/public-data/import")
-def import_public_data(request: Request, sid: str, body: PublicDataImport):
+@router.post("/{sid}/public-data/import", status_code=202, response_model=JobAccepted)
+def import_public_data(request: Request, sid: str, body: PublicDataImport, background_tasks: BackgroundTasks,
+                       idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")):
     settings = settings_of(request)
-    with connect(settings.db_path) as conn:
-        row = sessions.load_active(conn, require_owner(request), sid, settings)
+    owner = require_owner(request)
+    digest = idempotency.body_hash(body.model_dump())
+    with connect(settings.db_path, immediate=True) as conn:
+        row = sessions.load_active(conn, owner, sid, settings)
+        replay = idempotency.replay_or_none(conn, idempotency_key, owner, request.url.path, digest, settings)
+        if replay is not None:
+            return replay
         if row["input_revision"] != body.expected_input_revision:
             raise ApiError(409, "INPUT_REVISION_CONFLICT", "작업이 변경되었습니다. 최신 상태를 확인해 주세요.")
         brief = json.loads(row["brief_json"])
-        if not brief.get("target_company"):
+        target = brief.get("target_company")
+        corp_code = brief.get("dart_corp_code")
+        if not target:
             raise ApiError(422, "COMPANY_REQUIRED", "공개 자료를 가져올 회사를 먼저 선택해 주세요.")
-    # No adapter is configured yet: never create fabricated sources or a success job.
-    status = PublicDataStatus()
-    raise ApiError(503, "PUBLIC_DATA_NOT_CONFIGURED", status.message,
-                   details={"providers": status.providers})
+        status = sources.dart_status(settings)
+        if status.status != "ready":
+            raise ApiError(503, "PUBLIC_DATA_NOT_CONFIGURED", status.message)
+        target_key = f"dart@{row['input_revision']}"
+        job = jobs.find_active_by_key(conn, sid, "read", target_key)
+        created = job is None
+        if created:
+            job = jobs.create(conn, sid, "read", "DART 공개 자료 조회 대기 중",
+                              input_revision=row["input_revision"], target_key=target_key)
+        sessions.touch(conn, settings, row)
+        out = JobAccepted(job_id=job.job_id, status=job.status, kind="read", session_id=sid, created_at=job.created_at)
+        idempotency.remember(conn, idempotency_key, owner, request.url.path, digest, 202, out.model_dump(), session_id=sid)
+    if created:
+        background_tasks.add_task(sources.run_dart_import, settings, sid, job.job_id, body.expected_input_revision, target, corp_code)
+    return JSONResponse(status_code=202, content=out.model_dump())

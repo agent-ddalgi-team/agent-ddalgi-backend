@@ -364,7 +364,8 @@ def test_openapi_describes_common_errors_export_statuses_and_binary_responses(ap
     schema = app.openapi()
     operations = [operation for path, item in schema["paths"].items() if path.startswith("/api/v1/")
                   for method, operation in item.items() if method in {"get", "post", "patch", "delete"}]
-    assert len(operations) == 32
+    assert len(operations) == 33
+    assert "get" in schema["paths"]["/api/v1/companies"]
     assert "get" in schema["paths"]["/api/v1/sessions/{sid}/public-data"]
     assert "post" in schema["paths"]["/api/v1/sessions/{sid}/public-data/import"]
     assert "HTTPValidationError" not in schema["components"]["schemas"]

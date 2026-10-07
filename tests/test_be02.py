@@ -554,3 +554,226 @@ def test_public_data_not_configured_is_protected_and_does_not_mutate(client, app
         assert other.post(root + "/public-data/import", json={"expected_input_revision": 2}).status_code == 404
     client.delete(root)
     assert client.get(root + "/public-data").status_code == 410
+
+
+@pytest.fixture(params=["legacy", "orm"])
+def dart_client(settings, monkeypatch, request):
+    import json
+    import zipfile
+    from dataclasses import replace
+    from app.services import sources
+    settings = replace(settings, dart_api_key="test-dart-key")
+    if request.param == "orm":
+        from app.db import init_orm_db
+        init_orm_db(settings.db_path, settings.private_runs_dir)
+    monkeypatch.setattr(sources, "_DART_COMPANY_CACHE", None)
+    calls = []
+    def zipped(name, content):
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr(name, content)
+        return buffer.getvalue()
+    def download(current, endpoint, params, limit=10 * 1024 * 1024):
+        calls.append(endpoint)
+        if endpoint == "corpCode.xml":
+            return zipped("CORPCODE.xml", "<result><list><corp_code>00123456</corp_code><corp_name>테스트회사(주)</corp_name></list></result>")
+        if endpoint == "company.json":
+            return json.dumps({"status":"000", "corp_code":"00123456", "corp_name":"테스트회사(주)", "ceo_nm":"홍길동", "est_dt":"20000101"}, ensure_ascii=False).encode()
+        if endpoint == "list.json":
+            return json.dumps({"status":"000", "list":[{"corp_code":"00123456", "rcept_no":"20261007000001", "rcept_dt":"20261007", "report_nm":"감사보고서"}]}).encode()
+        return zipped("filing.xml", "<DOCUMENT><TITLE>감사보고서</TITLE><P>제조업 부품을 생산합니다.</P></DOCUMENT>")
+    monkeypatch.setattr(sources, "_dart_download", download)
+    with TestClient(create_app(settings)) as client:
+        session = client.post("/api/v1/sessions", json={"brief":{**BRIEF, "target_company":"테스트회사"}}).json()
+        yield client, settings, session, calls, download
+
+
+def test_dart_import_real_source_history_replay_and_dedup(dart_client):
+    from app.db import connect
+    from app.services.preflights import build_sources
+    client, settings, session, calls, _ = dart_client
+    root = f"/api/v1/sessions/{session['session_id']}"
+    status = client.get(root + "/public-data").json()
+    assert status["status"] == "ready" and status["configured_providers"] == ["dart"]
+    request = {"expected_input_revision":1}
+    response = client.post(root + "/public-data/import", json=request, headers={"Idempotency-Key":"dart-one"})
+    assert response.status_code == 202
+    job = client.get(root + "/jobs/" + response.json()["job_id"]).json()
+    assert job["status"] == "succeeded" and job["result_ref"]["type"] == "sources"
+    items = client.get(root + "/sources").json()["items"]
+    assert len(items) == 2 and all(item["scope"] == "session" and item["origin_kind"] == "real" for item in items)
+    assert all(item["text_available"] and item["warnings"][0]["code"] == "PUBLIC_OPEN_DATA" for item in items)
+    assert all("test-dart-key" not in str(item) for item in items)
+    assert client.get(root).json()["input_revision"] == 1
+    assert client.get(root).json()["selected_source_ids"] == []
+    assert client.post(root + "/public-data/import", json=request, headers={"Idempotency-Key":"dart-one"}).json() == response.json()
+    assert len(calls) == 4
+    assert client.post(root + "/public-data/import", json=request, headers={"Idempotency-Key":"dart-two"}).status_code == 202
+    assert len(client.get(root + "/sources").json()["items"]) == 2
+    source_ids = [item["source_id"] for item in items]
+    assert client.patch(root + "/inputs", json={"expected_input_revision":1, "selected_source_ids":source_ids}).status_code == 200
+    with connect(settings.db_path) as conn:
+        selected = build_sources(conn, session["session_id"], source_ids)
+        assert len(selected) == 2 and all(source.segments for source in selected)
+        from app.services import db_history
+        if db_history.enabled(conn):
+            assert conn.execute("SELECT count(*) FROM extraction_runs WHERE session_id=?", (session["session_id"],)).fetchone()[0] == 2
+            assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert len(list(settings.private_runs_dir.glob(session["session_id"] + "/*.dart.*"))) == 2
+    assert client.delete(root).status_code == 200
+    assert not (settings.private_runs_dir / session["session_id"]).exists()
+
+
+@pytest.mark.parametrize("mode", ["close", "revision", "capacity", "auth", "empty"])
+def test_dart_import_rejection_leaves_no_sources_or_files(dart_client, monkeypatch, mode):
+    from app.db import connect
+    from app.errors import ApiError
+    from app.services import sources
+    client, settings, session, calls, _ = dart_client
+    root = f"/api/v1/sessions/{session['session_id']}"
+    original = sources._dart_documents
+    def documents(current, target, corp_code=None):
+        if mode == "close":
+            client.delete(root)
+        elif mode == "revision":
+            client.patch(root + "/inputs", json={"expected_input_revision":1,"brief":{**BRIEF,"target_company":"다른회사"}})
+        elif mode == "auth":
+            raise ApiError(503,"DART_AUTH_ERROR","인증 실패")
+        elif mode == "empty":
+            raise ApiError(404,"DART_COMPANY_NOT_FOUND","회사 없음")
+        return original(current, target, corp_code)
+    monkeypatch.setattr(sources, "_dart_documents", documents)
+    if mode == "capacity":
+        object.__setattr__(settings, "max_files_per_session", 1)
+    response = client.post(root + "/public-data/import", json={"expected_input_revision":1})
+    assert response.status_code == 202
+    with connect(settings.db_path) as conn:
+        assert conn.execute("SELECT count(*) FROM sources WHERE session_id=?", (session["session_id"],)).fetchone()[0] == 0
+        job = conn.execute("SELECT status,error_json FROM jobs WHERE job_id=?",(response.json()["job_id"],)).fetchone()
+        assert job["status"] == ("cancelled" if mode == "close" else "failed")
+    assert not list(settings.private_runs_dir.glob(session["session_id"] + "/*"))
+
+
+def test_dart_concurrent_request_keys_join_same_job(dart_client, monkeypatch):
+    from app.services import sources
+    client, settings, session, calls, _ = dart_client
+    monkeypatch.setattr(sources, "run_dart_import", lambda *args: None)
+    root = f"/api/v1/sessions/{session['session_id']}"
+    response = client.post(root + "/public-data/import", json={"expected_input_revision":1}, headers={"Idempotency-Key":"key-1"})
+    joined = client.post(root + "/public-data/import", json={"expected_input_revision":1}, headers={"Idempotency-Key":"key-2"})
+    assert response.json()["job_id"] == joined.json()["job_id"]
+    assert client.post(root + "/public-data/import", json={"expected_input_revision":1}, headers={"Idempotency-Key":"key-2"}).json() == joined.json()
+    assert not calls
+
+
+@pytest.mark.parametrize("status,code", [("010","DART_AUTH_ERROR"),("012","DART_AUTH_ERROR"),("013","DART_DATA_NOT_FOUND"),("020","DART_RATE_LIMIT"),("800","DART_SERVICE_ERROR")])
+def test_dart_provider_error_mapping_hides_key(settings, monkeypatch, status, code):
+    from app.services.sources import _dart_download
+    from app.errors import ApiError
+    import json
+    import urllib.request
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+        def read(self, size):
+            data = getattr(self, "data", json.dumps({"status":status,"message":"do not expose raw message"}).encode())
+            self.data = b""
+            return data
+    class Opener:
+        def open(self,*args,**kwargs): return Response()
+    monkeypatch.setattr(urllib.request,"build_opener",lambda *args:Opener())
+    with pytest.raises(ApiError) as exc:
+        _dart_download(settings,"company.json",{"corp_code":"00123456"})
+    assert exc.value.code == code and "raw message" not in exc.value.message
+
+
+def test_dart_company_ambiguity_and_empty_never_choose_another_company(dart_client, monkeypatch):
+    from app.services import sources
+    from app.errors import ApiError
+    import hashlib, time
+    _, settings, _, _, _ = dart_client
+    with pytest.raises(ApiError) as exc:
+        sources._dart_company_code(settings,"없는회사")
+    assert exc.value.code == "DART_COMPANY_NOT_FOUND"
+    monkeypatch.setattr(sources,"_DART_COMPANY_CACHE",(hashlib.sha256(settings.dart_api_key.encode()).hexdigest(),time.monotonic()+100,[("00123456","테스트회사"),("00987654","테스트회사(주)")]))
+    with pytest.raises(ApiError) as exc:
+        sources._dart_company_code(settings,"테스트회사")
+    assert exc.value.code == "DART_COMPANY_AMBIGUOUS"
+
+
+def test_dart_xml_disables_entities_and_zip_never_extracts_paths():
+    from app.services.sources import _dart_xml, _dart_zip_entries
+    from app.errors import ApiError
+    import zipfile
+    with pytest.raises(ApiError):
+        _dart_xml(b'<!DOCTYPE x [<!ENTITY a SYSTEM "file:///secret">]><x>&a;</x>')
+    buffer=io.BytesIO()
+    with zipfile.ZipFile(buffer,"w") as archive:
+        archive.writestr("../escape.xml","<x>safe</x>")
+    assert _dart_zip_entries(buffer.getvalue()) == [("../escape.xml", b"<x>safe</x>")]
+
+
+def test_dart_handles_html_in_xml_filename_without_script_or_external_loads():
+    from app.services.sources import _dart_document_blocks
+    data = b'<html><head><meta name="encoding"><style>secret style</style></head><body><p>Company A</p><script>do not execute or cite</script><table><tr><td>Revenue</td><td>100</td></tr></table></body></html>'
+    assert _dart_document_blocks(data) == ["Company A", "Revenue", "100"]
+    assert _dart_document_blocks(b'<!DOCTYPE DOCUMENT SYSTEM "http://127.0.0.1/private.dtd"><DOCUMENT><P>text</P></DOCUMENT>') == ["text"]
+
+
+def test_dart_company_search_exact_first_partial_and_cache(dart_client, monkeypatch):
+    import hashlib, time
+    from app.services import sources
+    client, settings, _, calls, _ = dart_client
+    assert client.get("/api/v1/companies", params={"query":"테스트"}).json()["items"] == [{"corp_code":"00123456", "corp_name":"테스트회사(주)"}]
+    assert client.get("/api/v1/companies", params={"query":"없는회사"}).json() == {"items":[]}
+    assert calls == ["corpCode.xml"]
+    rows = [("00123456","주식회사 테스트회사"),("00987654","큰테스트회사"),("00000002","테스트회사서비스"),("00000003","테스트회사")]
+    monkeypatch.setattr(sources, "_DART_COMPANY_CACHE", (hashlib.sha256(settings.dart_api_key.encode()).hexdigest(),time.monotonic()+100,rows))
+    items = client.get("/api/v1/companies", params={"query":" 테스트 회사 "}).json()["items"]
+    assert [i["corp_code"] for i in items] == ["00123456","00000003","00000002","00987654"]
+    assert client.get("/api/v1/companies", params={"query":"테"}).status_code == 400
+    assert client.get("/api/v1/companies", params={"query":"x"*51}).status_code == 400
+    assert "test-dart-key" not in str(items)
+
+
+def test_dart_selected_code_disambiguates_but_cannot_select_wrong_company(dart_client, monkeypatch):
+    import hashlib, time
+    from app.services import sources
+    from app.errors import ApiError
+    client, settings, session, _, _ = dart_client
+    rows=[("00123456","테스트회사(주)"),("00987654","테스트회사"),("00000001","다른회사")]
+    monkeypatch.setattr(sources, "_DART_COMPANY_CACHE", (hashlib.sha256(settings.dart_api_key.encode()).hexdigest(),time.monotonic()+100,rows))
+    assert sources._dart_company_code(settings,"테스트회사","00123456") == "00123456"
+    with pytest.raises(ApiError) as error:
+        sources._dart_company_code(settings,"테스트회사","00000001")
+    assert error.value.code == "DART_COMPANY_MISMATCH"
+    root=f"/api/v1/sessions/{session['session_id']}"
+    change={"expected_input_revision":1,"brief":{**BRIEF,"target_company":"테스트회사","dart_corp_code":"00123456"},"selected_source_ids":[]}
+    assert client.patch(root+"/inputs",json=change).status_code == 200
+    assert client.get(root).json()["brief"]["dart_corp_code"] == "00123456"
+    accepted=client.post(root+"/public-data/import",json={"expected_input_revision":2}).json()
+    assert client.get(root+"/jobs/"+accepted["job_id"]).json()["status"] == "succeeded"
+    change["expected_input_revision"]=2
+    change["brief"]["dart_corp_code"]="00000001"
+    assert client.patch(root+"/inputs",json=change).status_code == 200
+    accepted=client.post(root+"/public-data/import",json={"expected_input_revision":3}).json()
+    assert client.get(root+"/jobs/"+accepted["job_id"]).json()["error"]["code"] == "DART_COMPANY_MISMATCH"
+    assert len(client.get(root+"/sources").json()["items"]) == 2
+
+
+def test_dart_company_search_without_key_does_not_claim_results(client):
+    response=client.get("/api/v1/companies",params={"query":"네이버"})
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "PUBLIC_DATA_NOT_CONFIGURED"
+
+
+def test_dart_naver_search_alias_preserves_canonical_identity_and_limit(dart_client, monkeypatch):
+    import hashlib,time
+    from app.services import sources
+    client,settings,_,_,_=dart_client
+    rows=[("00266961","NAVER"),("01246715","네이버랩스")]+[(f"{i:08d}",f"네이버서비스{i}") for i in range(100,130)]
+    monkeypatch.setattr(sources,"_DART_COMPANY_CACHE",(hashlib.sha256(settings.dart_api_key.encode()).hexdigest(),time.monotonic()+100,rows))
+    items=client.get("/api/v1/companies",params={"query":"네이버"}).json()["items"]
+    assert items[0] == {"corp_code":"00266961","corp_name":"NAVER","display_name":"NAVER (네이버)"}
+    assert len(items) == 20
+    assert client.get("/api/v1/companies",params={"query":"naver"}).json()["items"][0]["corp_name"] == "NAVER"

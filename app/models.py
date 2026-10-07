@@ -42,13 +42,14 @@ class Brief(BaseModel):
     usage_context: str = Field(default="", max_length=500)
     tone: Literal["plain", "formal", "concise"] = "plain"
     target_company: str | None = Field(default=None, min_length=1, max_length=200)
+    dart_corp_code: str | None = Field(default=None, pattern=r"^\d{8}$")
     required_fields: list[str] = Field(default_factory=list, max_length=14)
     brand_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
 
     def idempotency_payload(self) -> dict:
         """계약 1.6의 요청 해시를 보존한다. 새 조건을 실제 지정하면 해시도 달라진다."""
         payload = self.model_dump()
-        for name in ("audience", "usage_context", "tone", "target_company", "required_fields", "brand_color"):
+        for name in ("audience", "usage_context", "tone", "target_company", "dart_corp_code", "required_fields", "brand_color"):
             if payload[name] == type(self).model_fields[name].get_default(call_default_factory=True):
                 payload.pop(name)
         return payload
@@ -333,15 +334,26 @@ class DataSufficiency(BaseModel):
     has_blockers: bool
 
 
+class CompanySearchItem(BaseModel):
+    corp_code: str
+    corp_name: str
+    display_name: str | None = None
+
+
+class CompanySearchOut(BaseModel):
+    items: list[CompanySearchItem]
+
+
 class PublicDataImport(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_input_revision: RequestRevision
 
 
 class PublicDataStatus(BaseModel):
-    status: Literal["not_configured"] = "not_configured"
+    status: Literal["not_configured", "ready"] = "not_configured"
     providers: list[str] = Field(default_factory=lambda: ["dart", "kipris", "g2b"])
     message: str = "외부 API 키와 수집 연결을 아직 설정하지 않았습니다."
+    configured_providers: list[str] = Field(default_factory=list)
 
 
 class PreflightOut(BaseModel):

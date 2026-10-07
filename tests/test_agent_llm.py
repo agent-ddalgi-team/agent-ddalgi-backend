@@ -56,7 +56,7 @@ def legacy_contract_view(value):
     if isinstance(value, dict):
         result = {k: legacy_contract_view(v) for k, v in value.items()}
         if "purpose" in result and "target_pages" in result:
-            for key in ("audience", "usage_context", "tone", "target_company", "required_fields", "brand_color"):
+            for key in ("audience", "usage_context", "tone", "target_company", "dart_corp_code", "required_fields", "brand_color"):
                 assert result.pop(key) == Brief.model_fields[key].get_default(call_default_factory=True)
         if result.get("latest_preflight_id", "absent") is None:
             result.pop("latest_preflight_id")
