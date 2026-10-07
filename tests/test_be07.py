@@ -35,6 +35,7 @@ BANNED = ("거산", "케미칼", "Geosan")
 
 # 템플릿·폰트·DOCX 배치 상수·PDF 렌더 상수의 sha256(줄바꿈 정규화). 이 중 하나라도 바꾸면 TEMPLATE_VERSION을 올리고 여기 값을 갱신한다.
 TEMPLATE_FINGERPRINTS = {
+    "template_v11": "b63a7d29a4f7476d317bcbeffb90538f39aca3e2d1aef7c72ccfeaa4c66e4b7b",
     "template_v10": "c002f3bb5cf786bf59e3d0d05bb18079b6832cd82701dbe64e9514fc40b062fb",
     "template_v9": "576799643934d2178e3a03e6e569604c36e6859a51fa3e498caa1be15a8edad1",
     "template_v8": "77bee728ad40c81e24e5abb5b12c24fcaa282399a7da8224f14a9ec9bf82ac88",
@@ -398,7 +399,7 @@ def test_draft_pagination_bounds_repeated_overflow_without_losing_content(out_di
 
 def test_identity_values_come_from_layout_checks(out_dir):
     r = er.render(_fixture_snapshot("1pages"), "docx", out_dir)
-    assert r.template_version == layout_checks.TEMPLATE_VERSION == "template_v10"
+    assert r.template_version == layout_checks.TEMPLATE_VERSION == "template_v11"
     assert r.render_options_hash == layout_checks.RENDER_OPTIONS_HASH == layout_checks.render_options_hash(layout_checks.DEFAULT_RENDER_OPTIONS)
     assert len(r.render_options_hash) == 16 and int(r.render_options_hash, 16) >= 0
     changed = dict(layout_checks.DEFAULT_RENDER_OPTIONS, margin_mm=20)
@@ -583,7 +584,7 @@ def test_docx_render_structure_checks_and_font(out_dir):
     info = er.docx_info(r.file_path)
     total_blocks = sum(len(p.blocks) for p in snap.pages)
     assert info["inline_shapes"] == _ok_assets(snap) == 2 and info["paragraphs"] >= total_blocks and info["sections"] == 1
-    assert r.details["font_embedding"] == "not_supported_in_this_implementation"
+    assert r.details["font_embedding"] == "embedded_regular_bold"
     assert sorted(p.name for p in out_dir.iterdir()) == [r.file_path.name]   # 임시 파일이 남지 않는다
     # 글꼴 이름: Normal·Heading·Caption 스타일에 eastAsia 포함 지정, 테마 글꼴 속성 제거
     import docx
@@ -594,6 +595,26 @@ def test_docx_render_structure_checks_and_font(out_dir):
         rfonts = d.styles[name].element.rPr.find(qn("w:rFonts"))
         assert rfonts.get(qn("w:eastAsia")) == "Pretendard" == rfonts.get(qn("w:ascii")), name
         assert rfonts.get(qn("w:eastAsiaTheme")) is None and rfonts.get(qn("w:asciiTheme")) is None, name
+    # Portable regular/bold fonts must recover to the exact PDF font bytes.
+    import uuid
+    from zipfile import ZipFile
+    from lxml import etree
+    with ZipFile(r.file_path) as package:
+        table = etree.fromstring(package.read("word/fontTable.xml"))
+        font = next(f for f in table if f.get(qn("w:name")) == "Pretendard")
+        rels = etree.fromstring(package.read("word/_rels/fontTable.xml.rels"))
+        targets = {rel.get("Id"): rel.get("Target") for rel in rels}
+        for weight, tag in (("regular", "w:embedRegular"), ("bold", "w:embedBold")):
+            item = font.find(qn(tag))
+            assert item is not None and item.get(qn("w:subsetted")) == "false"
+            mask = uuid.UUID(item.get(qn("w:fontKey")).strip("{}")).bytes[::-1]
+            data = bytearray(package.read("word/" + targets[item.get(qn("r:id"))]))
+            for n in range(32):
+                data[n] ^= mask[n % 16]
+            assert data == er.FONT_FILES[weight].read_bytes()
+        settings = etree.fromstring(package.read("word/settings.xml"))
+        assert settings.find(qn("w:embedTrueTypeFonts")).get(qn("w:val")) == "true"
+        assert settings.find(qn("w:saveSubsetFonts")).get(qn("w:val")) == "false"
     assert d.core_properties.title == snap.title and d.core_properties.author == ""
     sec = d.sections[0]
     assert round(sec.page_width.mm) == 210 and round(sec.page_height.mm) == 297 and round(sec.left_margin.mm) == 15

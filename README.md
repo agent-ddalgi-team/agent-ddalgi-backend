@@ -216,7 +216,7 @@ DDL과 이력 기록은 하나의 명시적 트랜잭션으로 처리하고 실�
   - 다른 위치면 `.env`에 `EXPORT_BROWSER_PATH=<실행 파일 경로>`를 지정한다. 시간 제한은 `EXPORT_RENDER_TIMEOUT_S`(기본 90초).
   - macOS에서는 PDF 쓰기 완료·DOM 출력 완료 후 이번 임시 Chrome에 CDP `Browser.close`를 보내 실제 종료 코드까지 확인한다. 연결은 임시 프로필의 `127.0.0.1` 포트만 사용하며 `websockets`는 직접 의존성으로 포함한다. 출력 파일만 생기고 종료가 지연되는 환경을 위한 처리이며, 시간 초과·비정상 종료와 기존 배치 검사 실패는 그대로 실패로 남는다.
 - 한글 서체는 레포에 동봉한 OFL 폰트(Pretendard v1.3.9, `app/templates/fonts/`)를 PDF에 임베드한다.
-  DOCX는 글꼴 이름만 지정하므로(이번 구현에서 임베딩 미지원) 받는 사람 환경에 Pretendard가 없으면 다른 글꼴로 대체될 수 있다.
+  DOCX에도 같은 Regular/Bold 글꼴 파일 전체를 포함한다(template_v11). 서버/수신자 PC의 설치 여부에 따른 글꼴 대체를 줄이며, 기존 문서는 배치 재검사·재승인 후 새 DOCX를 내려받는다.
 - 렌더 어댑터는 `app/services/export_render.py`이며 배치 검사·Export·다운로드 API는 BE-08에서 연결했다(아래).
 - 도구 비교 실험은 `uv run python scripts/experiments/be07_render_candidates.py`로 재현할 수 있다(출력은 `private_runs/be07/`).
   reportlab·playwright 후보는 설치돼 있을 때만 실행되고 없으면 "미실행/설치 제약"으로 기록된다.
