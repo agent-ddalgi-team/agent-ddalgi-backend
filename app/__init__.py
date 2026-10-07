@@ -73,6 +73,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     install_error_handlers(app)
     app.include_router(sessions.router, prefix=API_PREFIX)
+    app.include_router(sessions.company_router, prefix=API_PREFIX)
     app.include_router(sources.router, prefix=API_PREFIX)
     app.include_router(jobs.router, prefix=API_PREFIX)
     app.include_router(assets.router, prefix=API_PREFIX)

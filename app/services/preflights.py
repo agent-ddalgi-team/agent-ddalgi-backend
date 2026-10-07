@@ -7,7 +7,7 @@ import uuid
 from app.db import Connection
 from app.agent_bridge import SegmentIn, SourceIn
 from app.errors import ApiError
-from app.models import Brief, DataSufficiency, Fact, Issue, PreflightOut, Recommendations, SufficiencyCategory
+from app.models import Brief, DataSufficiency, Fact, Issue, PreflightOut, PreflightReviewCreate, Recommendations, SufficiencyCategory
 from app.services import db_history
 from app.services.sources import evidence_scope
 from app.timeutil import now, to_iso
@@ -158,10 +158,30 @@ def get(conn: Connection, session_id: str, preflight_id: str) -> PreflightOut:
         raise ApiError(404, "RESOURCE_NOT_FOUND", "요청한 자원을 찾을 수 없습니다.")
     facts = [Fact.model_validate(f) for f in json.loads(row["facts_json"])]
     issues = [Issue.model_validate(i) for i in json.loads(row["issues_json"])]
+    excluded = {fid for issue in issues if issue.code == "FACT_EXCLUDED" and issue.status == "excluded"
+                and issue.resolution and issue.resolution.get("action") == "excluded"
+                for fid in issue.fact_ids}
+    excluded_facts = [fact for fact in facts if fact.fact_id in excluded]
+    facts = [fact for fact in facts if fact.fact_id not in excluded]
+    # Original issues stay in storage: restoration reopens them without guessing.
+    visible_issues = []
+    for issue in issues:
+        if (issue.code != "FACT_EXCLUDED" and issue.scope == "content" and issue.fact_ids
+                and set(issue.fact_ids) <= excluded and issue.code not in {"REQUIRED_MISSING", "MOCK_VALUE"}):
+            issue = issue.model_copy(update={"status": "excluded", "resolution": {
+                "action": "excluded", "reason": "관련 선택 항목을 사용자가 이번 문서에서 제외했습니다."}})
+        visible_issues.append(issue)
+    issues = visible_issues
+    session = conn.execute("SELECT input_revision, brief_json FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+    reviewable = []
+    if session and session["input_revision"] == row["input_revision"]:
+        brief = Brief.model_validate_json(session["brief_json"])
+        reviewable = reviewable_fact_ids(brief, facts, issues)
     return PreflightOut(
         preflight_id=row["preflight_id"], session_id=row["session_id"], input_revision=row["input_revision"],
         usable_source_ids=json.loads(row["usable_source_ids"]),
-        facts=facts, sufficiency=assess_sufficiency(facts, issues),
+        facts=facts, excluded_facts=excluded_facts, reviewable_fact_ids=reviewable,
+        sufficiency=assess_sufficiency(facts, issues),
         issues=issues,
         recommendations=Recommendations.model_validate_json(row["recommendations_json"]),
         can_generate=bool(row["can_generate"]), confirmed_at=row["confirmed_at"],
@@ -172,3 +192,65 @@ def confirm(conn: Connection, preflight_id: str) -> str:
     stamp = to_iso(now())
     conn.execute("UPDATE preflights SET confirmed_at=COALESCE(confirmed_at, ?) WHERE preflight_id=?", (stamp, preflight_id))
     return conn.execute("SELECT confirmed_at FROM preflights WHERE preflight_id=?", (preflight_id,)).fetchone()[0]
+
+
+_BUSINESS_FIELDS = {"company_summary", "business_areas", "products_services", "technology", "processes"}
+
+
+def reviewable_fact_ids(brief: Brief, facts: list[Fact], issues: list[Issue]) -> list[str]:
+    protected_fields = {"company_name", *brief.required_fields}
+    business = [fact.fact_id for fact in facts if fact.field_key in _BUSINESS_FIELDS and fact.status == "supported"]
+    protected_ids = set(business) if len(business) == 1 else set()
+    protected_ids.update(fid for issue in issues if issue.code in {"REQUIRED_MISSING", "MOCK_VALUE"}
+                         for fid in issue.fact_ids)
+    return [fact.fact_id for fact in facts if fact.status != "missing" and fact.field_key not in protected_fields
+            and fact.fact_id not in protected_ids]
+
+
+def review(conn: Connection, session_row, preflight_id: str, body: PreflightReviewCreate, owner: str) -> str:
+    """Persist an explicit publication choice in a new snapshot; never upgrade truth status."""
+    old = conn.execute("SELECT * FROM preflights WHERE session_id=? AND preflight_id=?",
+                       (session_row["session_id"], preflight_id)).fetchone()
+    if old is None:
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "요청한 점검 결과가 없습니다.")
+    raw_facts = [Fact.model_validate(fact) for fact in json.loads(old["facts_json"])]
+    raw_issues = [Issue.model_validate(issue) for issue in json.loads(old["issues_json"])]
+    facts = {fact.fact_id: fact for fact in raw_facts}
+    selected = set(body.fact_ids)
+    if not selected <= facts.keys():
+        raise ApiError(422, "INVALID_OPERATION", "현재 점검에 없는 항목입니다.")
+    current = get(conn, session_row["session_id"], preflight_id)
+    excluded = {fact.fact_id for fact in current.excluded_facts}
+    brief = Brief.model_validate_json(session_row["brief_json"])
+    if body.action == "exclude":
+        if not (selected - excluded) <= set(current.reviewable_fact_ids):
+            raise ApiError(422, "RESOLUTION_NOT_ALLOWED", "회사명·필수 내용·마지막 사업 설명은 제외할 수 없습니다. 근거를 보완해 주세요.")
+        remaining = [fact for fact in current.facts if fact.fact_id not in selected]
+        if (any(fact.field_key in _BUSINESS_FIELDS and fact.status == "supported" for fact in current.facts)
+                and not any(fact.field_key in _BUSINESS_FIELDS and fact.status == "supported" for fact in remaining)):
+            raise ApiError(422, "RESOLUTION_NOT_ALLOWED", "확인된 사업 설명을 모두 제외할 수 없습니다.")
+        next_excluded = excluded | selected
+    else:
+        if not selected <= excluded:
+            raise ApiError(422, "INVALID_OPERATION", "이번 점검에서 제외된 항목만 복원할 수 있습니다.")
+        next_excluded = excluded - selected
+    from app.services import refs
+    sources = build_sources(conn, session_row["session_id"], json.loads(session_row["selected_source_ids"]))
+    for fid in selected:
+        for evidence in facts[fid].evidence_refs:
+            if refs.evidence_problem(evidence, sources):
+                raise ApiError(422, "EVIDENCE_INVALID", "항목의 원문 근거가 현재 선택 자료와 맞지 않습니다. 자료를 다시 점검해 주세요.")
+    if next_excluded == excluded:
+        return preflight_id
+    # A marker is server-authored; Agent output cannot return resolved issues.
+    raw_issues = [issue for issue in raw_issues if issue.code != "FACT_EXCLUDED" or not set(issue.fact_ids) & selected]
+    for fid in sorted(selected):
+        raw_issues.append(Issue(issue_id=f"iss_{uuid.uuid4().hex[:16]}", scope="content", code="FACT_EXCLUDED",
+            severity="info", status="excluded" if body.action == "exclude" else "resolved",
+            message="사용자가 선택 항목을 이번 문서에서 제외했습니다." if body.action == "exclude" else "사용자가 제외 항목을 복원했습니다.",
+            fact_ids=[fid], source_ids=sorted({ref.source_id for ref in facts[fid].evidence_refs}),
+            resolution={"action": "excluded" if body.action == "exclude" else "restored", "reason": body.reason,
+                        "by": owner, "at": to_iso(now()), "basis_preflight_id": preflight_id,
+                        "input_revision": session_row["input_revision"]}))
+    return save(conn, session_row["session_id"], session_row["input_revision"], json.loads(old["usable_source_ids"]),
+                raw_facts, raw_issues, Recommendations.model_validate_json(old["recommendations_json"]), bool(old["can_generate"]))

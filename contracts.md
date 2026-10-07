@@ -1,6 +1,10 @@
 # 공통 데이터·API 계약
 
-기준일: 2026-10-07 · 문서 v1.37 · contract_version: 1.9 · 데이터 schema_version: 1.0
+기준일: 2026-10-07 · 문서 v1.42 · contract_version: 1.9 · 데이터 schema_version: 1.0
+
+**2026-10-07 화면에서 사실 제외·복원:** 선택 항목의 사용 여부는 `POST /sessions/{sid}/preflights/{pid}/reviews`로 저장한다. 요청은 `expected_input_revision`, `action:exclude|restore`, 비어 있지 않은 고유 `fact_ids`(최대50개), `reason`(최대300자)다. 200 Preflight는 새로운 불변 점검 ID와 선택적 읽기 필드 `excluded_facts`/`reviewable_fact_ids`를 반환한다. 기존 점검·원문·사실의 진실 상태는 보존하고 제외 사실만 생성 입력에서 빠진다. 회사명·사용자가 지정한 필수 내용·마지막 supported 사업 설명·필수/시연 위반 항목은 제외할 수 없다(422 RESOLUTION_NOT_ALLOWED). 복원은 원래 상태/문제를 되살린다. 소유·만료·현재 입력·최신 점검·선택 근거·진행 작업을 검사하고 멱등 재전송은 같은 결과를 반환한다. AI를 추가 호출하지 않으며 사용자 확인은 초기화하고 새 LangGraph 확인 지점을 저장한다. 기존 문서는 자동 수정하지 않고 검증/승인을 무효화한다. 제외 사실이 본문에 남아 있으면 EVIDENCE_INVALID로 삭제 또는 복원을 안내하며 기존 C-05/최종 검사 조건은 유지한다. 입력 변경 또는 새로운 AI 점검은 별도 결과로 취급하며 이전 제외를 임의 이월하지 않는다. API1.9 호환 확장·DBv11·template_v11 유지.
+
+**2026-10-07 숫자·날짜 표기 동등성:** 사실 추출·초안 수치 보존·서버 내용 검사에서 공유하는 숫자 비교는 명시된 날짜 항목의 YYYYMMDD, 같은 연도의 명확한 날짜 범위, 원화 조/억/만 단위의 정확한 Decimal 환산, 인용 표의 (원)/(%), 숫자 괄호 밖의 원/%를 정규화한다. 원문·인용 위치·저장 사실·문서는 바꾸지 않는다. 금액/백분율의 부호·실제 값 변경, 다른 통화/길이 단위, 문서 코드의 날짜 오인, 불명확한 연도 전환은 허용하지 않는다. 주체·조건·인증 범위는 별도의 의미 검사 대상으로 유지한다. 기존 저장된 needs_confirmation/Issue는 자동 해제하지 않으며 새 자료 점검이 필요하다. API 계약1.9·DB v11·template_v11 유지.
 
 **2026-10-07 초안 진입 조건 대조:** 최신 입력의 Preflight GET은 LLM 초안과 같은 결정적 입력 검사를 적용한다. 대상 회사명 미확인/불일치, 필수·제외 충돌, 사용할 supported 사실 없음은 can_generate=false와 recommendations.needed로 안내한다. 조회는 저장된 사실/확인/점검을 바꾸지 않는다. 공개 읽기 필드 latest_preflight_id:string|null을 추가해 같은 입력의 최신 점검을 알려준다. 오래된 점검은 can_generate=false이고 POST drafts는 Job/확인 지점 소비 전에 409 INPUT_REVISION_CONFLICT(latest_preflight_id 포함)로 거부한다. 자료/조건 문제도 422 INVALID_REQUEST 또는 NO_USABLE_TEXT로 접수 전에 거부한다. 일부 필수 사실 누락이나 열린 문제 자체는 검토용 초안을 일괄 차단하지 않으며 최종 승인 검사는 유지한다. 자동으로 필수가 되는 사업 설명은 명시 제외하지 않은 항목에서 선택한다. 프론트는 같은 입력의 최신 점검을 GET으로 복원하고 확인을 다시 받는다. 입력 revision이 달라지면 이전 점검/확인을 버리고 상태 새로고침을 안내한다. API 계약1.9 호환 확장·DB v11·template_v11 유지.
 
@@ -14,7 +18,11 @@
 
 GET /sessions/{sid}/preflights/{pid}에 sufficiency: {score, categories, has_blockers}를 추가한다. categories는 overview/process/performance/certification의 4개이며 각 항목은 {key,label,status}다. status는 supported|needs_confirmation|conflict|missing; 값·근거가 있는 supported 사실을 포함한 분야당 25점이다. 같은 분야의 충돌/확인 필요 또는 연결된 열린 blocker는 supported보다 우선한다. score는 근거 분야 포함 비율이며 생성 가능 여부·필수 항목 충족·승인 통과를 대체하지 않는다. 구버전 응답이나 최신 입력과 다른 점검은 프론트에서 '점검 필요'로 표시한다.
 
-GET /sessions/{sid}/public-data는 현재 {status:"not_configured",providers:["dart","kipris","g2b"],message}를 반환한다. POST /sessions/{sid}/public-data/import는 {expected_input_revision}를 받고 최신 버전을 검사한 뒤 회사 미선택이면 422 COMPANY_REQUIRED, 외부 키/수집기가 없는 현재 단계에서는 503 PUBLIC_DATA_NOT_CONFIGURED(retryable=false)다. 두 API 모두 기존 소유자·세션 활성 정책(401/404/410/403)을 따른다. 실패 시 자료·Job·revision을 만들거나 바꾸지 않는다. 실제 외부 수집·키 설정·원문 저장 연결은 다음 구현이며 키를 넣는 것만으로 수집이 활성화되지 않는다. API 계약1.9 호환 확장, DB v11 유지.
+**2026-10-07 DART 회사 검색·실제 수집(계약1.9 호환 확장):** GET /companies?query=기업명은 세션 생성 전에도 이용할 수 있는 공개 회사명 조회다. query는 2~50자이며 반환은 {items:[{corp_code,corp_name,display_name?}]} 최대20개다. 회사명 전체 일치→앞부분 일치→부분 포함 순서이며 법인 표기·공백·대소문자는 검색에서 정규화한다. 네이버의 DART 목록명 NAVER와 법인명 네이버(주)(고유번호00266961)는 확인된 동일 회사 명칭으로 검색·전체 이름 비교에 적용한다. 다른 영문 번역을 추측하지 않는다. corpCode.xml은 서버 메모리에 키별24시간 캐시하며 키/원문 URL 인증값을 반환하지 않는다. 미설정은503 PUBLIC_DATA_NOT_CONFIGURED, 검색 결과 없음은200 items:[]다.
+
+GET /sessions/{sid}/public-data는 {status:ready|not_configured,providers:[dart,kipris,g2b],configured_providers:[dart]|[],message}를 반환한다. ready는 서버 키 설정 여부이며 호출에서 인증 실패를 별도로 안내한다. POST /sessions/{sid}/public-data/import는 {expected_input_revision}와 Idempotency-Key를 받아202 JobAccepted(kind=read)를 반환한다. 세션 소유·활성/현재 revision·회사 선택을 검사하며 회사 미선택422 COMPANY_REQUIRED, 키 미설정503 PUBLIC_DATA_NOT_CONFIGURED다. 동일 active 대상은 Job 합류, 같은 키는 같은 응답이다. 실제 조회 실패는 Job.error에 DART_AUTH_ERROR/DART_RATE_LIMIT/DART_COMPANY_NOT_FOUND/DART_COMPANY_AMBIGUOUS/DART_COMPANY_MISMATCH/DART_DATA_NOT_FOUND/DART_SERVICE_ERROR 등으로 기록한다.
+
+회사는 Brief.target_company와 선택적 dart_corp_code(8자리 숫자)로 저장한다. 목록으로 대상을 먼저 검증하고 기업개황의 corp_code가 같으며 corp_name 또는 stock_name이 전체 이름으로 일치해야 수집한다. 목록의 공시명과 법인명이 다를 수 있으며 provider의 동일 고유번호/명칭으로 확인하고 임의 번역/부분 이름을 허용하지 않는다. 수집 텍스트는 실제 회사명과 공시 등록명을 모두 보존한다. 고유번호가 없으면 정식 전체 이름이 유일할 때만 수집하고 부분/유사 이름으로 자동 결정하지 않는다. 기존 기본값 요청의 멱등 해시는 보존한다. 기업개황1건과 최근3년의 최신 공시 최대1건을 실제 세션 자료로 저장한다. 공시가 없으면 기업개황만 저장하며 원문 JSON/ZIP과 인증값 없는 출처·접수일을 함께 보존한다. TEXT_LIMIT으로 부분 읽기를 공개하며 본문은 최대min(MAX_SOURCE_CHARS,25000)자다. Source는 origin_kind=real/scope=session, warnings.code=PUBLIC_OPEN_DATA이며 기존 구간·추출 이력·소유/정리 정책을 따른다. 자동 선택/AI 실행/revision 변경은 하지 않는다. 조회 중 회사/조건 변경·종료·용량 초과는 자료/파일을 남기지 않으며 DB와 파일을 함께 롤백한다. 특허청·나라장터 수집은 미연결이다. DB v11/template_v11 유지, API는34개다.
 
 **2026-10-06 형식별 승인 조회:** 문서 GET에 `approvals_by_format: {pdf: Approval|null, docx: Approval|null}`을 호환 가능한 조회 필드로 추가한다. 현재 문서·입력 버전의 active 승인만 형식별로 반환하며 문서/입력 변경 또는 승인 무효화 후에는 null이다. 기존 `approval`은 어느 형식이든 최신 active 승인이라는 의미를 유지한다. 프론트는 새 필드가 있으면 선택 형식의 승인을 사용하고, 구버전 응답/가상 미리보기에서는 기존 필드를 사용한다. 승인·출력 조건·자동 생성/승인 정책·DB 스키마는 변경하지 않는다.
 
@@ -96,6 +104,8 @@ GET /sessions/{sid}/public-data는 현재 {status:"not_configured",providers:["d
 
 **계약 1.5(2026-09-29, D-07 백엔드):** 개별 경고 확인과 승인 검사를 연결한다. `acknowledged` 요청에는 기존 문서 버전·사유에 `input_revision`, `validation_id`가 필수이며, 완료된 최신 검증과 일치해야 한다. 확인 기록을 `confirmations(kind=warning_ack)`에 저장하고 승인·승인 재전송·출력/다운로드에서 유효성을 검사한다. 미확인 경고는 `422 WARNING_ACKNOWLEDGEMENT_REQUIRED`로 거부한다. 원문·입력·관련 블록·경고 설명/심각도가 바뀌면 재확인하고, 무관한 변경은 재검증 후 원 확인자/시각을 보존한 연결 기록을 남긴다. 프론트 계약 사본·확인 버튼/요청/오류 표시는 아직 갱신하지 않았다. 이전 절의 D-07 미구현 표기는 당시 상태다. 데이터 schema_version은 1.0, DB는 v11을 유지한다.
 
+**2026-10-07 자료 종류별 AI 점검 활성화:** 등록 자료 선택은 필수가 아니다. 공개 연동 자료 또는 이번 작업 첨부만 선택한 경우에도 role=evidence/use_as_company_evidence=true이고 complete|partial 상태의 읽을 수 있는 텍스트가 하나 이상 있으면 점검을 실행할 수 있다. 선택한 자료가 queued|reading이면 완료를 기다리며 선택하지 않은 자료의 읽기 상태는 실행을 막지 않는다. 미저장 조건/진행 중 요청/업로드 응답 유실/C-05/사진만 선택한 상태의 제한은 유지한다. 서버는 기존 선택 자료·소유·버전 정책을 유지하며 별도의 등록자료 필수 조건을 추가하지 않는다. API/DB 형식 변경 없음.
+
 ## 1. 공통 규칙
 
 - JSON 필드는 snake_case, ID는 불투명 문자열, 시간은 UTC ISO 8601을 사용한다.
@@ -144,6 +154,7 @@ GET /sessions/{sid}/public-data는 현재 {status:"not_configured",providers:["d
 | audience / usage_context | string / string | 독자(기본 처음 회사를 접하는 고객·협력사) / 사용 상황(기본 빈 문자열) |
 | tone | plain / formal / concise | 문체; 기본 plain |
 | target_company | string 또는 null | 원문에서 대상 회사를 고르는 단서; 사실 근거가 아님 |
+| dart_corp_code | 8자리 숫자 string 또는 null | DART 검색에서 명시 선택한 회사 고유번호; 이름과 함께 검증하며 사실 근거가 아님 |
 | required_fields | string[] | 반드시 포함할 기존 회사정보 key; 근거 부재 시 보완 요청 |
 | brand_color | #RRGGBB 또는 null | 제공된 브랜드 강조색 |
 
@@ -401,6 +412,7 @@ HTTP 필드·상태·DB 스키마는 그대로여서 contract_version 1.5/schema
 | PATCH /sessions/{sid}/inputs | expected_input_revision, brief?/selected_source_ids? 중 하나 이상 | `{session_id, input_revision, selected_source_ids, preflight_invalidated}` |
 | POST /sessions/{sid}/preflights | expected_input_revision | Job; 완료 시 Preflight |
 | GET /sessions/{sid}/preflights/{pid} | 없음 | 저장된 Preflight; 현재 입력 버전인지 함께 확인 |
+| POST /sessions/{sid}/preflights/{pid}/reviews | expected_input_revision, action, fact_ids, reason | 200 새 Preflight; 명시 제외/복원·재확인 필요·AI 호출 없음 |
 | POST /sessions/{sid}/drafts | preflight_id, input_revision, confirmed: true | 최신 사전 확인 기록, 초안 생성 Job |
 | GET /sessions/{sid}/documents/{did} | 없음 | Document, 검사/승인 상태 |
 | PATCH /sessions/{sid}/documents/{did} | expected_revision, operations | DocumentChangeOut; 전체 문서는 별도 GET |

@@ -1607,6 +1607,9 @@ class DraftConfirmationGraph:
         from app.services import preflights
 
         stored = preflights.get(conn, request.session_id, request.preflight.preflight_id)
+        current = conn.execute("SELECT input_revision FROM sessions WHERE session_id=?", (request.session_id,)).fetchone()
+        if current["input_revision"] != request.input_revision or stored.input_revision != request.input_revision:
+            raise AgentError("INPUT_REVISION_CONFLICT", "최신 입력의 사전 점검을 확인해 주세요.", False)
         if not stored.confirmed_at or stored.model_dump() != request.preflight.model_dump():
             raise AgentError("PREFLIGHT_NOT_CONFIRMED", "저장된 사전 점검의 사용자 확인이 필요합니다.", False)
         if not stored.can_generate:

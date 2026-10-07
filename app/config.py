@@ -16,6 +16,9 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 
+# Same provider identity verified in DART corpCode.xml/company.json and official company site.
+VERIFIED_DART_COMPANY_NAMES = {"00266961": ("NAVER", "네이버")}
+
 
 def company_name_aliases(value: str | None) -> tuple[str, ...]:
     """운영자가 동일 회사로 확인한 정확한 이름만 연결한다. 실명 목록은 로컬 설정에 둔다."""
@@ -47,10 +50,10 @@ def company_names_match(target: str, grounded: str) -> bool:
         return False
     if target_name == grounded_name:
         return True
-    # Translations are never inferred: the operator must have confirmed the group.
+    # Only explicit provider-verified names or operator-confirmed groups are aliases.
     return any(target_name in {normalize(alias) for alias in group}
                and grounded_name in {normalize(alias) for alias in group}
-               for group in (company_name_aliases(target), company_name_aliases(grounded)) if group)
+               for group in (*VERIFIED_DART_COMPANY_NAMES.values(), company_name_aliases(target), company_name_aliases(grounded)) if group)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -83,6 +86,7 @@ class Settings:
     owner_cookie_secure: bool = False
     # AI 실행 모드. mock = 가짜 결과(실제 호출 없음, 기본) / llm = Agent 구현(app/agent_llm.py) — 없으면 Job failed.
     agent_mode: str = "mock"
+    dart_api_key: str = field(default="", repr=False)
     # 시연 정책과 AI 실행 모드는 독립이다. 끄면 접근만 차단하며 기존 수명/삭제 규칙은 유지한다.
     demo_mode: bool = False
     # BE-07 출력(D-03): PDF는 시스템 Chromium 계열 브라우저(Chrome/Edge)의 headless 인쇄로 만든다. 비어 있으면 자동 탐색.
@@ -122,6 +126,7 @@ def load_settings() -> Settings:
         cors_origins=_env_list("FRONTEND_ORIGINS", ["http://localhost:5173", "http://127.0.0.1:5173"]),
         owner_cookie_secure=os.environ.get("OWNER_COOKIE_SECURE", "").strip().lower() in {"1", "true", "yes"},
         agent_mode=agent_mode,
+        dart_api_key=(os.environ.get("DART_API_KEY") or "").strip(),
         demo_mode=os.environ.get("DEMO_MODE", "").strip().lower() in {"1", "true", "yes"},
         export_browser_path=(os.environ.get("EXPORT_BROWSER_PATH") or "").strip() or None,
         export_render_timeout_s=_env_int("EXPORT_RENDER_TIMEOUT_S", 90),
