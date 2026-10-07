@@ -34,6 +34,25 @@ def company_name_aliases(value: str | None) -> tuple[str, ...]:
     return ()
 
 
+def company_names_match(target: str, grounded: str) -> bool:
+    """Compare whole names; only stock-company notation or confirmed aliases may differ."""
+    import unicodedata
+
+    def normalize(text: str) -> str:
+        text = re.sub(r"\s+", "", unicodedata.normalize("NFKC", text)).casefold()
+        return re.sub(r"^(?:\(주\)|주식회사)|(?:\(주\)|주식회사)$", "", text)
+
+    target_name, grounded_name = normalize(target), normalize(grounded)
+    if not target_name or not grounded_name:
+        return False
+    if target_name == grounded_name:
+        return True
+    # Translations are never inferred: the operator must have confirmed the group.
+    return any(target_name in {normalize(alias) for alias in group}
+               and grounded_name in {normalize(alias) for alias in group}
+               for group in (company_name_aliases(target), company_name_aliases(grounded)) if group)
+
+
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name, "").strip()
     return int(raw) if raw else default

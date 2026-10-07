@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from app.access import require_owner, settings_of
 from app.db import connect
 from app.errors import ApiError
-from app.models import DraftCreate, JobAccepted
+from app.models import Brief, DraftCreate, JobAccepted
 from app.services import ai_jobs, documents, idempotency, jobs, preflights, sessions
 
 router = APIRouter(prefix="/sessions/{sid}/drafts", tags=["drafts"])
@@ -33,12 +33,19 @@ def create_draft(request: Request, sid: str, body: DraftCreate, background_tasks
             raise ApiError(409, "INPUT_REVISION_CONFLICT", "사전 점검이 이전 입력 기준입니다. 다시 실행해 주세요.",
                            details={"preflight_input_revision": preflight.input_revision,
                                     "current_input_revision": row["input_revision"]})
+        latest = preflights.latest_id(conn, sid, row["input_revision"])
+        if latest != body.preflight_id:
+            raise ApiError(409, "INPUT_REVISION_CONFLICT", "새로운 점검 결과가 있습니다. 최신 점검을 확인한 뒤 초안을 생성해 주세요.",
+                           details={"preflight_id": body.preflight_id, "latest_preflight_id": latest})
         if not body.confirmed:
             raise ApiError(422, "PREFLIGHT_NOT_CONFIRMED", "사전 점검 결과를 확인한 뒤 생성할 수 있습니다.",
                            details={"preflight_id": body.preflight_id})
         if not preflight.can_generate:
             raise ApiError(422, "NO_USABLE_TEXT", "텍스트 근거가 있는 자료가 없어 초안을 만들 수 없습니다.",
                            details={"preflight_id": body.preflight_id, "needed": preflight.recommendations.needed})
+        if problem := preflights.draft_problem(Brief.model_validate_json(row["brief_json"]), preflight.facts, settings.agent_mode):
+            raise ApiError(422, problem[0], problem[1], details={"preflight_id": body.preflight_id,
+                           "recovery_action": "review_inputs"})
         if (existing := documents.exists_for_session(conn, sid)) is not None:
             raise ApiError(409, "DOCUMENT_EXISTS", "이미 초안이 있습니다. 편집 화면에서 이어가 주세요.",
                            details={"document_id": existing})

@@ -17,6 +17,8 @@ from app.errors import ApiError
 from app.models import JobOut
 from app.timeutil import now, to_iso
 
+# Explicit user retries only. Input/policy/confirmation failures require review.
+DRAFT_RETRY_CODES = frozenset({"AGENT_OUTPUT_INVALID", "SERVICE_TEMPORARY_FAILURE", "AI_RATE_LIMIT", "INTERNAL_ERROR"})
 ACTIVE = ("queued", "running", "waiting_user")
 RECOVERABLE = ACTIVE + ("failed", "succeeded")   # 재시작 복구 전용: cancelled만 제외하고 Export의 실제 결과로 맞춘다
 CANCELLED_ERROR = {"code": "SESSION_EXPIRED", "message": "세션이 종료되어 작업이 취소되었습니다.", "retryable": False,

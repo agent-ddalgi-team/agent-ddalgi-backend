@@ -7,7 +7,7 @@ import uuid
 from app.db import Connection
 from app.agent_bridge import SegmentIn, SourceIn
 from app.errors import ApiError
-from app.models import DataSufficiency, Fact, Issue, PreflightOut, Recommendations, SufficiencyCategory
+from app.models import Brief, DataSufficiency, Fact, Issue, PreflightOut, Recommendations, SufficiencyCategory
 from app.services import db_history
 from app.services.sources import evidence_scope
 from app.timeutil import now, to_iso
@@ -125,6 +125,30 @@ def assess_sufficiency(facts: list[Fact], issues: list[Issue]) -> DataSufficienc
         categories.append(SufficiencyCategory(key=key, label=label, status=status))
     return DataSufficiency(score=25 * sum(c.status == "supported" for c in categories),
                            categories=categories, has_blockers=bool(blockers))
+
+
+def latest_id(conn: Connection, session_id: str, input_revision: int) -> str | None:
+    row = conn.execute("SELECT preflight_id FROM preflights WHERE session_id=? AND input_revision=? "
+                       "ORDER BY created_at DESC, rowid DESC LIMIT 1", (session_id, input_revision)).fetchone()
+    return row[0] if row else None
+
+
+def draft_problem(brief: Brief, facts: list[Fact], agent_mode: str) -> tuple[str, str] | None:
+    if agent_mode != "llm":
+        return None
+    from app.agent_llm import draft_input_problem
+    return draft_input_problem(brief, facts)
+
+
+def apply_draft_readiness(result: PreflightOut, brief: Brief, agent_mode: str) -> PreflightOut:
+    if not result.can_generate:
+        return result
+    if problem := draft_problem(brief, result.facts, agent_mode):
+        result = result.model_copy(deep=True)
+        result.can_generate = False
+        if problem[1] not in result.recommendations.needed:
+            result.recommendations.needed.append(problem[1])
+    return result
 
 
 def get(conn: Connection, session_id: str, preflight_id: str) -> PreflightOut:

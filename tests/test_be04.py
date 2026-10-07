@@ -557,3 +557,73 @@ def test_preflight_api_exposes_evidence_coverage(client):
     assert len(coverage["categories"]) == 4
     assert coverage["score"] == 25 * sum(c["status"] == "supported" for c in coverage["categories"])
     assert isinstance(coverage["has_blockers"], bool)
+
+
+@pytest.mark.parametrize("case,ready", [
+    ("same", True), ("corporation", True), ("other", False),
+    ("unknown_translation", False), ("missing_name", False),
+    ("conflict", False), ("missing_required_excluded", False),
+    ("missing_required", True), ("excluded_opening", True),
+    ("empty_supported", False),
+])
+def test_draft_entry_preflight_and_post_use_same_conditions(client, settings, monkeypatch, case, ready):
+    from app.services import preflights
+    sid = _session(client)
+    ids = _upload(client, sid, ("company.txt", SOURCE_A))
+    rev = _select(client, sid, ids)
+    pf = _preflight(client, sid, rev)
+    brief = dict(BRIEF, target_company="예시 회사")
+    if case == "corporation": brief["target_company"] = "㈜예시 회사"
+    if case == "other": brief["target_company"] = "다른회사"
+    if case == "unknown_translation": brief["target_company"] = "EXAMPLE COMPANY"
+    if case in {"conflict", "missing_required_excluded", "missing_required"}:
+        brief["required_fields"] = ["certifications"]
+        if case != "missing_required": brief["emphasis"] = ["인증 제외"]
+    if case == "excluded_opening": brief["emphasis"] = ["회사 개요 제외"]
+    with connect(settings.db_path) as conn:
+        conn.execute("UPDATE sessions SET brief_json=? WHERE session_id=?", (json.dumps(brief), sid))
+        facts = pf["facts"]
+        for fact in facts:
+            if (case == "missing_name" and fact["field_key"] == "company_name") or case == "empty_supported":
+                fact.update(status="missing", value=None, evidence_refs=[])
+        conn.execute("UPDATE preflights SET facts_json=? WHERE preflight_id=?", (json.dumps(facts),pf["preflight_id"]))
+        stored = preflights.get(conn, sid, pf["preflight_id"]).model_dump()
+        job_count = conn.execute("SELECT count(*) FROM jobs WHERE session_id=?", (sid,)).fetchone()[0]
+    client.app.state.settings = replace(settings, agent_mode="llm")
+    monkeypatch.setattr(ai_jobs, "get_bridge", lambda s: MockAgent())
+    observed = client.get(f"/api/v1/sessions/{sid}/preflights/{pf['preflight_id']}").json()
+    assert observed["can_generate"] is ready
+    if not ready:
+        assert observed["recommendations"]["needed"]
+    with connect(settings.db_path) as conn:
+        assert preflights.get(conn,sid,pf["preflight_id"]).model_dump() == stored  # GET never rewrites facts/confirmation.
+    r = client.post(f"/api/v1/sessions/{sid}/drafts",json={"preflight_id":pf["preflight_id"],"input_revision":rev,"confirmed":True})
+    if ready:
+        assert r.status_code == 202, r.text
+    else:
+        assert r.status_code == 422, r.text
+        assert r.json()["error"]["details"]["recovery_action"] == "review_inputs"
+        with connect(settings.db_path) as conn:
+            assert conn.execute("SELECT count(*) FROM jobs WHERE session_id=?", (sid,)).fetchone()[0] == job_count
+            assert preflights.get(conn,sid,pf["preflight_id"]).confirmed_at is None
+            assert not conn.execute("SELECT 1 FROM documents WHERE session_id=?",(sid,)).fetchone()
+
+
+def test_older_same_input_preflight_is_not_offered_or_consumed(client, settings):
+    from app.services import preflights
+    sid = _session(client)
+    rev = _select(client,sid,_upload(client,sid,("company.txt",SOURCE_A)))
+    first = _preflight(client,sid,rev)
+    latest = _preflight(client,sid,rev)
+    view = client.get(f"/api/v1/sessions/{sid}/preflights/{first['preflight_id']}").json()
+    assert not view["can_generate"] and view["recommendations"]["needed"]
+    assert view["latest_preflight_id"] == latest["preflight_id"]
+    assert client.get(f"/api/v1/sessions/{sid}/preflights/{latest['preflight_id']}").json()["can_generate"]
+    with connect(settings.db_path) as conn:
+        count = conn.execute("SELECT count(*) FROM jobs WHERE session_id=?",(sid,)).fetchone()[0]
+    response = client.post(f"/api/v1/sessions/{sid}/drafts",json={"preflight_id":first['preflight_id'],"input_revision":rev,"confirmed":True})
+    assert response.status_code == 409
+    assert response.json()["error"]["details"]["latest_preflight_id"] == latest['preflight_id']
+    with connect(settings.db_path) as conn:
+        assert preflights.get(conn,sid,first['preflight_id']).confirmed_at is None
+        assert conn.execute("SELECT count(*) FROM jobs WHERE session_id=?",(sid,)).fetchone()[0] == count

@@ -58,6 +58,10 @@ def legacy_contract_view(value):
         if "purpose" in result and "target_pages" in result:
             for key in ("audience", "usage_context", "tone", "target_company", "required_fields", "brand_color"):
                 assert result.pop(key) == Brief.model_fields[key].get_default(call_default_factory=True)
+        if result.get("latest_preflight_id", "absent") is None:
+            result.pop("latest_preflight_id")
+        if result.get("sufficiency", "absent") is None:
+            result.pop("sufficiency")  # New optional coverage metadata is outside the frozen pre-1.7 inputs.
         if result.get("design", "absent") is None:
             result.pop("design")
         if result.get("editorial", "absent") is None:
@@ -164,7 +168,8 @@ def editorial_response(payload):
                   "certifications": "인증 범위·기간", "lead_time": "일정·협의 조건", "history": "시작 이력"}
         return {**item(f), "label": labels.get(f["field_key"], "세부 정보")}
     name = next(f for f in included if f["field_key"] == "company_name")
-    opening = next(f for f in included if f["field_key"] == "company_summary")
+    opening = next((f for f in included if f["field_key"] == "company_summary"),
+                   next((f for f in included if f["field_key"] in llm._BUSINESS_KEYS), name))
     details = [f for f in included if f not in [name, opening]]
     if payload["brief"]["audience"] == "기술 검토자":
         details.sort(key=lambda f: f["field_key"] not in {"capabilities", "processes"})
@@ -325,7 +330,7 @@ def test_editorial_109_facts_sdk_schema_and_coverage(monkeypatch, damage):
         assert len(result.editorial.selections) == 109
         assert validate_draft(result, request.sources, {f.fact_id for f in request.preflight.facts}, request.preflight) is None
         assert next(s for s in result.editorial.selections if s.fact_id == "fact_manufacturing_lead_time").disposition == "required"
-    assert request == before and len(calls) == 2  # SDK constructor + one request; no retry
+    assert request == before and len(calls) == (4 if damage in {"required_body_missing", "unused_null", "omitted"} else 2)  # At most one diagnosed live rewrite.
 
 
 @pytest.mark.parametrize("case_id", EDITORIAL_CASES)
@@ -738,7 +743,7 @@ def test_compound_certificate_whole_fact_requirement_is_bounded(case, required):
     if case == "simple":
         fact.value = "인증 원문에 적용 범위가 기록되어 있습니다."
     elif case == "other_field":
-        fact.field_key = "history"
+        fact.field_key = "capabilities"
     elif case == "unconfirmed":
         fact.status = "needs_confirmation"
     elif case == "conditions":
@@ -1342,6 +1347,29 @@ def test_editorial_missing_required_is_internal_supplement_not_invented_body():
     assert not any("추가 확인" in t for p in result.pages for b in p.blocks for t in validation.block_texts(b))
 
 
+def test_editorial_excluded_opening_uses_another_grounded_business_fact():
+    request = build_editorial_request("manufacturing")
+    request.brief.emphasis = ["회사 개요 제외"]
+    assert llm.draft_input_problem(request.brief, request.preflight.facts) is None
+    result = llm.LlmAgent(lambda i,p,s,n: editorial_response(p)).draft(request)
+    summary = next(f.fact_id for f in request.preflight.facts if f.field_key == "company_summary")
+    assert next(s.disposition for s in result.editorial.selections if s.fact_id == summary) == "excluded"
+    assert not any(summary in b.fact_ids for p in result.pages for b in p.blocks)
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_draft_readiness_required_excluded_conflict_is_detected_without_model(missing):
+    request = build_editorial_request("manufacturing")
+    request.brief.required_fields = ["certifications"]
+    request.brief.emphasis = ["인증 제외"]
+    if missing:
+        request.preflight.facts = [f for f in request.preflight.facts if f.field_key != "certifications"]
+    problem = llm.draft_input_problem(request.brief, request.preflight.facts)
+    assert problem and problem[0] == "INVALID_REQUEST"
+    with pytest.raises(AgentError, match="INVALID_REQUEST"):
+        llm.LlmAgent(lambda *a: pytest.fail("Input rejection must not call AI")).draft(request)
+
+
 def test_editorial_company_scope_and_target_company_are_checked_before_call():
     request = build_editorial_request("company_b")
     foreign = build_editorial_request("manufacturing").preflight.facts[0]
@@ -1355,6 +1383,45 @@ def test_editorial_company_scope_and_target_company_are_checked_before_call():
     with pytest.raises(AgentError):
         llm.LlmAgent(lambda *args: calls.append(args)).draft(request)
     assert not calls
+
+
+@pytest.mark.parametrize("target,grounded", [
+    ("예시정공", "㈜예시정공"), ("예시정공", "(주) 예시정공"),
+    ("예시 정공", "주식회사 예시정공"), ("예시정공", "예시정공 주식회사"),
+    ("㈜예시정공", "예시정공"), ("ＥＸＡＭＰＬＥ", "example"),
+])
+def test_editorial_target_company_accepts_notation_without_reextracting(target, grounded):
+    request = build_editorial_request("manufacturing")
+    request.brief.target_company = target
+    fact = next(f for f in request.preflight.facts if f.field_key == "company_name")
+    segment = next(s for s in request.sources[0].segments if s.segment_id == fact.evidence_refs[0].segment_id)
+    fact.value = segment.text = fact.evidence_refs[0].excerpt = grounded
+    before = request.preflight.model_copy(deep=True)
+    calls = []
+    def compose(i, payload, s, n):
+        calls.append(n)
+        return editorial_response(payload)
+    result = llm.LlmAgent(compose).draft(request)
+    assert result.title == grounded
+    assert len(calls) == 1 and request.preflight == before
+
+
+@pytest.mark.parametrize("target,grounded", [
+    ("예시정공", "다른예시정공"), ("예시정공", "예시정공테크"),
+    ("예시정공", "EXAMPLE MACHINING"), ("㈜", "(주)"),
+    ("예시정공", "유한회사 예시정공"),
+])
+def test_company_name_match_does_not_infer_other_companies(monkeypatch, target, grounded):
+    from app.config import company_names_match
+    monkeypatch.delenv("COMPANY_NAME_ALIASES", raising=False)
+    assert not company_names_match(target, grounded)
+
+
+def test_editorial_target_company_accepts_only_confirmed_translation(monkeypatch):
+    from app.config import company_names_match
+    monkeypatch.setenv("COMPANY_NAME_ALIASES", json.dumps([["예시정공", "EXAMPLE MACHINING"]]))
+    assert company_names_match("㈜예시정공", "EXAMPLE MACHINING")
+    assert not company_names_match("예시정공테크", "EXAMPLE MACHINING")
 
 
 def test_editorial_audience_is_forwarded_and_design_proposal_keeps_document_unchanged():
@@ -5835,7 +5902,7 @@ def graph_job(flow, accepted):
     return flow.client.get(flow.base + "/jobs/" + accepted.json()["job_id"]).json()
 
 
-def test_interactive_failed_draft_recovers_after_fresh_confirmation(graph_flow, monkeypatch):
+def test_interactive_failed_draft_recovers_without_reanalysis(graph_flow, monkeypatch):
     flow = graph_flow
     ledger = llm.TrialLedger(interactive=True, budget_usd=Decimal("5"))
     attempts = []
@@ -5858,18 +5925,13 @@ def test_interactive_failed_draft_recovers_after_fresh_confirmation(graph_flow, 
     assert not ledger.snapshot()["stopped"]
     assert flow.client.post(flow.base + "/drafts", json=flow.body, headers=headers).json() == accepted.json()
     assert attempts == ["draft_sections"]  # 같은 전송 키는 재생성하지 않는다.
-    old = graph_job(flow, flow.client.post(flow.base + "/drafts", json=flow.body))
-    assert old["status"] == "failed" and old["error"]["code"] == "PREFLIGHT_NOT_CONFIRMED"
-    fresh = graph_job(flow, flow.client.post(flow.base + "/preflights", json={"expected_input_revision": flow.rev}))
-    assert fresh["status"] == "succeeded", fresh
-    body = flow.body | {"preflight_id": fresh["result_ref"]["preflight_id"]}
-    created = graph_job(flow, flow.client.post(flow.base + "/drafts", json=body))
+    created = graph_job(flow, flow.client.post(flow.base + "/drafts", json=flow.body))
     assert created["status"] == "succeeded", created
     summary = flow.client.get(flow.base).json()["document_summary"]
     assert summary is not None
     saved = flow.client.get(flow.base + "/documents/" + summary["document_id"]).json()["document"]
     assert saved["editorial"]["prompt_version"] == "editorial_v2"
-    assert attempts == ["draft_sections", "company_info", "draft_sections"]
+    assert attempts == ["draft_sections", "draft_sections"]
     assert not ledger.snapshot()["stopped"]
 
 
@@ -5893,8 +5955,9 @@ def test_editorial_heading_fix_and_rejection_reach_job_api(graph_flow, monkeypat
     result = graph_job(flow, accepted)
     if invalid_heading:
         assert result["status"] == "failed" and result["error"]["code"] == "AGENT_OUTPUT_INVALID"
-        assert "제목의 사실 표현" in result["error"]["message"] and "사전 점검부터" in result["error"]["message"]
-        assert not result["error"]["retryable"]
+        assert "제목의 사실 표현" in result["error"]["message"]
+        assert result["error"]["retryable"]
+        assert result["error"]["details"]["recovery_action"] == "retry_draft"
         assert flow.client.get(flow.base).json()["document_summary"] is None
     else:
         assert result["status"] == "succeeded", result
@@ -6155,8 +6218,9 @@ def test_graph_wait_survives_new_app_and_contains_only_references(graph_flow, mo
     assert attempts == []
 
 
+@pytest.mark.parametrize("graph_flow", [None, "orm"], indirect=True)
 @pytest.mark.parametrize("failure", ["model", "validation", "storage"])
-def test_graph_failed_draft_requires_reanalysis_and_does_not_retry_model(graph_flow, monkeypatch, failure):
+def test_graph_failed_draft_explicit_retry_preserves_preflight_and_idempotency(graph_flow, monkeypatch, failure):
     flow = graph_flow
     def fail_model(_):
         raise AgentError("AI_RATE_LIMIT", "가짜 요청 한도 오류", True)
@@ -6172,16 +6236,23 @@ def test_graph_failed_draft_requires_reanalysis_and_does_not_retry_model(graph_f
         headers = {"Idempotency-Key": "graph-failed-draft"}
         first = flow.client.post(flow.base + "/drafts", json=flow.body, headers=headers)
         result = graph_job(flow, first)
-        assert result["status"] == "failed" and not result["error"]["retryable"]
-        assert "사전 점검부터" in result["error"]["message"]
+        assert result["status"] == "failed" and result["error"]["retryable"]
+        assert result["error"]["details"]["recovery_action"] == "retry_draft"
+        assert "사전 점검부터" not in result["error"]["message"]
         assert flow.client.post(flow.base + "/drafts", json=flow.body, headers=headers).json() == first.json()
-        second = graph_job(flow, flow.client.post(flow.base + "/drafts", json=flow.body,
-                                                headers={"Idempotency-Key": "graph-failed-draft-new"}))
-        assert second["status"] == "failed" and second["error"]["code"] == "PREFLIGHT_NOT_CONFIRMED"
         assert len(flow.model.calls) == 2
-    recheck = graph_job(flow, flow.client.post(flow.base + "/preflights", json={"expected_input_revision": flow.rev}))
-    current = flow.body | {"preflight_id": recheck["result_ref"]["preflight_id"]}
-    assert graph_job(flow, flow.client.post(flow.base + "/drafts", json=current))["status"] == "succeeded"
+    before = flow.client.get(flow.base + "/preflights/" + flow.pfid).json()
+    denied = flow.client.post(flow.base + "/drafts", json=flow.body | {"confirmed": False})
+    assert denied.status_code == 422 and len(flow.model.calls) == 2
+    retry_headers = {"Idempotency-Key": "graph-failed-draft-new"}
+    second = flow.client.post(flow.base + "/drafts", json=flow.body, headers=retry_headers)
+    assert graph_job(flow, second)["status"] == "succeeded"
+    assert flow.client.get(flow.base + "/preflights/" + flow.pfid).json() == before
+    assert len(flow.model.calls) == 3  # One analysis, two explicit draft calls.
+    assert flow.client.post(flow.base + "/drafts", json=flow.body, headers=retry_headers).json() == second.json()
+    assert graph_job(flow, first)["status"] == "failed"  # Never rewrite failure as success.
+    assert flow.client.post(flow.base + "/drafts", json=flow.body).status_code == 409
+    assert len(flow.model.calls) == 3
 
 
 def test_server_stores_structure_from_current_brief_with_graph_confirmation(graph_flow):
@@ -6237,8 +6308,8 @@ def test_graph_rejects_old_preflight_after_new_analysis_at_same_revision(graph_f
     flow = graph_flow
     new_job = graph_job(flow, flow.client.post(flow.base + "/preflights", json={"expected_input_revision": flow.rev}))
     assert new_job["status"] == "succeeded", new_job
-    rejected = graph_job(flow, flow.client.post(flow.base + "/drafts", json=flow.body))
-    assert rejected["status"] == "failed" and rejected["error"]["code"] == "INPUT_REVISION_CONFLICT"
+    rejected = flow.client.post(flow.base + "/drafts", json=flow.body)
+    assert rejected.status_code == 409 and rejected.json()["error"]["code"] == "INPUT_REVISION_CONFLICT"
     assert len(flow.model.calls) == 2
     current = flow.body | {"preflight_id": new_job["result_ref"]["preflight_id"]}
     assert graph_job(flow, flow.client.post(flow.base + "/drafts", json=current))["status"] == "succeeded"
@@ -7396,3 +7467,109 @@ def test_proposal_receives_per_item_numeric_tokens_and_actionable_rejection():
     assert caught.value.code == "AGENT_OUTPUT_INVALID"
     assert "숫자·날짜" in caught.value.message and "직접 편집" in caught.value.message
     assert request.document.model_dump() == before
+
+
+@pytest.mark.parametrize("value", ["2015년 6월 생산 공정을 도입했습니다.",
+    "2015.06.12 생산 공정을 도입했습니다.", "2015-06-12 공정 2개를 도입했습니다."])
+def test_dated_history_whole_fact_points_preserve_dates_without_repair_calls(value):
+    request, fid = numeric_editorial_request(value, value)
+    fact = next(f for f in request.preflight.facts if f.fact_id == fid)
+    fact.field_key = "history"
+    request.brief.required_fields = ["history"]
+    calls = []
+    def respond(instructions, payload, schema, name):
+        calls.append(name)
+        requirement = next(r for r in payload["body_requirements"] if r["fact_id"] == fid)
+        assert requirement["whole_fact_point_required"]
+        assert fid not in schema["$defs"]["_EditorialPoint"]["properties"]["fact_ids"]["items"]["enum"]
+        response = editorial_composition(editorial_response(payload))
+        for page in response["pages"]:
+            page["points"] = [{"label": "도입 이력", "fact_id": fid}
+                              if p["fact_ids"] == [fid] else p for p in page["points"]]
+        return response
+    result = llm.LlmAgent(respond).draft(request)
+    block = next(b for p in result.pages for b in p.blocks if b.type == "paragraph" and b.fact_ids == [fid])
+    assert block.content["text"] == value
+    assert block.evidence_refs == fact.evidence_refs
+    assert calls == ["draft_sections"]
+
+
+@pytest.mark.parametrize("state", ["cancelled", "running", "missing_job", "policy_error", "changed_input", "new_preflight"])
+def test_failed_draft_retry_rejects_unsafe_confirmation_reuse(graph_flow, monkeypatch, state):
+    flow = graph_flow
+    with monkeypatch.context() as patch:
+        patch.setattr(flow.model, "draft_change", lambda _: (_ for _ in ()).throw(AgentError("AGENT_OUTPUT_INVALID", "시험 실패")))
+        accepted = flow.client.post(flow.base + "/drafts", json=flow.body)
+        assert graph_job(flow, accepted)["status"] == "failed"
+    jid = accepted.json()["job_id"]
+    with connect(flow.settings.db_path, immediate=True) as conn:
+        if state in {"cancelled", "running"}:
+            conn.execute("UPDATE jobs SET status=? WHERE job_id=?", (state, jid))
+        elif state == "missing_job":
+            conn.execute("DELETE FROM jobs WHERE job_id=?", (jid,))
+        elif state == "policy_error":
+            conn.execute("UPDATE jobs SET error_json=? WHERE job_id=?",
+                         (json.dumps({"code": "INVALID_REQUEST", "retryable": False}), jid))
+    if state == "changed_input":
+        flow.client.patch(flow.base + "/inputs", json={"expected_input_revision": flow.rev, "brief": BRIEF.model_dump()})
+    elif state == "new_preflight":
+        flow.client.post(flow.base + "/preflights", json={"expected_input_revision": flow.rev})
+    calls = len(flow.model.calls)
+    retried = flow.client.post(flow.base + "/drafts", json=flow.body)
+    if state in {"changed_input", "new_preflight"}:
+        assert retried.status_code == 409
+        assert retried.json()["error"]["code"] == "INPUT_REVISION_CONFLICT"
+    elif state == "running":
+        assert retried.json()["job_id"] == jid
+    else:
+        assert graph_job(flow, retried)["status"] == "failed"
+    assert len(flow.model.calls) == calls
+    assert flow.client.get(flow.base).json()["document_summary"] is None
+
+
+@pytest.mark.parametrize("recover", [True, False])
+def test_live_editorial_rewrite_is_bounded_and_preserves_input(monkeypatch, recover):
+    request = build_editorial_request("manufacturing")
+    before = copy.deepcopy(request)
+    payloads = []
+    def respond(**kwargs):
+        payload = json.loads(kwargs["input"])
+        payloads.append(payload)
+        response = indexed_editorial_composition(editorial_response(payload))
+        if len(payloads) == 1 or not recover:
+            response["pages"][0]["heading"] = {"text": "회사 소개", "fact_ids": []}
+        return metered_response(output_text=json.dumps(response, ensure_ascii=False))
+    fake_sdk(monkeypatch, response=respond)
+    ledger = llm.TrialLedger(interactive=True, budget_usd=Decimal("5"))
+    agent = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=ledger))
+    if recover:
+        result = agent.draft(request)
+        assert validate_draft(result, request.sources, {f.fact_id for f in request.preflight.facts}, request.preflight) is None
+    else:
+        with pytest.raises(AgentError, match="AGENT_OUTPUT_INVALID"):
+            agent.draft(request)
+    assert len(payloads) == 2
+    assert "repair_requirements" not in payloads[0]
+    repair = payloads[1]["repair_requirements"]
+    assert repair["rule"] == "selection_coverage"
+    assert repair["fact_ids"] == [next(f["fact_id"] for f in payloads[1]["facts"] if f["field_key"] == "company_name")]
+    assert request == before
+
+
+@pytest.mark.parametrize("limited", ["trial", "manual_stop"])
+def test_editorial_rewrite_respects_trial_and_manual_stop(monkeypatch, limited):
+    payloads = []
+    ledger = llm.TrialLedger(interactive=limited == "manual_stop", budget_usd=Decimal("1"))
+    def respond(**kwargs):
+        payload = json.loads(kwargs["input"])
+        payloads.append(payload)
+        response = indexed_editorial_composition(editorial_response(payload))
+        response["pages"][0]["heading"] = {"text": "회사 소개", "fact_ids": []}
+        if limited == "manual_stop":
+            ledger.stop()
+        return metered_response(output_text=json.dumps(response, ensure_ascii=False))
+    fake_sdk(monkeypatch, response=respond)
+    agent = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=ledger))
+    with pytest.raises(AgentError):
+        agent.draft(build_editorial_request("manufacturing"))
+    assert len(payloads) == 1

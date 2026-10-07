@@ -72,7 +72,8 @@ DOCX_LAYOUT_CONSTANTS = {"page_mm": [PAGE_W_MM, PAGE_H_MM], "image_max_h_mm": IM
                          "exif_orientation": "apply_before_embed", "image_decode": "full_pixels",
                          "demo_footer": DEMO_FOOTER_TEXT, "demo_footer_mm": DEMO_FOOTER_MM,
                          "image_paragraph": "left_explicit_center_indent_zero_inline_distance",
-                         "layout_check": "libreoffice_pdf_per_page_text_images_printable_bounds_pypdf_exact_fallback_v2"}
+                         "layout_check": "libreoffice_pdf_per_page_text_images_printable_bounds_pypdf_exact_fallback_v2",
+                         "font_embedding": "full_regular_bold_ooxml_obfuscated_v1"}
 # 배치에 영향을 주는 브라우저 인자(창 크기·가상 시간). 바꾸면 TEMPLATE_VERSION을 올린다(지문 포함). 샌드박스·프로필 등 환경 인자는 제외.
 PDF_RENDER_CONSTANTS = {"window_size": "1000,1400", "virtual_time_budget_ms": 10000, "measure": "after_load_and_fonts_ready"}
 
@@ -899,6 +900,53 @@ def _docx_set_font(style, family: str, size_pt: float | None = None, bold: bool 
             del rfonts.attrib[qn(attr)]
 
 
+def _docx_embed_fonts(doc, family: str) -> None:
+    """Use the same OFL fonts as PDF; keep full glyph sets for later editing."""
+    import uuid
+    from docx.oxml import OxmlElement, parse_xml
+    from docx.oxml.ns import qn
+    from docx.opc.constants import RELATIONSHIP_TYPE as RT
+    from docx.opc.packuri import PackURI
+    from docx.opc.part import Part
+    from docx.oxml.xmlchemy import serialize_for_reading
+
+    font_table = doc.part.part_related_by(RT.FONT_TABLE)
+    root = parse_xml(font_table.blob)
+    entry = next((f for f in root if f.get(qn("w:name")) == family), None)
+    if entry is None:
+        entry = OxmlElement("w:font")
+        entry.set(qn("w:name"), family)
+        root.append(entry)
+    for weight, tag in (("regular", "w:embedRegular"), ("bold", "w:embedBold")):
+        try:
+            data = bytearray(FONT_FILES[weight].read_bytes())
+        except OSError as exc:
+            raise RenderError("template_missing", "DOCX에 포함할 글꼴 파일을 읽지 못했습니다.") from exc
+        if len(data) < 32:
+            raise RenderError("template_missing", "DOCX 글꼴 파일이 올바르지 않습니다.")
+        # ECMA-376 font obfuscation: reversed GUID bytes XOR the first 32 bytes.
+        key = uuid.UUID(bytes=hashlib.sha256(data).digest()[:16])
+        mask = key.bytes[::-1]
+        for i in range(32):
+            data[i] ^= mask[i % 16]
+        part = Part(PackURI(f"/word/fonts/Pretendard-{weight}.odttf"),
+                    "application/vnd.openxmlformats-officedocument.obfuscatedFont",
+                    bytes(data), doc.part.package)
+        embedded = OxmlElement(tag)
+        embedded.set(qn("r:id"), font_table.relate_to(part, RT.FONT))
+        embedded.set(qn("w:fontKey"), "{" + str(key).upper() + "}")
+        embedded.set(qn("w:subsetted"), "false")
+        entry.append(embedded)
+    # fontTable is a generic python-docx Part; its relationships are saved with it.
+    font_table._blob = serialize_for_reading(root).encode("utf-8")
+    for tag, value in (("w:embedTrueTypeFonts", "true"), ("w:saveSubsetFonts", "false")):
+        setting = doc.settings.element.find(qn(tag))
+        if setting is None:
+            setting = OxmlElement(tag)
+            doc.settings.element.append(setting)
+        setting.set(qn("w:val"), value)
+
+
 def _docx_box(doc, title: str, body: str, broken: bool) -> None:
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.shared import Pt, RGBColor
@@ -957,7 +1005,7 @@ def _render_docx(snapshot: RenderSnapshot, out_dir: Path) -> tuple[Path, int | N
             tmp.unlink(missing_ok=True)
         except OSError:
             pass
-    details["font_embedding"] = "not_supported_in_this_implementation"
+    details["font_embedding"] = "embedded_regular_bold"
     checks = [_record("overflow", "docx", findings, not_checked_reason="docx_no_layout_engine"),
               _record("broken_image", "docx", findings), _record("placeholder_remaining", "docx", findings)]
     return final, None, findings, checks, "python-docx/" + _module_version("docx"), details
@@ -1146,6 +1194,7 @@ def _build_docx(snapshot: RenderSnapshot, family: str, base_pt: float, content_w
     from docx.shared import Mm, Pt, RGBColor
 
     doc = docx.Document()
+    _docx_embed_fonts(doc, family)
     section = doc.sections[0]
     section.page_width, section.page_height = Mm(PAGE_W_MM), Mm(PAGE_H_MM)
     section.left_margin = section.right_margin = section.top_margin = section.bottom_margin = Mm(layout_checks.DEFAULT_RENDER_OPTIONS["margin_mm"])

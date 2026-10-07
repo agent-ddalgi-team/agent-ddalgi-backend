@@ -150,7 +150,9 @@ def _editorial_invalid(rule: str) -> AgentError:
         "cover_position": "AI 초안이 첫 페이지 이외에 표지 배치를 사용했습니다.",
     }
     logger.warning("Editorial draft rejected: rule=%s", rule)
-    return AgentError("AGENT_OUTPUT_INVALID", messages[rule] + " 초안을 저장하지 않았습니다.", False)
+    error = AgentError("AGENT_OUTPUT_INVALID", messages[rule] + " 초안을 저장하지 않았습니다.", False)
+    error.repair_rule = rule  # Internal, fixed rule names only; never raw response data.
+    return error
 
 
 class ReviewInputLimitError(AgentError):
@@ -1061,11 +1063,12 @@ def _whole_fact_point_available(fact: Fact) -> bool:
 
 
 def _whole_fact_point_required(fact: Fact) -> bool:
-    """Compound certificate identifiers/dates must not take the lossy prose path."""
+    """Preserve detailed certificates and dated history when explicitly selected."""
     from app.services.validation import numeric_evidence_tokens
-    return (fact.status == "supported" and fact.field_key == "certifications"
-            and _whole_fact_point_available(fact)
-            and len(numeric_evidence_tokens(fact.value or "")) >= 4)
+    tokens = numeric_evidence_tokens(fact.value or "")
+    return (fact.status == "supported" and _whole_fact_point_available(fact)
+            and ((fact.field_key == "certifications" and len(tokens) >= 4)
+                 or (fact.field_key == "history" and bool(tokens))))
 
 
 def _expand_editorial_pages(pages: list[_EditorialPage], target: int) -> list[_EditorialPage]:
@@ -1174,10 +1177,14 @@ def _composition_plan(response: dict, facts: dict[str, Fact], policy: dict[str, 
     # name heading) can omit its redundant note. Unused/review/excluded facts
     # still need the model's reason;
     # unknown/duplicate IDs and downstream body/numeric gates remain strict.
-    if any(fid not in body_referenced or facts[fid].status != "supported"
-           or not {"required", "optional"}.intersection(policy.get(fid, ()))
-           for fid in missing_notes):
-        raise _editorial_invalid("selection_coverage")
+    uncovered = sorted(fid for fid in missing_notes
+                       if fid not in body_referenced or facts[fid].status != "supported"
+                       or not {"required", "optional"}.intersection(policy.get(fid, ())))
+    if uncovered:
+        error = _editorial_invalid("selection_coverage")
+        error.repair_fact_ids = uncovered
+        logger.warning("Editorial coverage rejected: uncovered_count=%s", len(uncovered))
+        raise error
     decisions = []
     for fid, allowed in policy.items():
         note = notes.get(fid)
@@ -1241,10 +1248,15 @@ def _editorial_body_gaps(facts: dict[str, Fact], used: dict[str, list[str]]) -> 
 
 
 def _editorial_required(request: DraftRequest, facts: dict[str, Fact]) -> tuple[set[str], list[str]]:
-    required_fields = {"company_name", *request.brief.required_fields}
+    return _editorial_required_for_brief(request.brief, facts)
+
+
+def _editorial_required_for_brief(brief: Brief, facts: dict[str, Fact]) -> tuple[set[str], list[str]]:
+    required_fields = {"company_name", *brief.required_fields}
     supported = [f for f in facts.values() if f.status == "supported"]
     required = {f.fact_id for f in supported if f.field_key in required_fields}
-    business = [f for f in supported if f.field_key in _BUSINESS_KEYS]
+    excluded = _section_preferences(brief)[2]
+    business = [f for f in supported if f.field_key in _BUSINESS_KEYS and f.field_key not in excluded]
     if business:
         # One grounded opening is always required; remaining facts can be selected by purpose.
         required.add(business[0].fact_id)
@@ -1252,6 +1264,25 @@ def _editorial_required(request: DraftRequest, facts: dict[str, Fact]) -> tuple[
     if not business:
         missing.append("주요 사업/제품 설명")
     return required, missing
+
+
+def draft_input_problem(brief: Brief, fact_list: list[Fact]) -> tuple[str, str] | None:
+    """Predict only deterministic editorial input rejections; never perform an AI call."""
+    from app.config import company_names_match
+    facts = {f.fact_id: f for f in fact_list}
+    excluded = _section_preferences(brief)[2]
+    required, _ = _editorial_required_for_brief(brief, facts)
+    if set(brief.required_fields) & excluded or any(facts[fid].field_key in excluded for fid in required):
+        return "INVALID_REQUEST", "필수 내용과 제외 요청이 겹칩니다. 작성 조건을 정리해 주세요."
+    names = [f for f in fact_list if f.field_key == "company_name" and f.status == "supported"]
+    if brief.target_company:
+        if names and not any(company_names_match(brief.target_company, _company_name_title(f)) for f in names):
+            return "INVALID_REQUEST", "대상 회사명과 확인된 회사명 근거가 일치하지 않습니다. 자료를 보완해 주세요."
+        if not names:
+            return "INVALID_REQUEST", "선택한 대상 회사명을 확인할 근거가 없습니다. 회사명이 명시된 자료를 보완해 주세요."
+    if not any(f.status == "supported" and f.field_key not in excluded for f in fact_list):
+        return "NO_USABLE_TEXT", "초안 본문에 사용할 확정 근거가 없습니다. 자료나 제외 조건을 보완해 주세요."
+    return None
 
 
 def _editorial_selection_policy(facts: dict[str, Fact], required: set[str],
@@ -1589,7 +1620,29 @@ class DraftConfirmationGraph:
             if state.values.get("consumed"):
                 if state.values.get("job_id") == job_id:
                     return False  # 같은 Job의 중복 실행은 진행 중인 원래 Job을 실패 처리하지 않는다.
-                raise AgentError("PREFLIGHT_NOT_CONFIRMED", "이미 사용한 확인입니다. 사전 점검을 다시 실행해 주세요.", False)
+                from app.services import jobs
+                previous = conn.execute(
+                    "SELECT * FROM jobs WHERE job_id=? AND session_id=?",
+                    (state.values.get("job_id"), request.session_id)).fetchone()
+                current = conn.execute(
+                    "SELECT * FROM jobs WHERE job_id=? AND session_id=?", (job_id, request.session_id)).fetchone()
+                error = json.loads(previous["error_json"] or "{}") if previous else {}
+                latest = conn.execute(
+                    "SELECT preflight_id FROM preflights WHERE session_id=? AND input_revision=? "
+                    "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                    (request.session_id, request.input_revision)).fetchone()
+                document = conn.execute("SELECT 1 FROM documents WHERE session_id=?", (request.session_id,)).fetchone()
+                if (not previous or previous["status"] != "failed" or previous["kind"] != "draft"
+                        or previous["input_revision"] != request.input_revision
+                        or error.get("code") not in jobs.DRAFT_RETRY_CODES
+                        or not current or current["kind"] != "draft" or current["status"] != "running"
+                        or current["input_revision"] != request.input_revision
+                        or not latest or latest["preflight_id"] != stored.preflight_id or document):
+                    raise AgentError("PREFLIGHT_NOT_CONFIRMED", "확인 상태를 복구할 수 없습니다. 사전 점검을 다시 실행해 주세요.", False)
+                # A new confirmed POST may rearm only a recorded failed draft.
+                # Missing/rolled-back Job records, active work and saved documents never rearm.
+                graph.invoke({**expected, "consumed": False, "job_id": ""}, config)
+                state = graph.get_state(config)
             if state.next != ("confirm",) or len(state.interrupts) != 1:
                 raise AgentError("PREFLIGHT_NOT_CONFIRMED", "재개할 확인 지점이 없습니다. 사전 점검을 다시 실행해 주세요.", False)
             result = graph.invoke(Command(resume={state.interrupts[0].id:
@@ -1882,7 +1935,21 @@ class LlmAgent:
                     supported.append({"field": fact.field_key, "fact_id": fact.fact_id, "text": fact.value})
             _, focus, excluded = _section_preferences(request.brief)
             if not self.legacy_draft:
-                return self._draft_editorial(request, supported, by_id, excluded, index)
+                repair = None
+                for attempt in range(2):
+                    try:
+                        return self._draft_editorial(request, supported, by_id, excluded, index, repair=repair)
+                    except AgentError as exc:
+                        rule = getattr(exc, "repair_rule", None)
+                        # Trial evaluations and pure fixture requesters keep their single-call contract.
+                        # Live interactive/runtime composition gets at most one bounded rewrite.
+                        if (attempt or not isinstance(self.request_json, OpenAIRequester)
+                                or not self.request_json.ledger.interactive
+                                or rule not in {"selection_coverage", "body_coverage", "page_count"}):
+                            raise
+                        repair = {"rule": rule,
+                                  "fact_ids": getattr(exc, "repair_fact_ids", [])}
+                        logger.warning("Draft composition rewrite: rule=%s attempt=1", rule)
             # 전체 사실의 근거 검사를 마친 뒤 생성용 목록만 좁힌다. 사전 점검은 보존한다.
             supported = [fact for fact in supported if fact["field"] not in excluded]
             order = _section_order({fact["field"] for fact in supported}, focus)
@@ -1898,16 +1965,13 @@ class LlmAgent:
             raise _invalid() from None
 
     def _draft_editorial(self, request: DraftRequest, supported: list[dict], facts: dict[str, Fact],
-                         excluded: set[str], index: SourceIndex) -> DraftResult:
-        """One bounded call: select -> compose -> write atomic claims -> choose safe design tokens."""
+                         excluded: set[str], index: SourceIndex, *, repair: dict | None = None) -> DraftResult:
+        """Compose atomic claims; the caller may allow one diagnosed live rewrite."""
         from app.services.validation import is_label, numeric_evidence_tokens, sequence_evidence_supported
         required, missing = _editorial_required(request, facts)
-        if any(facts[fid].field_key in excluded for fid in required):
-            raise AgentError("INVALID_REQUEST", "필수 내용과 제외 요청이 겹칩니다. 작성 조건을 정리해 주세요.")
+        if problem := draft_input_problem(request.brief, list(facts.values())):
+            raise AgentError(*problem)
         names = [f for f in facts.values() if f.field_key == "company_name" and f.status == "supported"]
-        if request.brief.target_company and not any(
-                request.brief.target_company == _company_name_title(f) for f in names):
-            raise AgentError("INVALID_REQUEST", "대상 회사명과 확인된 회사명 근거가 일치하지 않습니다. 자료를 보완해 주세요.")
         photos = self._brochure_photos(request, excluded)
         selection_policy = _editorial_selection_policy(facts, required, excluded)
         payload = {
@@ -1929,6 +1993,13 @@ class LlmAgent:
             "maximum_pages": request.brief.target_pages,
         }
         instructions = legacy.load_draft_prompt(editorial=True)
+        if repair is not None:
+            payload["repair_requirements"] = repair
+            instructions += ("\n이전 작성은 repair_requirements의 검사에서 거부되었습니다. 같은 사실과 원문으로 다시 작성하세요. "
+                             "fact_ids의 항목을 allowed_dispositions와 body_requirements에 따라 본문에 반영하세요. "
+                             "필수 사실은 제외할 수 없고 제목/sequence_fact_ids만으로 본문을 대신할 수 없습니다. "
+                             "whole_fact_point_required 항목은 fact_id point를 사용하여 날짜/수치/조건 전체를 보존하세요. "
+                             "새 사실이나 근거를 만들거나 사실 값을 수정하여 검사를 우회하지 마세요.")
         schema = _EditorialGroupedComposition.model_json_schema()
         usable_ids = sorted(fid for fid, allowed in selection_policy.items() if "optional" in allowed or "required" in allowed)
         whole_fact_ids = [fid for fid in usable_ids if _whole_fact_point_available(facts[fid])]
@@ -2095,7 +2166,10 @@ class LlmAgent:
                 logger.warning("Editorial draft rejected: rule=body_coverage fact_position=%s field=%s "
                     "body_missing=%s missing_numeric_count=%s", positions[fid], facts[fid].field_key,
                     gap["body_missing"], len(gap["missing_numeric_tokens"]))
-            raise AgentError("AGENT_OUTPUT_INVALID", "포함하기로 한 사실 또는 수치·단위가 본문에서 빠졌습니다.")
+            error = AgentError("AGENT_OUTPUT_INVALID", "포함하기로 한 사실 또는 수치·단위가 본문에서 빠졌습니다.")
+            error.repair_rule = "body_coverage"
+            error.repair_fact_ids = sorted(gaps)
+            raise error
         extracted = {r.segment_id for f in facts.values() for r in f.evidence_refs}
         count_reason = plan.page_count_reason
         if removed_duplicates:
