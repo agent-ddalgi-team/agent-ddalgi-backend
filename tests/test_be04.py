@@ -60,6 +60,13 @@ CUSTOMER_QUALITY_CASES = {
     },
 }
 
+# Live evaluation controls: explicit performance/completion must survive too.
+CUSTOMER_TEST_STATE_CONTROLS = {
+    "conditions": "알루미늄 시험시편의 중성 염수분무 시험 시간은168시간입니다. 시험시편 결과이며 양산 제품의 성능 보증이 아닙니다.",
+    "performed": "알루미늄 시험시편에 중성 염수분무 시험을168시간 실시했습니다. 시험시편 결과이며 양산 제품의 성능 보증이 아닙니다.",
+    "completed": "알루미늄 시험시편의 중성 염수분무 시험을168시간 실시하고 완료했습니다. 시험시편 결과이며 양산 제품의 성능 보증이 아닙니다.",
+}
+
 
 def customer_quality_brief(case_id):
     case = CUSTOMER_QUALITY_CASES[case_id]
