@@ -1955,6 +1955,14 @@ def test_extract_restores_source_version_location_and_keeps_conditions():
 
 
 @pytest.mark.parametrize("source,value,expected_status", [
+    ("표면의 내식성(168hr)은 좋다", "표면 내식성은 168시간으로 제시되어 있다.", "supported"),
+    ("내식성 168 HRS", "내식성 168시간", "supported"),
+    ("내식성 168 hours", "내식성 168시간", "supported"),
+    ("내식성 168시간", "내식성 168hr", "supported"),
+    ("내식성 168hr", "내식성 169시간", "needs_confirmation"),
+    ("내식성 168hr", "내식성 168일", "needs_confirmation"),
+    ("내식성 168hr", "내식성 10080분", "needs_confirmation"),
+    ("168hrcode 시험", "내식성 168시간", "needs_confirmation"),
     ("거래업체:350여 업체", "거래업체가 약 350개 업체라고 기재되어 있다.", "supported"),
     ("거래업체 약 350개 업체", "거래업체 350여 업체", "supported"),
     ("거래업체:1,350여 업체", "거래업체 약 1350개 업체", "supported"),

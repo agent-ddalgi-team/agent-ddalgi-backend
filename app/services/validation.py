@@ -116,8 +116,10 @@ def _norm(text: str) -> str:
 
 def quantity_tokens(text: str) -> set[tuple[str, str]]:
     """Literal number/unit pairs; semantic equivalence and unit conversions remain review work."""
-    return {(number.replace(",", ""), unit.lower()) for number, unit in re.findall(
-        r"(?<![0-9.])(\d+(?:[.,]\d+)*)\s*(영업일|개월|시간|억원|만원|kg|mm|cm|㎡|m²|%|톤|년|월|일|명|개|대|건|회|원|g|m)(?![A-Za-z])",
+    time_aliases = {"hr": "시간", "hrs": "시간", "hour": "시간", "hours": "시간"}
+    return {(number.replace(",", ""), time_aliases.get(unit.lower(), unit.lower()))
+            for number, unit in re.findall(
+        r"(?<![0-9.])(\d+(?:[.,]\d+)*)\s*(영업일|개월|시간|억원|만원|hours?|hrs?|kg|mm|cm|㎡|m²|%|톤|년|월|일|명|개|대|건|회|원|g|m)(?![A-Za-z])",
         text, re.IGNORECASE)}
 
 
