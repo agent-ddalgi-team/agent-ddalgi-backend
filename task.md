@@ -7,6 +7,8 @@
 
 ## 1. Quick Status
 
+- **2026-10-08 [BE-06·10 / F-08] 보완 적용 후 화면 복구:** 응답 유실·새로고침의 이전 점검 ID 잠금 수정·새 필수 사실 추가·PDF/DOCX4쪽 승인/다운로드 통과·진행중 유지. [기록](task_backend.md#supplement-required-ui-recovery-20261008).
+
 - **2026-10-08 [BE-04·06·07·10 / F-08] 시험 상태·근거 보완 복구:** 지침 보완/회귀1,460건·실제8호출·본문 보존 재검증/배치통과·일반품질 진행중. [기록](task_backend.md#test-state-and-evidence-recovery-20261008).
 
 - **2026-10-08 [BE-04·06·07·10 / F-08] 고객 목적3종 실제 비교:** 핵심7묶음 사실/초안/PDF 보존·양식별1쪽 배치통과·확인필요/해석 차이 유지·진행중. [기록](task_backend.md#customer-purpose-quality-baseline-20261008).

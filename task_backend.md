@@ -1615,3 +1615,16 @@
 - 실제 총8호출: 상태추출3+품질 재검증1+생산기술 편집 검증1+보완추출1+보완 적용 검증1+미저장 작성1. SDK 재시도0/timeout120초/입력40,000자/출력32,000토큰/검증400,000자, 각 단계 외부 호출 상한3/3/2와 확정 비용·예산으로 전체$1 안에 제한했다. ledger 추정 합계 **$0.008815460/미확인 예약0**이며 청구서 실금액이 아니다. 자동 재추출·자동 사용자 문서 재생성·추가 반복은 없다.
 - 상태 결과/첫 거절은 Temp/ddalgi-state-recovery-k1z_31lv, ORM 복구·최신 점검/본문/Job/Issue·PDF/DOCX·미저장 초안은 Temp/ddalgi-state-recovery-orm-mtwlc2_t에 있다. 실행 도구는 Temp/ddalgi-state-recovery-20261008.py/ddalgi-state-recovery-orm-20261008.py/ddalgi-state-recovery-apply-20261008.py다. extract/draft SHA256=3b71d215ec96b0d343181c0eefdb1d35bedf1b66ec377aa2a8d5f0861b560f9c/5d2fff73df7ddb6308ad2a225853daab90d91d6a6b8c5e455dc170945da58f28. 새 저장소 파일/의존성/프론트 변경 없음. 프롬프트는 요청마다 읽으므로 다음 자료 점검/작성부터 반영하며 기존 사용자 결과는 자동 수정하지 않는다.
 - BE-10/F-08 일반 품질과 Agent 담당 상태는 유지한다. 다음은 다른 회사·긴 자료·다른 분량에서 같은 상태/범위가 유지되는지 비교하고, 실제 프론트에서 보완 자료와 신규 필수 사실 선택을 끝까지 수행하는 화면 검수다. 이번 완료는 위 대조/복구 표본에 한정한다.
+
+<a id="supplement-required-ui-recovery-20261008"></a>
+
+### 2026-10-08 보완 자료 적용 후 새 필수 사실의 화면 복구
+
+- BE-06·10/F-08 연결. 백엔드 작업 브랜치는 eval/customer-purpose-quality-20261008, 프론트는 release/20261008-recovery-integration에서 만든 test/supplement-required-ui-20261008이다. 기존 `.claude/`는 보존한다. 프론트 usePublication.ts·기존 check-ai-workflow.mjs·README.md와 백엔드 기존 계획/현황 문서만 변경한다. 백엔드 실행 코드/API/계약/DB 스키마/프롬프트/환경 설정 변경은 없다.
+- 기존 PDF 통합 조합36묶음은 먼저 Temp ddalgi-ai-ui-KSdwMU에서 통과했다. 새 --supplement-required는 동일 합성 원문을 가진 대체 자료에 알루미늄 시험시편200mm 대응 범위를 추가한다. 격리 세션 inputs API로 required_fields와 expected_input_revision을 설정하는 단계는 시험 준비이며 작성 조건 화면의 구현을 새로 확인한 것으로 보고하지 않는다. 이후 선택·재점검·근거 연결·반영·필수 사실 추가는 실제 UI/서버에서 실행한다.
+- **제품 문제 재현:** C-05 적용 응답을 잃고 새로고침하면 서버는 반영 완료/input_review_required=false인데 프론트가 예전 boundPreflightId를 유지했다. 새 supported 대응 범위의 실제 REQUIRED_MISSING은 화면에 나왔지만 ‘자료 변경 반영을 먼저 마쳐 주세요’라는 잠금으로 추가할 수 없었다(Temp ddalgi-ai-ui-YdGpaj). 기존 통합 검사는 곧바로 새 점검/C-05를 실행해 이 잠금을 놓쳤다.
+- **수정:** 조회한 review.status가 applied이고 pending recovery가 있을 때 review.preflight_id를 boundPreflightId로 복원한다. applyImpact의 이미 적용된 요청 확인 경로에도 같은 처리를 넣었다. 최신 점검이 따로 변경됐으면 기존 ID 불일치 차단은 유지한다. 서버의 근거/필수/승인 검사를 약화하거나 확인필요 사실을 supported로 바꾸지 않는다.
+- **수정 후 화면 확인:** 필수 사실과 페이지를 각각 선택해야 추가 가능·같은 문서ID/원문 값/최신 fact·refs 저장·문서 revision1회 증가·기존 모든 블록 보존·실제 필수 blocker0·기존 안내 문구 경고 유지·새로고침 후 중복 추가 대상 제거·추가 과정에서 분석/초안 요청 증가0. 각 최종 실행의 초안 요청은1회이며 의도적인 점검/응답 유실 재요청은7회다. 경고가 남은 needs_review를 전체 passed로 부르지 않으며 최종 승인 전 별도 경고 처리도 수행했다.
+- **최종 확인:** `AI_CHECK_BACKEND=C:/final/backend`, `AI_CHECK_LIVE=0`의 `node scripts/check-ai-workflow.mjs --publication --impact --supplement-required --photos --required-insert`는 PDF4쪽/27,426바이트 승인·동일 바이트 다운로드까지 PASS(Temp ddalgi-ai-ui-RpGeUm). 같은 명령의 --docx는 실제 LibreOffice DOCX4쪽/2,410,968바이트 승인·동일 바이트 다운로드까지 PASS(Temp ddalgi-ai-ui-z49PIe). 새 점검 후 이전 C-05 무효화, 정상 반영/Job 추적, 사진/본문 보존, 필수 회사명 추가/연결 문구 복구, 넘침 승인 차단, 편집 후 옛 다운로드 차단·종료 정리도 포함한다. 중복 검사를 합산하지 않는다.
+- build·변경 TS/검사 스크립트 ESLint·git diff --check 통과. 기존 JS 청크507kB 경고 유지. 첫 샌드박스 실행은 캐시 EPERM/브라우저 실행 제한, 추가 시험 준비는 버전 필드 누락/복원 탭 선택 대기 실패가 있어 수정 후 재실행했다. 별도 경고가 남은 결과를 passed로 기다리던 검사 조건도 needs_review/실제 blocker0로 바로잡았으며 제품 경고 기준은 유지했다.
+- 실제 사용자 시연 DB·자료/세션·API 키는 사용하거나 변경하지 않았고 유료 호출0이다. 이번 결과는 가상 AI의 실제 브라우저/API/파일 출력 회귀이며 직전 실제 LLM 복구 시험을 대체하지 않는다. BE-10/F-08 일반 품질·Agent 상태는 진행중 그대로다. 다음은 다른 회사·장문/표 자료·분량의 실제 LLM 품질 비교이며 모든 오류의 자동 해결 완료로 보고하지 않는다.
