@@ -1587,71 +1587,74 @@ DQ03에서는 본문에서 쓰지 않은 공정 수 충돌이 서버 일반 검�
 | 공정 수치·원문 서술 | 원문 두께·시험 시간·공법/설비 문장 | 가상 `4·12·24미크론`, 가상 공법·설비·서술; 값 변경·조건 손실 거부 유지 |
 | 렌더링 식별번호 | 실제 번호 문자열 | 가상 번호로 같은 줄바꿈·출력 보존 assertion 유지 |
 
-**커밋 대응 방법:** 54개를 파일 영역별 4개로 합쳤다. 아래는 일대일 cherry-pick 대응이 아니라 각 이전 커밋의 변경 파일이 들어간 새 커밋이다. 여러 영역을 건드린 이전 커밋은 새 해시도 여러 개다. 앞의 실행 기록에 있는 이전 해시는 원래 실행 식별값으로 남기며 새 구현 위치는 이 표를 따른다. 이 표 자체는 아래 네 커밋 뒤의 별도 문서 커밋에 기록한다.
+**커밋 대응 방법:** 원래 54개를 파일 영역별 4개로 합쳤고, 아래 표에는 이메일 변경 후 최종 해시와 문서·내식성·stash 후속을 포함한 7개 커밋을 제목 기준으로 연결한다. 이전 54개 대응은 일대일 cherry-pick이 아니라 변경 파일이 들어간 영역별 커밋이다. 이전 전체 해시 열과 과거 실행 기록은 원래 식별값으로 보존하고, 새 구현 위치는 갱신된 새 커밋 열을 따른다. 이메일 변경 전후의 이력 설명은 아래 별도 기록에 유지한다.
 
 | 영역 | 새 전체 해시 | 메시지 |
 |---|---|---|
-| 도구 | 4a52929857009f44bb5269b189180adc114437a2 | feat: 저장 실행 기록과 오프라인 비교 도구 정리 |
-| Agent | e4accdc2c3b26ff5f4fc48de85117adc343dfbba | fix: 근거 추출과 초안 보존 검증 개선 |
-| 조판 | 53b61eeb5ec9b6fb690231140d384647e5b12226 | fix: 초안 배치와 출력 가독성 개선 |
-| 문서 | ce505c469f1f40b8259b43a7724bca9d1dc27478 | docs: 품질 검증과 가독성 작업 기록 정리 |
+| 도구 | 16d10efebdcd6ed9deebf64783d2636830b95cbd | feat: 저장 실행 기록과 오프라인 비교 도구 정리 |
+| Agent | 03da3532d259e1002e24160aa8e92f25d32a79af | fix: 근거 추출과 초안 보존 검증 개선 |
+| 조판 | ae62969bc32e6d8b424b8a41d8491d78730a5ff6 | fix: 초안 배치와 출력 가독성 개선 |
+| 문서 | 87d38acdb9fe4f1401c89a20418adc0fc3582341 | docs: 품질 검증과 가독성 작업 기록 정리 |
+| 대응표 기록 | 188bac41ede4672ccc636cede83d7e3464062b7e | docs: 로컬 커밋 대응표와 재검증 결과 기록 |
+| 내식성 후속 | ee489e1ad66ab37b96354ec11e4b3a93b90db326 | fix: 내식성 시간 수치의 조건과 문장 연결 보완 |
+| 실행기·인계 후속 | 9aa3fe776c0627f54114e449dcf4f3fc142d6e99 | test: 저장 단계 실행기와 인계 회귀 반영 |
 
 | 이전 전체 해시 | 새 커밋(영역) |
 |---|---|
-| 30c08b6135ea3b3d19032a2fcf1001596e91d23c | ce505c4 (문서) |
-| 5e6f833e2229d91b866c495f682aeb48a20de9c9 | ce505c4 (문서) |
-| c9b27c0839fdd061e6cabbb0f55d73466d9d5214 | 4a52929 (도구), e4accdc (Agent), ce505c4 (문서) |
-| e94aa800acc9e7a8c16ddb7c44f6b0d1d1e7e286 | ce505c4 (문서) |
-| d8057f36e3a60a0011e54833d2cdd5f068c7bcd4 | e4accdc (Agent), ce505c4 (문서) |
-| 2b14feac49526b2f0f1d6902326abdfe236e5704 | 53b61ee (조판), ce505c4 (문서) |
-| c61a2e44742873890979cf68e7b678c266bf1bde | ce505c4 (문서) |
-| 3521e2e46bb66ec600a85611f9a5580d56072cf6 | 4a52929 (도구), e4accdc (Agent) |
-| 965b903a9b4d184fdf8b7024e603375551985cb6 | e4accdc (Agent) |
-| 4c020c1e62fc1c8b27ecf839799b27c0e8f5031b | 4a52929 (도구), e4accdc (Agent) |
-| 5db8706e5526b395cbb63b7ec7265f226fd81c28 | 4a52929 (도구), e4accdc (Agent) |
-| df19801990358f24062307f15f3a6f27f5555008 | 4a52929 (도구), e4accdc (Agent) |
-| fee62df866e3088361f5f0d14c0a8569712a54fd | ce505c4 (문서) |
-| a352fda2eea7b95add6ba00c316ca1e949592d43 | 4a52929 (도구), e4accdc (Agent), 53b61ee (조판) |
-| 03abd8da80667a70f587e0a1d86043510bf8d892 | 4a52929 (도구), e4accdc (Agent) |
-| 452870df428bb189b8b1e5df03ae2bfda03c3e8e | 4a52929 (도구), e4accdc (Agent) |
-| 2dee972ba43ae3ad34feda8093011fd169dcc23e | 4a52929 (도구), e4accdc (Agent) |
-| 0d33b2cdc316e27a3938b24f9a1457cda2d88332 | 4a52929 (도구), e4accdc (Agent), 53b61ee (조판) |
-| 614c07f13c5a27cac2ad4b408b1dedeb8c7750c6 | 4a52929 (도구), e4accdc (Agent), 53b61ee (조판) |
-| 186f2444e3c52b56b96a354d873d19a3f667adc0 | ce505c4 (문서) |
-| 69d226ac81d253b837085541173ac3972b69c2c1 | e4accdc (Agent), 53b61ee (조판) |
-| 6d31fb7e7c80f6ad96c67d57f133e21e0d8d5943 | e4accdc (Agent) |
-| 22b848adb4fec90f22dbfd0075661bf9f4eb4b10 | ce505c4 (문서) |
-| 1993f2fa7e6c2218f812d9e307eb1c32f7783596 | e4accdc (Agent) |
-| 3de9363be479e1be9808475c85311d59ce97d9f9 | 4a52929 (도구), e4accdc (Agent) |
-| ba9f5279a25e767fac126239a2d853b4ed976a46 | e4accdc (Agent) |
-| 9861e0557039322609f08b172a53410e7c2af258 | 53b61ee (조판) |
-| 78c1bedfb02397cf81cb010161b2ee9718579668 | 4a52929 (도구), e4accdc (Agent) |
-| 8133b9c2346d7ff511cf3dc16dccd02f1bca276d | ce505c4 (문서) |
-| 09c02a07f06024f6b27592051afdf5b14286ad9c | e4accdc (Agent) |
-| 9f87b8ff732b88fcada96efbb68a508ac40ca166 | e4accdc (Agent) |
-| 0993a54d37c49ff086fd6a5f09b4f22d6f613ac2 | ce505c4 (문서) |
-| 468223323ab7f52b60565d4b3642a00b2c405f36 | 4a52929 (도구), e4accdc (Agent) |
-| d091da826eee5b59cbd8d1392c58b1364a78f49f | ce505c4 (문서) |
-| 8ab6357e56cc075e5c009b0919ff3fc5fad3e3ef | e4accdc (Agent), ce505c4 (문서) |
-| 08d1cc74074b56c2195f15b4aa6f6b1f66af1bca | 4a52929 (도구), e4accdc (Agent), ce505c4 (문서) |
-| c5e6d59019741b4431ff50dffb8777c7c8119ed9 | 53b61ee (조판), ce505c4 (문서) |
-| 28d21f1039b3380cb1f9273b2d72ae745d1ed8d1 | 4a52929 (도구), e4accdc (Agent), ce505c4 (문서) |
-| ca45afb5daf0328a819bc96f4c644ecd2bcfa07d | 4a52929 (도구), e4accdc (Agent), ce505c4 (문서) |
-| a5d54174b50656fdcfd09e9111320562e048cda6 | 53b61ee (조판), ce505c4 (문서) |
-| e8f472ce21cd8e2b25b1da38396557632f7feef8 | ce505c4 (문서) |
-| 3877548a002de53a13bf6bf2fa3983fbb4f6f02f | ce505c4 (문서) |
-| 1cc8535b0f39cc0a255d7d3dea8b4fda05aa75ee | e4accdc (Agent), ce505c4 (문서) |
-| 947a528f62df13f281480361a669a93eb9342370 | 4a52929 (도구), e4accdc (Agent), ce505c4 (문서) |
-| 119755f551065f3568c22f0ec64bff149aba81cc | e4accdc (Agent), ce505c4 (문서) |
-| 8311db502723065e1206d2be751047bbe26add19 | 4a52929 (도구), 53b61ee (조판), ce505c4 (문서) |
-| 80669b5f2a052df5b8233316470f1bc0dffef140 | e4accdc (Agent), ce505c4 (문서) |
-| c7581cf60e45c938087227feb2033fca76693b82 | ce505c4 (문서) |
-| 6d417e8d8f9c926997f9d621894dfd4f1b8e9d51 | ce505c4 (문서) |
-| 704d49aa70739af7270431a450785a9008e60553 | 4a52929 (도구), e4accdc (Agent), 53b61ee (조판), ce505c4 (문서) |
-| daa14addb3182a01619a6ae04a14c7b378fdd975 | 53b61ee (조판), ce505c4 (문서) |
-| ab7421afdb1a7f657b1245b0a09c04267e96dce1 | e4accdc (Agent), 53b61ee (조판), ce505c4 (문서) |
-| ab7f3a1a97d54b0e66c0912586a29390c437bc40 | e4accdc (Agent), ce505c4 (문서) |
-| 5c170dbf9becff1450eb1bc63e84e4a7b4819b37 | e4accdc (Agent), ce505c4 (문서) |
+| 30c08b6135ea3b3d19032a2fcf1001596e91d23c | 87d38ac (문서) |
+| 5e6f833e2229d91b866c495f682aeb48a20de9c9 | 87d38ac (문서) |
+| c9b27c0839fdd061e6cabbb0f55d73466d9d5214 | 16d10ef (도구), 03da353 (Agent), 87d38ac (문서) |
+| e94aa800acc9e7a8c16ddb7c44f6b0d1d1e7e286 | 87d38ac (문서) |
+| d8057f36e3a60a0011e54833d2cdd5f068c7bcd4 | 03da353 (Agent), 87d38ac (문서) |
+| 2b14feac49526b2f0f1d6902326abdfe236e5704 | ae62969 (조판), 87d38ac (문서) |
+| c61a2e44742873890979cf68e7b678c266bf1bde | 87d38ac (문서) |
+| 3521e2e46bb66ec600a85611f9a5580d56072cf6 | 16d10ef (도구), 03da353 (Agent) |
+| 965b903a9b4d184fdf8b7024e603375551985cb6 | 03da353 (Agent) |
+| 4c020c1e62fc1c8b27ecf839799b27c0e8f5031b | 16d10ef (도구), 03da353 (Agent) |
+| 5db8706e5526b395cbb63b7ec7265f226fd81c28 | 16d10ef (도구), 03da353 (Agent) |
+| df19801990358f24062307f15f3a6f27f5555008 | 16d10ef (도구), 03da353 (Agent) |
+| fee62df866e3088361f5f0d14c0a8569712a54fd | 87d38ac (문서) |
+| a352fda2eea7b95add6ba00c316ca1e949592d43 | 16d10ef (도구), 03da353 (Agent), ae62969 (조판) |
+| 03abd8da80667a70f587e0a1d86043510bf8d892 | 16d10ef (도구), 03da353 (Agent) |
+| 452870df428bb189b8b1e5df03ae2bfda03c3e8e | 16d10ef (도구), 03da353 (Agent) |
+| 2dee972ba43ae3ad34feda8093011fd169dcc23e | 16d10ef (도구), 03da353 (Agent) |
+| 0d33b2cdc316e27a3938b24f9a1457cda2d88332 | 16d10ef (도구), 03da353 (Agent), ae62969 (조판) |
+| 614c07f13c5a27cac2ad4b408b1dedeb8c7750c6 | 16d10ef (도구), 03da353 (Agent), ae62969 (조판) |
+| 186f2444e3c52b56b96a354d873d19a3f667adc0 | 87d38ac (문서) |
+| 69d226ac81d253b837085541173ac3972b69c2c1 | 03da353 (Agent), ae62969 (조판) |
+| 6d31fb7e7c80f6ad96c67d57f133e21e0d8d5943 | 03da353 (Agent) |
+| 22b848adb4fec90f22dbfd0075661bf9f4eb4b10 | 87d38ac (문서) |
+| 1993f2fa7e6c2218f812d9e307eb1c32f7783596 | 03da353 (Agent) |
+| 3de9363be479e1be9808475c85311d59ce97d9f9 | 16d10ef (도구), 03da353 (Agent) |
+| ba9f5279a25e767fac126239a2d853b4ed976a46 | 03da353 (Agent) |
+| 9861e0557039322609f08b172a53410e7c2af258 | ae62969 (조판) |
+| 78c1bedfb02397cf81cb010161b2ee9718579668 | 16d10ef (도구), 03da353 (Agent) |
+| 8133b9c2346d7ff511cf3dc16dccd02f1bca276d | 87d38ac (문서) |
+| 09c02a07f06024f6b27592051afdf5b14286ad9c | 03da353 (Agent) |
+| 9f87b8ff732b88fcada96efbb68a508ac40ca166 | 03da353 (Agent) |
+| 0993a54d37c49ff086fd6a5f09b4f22d6f613ac2 | 87d38ac (문서) |
+| 468223323ab7f52b60565d4b3642a00b2c405f36 | 16d10ef (도구), 03da353 (Agent) |
+| d091da826eee5b59cbd8d1392c58b1364a78f49f | 87d38ac (문서) |
+| 8ab6357e56cc075e5c009b0919ff3fc5fad3e3ef | 03da353 (Agent), 87d38ac (문서) |
+| 08d1cc74074b56c2195f15b4aa6f6b1f66af1bca | 16d10ef (도구), 03da353 (Agent), 87d38ac (문서) |
+| c5e6d59019741b4431ff50dffb8777c7c8119ed9 | ae62969 (조판), 87d38ac (문서) |
+| 28d21f1039b3380cb1f9273b2d72ae745d1ed8d1 | 16d10ef (도구), 03da353 (Agent), 87d38ac (문서) |
+| ca45afb5daf0328a819bc96f4c644ecd2bcfa07d | 16d10ef (도구), 03da353 (Agent), 87d38ac (문서) |
+| a5d54174b50656fdcfd09e9111320562e048cda6 | ae62969 (조판), 87d38ac (문서) |
+| e8f472ce21cd8e2b25b1da38396557632f7feef8 | 87d38ac (문서) |
+| 3877548a002de53a13bf6bf2fa3983fbb4f6f02f | 87d38ac (문서) |
+| 1cc8535b0f39cc0a255d7d3dea8b4fda05aa75ee | 03da353 (Agent), 87d38ac (문서) |
+| 947a528f62df13f281480361a669a93eb9342370 | 16d10ef (도구), 03da353 (Agent), 87d38ac (문서) |
+| 119755f551065f3568c22f0ec64bff149aba81cc | 03da353 (Agent), 87d38ac (문서) |
+| 8311db502723065e1206d2be751047bbe26add19 | 16d10ef (도구), ae62969 (조판), 87d38ac (문서) |
+| 80669b5f2a052df5b8233316470f1bc0dffef140 | 03da353 (Agent), 87d38ac (문서) |
+| c7581cf60e45c938087227feb2033fca76693b82 | 87d38ac (문서) |
+| 6d417e8d8f9c926997f9d621894dfd4f1b8e9d51 | 87d38ac (문서) |
+| 704d49aa70739af7270431a450785a9008e60553 | 16d10ef (도구), 03da353 (Agent), ae62969 (조판), 87d38ac (문서) |
+| daa14addb3182a01619a6ae04a14c7b378fdd975 | ae62969 (조판), 87d38ac (문서) |
+| ab7421afdb1a7f657b1245b0a09c04267e96dce1 | 03da353 (Agent), ae62969 (조판), 87d38ac (문서) |
+| ab7f3a1a97d54b0e66c0912586a29390c437bc40 | 03da353 (Agent), 87d38ac (문서) |
+| 5c170dbf9becff1450eb1bc63e84e4a7b4819b37 | 03da353 (Agent), 87d38ac (문서) |
 
 ### 2026-10-08 push 전 후속 점검 — 이메일 확정 대기
 
@@ -1681,3 +1684,8 @@ DQ03에서는 본문에서 쓰지 않은 공정 수 충돌이 서버 일반 검�
 - **검증:** 실행기 CLI 도움말·구문 확인, stash 선택 검사 **14 passed / 1 warning**. 최종 코드의 Agent·BE-04·BE-06·시연·BE-07 회귀 **1,539 passed / 8 skipped / 1 warning, 196.87초**. 8개는 macOS 전용 POSIX 검사이며 경고는 기존 Starlette 폐기 예정 경고다. 최초 임시 폴더 접근 오류는 성공으로 세지 않고 승인된 재실행 결과를 기록했다. 실제 LLM·프론트 연결 재시험은 하지 않았다.
 - **내식성 최종 동결:** 사용자의 중단 지시 후 제품 코드는 수정하지 않고 동일 JSON 2,293개를 한 번만 다시 비교했다. 이전 규칙보다 놓친 입력 **0건·새 오탐 0건**, 수정 전 미탐 2문장·22곳 해소, 입력 해시 동일·API/네트워크 0회다. 최종 코드가 내식성 커밋 `ee489e1`과 같은지 확인했다. 표현·시험 조건·독립 시간·다른 시편·마침표 경계는 회사명/특정 저장 문장/고정 성능값에 의존하지 않는 일반 규칙이며, 실제 발견 2문장은 가상 값으로 바꾼 회귀 입력으로만 사용한다. 관련 가상 선택 검사 47개를 통과했으나 미지의 모든 표현·다른 회사 실자료의 정확성을 보장하지 않는다.
 - **상태·남은 일:** F-03/AG-03·04는 진행중·사용자 평가 대기로 `task.md`와 일치한다. 조판·미리보기 인계와 사람 평가·저장 문서 검사 연결은 위 기록대로 남는다. `.env`·private_runs·중첩 미추적 폴더는 커밋 대상이 아니며 global 설정·backup·stash는 변경하지 않는다. PR base는 팀 확인 전 미정이며 push는 하지 않는다.
+
+### 2026-10-08 공개 브랜치 게시 준비 — 최종 대응표 갱신
+
+- **대응표:** `16d10ef`부터 `9aa3fe7`까지 7개 커밋을 실제 제목·전체 해시로 대조했다. 영역별 표와 이전 54개 대응의 새 커밋 열을 최종 해시로 고쳤다. 이메일 변경 전후를 설명하는 과거 기록·이전 전체 해시 열은 유지한다. 문서만 변경했으며 대응 참조·도달 가능성·diff 공백을 확인한다. 제품 코드·테스트·AG 상태는 변경하지 않는다.
+- **게시 범위:** 사용자 요청에 따라 이 문서 수정 커밋을 포함한 `feat/agent-quality-eval`만 일반 push 대상으로 확정했다. develop·main·test·backup과 stash·미추적 중첩 폴더는 작업 대상이 아니다. PR은 사용자가 웹에서 test를 base로 열고 깃마스터가 최종 base·승인·머지를 판단한다. README 기준 develop 여부와 조판·출력 담당 검토 요청을 PR 설명 맨 위에 명시한다.
