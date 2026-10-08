@@ -23,6 +23,51 @@ BRIEF = {"purpose": "테스트", "emphasis": [], "direction": "balanced", "targe
 SOURCE_A = "회사명: 예시 회사\n회사 개요: 예시용 기업입니다.\n사업 분야: 예시 사업 A\n공정 수: 2개\n납기 표현: 빠른 납기\n".encode()
 SOURCE_B = "회사명: 다른 예시 회사\n".encode()
 
+# Shared synthetic source; scoring requirements stay outside Agent input.
+# These fixtures do not evaluate MockAgent as semantic AI quality.
+CUSTOMER_QUALITY_SOURCE = """회사명: 예시정공
+회사 개요: 예시정공은 시험용 금속 부품을 가공하는 가상 제조업체입니다.
+사업 분야: 시험용 금속 부품 가공과 시편 검사 지원.
+제품 및 서비스: 시험용 브래킷과 커버를 가공합니다.
+공정: 절삭과 연마를 수행합니다. 공정 순서는 지정하지 않습니다.
+설비: 3축 CNC 가공기와 표면 거칠기 측정기를 사용합니다.
+가공 능력: 알루미늄 시편에 한해 최대 가공 길이 200mm입니다. 다른 소재의 가공 한계는 확인 필요입니다.
+인증: ISO 9001 인증의 적용 범위는 시험 부품 제조이며 유효기간은 2025년부터 2027년까지입니다.
+시험: 알루미늄 시험시편의 중성 염수분무 시험 시간은 168시간입니다. 시험시편 결과이며 양산 제품의 성능 보증이 아닙니다.
+적용 사례: 시험용 브래킷은 연구용 고정 지그에 적용했습니다. 고객명과 판매 수량은 공개하지 않습니다.
+연혁: 2024년 시범 생산을 시작했습니다.
+"""
+CUSTOMER_QUALITY_CASES = {
+    "quality": {
+        "purpose": "인증 적용 범위와 시험 근거 중심 회사 소개",
+        "audience": "품질 담당자", "emphasis": ["품질관리", "인증·특허"],
+        "required_fields": ["certifications", "technology"],
+        "probes": {"certification": ["ISO", "9001", "시험", "제조", "2025", "2027"],
+                   "test": ["알루미늄", "시편", "염수", "168", "양산", "보증"]},
+    },
+    "production": {
+        "purpose": "공정·설비·소재와 기술 검토사항 중심 회사 소개",
+        "audience": "생산기술 담당자", "emphasis": ["공정 역량", "기술"],
+        "required_fields": ["processes", "capabilities"],
+        "probes": {"process": ["절삭", "연마"], "equipment": ["CNC", "거칠기"],
+                   "capability": ["알루미늄", "시편", "200"]},
+    },
+    "customer": {
+        "purpose": "주요 서비스와 관련 적용 사례 중심 신규 고객 소개",
+        "audience": "신규 고객", "emphasis": ["제품·서비스", "적용 사례"],
+        "required_fields": ["products_services", "customers_markets"],
+        "probes": {"service": ["브래킷", "커버"], "application": ["브래킷", "연구", "지그"]},
+    },
+}
+
+
+def customer_quality_brief(case_id):
+    case = CUSTOMER_QUALITY_CASES[case_id]
+    return {"purpose": case["purpose"], "audience": case["audience"],
+            "emphasis": list(case["emphasis"]), "required_fields": list(case["required_fields"]),
+            "direction": "balanced", "target_pages": 1, "photo_preference": "none",
+            "target_company": "예시정공"}
+
 
 @pytest.fixture
 def settings(tmp_path):
@@ -858,6 +903,37 @@ def test_customer_request_table_transfer_and_job_trace_without_llm_quality_claim
     for page in document["pages"]:
         for block in page["blocks"]:
             assert all(r["source_id"] == src[0] and r["source_version"] == 1 for r in block["evidence_refs"])
+
+
+@pytest.mark.parametrize("case_id", CUSTOMER_QUALITY_CASES)
+def test_customer_quality_fixture_preserves_conditions_without_sending_rubric(client, settings, monkeypatch, case_id):
+    from app.services import preflights
+    captured = []
+    original = MockAgent.analyze
+
+    def observe(self, request):
+        captured.append(request)
+        return original(self, request)
+
+    monkeypatch.setattr(MockAgent, "analyze", observe)
+    brief = customer_quality_brief(case_id)
+    sid = client.post("/api/v1/sessions", json={"brief": brief}).json()["session_id"]
+    ids = _upload(client, sid, ("synthetic-manufacturing.txt", CUSTOMER_QUALITY_SOURCE.encode()), kind="company")
+    revision = _select(client, sid, ids)
+    _preflight(client, sid, revision)
+    assert len(captured) == 1
+    request = captured[0]
+    assert request.brief.model_dump() == client.get(f"/api/v1/sessions/{sid}").json()["brief"]
+    assert request.brief.required_fields == brief["required_fields"]
+    with connect(settings.db_path) as conn:
+        source = preflights.build_sources(conn, sid, ids)[0]
+    assert request.sources == [source]
+    parsed = "\n".join(segment.text for segment in source.segments)
+    assert all(line in parsed for line in CUSTOMER_QUALITY_SOURCE.splitlines())
+    # Probe IDs/expected presence are evaluation metadata, not company evidence.
+    assert not any(key in source.metadata for key in ("probes", "expected", "rubric"))
+    assert source.source_version == 1
+    assert all(segment.segment_id and segment.locator for segment in source.segments)
 
 
 def _layout_pptx(*, duplicate=False, rotated=False, offset=0):

@@ -1568,3 +1568,25 @@
 - 프론트 공개자료 import 호출에서 빠진 멱등 키·응답 유실 복구와 Job 성공/실패 안내를 복원했다. 새로 유입된 테스트 middleware가 실제 제외 API를 가짜 성공으로 바꾸고 있어 C-05가 연결된 점검으로 거절되는 문제가 재현됐다. 우회 middleware를 제거하고 실제 서버 저장·재전송·변경 반영·검증을 사용한다.
 - 통합 코드에서 tests/test_be06.py 전체 98 passed/경고1, frontend build/전체 ESLint 통과. 최종 PDF 격리 통합 36묶음/4쪽 승인·다운로드 통과(Temp ddalgi-ai-ui-kCq9Ef). 최초 통합 검사의 위 두 실패를 통과로 표시하지 않는다. 기존 500kB 번들 경고 유지. 실제 AI 호출·원본 시연 DB 쓰기·환경 설정 변경 없음.
 - API1.9/DBv11·BE-10/F-08 진행중·Agent 담당 상태 유지. 실제 AI 일반 품질과 추가 자료 검수는 별도이며 모든 오류 해결을 선언하지 않는다.
+
+
+<a id="customer-purpose-quality-baseline-20261008"></a>
+### 2026-10-08 고객 목적 3종의 실제 LLM·정보 전달·출력 대조 (BE-04·06·07·10 / F-08)
+
+- 첨부 message (3).txt의 후속 공통 검수다. 기존 Agent 품질 PR #41(feat/agent-quality-eval, a902265)의 오프라인 비교/stage_runner와 결과를 읽었다. 해당 PR은 아직 미병합이며 현재 test에 없는 template_v13/정책/프롬프트를 임의 반영하지 않았다. 이번 기준은 병합된 backend test 35ce245의 제품 코드이며 실제 사용자의 세션/원자료는 바꾸지 않는다.
+- 기존 tests/test_be04.py에 공통 가상 원문 CUSTOMER_QUALITY_SOURCE와 목적3종 CUSTOMER_QUALITY_CASES/customer_quality_brief를 보존했다. 예시정공의 공정·CNC/측정기·알루미늄 시편200mm·ISO9001 시험부품 제조/2025~2027·시편 염수분무168시간/양산 보증 아님·연구용 지그 적용 사례가 대상이다. 납기 기능/평가는 넣지 않았다. 정답 presence probe는 별도 평가 정보이며 Agent에게 전달하지 않는다. 목적별 핵심 내용을 required_fields로 API에 지정한 시험이며 현재 프론트의 필수항목 선택 UI를 검사한 결과는 아니다.
+- 신규/기존 결정적6건은 목적/필수 필드와 원문 구간·조건·위치·버전이 실제 analyze 입력까지 유지되고 probe/rubric이 Source.metadata에 섞이지 않는지 확인했다. 6 passed/80 deselected/기존 경고1. MockAgent를 의미 품질 평가에 사용하지 않았다.
+- 실제 LLM은 새 격리DB/세션3개에서 HTTP 업로드→파싱→선택→점검→명시 확인한 초안→내용 검사로 실행했다. gpt-6-luna/reasoning medium/timeout120초/SDK 재시도0/입력40,000자/출력32,000토큰/검증400,000자, 총9호출/$1 상한. interactive ledger의 기능별 시험 제한을 해제하되 외부 requester에서 전체9호출을 고정해 초과 호출을 막았다. 실패를 추가 AI 호출로 복구하거나 반복하지 않았다. 원문 파일 SHA256=04ad8b282640b69aa7b45d3e356d79f227bed063af1a68cdb81f4136f964eec6.
+
+| 목적 | 추출 사실 수 | 핵심 probe: 사실→초안→PDF | 내용 검사 | PDF/DOCX 실제 배치 |
+|---|---:|---|---|---|
+| 품질 담당 | 17 | 인증 범위/기간·시편 시험/보증 한계2묶음 모두 유지 | failed: 확인필요1 | 각각1쪽/통과 |
+| 생산기술 담당 | 17 | 공정·설비·소재/200mm3묶음 모두 유지 | failed: 확인필요1+표현 지적1 | 각각1쪽/통과 |
+| 신규 고객 | 16 | 브래킷/커버·연구용 지그 적용2묶음 모두 유지 | failed: 확인필요1 | 각각1쪽/통과 |
+
+- 원문11줄은 세 파싱 입력 모두 유지됐다. 핵심 presence7묶음은 사실→Block.content.text→PDF 추출 텍스트에 각각 남았고 해당 문단을 직접 읽어 인증 범위/기간, 시험시편/양산 보증 제외, 소재·가공길이, 지그 적용 주체를 대조했다. 이7묶음은 전체 사실 recall/전체 의미 정확성/동일 응답 안정성을 뜻하지 않는다. 프론트 브라우저·이미지·4/6/8/10쪽·최종 승인/다운로드는 이번 범위가 아니다.
+- 모든 목적의 확인필요1건은 원문에 명시한 ‘다른 소재의 가공 한계는 확인 필요’다. supported로 승격하지 않았고 본문은 알루미늄 범위를 유지했다. 품질/신규고객 목적에서는 기존 명시 제외 API로 처리 가능한 선택 항목이다. 생산기술은 시험에서 capabilities를 필수 지정했으므로 제외 불가이며 추가 근거가 필요하다. 필수 설정을 몰래 해제하거나 저장 결과를 자동 제외하지 않았다.
+- 생산기술의 실제 초안은 ‘중성 염수분무 시험을168시간 실시했다’로 작성했고 content_review는 원문의 ‘시험 시간은168시간’에 시험 완료가 명시되지 않았다는 VALUE_MISMATCH를 생성했다. 같은 문장의 ‘시험시편 결과’ 표현도 고려해야 하므로 객관적 잘못이라고 단정하거나 모든 완료 동사를 금지하지 않는다. 원문대로 ‘시험 시간은168시간이며 … 보증은 아니다’로 쓰면 불필요한 완료 해석을 줄일 수 있다. 이는 날짜/숫자 손실과 구분한 작성·검사 해석 차이이며 후속 비교 대상이다.
+- 실제 Job9개 trace에서 모두 actual_mode=llm/model=gpt-6-luna와 단계 참조를 확인했다. Job succeeded는 내용 passed가 아니다. PDF/DOCX는 실제 renderer/LibreOffice로 각1쪽 layout_ok=true·not_checked0을 확인했지만 검사 failed 문서를 승인/배포하지 않았다. 격리 렌더는 테스트 산출물이다.
+- 총9호출의 ledger 추정 합계 $0.013376465/미확인 예약0이다. 결과는 시스템 Temp/ddalgi-customer-quality-f9iaxqi8의 report/rubric/source·목적별 preflight/draft/validated/issues/Job JSON·PDF/DOCX와 격리DB에 있다. 실행 도구는 시스템 Temp/ddalgi-customer-quality-20261008.py다. 최초 presence 집계가 존재하지 않는 Block.text를 읽어 비어 있었으므로 저장한 결과에서 실제 Block.content.text/items를 읽도록 재집계했다. AI 재호출/본문 수정 없이 보정했으며 report.measurement_note와 코드/프롬프트 SHA256에 남겼다. PDF PNG는 로컬 fitz 미설치로 미생성했고 시각 육안 검수로 보고하지 않는다.
+- 이번은 목적별1회 baseline이다. BE-10/F-08 일반품질/Agent 상태는 진행중 유지. 다음은 같은 원문에서 시험 시간/수행 상태 표현을 대조하고, 확인필요의 선택 제외·필수 근거 보완 후 기존 초안을 유지한 재검증을 실제 LLM으로 확인하는 것이다. 제품 프롬프트·정책·API/DB·.env·원본 시연 DB·프론트는 변경하지 않았다.
