@@ -95,6 +95,21 @@
 
 ## 5. 완료된 기능 히스토리 (누적 아카이브)
 
+<a id="agent-eval-tools-20261008"></a>
+
+### [F-08] → 평가 도구만 test 기준으로 분리 이관 (2026-10-08, AG-08 도구 준비)
+
+- **범위/위치:** `origin/test` `3d99920` 기준 별도 worktree·`feat/agent-eval-tools`. 기존 `feat/mock-manufacturing-fixture` 폴더·미추적 자료·stash를 변경하지 않는다. 도구 원본은 `a902265`의 `scripts/experiments/agent_quality_comparison.py`, `stage_runner.py`이며 전체 커밋을 이관하지 않는다.
+- **현재 구현:** 기록 기본 off, 명시 실행/입력/회사/동결 rubric 필요. 현재 요청기와 비용 ledger·개별 status·source metadata를 관찰하고 요청/원응답·사실/근거·문서/출력·해시·실패 단계를 별도 로컬 아카이브에 저장한다. 서버 Job 추적/DB에 원문 기록을 추가하지 않는다. 키 유출 거부, 저장 실패의 제한 재시도, 초기 추출의 검증된 재사용을 유지한다. 자동 API 재시도·가상/실자료 재분류·새 회사명/연락처 정책은 도입하지 않는다.
+- **저장 입력:** `--source-archive`는 `source_units.json`(SourceIn 배열과 metadata), `manifest.json`(source_id/path 대응), `asset_manifest.json`(asset_id/archive_file/sha256)과 이미지 파일을 포함한다. live DB 자동 탐색/조회는 없다. 자료·아카이브는 ignored `private_runs`에 두고 공개 저장소에 추가하지 않는다.
+- **오프라인 사용:** `python -B scripts/experiments/agent_quality_comparison.py --saved-manifest private_runs/input.json --saved-output private_runs/comparison-new`. manifest의 `documents`에는 label/document_path/assets_dir를 명시하며 상대 경로는 manifest 기준이다. 새 출력 폴더만 만들고 원본·PDF 문구·자산 해시를 검사한다. 쪽수 일치 여부와 점유율은 진단이다.
+- **단계 사용:** `python -B scripts/experiments/stage_runner.py stage1 --manifest private_runs/input.json --run-dir private_runs/stages-new --expected-template template_v11`; 다음은 같은 인자로 stage2. stage2는 현재 제품의 페이지 분할만 사용하며 블록 내용·ID·순서·근거가 달라지면 보존 검사에서 중단한다. `--resume`은 코드/프롬프트/테스트/입력/산출물 해시가 같을 때만 허용하고 회귀는 매번 새로 실행한다. `--docx-label LABEL`은 DOCX 보존 검사이며, LibreOffice 없는 실배치는 not_checked로 남긴다. stage3/4·캡션 크기 실험은 정책 결정 전 미제공이다.
+- **검증:** 도구 가상 회귀 38 passed. 요청 기록의 SDK 동등성·현재 개별 상태/메타데이터·실패/비밀값·해시 재개, 실제 Chromium PDF 및 DOCX 문구/사진 보존을 확인했다. 단계 호출 테스트 안의 회귀 dispatch는 중첩 pytest 방지를 위해 대역이며 기존 회귀는 별도 실행한다. **전체 회귀 2,122 passed / 31 skipped / 3 warnings (583.62초)**. 기존 테스트 원문은 수정하지 않고 추가만 했다. 건너뜀은 LibreOffice/플랫폼/로컬 실행 환경 관련이며, 경고는 기존 Starlette deprecation 1건과 마이그레이션 FK 순환 정렬 2건이다. 로그: ignored `private_runs/eval_tools_checks/regression.log`. 기본 CLI에서 기록 off·호출 없음과 stage1/2만 노출됨도 확인했다.
+- **push 전 검사(2026-10-08):** `597a17c`의 변경 7개 파일 전체와 추가분을 나눠 검사했다. 추가분에서 실회사 정보·개인 PC 경로·인증 키는 발견하지 못했다. 기존 test 문서에는 실제 회사명·주소 확인 기록·개인 PC 경로가, 기존 테스트에는 실제 회사명 문자열이 남아 있어 파일 전체 무포함 조건은 미충족이다. 해당 기존 내용은 임의 변경하지 않고 push를 보류했다. plan.md의 기존 버전 표기만 복원하고 새 4.99절을 제외한 본문이 기준 커밋과 줄바꿈 차이 없이 같음을 확인했다. 제품/테스트 수정 없이 문서만 정정하여 앞서 실행한 회귀 결과를 유지한다.
+- **남은 일/다음 작업:** 유료 API·실회사 입력 비교·새 DOCX 실배치·프론트 연결은 미실행이다. 후속 6개 PR은 [plan.md 4.99절](plan.md#499-평가-도구-분리-이관과-후속-pr-순서-2026-10-08)의 팀 결정 1~8 승인 뒤 범위별 진행한다. 오늘은 커밋까지만, push/PR 생성은 하지 않는다. AG-03/04 진행중·AG-08 대기와 F-08 전체 대기는 유지한다.
+
+
+
 <a id="sequence-review-parity-20261001"></a>
 
 ### [F-03/05] → 연혁·공정 단계의 생성/최종 검사 불일치 수정 (2026-10-01, AG-04/07)
