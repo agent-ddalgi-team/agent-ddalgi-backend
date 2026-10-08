@@ -7,6 +7,8 @@
 
 ## 1. Quick Status
 
+- **2026-10-08 [BE-06·10 / F-08] 본문 수정 후 검사:** 편집 화면 지적/원문·저장 후 내용 검사·응답 유실 복구 확인·BE-10 진행중. [기록](task_backend.md#editor-finding-save-validation-20261008).
+
 - **2026-10-08 [BE-06·10 / F-08] 제외 후 재검증 연결:** 한 번 클릭·S03 응답 유실 복구·브라우저28묶음 통과·BE-10 진행중. [기록](task_backend.md#one-click-exclusion-validation-20261008).
 
 - **2026-10-08 [BE-06·10 / F-08] 미사용 선택 사실 처리:** S03 명시 제외·처리 기록 분리·API41건/UI27묶음 통과·BE-10 진행중 유지. [기록](task_backend.md#unused-preflight-review-20261008).
