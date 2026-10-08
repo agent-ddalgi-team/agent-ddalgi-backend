@@ -67,6 +67,52 @@ CUSTOMER_TEST_STATE_CONTROLS = {
     "completed": "알루미늄 시험시편의 중성 염수분무 시험을168시간 실시하고 완료했습니다. 시험시편 결과이며 양산 제품의 성능 보증이 아닙니다.",
 }
 
+# Held-out company: identical core claims in short text and a longer DOCX table.
+LONG_TABLE_QUALITY_ROWS = [
+    ("회사명", "예시유체"),
+    ("회사 개요", "예시유체는 연구용 냉각 모듈을 조립하고 시험하는 가상 기업입니다."),
+    ("제품 및 서비스", "연구용 냉각 모듈 CM-20의 조립과 시험시편 검사를 제공합니다."),
+    ("공정", "부품 세척과 모듈 조립을 수행합니다. 공정 순서는 지정하지 않습니다."),
+    ("설비", "유량 시험대와 압력 센서를 사용합니다."),
+    ("가공 능력", "알루미늄 시험시편의 최대 가공 길이는 200mm입니다. 스테인리스 시험시편은 100mm입니다."),
+    ("시험 조건", "CM-20 시험시편의 유량은 35L/min, 최대 압력은 0.6MPa입니다. 물 온도 20±2°C와 회전수 1,450rpm 조건의 시험시편 수치이며 양산 제품의 성능 보증이 아닙니다."),
+    ("인증", "ISO 9001의 적용 범위는 연구용 냉각 모듈 조립입니다. 유효기간은 2025년 1월 1일부터 2027년 12월 31일까지입니다."),
+    ("납기", "표준 주문은 도면 승인 후 영업일 7일입니다. 시제품 주문은 사양 확정 후 영업일 20일입니다."),
+    ("연혁", "2009년 법인을 설립했고 2018년 연구용 냉각 모듈의 시범 생산을 시작했습니다."),
+]
+LONG_TABLE_QUALITY_BACKGROUND = [
+    "자료 배경: 예시유체의 연구용 모듈 작업 기록에는 도면 검토와 부품 상태 확인 내용을 함께 남깁니다.",
+    "자료 배경: 시험시편의 소재와 시험 조건은 작업 기록에 구분해 적으며 다른 제품의 성능으로 일반화하지 않습니다.",
+    "자료 배경: 고객과 협의할 때 표준 주문과 시제품 주문의 승인 조건을 구분하고 변경된 사양은 다시 확인합니다.",
+    "자료 배경: 이 자료는 가상 기업의 소개서 시험 자료이며 고객명이나 판매 실적을 제시하지 않습니다.",
+]
+LONG_TABLE_QUALITY_PROBES = {
+    "materials": ["알루미늄", "200", "스테인리스", "100"],
+    "test_scope": ["35", "0.6", "20", "2", "1,450", "시험시편", "양산", "보증"],
+    "certification": ["ISO", "9001", "조립", "2025", "2027"],
+    "delivery": ["도면", "승인", "영업일", "7", "사양", "확정", "20"],
+}
+
+
+def long_table_quality_source(fmt):
+    if fmt == "txt":
+        return "\n".join(f"{key}: {value}" for key, value in LONG_TABLE_QUALITY_ROWS).encode()
+    from docx import Document
+    document = Document()
+    document.add_heading("예시유체 연구용 모듈 소개 자료", 0)
+    for index in range(36):
+        document.add_paragraph(LONG_TABLE_QUALITY_BACKGROUND[index % 4])
+    table = document.add_table(rows=1, cols=2)
+    table.rows[0].cells[0].text, table.rows[0].cells[1].text = "항목", "내용 및 적용 조건"
+    for key, value in LONG_TABLE_QUALITY_ROWS:
+        cells = table.add_row().cells
+        cells[0].text, cells[1].text = key, value
+    for index in range(36):
+        document.add_paragraph(LONG_TABLE_QUALITY_BACKGROUND[index % 4])
+    output = io.BytesIO()
+    document.save(output)
+    return output.getvalue()
+
 
 def customer_quality_brief(case_id):
     case = CUSTOMER_QUALITY_CASES[case_id]
@@ -941,6 +987,32 @@ def test_customer_quality_fixture_preserves_conditions_without_sending_rubric(cl
     assert not any(key in source.metadata for key in ("probes", "expected", "rubric"))
     assert source.source_version == 1
     assert all(segment.segment_id and segment.locator for segment in source.segments)
+
+
+@pytest.mark.parametrize("fmt", ["txt", "docx"])
+def test_long_table_quality_input_keeps_core_conditions(client, monkeypatch, fmt):
+    captured = []
+    original = MockAgent.analyze
+
+    def observe(self, request):
+        captured.append(request)
+        return original(self, request)
+
+    monkeypatch.setattr(MockAgent, "analyze", observe)
+    brief = {**BRIEF, "target_company": "예시유체", "photo_preference": "none"}
+    sid = client.post("/api/v1/sessions", json={"brief": brief}).json()["session_id"]
+    ids = _upload(client, sid, ("held-out." + fmt, long_table_quality_source(fmt)), kind="company")
+    _preflight(client, sid, _select(client, sid, ids))
+    assert len(captured) == 1
+    source = captured[0].sources[0]
+    parsed = "\n".join(segment.text for segment in source.segments)
+    for key, value in LONG_TABLE_QUALITY_ROWS:
+        assert key in parsed and value in parsed
+    assert not any(key in source.metadata for key in ("probes", "expected", "rubric"))
+    assert all(segment.segment_id and segment.locator for segment in source.segments)
+    if fmt == "docx":
+        assert len(parsed) > 4000
+        assert parsed.count("자료 배경:") == 72
 
 
 def _layout_pptx(*, duplicate=False, rotated=False, offset=0):

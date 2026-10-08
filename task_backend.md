@@ -1628,3 +1628,26 @@
 - **최종 확인:** `AI_CHECK_BACKEND=C:/final/backend`, `AI_CHECK_LIVE=0`의 `node scripts/check-ai-workflow.mjs --publication --impact --supplement-required --photos --required-insert`는 PDF4쪽/27,426바이트 승인·동일 바이트 다운로드까지 PASS(Temp ddalgi-ai-ui-RpGeUm). 같은 명령의 --docx는 실제 LibreOffice DOCX4쪽/2,410,968바이트 승인·동일 바이트 다운로드까지 PASS(Temp ddalgi-ai-ui-z49PIe). 새 점검 후 이전 C-05 무효화, 정상 반영/Job 추적, 사진/본문 보존, 필수 회사명 추가/연결 문구 복구, 넘침 승인 차단, 편집 후 옛 다운로드 차단·종료 정리도 포함한다. 중복 검사를 합산하지 않는다.
 - build·변경 TS/검사 스크립트 ESLint·git diff --check 통과. 기존 JS 청크507kB 경고 유지. 첫 샌드박스 실행은 캐시 EPERM/브라우저 실행 제한, 추가 시험 준비는 버전 필드 누락/복원 탭 선택 대기 실패가 있어 수정 후 재실행했다. 별도 경고가 남은 결과를 passed로 기다리던 검사 조건도 needs_review/실제 blocker0로 바로잡았으며 제품 경고 기준은 유지했다.
 - 실제 사용자 시연 DB·자료/세션·API 키는 사용하거나 변경하지 않았고 유료 호출0이다. 이번 결과는 가상 AI의 실제 브라우저/API/파일 출력 회귀이며 직전 실제 LLM 복구 시험을 대체하지 않는다. BE-10/F-08 일반 품질·Agent 상태는 진행중 그대로다. 다음은 다른 회사·장문/표 자료·분량의 실제 LLM 품질 비교이며 모든 오류의 자동 해결 완료로 보고하지 않는다.
+
+<a id="heldout-long-table-quality-20261008"></a>
+
+### 2026-10-08 다른 회사·장문 DOCX 표의 실제 품질 비교
+
+- BE-04·06·07·10/F-08 연결, 기존 eval/customer-purpose-quality-20261008에서 진행했다. 실제 회사 자료 대신 이전 예시정공과 다른 가상 회사 예시유체를 사용했다. 기존 tests/test_be04.py의 LONG_TABLE_QUALITY_ROWS/배경/평가 기준/바이트 생성 함수와 파서→Agent 입력 회귀2종을 추가했다. 새 저장소 파일·의존성·프론트/SDK/API/DB/환경 설정 변경은 없다. 기존 설치된 python-docx로 시험 입력을 만들었고 제품의 새 출력 엔진을 추가한 것이 아니다.
+- 핵심10행이 같은 TXT526자/10구간과 DOCX4,832자/95구간(배경 문단72개+표)을 비교했다. 문서 형식·길이·배경이 함께 달라지는 견고성 표본이지 길이만의 인과 효과나 모든 DOCX 표의 품질을 측정한 것은 아니다. 같은 목적·필수 capabilities/technology/certifications/lead_time·4쪽 Brief를 사용했다. 표는 실제 셀 locator(table/row/col), TXT는 실제 line locator를 가진다. 시험 정답/평가 기준은 모델 입력에 넣지 않는다.
+- 핵심4묶음은 소재별 알루미늄200mm/스테인리스100mm, 시험시편의35L/min/0.6MPa·물20±2°C·1,450rpm·양산 보증 제외, ISO9001 조립 범위/2025-01-01~2027-12-31, 표준 주문 도면 승인 후 영업일7일/시제품 사양 확정 후 영업일20일이다. 토큰 존재 검사는 공백/천 단위 쉼표를 정규화한 보조 측정이며 의미 판정과 구분한다. 실제 fact/본문/인용을 읽어 조건의 연결과 공정 순서 미지정을 함께 확인했다.
+
+| 단계 | TXT | 긴 DOCX 표 |
+|---|---|---|
+| 처음 실제 추출 | supported15/전체19, 확인필요·충돌0 | supported18/전체21, 확인필요·충돌0 |
+| 처음 실제 초안/검증 | 핵심4묶음 보존, needs_review/중복 경고1 | 핵심4묶음 보존, needs_review/중복 경고1 |
+| 작성 지침 보완 후 저장 추출 재사용 | 핵심 보존, passed/문제0 | 핵심 보존, needs_review/중복 경고1 유지 |
+| 남은 문단의 명시 수정 후 실제 검증 | 추가 수정 없음 | 같은 문서 revision2, passed/문제0 |
+
+- 처음 중복은 company_summary/business_areas가 같은 연구용 냉각 모듈 조립·시험을 서로 다른 말로 두 번 설명한 것이다. prompts/draft.txt에 같은 제품·업무 설명은 한 문장으로 합치고 사용하는 사실·근거를 함께 연결하되 서로 다른 조건은 보존하도록 추가했다. TXT는 재발하지 않았지만 긴 DOCX에서는 재발해 **작성 지침만으로 자동 제거 완료라고 보고하지 않는다**. TXT의 재작성 구성 기록은 중복 business_areas를 excluded로 설명했고 저장된 추출 사실은 그대로다. 모든 원래 사실 ID가 새 본문에 들어갔다고 주장하지 않는다.
+- 긴 DOCX의 실제 저장 응답은 새로 소유한 격리 세션에 재현했다. locator와 원문 excerpt가 유일하게 일치하는 경우에만 source/segment ID를 대응했다. 재현 analyze/draft는 새 실제 호출이 아니다. 지적된 첫 문단을 ‘예시유체는 연구용 냉각 모듈을 조립하고 시험하는 가상 기업입니다.’로 명시 PATCH하고 두 연결 사실 ID/근거·나머지 모든 블록을 보존했다. 실제 전체 의미 검사1회는 passed/미해결0이며 재추출·재생성은 없다. 제품의 사용자 자동 적용 기능을 새로 만든 것이 아니고 이번 수정 확인은 기존 API로 수행했다. 화면 저장/검사 경로는 직전 브라우저 회귀와 구분한다.
+- 각 초기·재작성 결과의 PDF/DOCX는 실제4쪽/layout_ok=true/not_checked0이었다. 경고 수정 후 revision2도 두 형식의 실제4쪽 배치가 통과했다. 최종 승인/외부 공개는 실행하지 않았고 사용자 원본 시연DB/자료/세션은 읽거나 수정하지 않았다. 렌더 결과 및 PDF 텍스트 확인이며 별도의 픽셀 단위 디자인 검수는 아니다.
+- 실제 호출은 첫 비교6회(추출2/작성2/검증2), 저장 추출 재사용 후 작성/검증4회, 명시 수정 검증1회로 **11회**다. 각 묶음의 외부 상한6/4/1을 고정했고 SDK 재시도0, timeout120초, 입력40,000자/출력32,000토큰/검증400,000자, gpt-6-luna/medium을 유지했다. 비용 확인 후 다음 묶음의 예산을 줄여 누적$1 안에서 진행했으며 실제 ledger 추정 합계 **$0.026045935/미확인 예약0**이다. 청구서 실금액이나 반복 안정성의 통계 추정은 아니다.
+- 회귀는 파서/입력 보존 선택5건 통과 후 test_agent_llm.py/test_be04.py/test_be06.py **1,462 passed/기존 경고1/170.59초**다. git diff --check 통과. 준비 중 지원되지 않는2쪽/SourceIn dataclass 저장 호출/배타적인 ledger 옵션이 거부됐으며 모두 유료0호출이었다. 기존 시험 클라이언트의 소유 쿠키 없이 조회한 요청도401로 거부됐고 소유 정책을 우회하지 않고 새 소유 세션에 재현했다.
+- 최초 결과는 Temp/ddalgi-long-table-quality-6if6n4_d, 재작성/명시 복구/최종 파일은 Temp/ddalgi-long-table-rewrite-6de2j2lv(report.json/warning-recovery.json)에 있다. 실행 도구3개는 Temp/ddalgi-long-table-quality-20261008.py, ddalgi-long-table-rewrite-20261008.py, ddalgi-long-table-warning-recovery-20261008.py다. 원문 생성 fixture와 평가 기준은 기존 테스트 파일에 남겼다.
+- BE-10/F-08 일반 품질·Agent 담당 상태는 유지한다. 다음은 자연스럽게 작성된 장문·여러 자료의 실제 상충/시점 부족 사례와 확인필요 보완 경로다. 회사 개요의 의미상 중복은 자동 작성에서 여전히 발생 가능한 경고이며, 이번에 명시 편집으로 해결됨을 확인한 것과 재발 방지 완료를 혼동하지 않는다.
