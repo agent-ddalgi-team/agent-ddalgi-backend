@@ -7,6 +7,8 @@
 
 ## 1. Quick Status
 
+- **2026-10-08 [BE-06·10 / F-08] 보완 자료 반영 연결:** 단계별 버튼·미저장 편집 보호·재점검 응답 유실 복구·격리 브라우저29묶음 통과·BE-10 진행중. [기록](task_backend.md#supplement-document-continuation-20261008).
+
 - **2026-10-08 [BE-06·10 / F-08] 본문 수정 후 검사:** 편집 화면 지적/원문·저장 후 내용 검사·응답 유실 복구 확인·BE-10 진행중. [기록](task_backend.md#editor-finding-save-validation-20261008).
 
 - **2026-10-08 [BE-06·10 / F-08] 근거 보완 안내:** 항목별 보완 예시·후보별 원문·사실 직접 이동·격리 브라우저26묶음 통과·BE-10 진행중. [기록](task_backend.md#fact-evidence-guidance-20261008).
