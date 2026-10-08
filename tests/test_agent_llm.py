@@ -7970,7 +7970,8 @@ def test_sdk_keeps_source_and_segment_metadata_without_turning_dates_into_claims
         [SegmentIn("seg_metadata", {"paragraph": 1}, "인원 36명")], metadata={
             "source_version": 3, "document_date": document_date, "document_date_verified": False,
             "date_from_filename": "2025", "segments": {"seg_metadata": {
-                "evidence_status": "unverified", "document_date": "2016", "chunk_id": "chunk_fixture"}}})
+                "evidence_status": "unverified", "document_date": "2016", "chunk_id": "chunk_fixture",
+                "layout": {"slide": 1, "box_mm": [25.4, 50.8, 50.8, 12.7]}}}})
     request = AnalyzeRequest("ses_metadata", 1, BRIEF, [source])
     before = copy.deepcopy(request)
     def respond(**kwargs):

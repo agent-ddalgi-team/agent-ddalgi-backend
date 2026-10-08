@@ -1,6 +1,6 @@
 # 공통 데이터·API 계약
 
-기준일: 2026-10-08 · 문서 v1.43 · contract_version: 1.9 · 데이터 schema_version: 1.0
+기준일: 2026-10-08 · 문서 v1.44 · contract_version: 1.9 · 데이터 schema_version: 1.0
 
 **2026-10-07 화면에서 사실 제외·복원:** 선택 항목의 사용 여부는 `POST /sessions/{sid}/preflights/{pid}/reviews`로 저장한다. 요청은 `expected_input_revision`, `action:exclude|restore`, 비어 있지 않은 고유 `fact_ids`(최대50개), `reason`(최대300자)다. 200 Preflight는 새로운 불변 점검 ID와 선택적 읽기 필드 `excluded_facts`/`reviewable_fact_ids`를 반환한다. 기존 점검·원문·사실의 진실 상태는 보존하고 제외 사실만 생성 입력에서 빠진다. 회사명·사용자가 지정한 필수 내용·마지막 supported 사업 설명·필수/시연 위반 항목은 제외할 수 없다(422 RESOLUTION_NOT_ALLOWED). 복원은 원래 상태/문제를 되살린다. 소유·만료·현재 입력·최신 점검·선택 근거·진행 작업을 검사하고 멱등 재전송은 같은 결과를 반환한다. AI를 추가 호출하지 않으며 사용자 확인은 초기화하고 새 LangGraph 확인 지점을 저장한다. 기존 문서는 자동 수정하지 않고 검증/승인을 무효화한다. 제외 사실이 본문에 남아 있으면 EVIDENCE_INVALID로 삭제 또는 복원을 안내하며 기존 C-05/최종 검사 조건은 유지한다. 입력 변경 또는 새로운 AI 점검은 별도 결과로 취급하며 이전 제외를 임의 이월하지 않는다. API1.9 호환 확장·DBv11·template_v11 유지.
 
@@ -449,6 +449,8 @@ Job 조회는 `job_id`, `kind`, `status`, `progress`, `result_ref`, `error`, `cr
 실행 완료/실패의 trace.outcome은 Job 상태를 요약한다. 최종 상태는 Job.status를 따르며 cancelled는 outcome이 없을 수 있다. `Job.status:succeeded`라도 `result_ref.status:failed`면 내용/배치 검증은 실패다. 세션 종료/만료 정리 시 성공한 Job을 포함한 trace를 제거한다. 현재 소유·만료 검사와 기존 조회 접근 조건은 유지한다. DB 마이그레이션/새 API가 없는 호환 읽기 필드 확장이며 프론트는 null/추가 진단 필드를 허용해야 한다.
 
 내부 Agent SourceIn.metadata는 선택 버전의 출처 정보다. source의 문서 날짜·검증 여부·파일명 날짜 힌트와 segments의 chunk_id/evidence_status/document_date/extraction_method를 보존한다. 이전 버전의 source 날짜 스냅샷이 없으면 최신 source 날짜 대신 null을 전달한다. 구간 metadata는 선택 extraction_run의 값을 사용한다. 자료 날짜·근거 상태는 사실의 기준일·현재 인증·공개 승인 확정을 대신하지 않으며 공개 Fact/EvidenceRef 형식과 승인 정책은 유지한다.
+
+2026-10-08 사전 점검의 PPTX 구간 metadata에는 선택 원본과 해시·문구가 일치할 때 선택적 `layout: {slide, box_mm:[left,top,width,height]}`를 추가한다. mm 좌표는 제목/설명 배치 참고이며 회사의 사실 수치나 상태 확정 근거가 아니다. 같은 쪽의 공백 정규화 전체 문구가 유일한 최상위 비회전 텍스트 상자만 지원한다. 그룹/회전/표 안의 동일 문구도 중복 판정에 포함한다. 선택 버전의 경로·해시와 저장 범위를 검사하고 파일당 업로드 한도 및 ZIP5,000항목/해제100MiB 한도를 적용한다. 누락·변조·모호한 대응·미지원 배치에는 좌표를 추가하지 않고 기존 구간을 보존한다. 원문 locator/ID/버전/텍스트·DB는 변경하지 않으며 파일 경로와 미선택 문구는 모델에 전달하지 않는다. API1.9/데이터1.0/DBv11/template_v11 유지, 프론트 변경은 필요하지 않다.
 
 | kind | 성공한 Job의 result_ref | 이후 조회 |
 |---|---|---|

@@ -858,3 +858,106 @@ def test_customer_request_table_transfer_and_job_trace_without_llm_quality_claim
     for page in document["pages"]:
         for block in page["blocks"]:
             assert all(r["source_id"] == src[0] and r["source_version"] == 1 for r in block["evidence_refs"])
+
+
+def _layout_pptx(*, duplicate=False, rotated=False, offset=0):
+    from pptx import Presentation
+    from pptx.util import Inches
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    # Deliberately put the bodies before the titles in XML order.
+    entries = [(4, 2, "알루미늄 소재 후처리 내식성 168hr"),
+               (4, 4, "금속 산화피막 설명"),
+               (1, 2, "크로메이트"), (1, 4, "부동태")]
+    if duplicate == True:
+        entries.append((1, 6, "알루미늄 소재 후처리 내식성 168hr"))
+    for x, y, text in entries:
+        box = slide.shapes.add_textbox(Inches(x), Inches(y + offset), Inches(2), Inches(.5))
+        box.text = text
+        if rotated and text.startswith("알루미늄"):
+            box.rotation = 90
+    if duplicate in ("group", "rotated"):
+        owner = slide.shapes.add_group_shape().shapes if duplicate == "group" else slide.shapes
+        box = owner.add_textbox(Inches(1), Inches(6), Inches(2), Inches(.5))
+        box.text = "알루미늄 소재 후처리 내식성 168hr"
+        if duplicate == "rotated":
+            box.rotation = 90
+    buf = io.BytesIO()
+    prs.save(buf)
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("case", ["valid", "changed_text", "wrong_slide", "ambiguous", "rotated",
+                                   "hash_mismatch", "missing_hash", "missing_file", "oversize", "outside_root", "corrupt", "group_duplicate", "rotated_duplicate"])
+def test_pptx_context_never_attaches_unmatched_or_untrusted_geometry(tmp_path, case):
+    import hashlib
+    from app.agent_bridge import SegmentIn
+    from app.services.preflights import _source_layout
+    root = tmp_path / "runs"
+    root.mkdir()
+    settings = Settings(private_runs_dir=root, db_path=root / "test.sqlite3")
+    data = b"not a pptx" if case == "corrupt" else _layout_pptx(duplicate=case.removesuffix("_duplicate") if case.endswith("_duplicate") else case == "ambiguous", rotated=case == "rotated")
+    filename = "../outside.pptx" if case == "outside_root" else "deck.pptx"
+    path = root / filename
+    if case != "missing_file":
+        path.write_bytes(data)
+    digest = hashlib.sha256(data).hexdigest()
+    if case == "hash_mismatch":
+        digest = "0" * 64
+    if case == "missing_hash":
+        digest = None
+    if case == "oversize":
+        settings = replace(settings, max_file_bytes=len(data) - 1)
+    segment = SegmentIn("selected", {"slide": 2 if case == "wrong_slide" else 1},
+                        "없는 설명" if case == "changed_text" else "알루미늄 소재 후처리 내식성 168hr")
+    result = _source_layout(settings, filename, digest, [segment])
+    if case == "valid":
+        assert result == {"selected": {"slide": 1, "box_mm": [101.6, 50.8, 50.8, 12.7]}}
+        assert "크로메이트" not in json.dumps(result, ensure_ascii=False)  # unselected title is not leaked
+    else:
+        assert result == {}
+    assert segment.locator == {"slide": 2 if case == "wrong_slide" else 1}
+
+
+@pytest.mark.parametrize("orm", [False, True])
+def test_preflight_passes_pptx_layout_from_selected_version_without_rewriting_evidence(settings, monkeypatch, orm):
+    import hashlib
+    from app.services import preflights
+    if orm:
+        settings.private_runs_dir.mkdir(parents=True, exist_ok=True)
+        init_orm_db(settings.db_path, settings.private_runs_dir)
+    seen = []
+    original = MockAgent.analyze
+    async def capture(self, request):
+        seen.append(request)
+        return await original(self, request)
+    monkeypatch.setattr(MockAgent, "analyze", capture)
+    monkeypatch.setattr(ai_jobs, "get_bridge", lambda _: MockAgent())
+    with TestClient(create_app(settings)) as api:
+        sid = _session(api)
+        ids = _upload(api, sid, ("two-processes.pptx", _layout_pptx()))
+        rev = _select(api, sid, ids)
+        with connect(settings.db_path) as conn:
+            before = preflights.build_sources(conn, sid, ids)[0]
+            # Existing registered excerpts may have only a slide locator.
+            for segment in before.segments:
+                conn.execute("UPDATE segments SET locator_json=? WHERE segment_id=?", ('{"slide":1}', segment.segment_id))
+            before = preflights.build_sources(conn, sid, ids)[0]
+            if orm:
+                data = _layout_pptx(offset=1)
+                (settings.private_runs_dir / "new-version.pptx").write_bytes(data)
+                conn.execute("UPDATE sources SET source_version=2, current_run_id=NULL, stored_path=?, content_hash=? WHERE source_id=?",
+                             ("new-version.pptx", hashlib.sha256(data).hexdigest(), ids[0]))
+        _preflight(api, sid, rev)
+        source = seen[0].sources[0]
+        assert source.source_version == 1 and source.segments == before.segments
+        title = next(s for s in source.segments if s.text == "크로메이트")
+        body = next(s for s in source.segments if "168hr" in s.text)
+        assert source.metadata["segments"][title.segment_id]["layout"]["box_mm"] == [25.4, 50.8, 50.8, 12.7]
+        assert source.metadata["segments"][body.segment_id]["layout"]["box_mm"] == [101.6, 50.8, 50.8, 12.7]
+        with connect(settings.db_path) as conn:
+            after = preflights.build_sources(conn, sid, ids)[0]
+            assert after.segments == before.segments
+            # A foreign session's selected IDs cannot bring their file context in.
+            other = _session(api)
+            assert preflights.build_sources(conn, other, ids, settings=settings) == []

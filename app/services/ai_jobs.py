@@ -214,7 +214,7 @@ def run_preflight_job(settings: Settings, session_id: str, job_id: str, input_re
             jobs.set_progress(conn, job_id, "analyzing", "자료에서 사실을 정리하는 중")
             brief = Brief.model_validate_json(row["brief_json"])
             exclusions = []
-            sources = preflights.build_sources(conn, session_id, json.loads(row["selected_source_ids"]), exclusions=exclusions)
+            sources = preflights.build_sources(conn, session_id, json.loads(row["selected_source_ids"]), exclusions=exclusions, settings=settings)
             _trace_input(conn, job_id, settings, sources, exclusions=exclusions)
         try:
             bridge = get_bridge(settings)
