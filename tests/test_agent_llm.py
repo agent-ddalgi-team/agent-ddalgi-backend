@@ -8070,3 +8070,391 @@ def test_conflict_candidates_require_their_own_numeric_evidence(monkeypatch, per
     assert body == original_body and request == original_request
     assert validate_analyze(result, [source]) is None
     assert len([event for event, _ in calls if event == "response"]) == 1
+
+
+# AG-08 evaluation tools: synthetic inputs, no product-policy changes.
+
+def test_quality_recording_default_off_and_sdk_parity(monkeypatch, tmp_path):
+    from scripts.experiments.agent_quality_comparison import RunArchive, RecordingRequester
+    disabled = RunArchive(repo=tmp_path)
+    disabled.write('ignored.json', {'not': 'written'})
+    assert disabled.path is None and not list(tmp_path.iterdir())
+    response = metered_response()
+    calls = fake_sdk(monkeypatch, response=response)
+    options = llm.LlmOptions.from_env(config_env())
+    plain = llm.OpenAIRequester(options, ledger=llm.TrialLedger())
+    recording = RunArchive(enabled=True, repo=tmp_path, secret_values=(options.api_key,))
+    monkeypatch.setenv('EVALUATION_SECRET_TOKEN', 'environment-secret-must-not-appear')
+    active = RecordingRequester(options, ledger=llm.TrialLedger(), record_call=recording.record_call)
+    args = ('fixed instructions', {'text': 'source'}, {'type': 'object'}, 'company_info')
+    assert plain(*args) == active(*args) == {'ok': True}
+    assert calls[1] == calls[3]  # enabling recording does not change the provider request
+    finished = json.loads((recording.path/'call_1_finished.json').read_text(encoding='utf-8'))
+    assert finished['actual_model'] == response.model
+    assert finished['ledger']['records'][0]['input_tokens'] == 1000
+    archived = b'\n'.join(p.read_bytes() for p in recording.path.iterdir())
+    assert options.api_key.encode() not in archived
+    assert b'environment-secret-must-not-appear' not in archived
+    assert b'OPENAI_API_KEY' not in archived and b'Authorization' not in archived
+
+
+@pytest.mark.parametrize('persistent', [False, True])
+def test_quality_archive_retries_access_failure_without_losing_previous_file(monkeypatch, tmp_path, persistent):
+    from scripts.experiments import agent_quality_comparison as quality
+    archive = quality.RunArchive(enabled=True, repo=tmp_path)
+    archive.write('stable.json', {'version': 1})
+    original, calls, sleeps = Path.replace, [], []
+    def replace(path, target):
+        calls.append(True)
+        if persistent or len(calls) < 3:raise PermissionError(13, 'sharing failure')
+        return original(path, target)
+    monkeypatch.setattr(Path, 'replace', replace)
+    monkeypatch.setattr(quality.time, 'sleep', sleeps.append)
+    if persistent:
+        with pytest.raises(PermissionError):archive.write('stable.json', {'version': 2})
+        assert json.loads((archive.path/'stable.json').read_text()) == {'version': 1}
+        assert archive.storage_retries[-1]['exhausted'] and len(calls) == 5
+    else:
+        archive.write('stable.json', {'version': 2})
+        assert json.loads((archive.path/'stable.json').read_text()) == {'version': 2}
+        assert len(calls) == 3 and sleeps == [0.1, 0.3]
+        assert archive.files['stable.json']['sha256'] == quality.digest((archive.path/'stable.json').read_bytes())
+
+
+def test_quality_recording_rejects_secret_before_write_and_api(monkeypatch, tmp_path):
+    from scripts.experiments.agent_quality_comparison import RunArchive, RecordingRequester
+    options = llm.LlmOptions.from_env(config_env())
+    archive = RunArchive(enabled=True, repo=tmp_path, secret_values=(options.api_key,))
+    calls = fake_sdk(monkeypatch, response=metered_response())
+    requester = RecordingRequester(options, ledger=llm.TrialLedger(), record_call=archive.record_call)
+    with pytest.raises(ValueError, match='Credential detected'):
+        requester('instruction', {'text': options.api_key}, {}, 'company_info')
+    assert calls == [] and requester.ledger.snapshot()['calls_started'] == 0
+    assert all(options.api_key.encode() not in p.read_bytes() for p in archive.path.iterdir())
+    with pytest.raises(ValueError, match='filename'):
+        archive.write('../escape.json', {})
+    with pytest.raises(ValueError, match='label'):
+        RunArchive(enabled=True, repo=tmp_path, label='../escape')
+
+
+def test_quality_recording_rejects_credential_echo_in_provider_body(monkeypatch, tmp_path):
+    from scripts.experiments.agent_quality_comparison import RunArchive, RecordingRequester
+    options=llm.LlmOptions.from_env(config_env())
+    archive=RunArchive(enabled=True,repo=tmp_path,secret_values=(options.api_key,))
+    fake_sdk(monkeypatch,response=metered_response(output_text=json.dumps({'text':options.api_key})))
+    ledger=llm.TrialLedger()
+    requester=RecordingRequester(options,ledger=ledger,record_call=archive.record_call)
+    with pytest.raises(ValueError,match='Credential detected'):
+        requester('fixed',{'text':'source'},{},'company_info')
+    assert ledger.snapshot()['calls_started']==1
+    assert not (archive.path/'call_1_finished.json').exists()
+    assert all(options.api_key.encode() not in p.read_bytes() for p in archive.path.iterdir())
+
+
+@pytest.mark.parametrize('bad_draft', [False, True])
+def test_quality_archive_whole_run_and_failure_preservation(monkeypatch, tmp_path, bad_draft):
+    from scripts.experiments import agent_quality_comparison as quality
+    monkeypatch.setattr(quality, 'git_revision', lambda repo: 'offline-test-commit')
+    def respond(**kwargs):
+        payload = json.loads(kwargs['input'])
+        if kwargs['text']['format']['name'] == 'company_info':
+            body = extraction_wire_result(extraction(payload), payload, kwargs['text']['format']['schema'])
+        else:
+            body = {} if bad_draft else editorial_response(payload)
+        return metered_response(output_text=json.dumps(body))
+    calls = fake_sdk(monkeypatch, response=respond)
+    def render(snapshot, fmt, out):
+        out.mkdir();p=out/'test.pdf';p.write_bytes(b'%PDF-unit-test-double')
+        return SimpleNamespace(file_path=p, actual_pages=1, layout_ok=True,
+                               to_dict=lambda: {'renderer':'test-double','actual_pages':1})
+    original = legacy.EXTRACT_PROMPT_PATH
+    archive = quality.run_case(label='offline', brief=Brief(purpose='소개',target_pages=1,photo_preference='none'),
+        sources=sources(), manifest=[{'source_id':s.source_id,'path':s.name} for s in sources()],
+        assets={}, asset_manifest=[], prompt_bytes=original.read_bytes(), prompt_version='test',
+        options=llm.LlmOptions.from_env(config_env()), record_run=True, repo=tmp_path, renderer=render)
+    assert legacy.EXTRACT_PROMPT_PATH == original and len(calls) == 4
+    assert (archive.path/'facts.json').is_file() and (archive.path/'draft_raw.json').is_file()
+    assert not (archive.path/'contact_setting.json').exists()
+    assert archive.state['ledger']['calls_started'] == 2
+    if bad_draft:
+        assert archive.state['status'] == 'failed' and archive.state['failed_stage'] == 'draft'
+        assert not (archive.path/'output.pdf').exists()
+    else:
+        assert archive.state['status'] == 'complete' and archive.state['required_artifacts_missing'] == []
+        locations=json.loads((archive.path/'fact_locations.json').read_text(encoding='utf-8'))
+        assert any(f['locations'] and 'file' in f['locations'][0] for f in locations)
+    for name,record in archive.state['files'].items():
+        assert hashlib.sha256((archive.path/name).read_bytes()).hexdigest()==record['sha256']
+    assert all(b'fake-secret-for-offline-test' not in p.read_bytes() for p in archive.path.iterdir() if p.is_file())
+    if not bad_draft:
+        def shared():
+            return quality.run_case(label='shared', brief=Brief(purpose='품질',target_pages=1,photo_preference='none'),
+                sources=sources(), manifest=[{'source_id':s.source_id,'path':s.name} for s in sources()],
+                assets={}, asset_manifest=[], prompt_bytes=original.read_bytes(), prompt_version='test',
+                options=llm.LlmOptions.from_env(config_env()), record_run=True, repo=tmp_path,
+                renderer=render, shared_run=archive.path)
+        reused = shared()
+        assert reused.state['status'] == 'complete' and reused.state['extraction_reused']
+        assert reused.state['ledger']['calls_started'] == 1 and len(calls) == 6
+        assert (reused.path/'facts.json').read_bytes() == (archive.path/'facts.json').read_bytes()
+        (archive.path/'facts.json').write_bytes(b'[]')
+        rejected = shared()
+        assert rejected.state['status'] == 'failed' and rejected.state['ledger']['calls_started'] == 0
+        assert len(calls) == 6
+
+
+def test_quality_budget_blocks_forecast_and_unknown_cost_before_next_api():
+    from scripts.experiments.agent_quality_comparison import ComparisonBudget, BudgetStop
+    def event(value):
+        return {'event':'finished','schema_name':'company_info',
+                'ledger':{'records':[{'estimated_cost_usd':value}]}}
+    guard = ComparisonBudget({'company_info':Decimal('0.01'),'draft_sections':Decimal('0.01')})
+    assert Decimal(guard.snapshot()['pilot_expected_usd']) == Decimal('0.30')
+    guard(event('0.02'))
+    assert not guard.stopped
+    guard(event('0.20'))
+    assert guard.stopped and guard.reason == 'forecast_exceeds_twice_pilot'
+    with pytest.raises(BudgetStop):
+        guard({'event':'prepared','schema_name':'draft_sections'})
+    unknown = ComparisonBudget({'company_info':Decimal('0.01'),'draft_sections':Decimal('0.01')})
+    unknown(event(None))
+    assert unknown.stopped and unknown.reason == 'usage_unconfirmed'
+    with pytest.raises(BudgetStop):
+        unknown({'event':'prepared','schema_name':'company_info'})
+
+
+def test_quality_records_actual_model_even_when_existing_cost_gate_rejects_it(monkeypatch, tmp_path):
+    from scripts.experiments.agent_quality_comparison import RunArchive, RecordingRequester
+    archive=RunArchive(enabled=True,repo=tmp_path)
+    fake_sdk(monkeypatch,response=metered_response(model='different-returned-snapshot'))
+    requester=RecordingRequester(llm.LlmOptions.from_env(config_env()),ledger=llm.TrialLedger(),
+                                 record_call=archive.record_call)
+    with pytest.raises(AgentError):
+        requester('instructions',{'text':'source'},{},'company_info')
+    event=json.loads((archive.path/'call_1_finished.json').read_text(encoding='utf-8'))
+    assert event['actual_model']=='different-returned-snapshot' and event['discarded']
+
+
+def test_editorial_checks_count_body_only_and_report_missing_metadata():
+    from scripts.experiments.agent_quality_comparison import editorial_checks
+    paragraph = {"type":"paragraph", "content":{"text":"아연도금: 조건입니다."}, "fact_ids":["F1"]}
+    doc={"pages":[{"blocks":[{"type":"heading", "content":{"text":"아연도금", "level":2},
+        "fact_ids":["F1"]}, paragraph, paragraph]}]}
+    result=editorial_checks(["자료에는 기재되어 있다. 제공합니다. 선택 자료 사진"],doc)
+    assert result["totals"] == {"source_description":2,"certificate_attribution":0,"plain_endings":1,"formal_endings":1,
+        "demo_footer":0,"generic_photo_caption":1,"mixed_endings":True,"formal_ratio":0.5,
+        "repeated_row_cells":1,"duplicate_body_fact_uses":1}
+    assert editorial_checks(["기재\n되어 있습니다."])["totals"]["source_description"]==1
+    assert editorial_checks([""])["totals"]["duplicate_body_fact_uses"] is None
+
+
+def test_reporting_metrics_separate_allowed_certificate_attribution():
+    from scripts.experiments.agent_quality_comparison import editorial_checks
+    allowed='인증서 기준 범위입니다. 인증서에 기재된 범위입니다. 인증서에 표시된 범위입니다.'
+    report='자료에는 소개 자료로 소개되어 기재되어 설명한다. 설명되어 제시한다. 열거되어 언급되어 말씀드립니다. 안내드립니다. 이력이 있습니다. 수록값 기준입니다.'
+    result=editorial_checks([allowed,report])
+    assert result['pages'][0]['source_description']==0
+    assert result['pages'][0]['certificate_attribution']==3
+    assert result['pages'][1]['source_description']==13
+    assert result['totals']['plain_endings']==2
+    assert result['totals']['formal_endings']==7
+
+
+def test_saved_comparison_enters_before_any_paid_setup(monkeypatch, tmp_path):
+    from scripts.experiments import agent_quality_comparison as q
+    calls = []
+    monkeypatch.setattr(q, 'render_saved_comparison', lambda source, out: calls.append((source, out)))
+    monkeypatch.setattr(q, 'load_source_archive', lambda *a, **k: pytest.fail('offline mode read live sources'))
+    monkeypatch.setattr(q.agent_llm, 'LlmOptions', lambda *a, **k: pytest.fail('offline mode requested a model'))
+    q.main(['--saved-manifest', str(tmp_path/'input.json'), '--saved-output', str(tmp_path/'baseline')])
+    assert calls == [(tmp_path/'input.json', tmp_path/'baseline')]
+
+
+def test_occupancy_is_diagnostic_and_does_not_change_layout_result():
+    from types import SimpleNamespace
+    from scripts.experiments.agent_quality_comparison import layout_diagnostics
+    result = SimpleNamespace(layout_ok=True, details={'measure': {'limit_px': 1000,
+        'pages': [{'height_px': 999, 'min_body_font_pt': 11}, {'height_px': 850, 'min_body_font_pt': 11}]}})
+    assert layout_diagnostics(result) == {'page_occupancy': [.999, .85], 'body_peak': .85,
+                                         'body_over_80': 1, 'minimum_body_pt': 11}
+    assert result.layout_ok is True
+
+
+def test_comparison_company_name_is_explicit_and_never_defaulted():
+    from scripts.experiments.agent_quality_comparison import fixed_briefs
+    with pytest.raises(TypeError):
+        fixed_briefs()
+    briefs = fixed_briefs('가상부품')
+    assert len(briefs) == 4
+    assert all(brief.target_company == '가상부품' for brief in briefs.values())
+
+
+def test_paid_comparison_requires_company_before_loading_sources(tmp_path, monkeypatch):
+    from scripts.experiments import agent_quality_comparison as q
+    rubric = tmp_path / 'rubric.json'
+    rubric.write_text('{}', encoding='utf-8')
+    monkeypatch.setattr(q, 'load_source_archive', lambda *a, **k: pytest.fail('live source access'))
+    monkeypatch.setattr(q.agent_llm, 'LlmOptions', lambda *a, **k: pytest.fail('model setup'))
+    with pytest.raises(SystemExit) as exc:
+        q.main(['--pilot', '--record-run', '--rubric', str(rubric)])
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize('labels', [['../escape'], ['a/b'], ['same', 'SAME'], ['CON']])
+def test_stage_runner_rejects_unsafe_or_duplicate_labels(tmp_path, labels):
+    import json
+    from scripts.experiments.stage_runner import load_manifest
+    path = tmp_path / 'manifest.json'
+    path.write_text(json.dumps({'documents': [
+        {'label': label, 'document_path': 'saved.json', 'assets_dir': 'assets'}
+        for label in labels]}), encoding='utf-8')
+    with pytest.raises(ValueError):
+        load_manifest(path)
+
+
+def test_stage_runner_manifest_paths_are_relative_to_manifest(tmp_path):
+    import json
+    from scripts.experiments.stage_runner import load_manifest
+    path = tmp_path / 'manifest.json'
+    path.write_text(json.dumps({'documents': [
+        {'label': 'sample', 'document_path': 'saved.json', 'assets_dir': 'assets'}]}), encoding='utf-8')
+    entry = load_manifest(path)[0]
+    assert entry['document_path'] == tmp_path / 'saved.json'
+    assert entry['assets_dir'] == tmp_path / 'assets'
+
+
+@pytest.mark.parametrize('change', ['product', 'runner', 'input', 'artifact'])
+def test_stage_runner_resume_rejects_changed_evidence(tmp_path, change):
+    from copy import deepcopy
+    from scripts.experiments.stage_runner import tree_hashes, verify_resume
+    folder = tmp_path / 'sample'
+    folder.mkdir()
+    (folder / 'page.png').write_bytes(b'original')
+    code = {'files': {'app/render.py': 'old'}, 'runner_sha256': 'runner'}
+    context = {'manifest_sha256': 'input'}
+    record = {'code': deepcopy(code), 'context': deepcopy(context),
+              'results': [{'label': 'sample', 'artifacts': tree_hashes(folder)}]}
+    verify_resume(record, code, context, tmp_path)
+    if change == 'product': code['files']['app/render.py'] = 'changed'
+    if change == 'runner': code['runner_sha256'] = 'changed'
+    if change == 'input': context['manifest_sha256'] = 'changed'
+    if change == 'artifact': (folder / 'page.png').write_bytes(b'changed')
+    with pytest.raises(ValueError):
+        verify_resume(record, code, context, tmp_path)
+
+
+def test_stage_runner_checks_original_instead_of_rewritten_copy():
+    from types import SimpleNamespace
+    from app.models import Block, Page
+    from scripts.experiments.stage_runner import preservation
+    page = Page(page_id='p', title='설비', layout_key='text', blocks=[
+        Block(block_id='b', type='paragraph', content={'text': '시험기 A 9대를 사용합니다.'})])
+    before = SimpleNamespace(pages=[page])
+    after = SimpleNamespace(pages=[page.model_copy(deep=True)])
+    after.pages[0].blocks[0].content['text'] = '시험기를 사용합니다.'
+    with pytest.raises(ValueError, match='Unrecorded body change'):
+        preservation(before, after, 'stage4', [])
+
+
+def test_stage_runner_blocks_external_connections_and_restores_socket(monkeypatch):
+    import socket
+    from scripts.experiments.stage_runner import offline_network
+    calls = []
+    original = lambda sock, address: calls.append(address)
+    monkeypatch.setattr(socket.socket, 'connect', original)
+    with offline_network():
+        socket.socket.connect(None, ('127.0.0.1', 9999))
+        with pytest.raises(ValueError, match='External network disabled'):
+            socket.socket.connect(None, ('203.0.113.1', 443))
+    assert socket.socket.connect is original and calls == [('127.0.0.1', 9999)]
+
+
+@pytest.mark.parametrize('error_kind', ['timeout', 'bad_json'])
+def test_eval_recording_keeps_product_failure_and_never_retries(monkeypatch, tmp_path, error_kind):
+    from scripts.experiments import agent_quality_comparison as q
+    error = APITimeoutError(request=httpx2.Request('POST', 'https://api.openai.com/v1/responses')) if error_kind == 'timeout' else None
+    calls = fake_sdk(monkeypatch, error=error, response=metered_response(output_text='invalid json'))
+    archive = q.RunArchive(enabled=True, repo=tmp_path)
+    ledger = llm.TrialLedger()
+    requester = q.RecordingRequester(llm.LlmOptions.from_env(config_env()), ledger=ledger, record_call=archive.record_call)
+    with pytest.raises(AgentError):
+        requester('test', {}, {}, 'company_info')
+    assert len([c for c in calls if c[0] == 'response']) == 1
+    assert ledger.snapshot()['stopped'] and ledger.snapshot()['calls_started'] == 1
+    assert json.loads((archive.path/'call_1_finished.json').read_text(encoding='utf-8'))['discarded']
+
+
+def test_eval_metadata_and_current_schema_survive_recording(monkeypatch, tmp_path):
+    from scripts.experiments import agent_quality_comparison as q
+    selected = sources()
+    segment = selected[0].segments[0]
+    selected[0].metadata = {'document_date': '2026-01-02', 'segments': {
+        segment.segment_id: {'extraction_method': 'synthetic', 'layout': {'slide': 1, 'box_mm': [1, 2, 3, 4]}}}}
+    def respond(**kwargs):
+        payload = json.loads(kwargs['input'])
+        return metered_response(output_text=json.dumps(extraction_wire_result(extraction(payload), payload,
+                                kwargs['text']['format']['schema'])))
+    calls = fake_sdk(monkeypatch, response=respond)
+    archive = q.RunArchive(enabled=True, repo=tmp_path)
+    requester = q.RecordingRequester(llm.LlmOptions.from_env(config_env()), ledger=llm.TrialLedger(),
+                                    record_call=archive.record_call, extract_prompt='Synthetic extraction prompt')
+    original_prompt = legacy.EXTRACT_PROMPT_PATH.read_bytes()
+    original_requester = llm.OpenAIRequester
+    result = llm.LlmAgent(requester, per_fact_status=True).analyze(AnalyzeRequest('eval',1,BRIEF,selected))
+    prepared = json.loads((archive.path/'call_1_prepared.json').read_text(encoding='utf-8'))
+    wire = calls[-1][1]
+    assert prepared['payload'] == json.loads(wire['input'])
+    assert prepared['schema'] == wire['text']['format']['schema']
+    assert wire['instructions'].startswith('Synthetic extraction prompt') and 'source_metadata' in wire['instructions']
+    assert prepared['payload']['source_metadata'][selected[0].source_id]['document_date'] == '2026-01-02'
+    assert any(u.get('metadata',{}).get('layout') for u in prepared['payload']['source_units'])
+    assert 'status' in prepared['schema']['$defs']['fact']['properties'] and result.facts
+    assert legacy.EXTRACT_PROMPT_PATH.read_bytes() == original_prompt and llm.OpenAIRequester is original_requester
+
+
+@pytest.mark.parametrize('mutation', ['metadata', 'asset_bytes', 'escape', 'duplicate_asset'])
+def test_eval_saved_source_archive_integrity_and_metadata(tmp_path, mutation):
+    from scripts.experiments import agent_quality_comparison as q
+    from app.services import export_render as er
+    from PIL import Image
+    import io
+    selected = sources()
+    selected[0].metadata = {'document_date': '2026-01-02', 'segments': {'x': {'evidence_status': 'verified'}}}
+    (tmp_path/'source_units.json').write_bytes(q.json_bytes(selected))
+    manifest = [{'source_id': s.source_id, 'path': s.name} for s in selected]
+    (tmp_path/'manifest.json').write_bytes(q.json_bytes(manifest))
+    data = io.BytesIO(); Image.new('RGB',(8,8),'blue').save(data,format='PNG')
+    raw = data.getvalue(); (tmp_path/'asset.png').write_bytes(raw)
+    rows = [{'asset_id':'a', 'archive_file':'asset.png', 'sha256':q.digest(raw)}]
+    (tmp_path/'asset_manifest.json').write_bytes(q.json_bytes(rows))
+    loaded = q.load_source_archive(tmp_path)
+    assert loaded[0][0].metadata == selected[0].metadata and loaded[2]['a'].data == raw
+    if mutation == 'metadata':
+        assert q.digest(q.json_bytes(loaded[0])) == q.digest(q.json_bytes(selected))
+        return
+    if mutation == 'asset_bytes': (tmp_path/'asset.png').write_bytes(raw+b'changed')
+    if mutation == 'escape': rows[0]['archive_file'] = '../escape.png'
+    if mutation == 'duplicate_asset': rows.append(dict(rows[0]))
+    (tmp_path/'asset_manifest.json').write_bytes(q.json_bytes(rows))
+    with pytest.raises(ValueError): q.load_source_archive(tmp_path)
+
+
+def test_eval_preflight_uses_current_readiness_and_preserves_blockers():
+    from scripts.experiments import agent_quality_comparison as q
+    request = build_editorial_request('manufacturing')
+    source_request = AnalyzeRequest(request.session_id, request.input_revision, request.brief, request.sources)
+    issue = Issue(issue_id='unresolved', scope='content', code='UNSUPPORTED_CLAIM', severity='blocker', message='Synthetic unresolved claim')
+    analyzed = SimpleNamespace(facts=request.preflight.facts, issues=[issue], recommendations=request.preflight.recommendations)
+    ready = q.ai_preflight(source_request, analyzed)
+    assert ready.issues == [issue] and ready.can_generate
+    source_request.brief = source_request.brief.model_copy(update={'target_company':'다른가상회사'})
+    refused = q.ai_preflight(source_request, analyzed)
+    assert not refused.can_generate and refused.issues == [issue]
+
+
+@pytest.mark.parametrize('stage', ['stage3', 'stage4'])
+def test_stage_runner_deferred_transformations_are_not_available(stage):
+    from scripts.experiments import stage_runner
+    with pytest.raises(SystemExit) as caught:
+        stage_runner.main([stage, '--manifest','unused.json','--run-dir','unused','--expected-template','template_v11'])
+    assert caught.value.code == 2
