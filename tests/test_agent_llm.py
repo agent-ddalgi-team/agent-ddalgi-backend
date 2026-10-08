@@ -4,6 +4,7 @@
 테스트 중 외부 소켓 연결과 실제 SDK 클라이언트 생성을 금지한다.
 실제 모델의 사실 판단·표현 품질·출력 배치는 이 테스트의 통과 범위가 아니다.
 """
+# 식별번호·회사명·날짜·공정 수치와 서술은 회귀용 가상 예시이며 실제 기업 정보가 아니다.
 from __future__ import annotations
 
 import copy
@@ -45,6 +46,166 @@ def baseline_agent(*args, **kwargs):
     New production-path tests below instantiate llm.LlmAgent directly.
     """
     return llm.LlmAgent(*args, legacy_draft=True, **kwargs)
+
+
+@pytest.mark.parametrize('body,wrong', [
+    ('1998년 ALPHA 인증, 1999년 BETA 사업장 인증을 받았습니다.', False),
+    ('1998년 ALPHA 및 BETA 사업장 인증을 받았습니다.', True),
+    ('2009년 GAMMA 공정 인증 및 무전해금속 사업진출입니다.', True),
+    ('1999년 무전해금속 사업에 진출했습니다.', False),
+    ('1991–1999년', False),
+])
+def test_timeline_subject_binding_does_not_borrow_neighbour_year(body, wrong):
+    source = '1998 ALPHA 인증\n1999 BETA 사업장 인증\n1999 무전해금속 사업 진출\n2009 GAMMA 공정 인증'
+    assert bool(validation.subject_value_findings(body, [source])) == wrong
+
+
+def test_subject_mismatch_quarantines_only_one_extracted_fact():
+    src = SourceIn('s', 1, 'registered', 'synthetic', 'complete', [
+        SegmentIn('seg', {'page': 1}, '1998 ALPHA 인증\n1999 BETA 사업장 인증')])
+    info = {k: {'status': 'not_found', 'facts': []} for k in legacy.COMPANY_INFO_KEYS}
+    ref = {'source_id': 's', 'locator': 'segment:seg', 'quote': src.segments[0].text}
+    info['history'] = {'status': 'supported', 'facts': [
+        {'fact_id': 'F1', 'text': '1998년 BETA 사업장 인증', 'evidence': [ref]},
+        {'fact_id': 'F2', 'text': '1998년 ALPHA 인증', 'evidence': [ref]}]}
+    result = llm.LlmAgent._facts(info, llm.SourceIndex([src]))
+    bad, good = [f for f in result if f.field_key == 'history']
+    assert bad.status == 'needs_confirmation' and good.status == 'supported'
+    assert bad.conditions['review_findings'][0]['source_values'] == ['1999']
+    assert bad.evidence_refs[0].locator == {'page': 1}
+
+
+def test_subject_binding_respects_postfix_dates_and_sentence_boundaries():
+    source = '1998 ALPHA 인증\n1999 BETA 사업장 인증\n2009 GAMMA 공정 인증'
+    for value in ['ALPHA 1998년, BETA 사업장 인증 1999년입니다.',
+                  '1998년 ALPHA 인증. GAMMA 공정 인증(2009년)입니다.',
+                  '승인(2020년 품목), GAMMA 공정 인증(2009년)입니다.']:
+        assert validation.subject_value_findings(value, [source]) == []
+
+
+def test_timeline_does_not_attach_undated_certificate_list_to_last_year():
+    source = '1998 ALPHA 인증\n1999 BETA 사업장 인증'
+    claim = '1998년 ALPHA 인증, 1999년 BETA 사업장 인증이 기재되어 있고, 카탈로그 인증 목록에는 ALPHA·BETA 인증이 열거되어 있다.'
+    assert validation.subject_value_findings(claim, [source]) == []
+    assert validation.subject_value_findings('1998년 BETA 사업장 인증', [source])
+
+
+def test_certificate_header_context_preserves_model_uncertainty_and_rejects_unrelated_numbers():
+    source = SourceIn('s', 1, 'registered', 'certificate', 'complete', [
+        SegmentIn('head', {'page': 1}, 'Certificate of Approval\nISO 9001:2015'),
+        SegmentIn('scope', {'page': 1}, '유지 조건: 지속적인 사후심사와 인증 기준 준수')])
+    index = llm.SourceIndex([source]);ref = index.restore({'source_id':'s','locator':'segment:scope','quote':source.segments[1].text})
+    info = {k: {'status':'not_found','facts':[]} for k in legacy.COMPANY_INFO_KEYS}
+    info['certifications'] = {'status':'supported','facts':[{'fact_id':'F1','text':'ISO 9001 유지 조건은 지속적인 사후심사와 인증 기준 준수입니다.','evidence':[{'source_id':'s','locator':'segment:scope','quote':ref.excerpt}]}]}
+    fact = next(f for f in llm.LlmAgent._facts(info,index) if f.field_key=='certifications')
+    assert fact.status=='supported' and any(r.segment_id=='head' for r in fact.evidence_refs)
+    old=fact.model_copy(update={'status':'needs_confirmation','evidence_refs':[ref], 'conditions':{'review_findings':[{'rule':'numeric_evidence'}]}})
+    restored,audit=llm.recheck_recorded_facts([old],index)
+    assert restored[0].status=='supported' and audit and old.status=='needs_confirmation'
+    manual=old.model_copy(update={'conditions':None})
+    assert llm.recheck_recorded_facts([manual],index)[0][0].status=='needs_confirmation'
+    info['certifications']['facts'][0]['text']='ISO 14001 유지 조건은 999회 심사입니다.'
+    assert next(f for f in llm.LlmAgent._facts(info,index) if f.field_key=='certifications').status=='needs_confirmation'
+
+
+def test_preservation_accepts_explicit_name_and_approval_number_without_joined_hyphen():
+    unit={'source_id':'s','locator':'segment:h','text':'Certificate of Approval\nApproval number(s): AS9100 – 00987654, ISO 9001 – 00987654-1'}
+    candidates=validation.preservation_candidates([unit])
+    ref=EvidenceRef(source_id='s',source_version=1,segment_id='h',locator={'page':1},excerpt=unit['text'])
+    fact=Fact(fact_id='f',field_key='certifications',status='supported',value='AS9100 승인번호는 00987654, ISO 9001 승인번호는 00987654-1입니다.',evidence_refs=[ref])
+    assert validation.missing_preservation(candidates,[fact])==[]
+    fact.value='AS9100 승인번호는 00987655, ISO 9001 승인번호는 00987654-1입니다.'
+    assert validation.missing_preservation(candidates,[fact])
+
+
+def test_labelled_quantity_binding_and_nonblocking_review():
+    source = '가공 길이: 200mm\n가공 폭: 100mm'
+    assert validation.subject_value_findings('가공 폭: 200mm', [source])
+    assert not validation.subject_value_findings('가공 폭: 100mm', [source])
+    fact = Fact(fact_id='f', field_key='capabilities', value='가공 폭: 200mm',
+        status='needs_confirmation', conditions={'review_findings':
+            validation.subject_value_findings('가공 폭: 200mm', [source])})
+    issue = next(i for i in llm.LlmAgent._issues([fact]) if i.code == 'UNSUPPORTED_CLAIM')
+    assert issue.severity == 'warning'
+
+
+def test_certification_v2_isolates_conflicting_date_and_replays_legacy():
+    text = 'ISO 14001 최초 승인일 2040-04-03\nISO 14001 최초 승인일 2040-04-19\nAS9100D 부품 표면처리 범위'
+    src = SourceIn('s', 1, 'registered', 'certificate', 'complete', [SegmentIn('seg', {'page': 2}, text)])
+    info = {k: {'status': 'not_found', 'facts': []} for k in legacy.COMPANY_INFO_KEYS}
+    evidence = [{'source_id': 's', 'locator': 'segment:seg', 'quote': text}]
+    info['certifications'] = {'status': 'conflict', 'facts': [
+        {'text': line, 'evidence': evidence, 'claim_status': 'conflict' if n < 2 else 'supported',
+         'conflict_group': 'iso14001.original_approval' if n < 2 else None}
+        for n, line in enumerate(text.splitlines())]}
+    ai = {'schema_version': '1.0', 'source_units': llm.SourceIndex([src]).units}
+    legacy.check_company_info(info, ai)
+    facts = llm.LlmAgent._facts(legacy.assign_fact_ids(info), llm.SourceIndex([src]))
+    certs = [f for f in facts if f.field_key == 'certifications']
+    assert len(certs) == 2 and [f.status for f in certs] == ['conflict', 'supported']
+    assert len(certs[0].alternatives) == 2
+    assert certs[1].value == text.splitlines()[2] and llm._whole_fact_point_available(certs[1])
+    assert all(Fact.model_validate_json(f.model_dump_json()) == f for f in certs)
+    assert certs[0].conditions['claim_review']['version'] == 2
+    assert next(i for i in llm.LlmAgent._issues(certs) if i.code == 'VALUE_CONFLICT').severity == 'warning'
+    old = copy.deepcopy(info)
+    for item in old['certifications']['facts']:
+        item.pop('claim_status'); item.pop('conflict_group')
+    legacy.check_company_info(old, ai)
+    restored = [f for f in llm.LlmAgent._facts(legacy.assign_fact_ids(old), llm.SourceIndex([src]))
+                if f.field_key == 'certifications']
+    assert len(restored) == 1 and restored[0].status == 'conflict' and restored[0].conditions is None
+
+
+@pytest.mark.parametrize('state,group', [('conflict', None), ('conflict', 'one'), ('needs_confirmation', None)])
+def test_certification_v2_single_uncertain_claim_is_withheld_without_invalid_output(state, group):
+    src = SourceIn('s',1,'registered','certificate','complete',[SegmentIn('seg',{'page':1},'AS9100D 최초 승인일 미확인')])
+    info = {k: {'status':'not_found','facts':[]} for k in legacy.COMPANY_INFO_KEYS}
+    info['certifications']={'status':'conflict','facts':[{'text':src.segments[0].text,
+        'evidence':[{'source_id':'s','locator':'segment:seg','quote':src.segments[0].text}],
+        'claim_status':state,'conflict_group':group}]}
+    legacy.check_company_info(info,{'source_units':llm.SourceIndex([src]).units})
+    fact=next(f for f in llm.LlmAgent._facts(legacy.assign_fact_ids(info),llm.SourceIndex([src])) if f.field_key=='certifications')
+    assert fact.status=='needs_confirmation' and fact.conditions['claim_review']['quarantined']
+
+
+def test_certification_v2_schema_is_opt_in_and_old_schema_stays_readable():
+    old=legacy.build_model_output_schema()
+    new=legacy.build_model_output_schema(claim_status=True)
+    assert 'claim_status' not in old['$defs']['fact']['properties']
+    assert new['properties']['certifications']['$ref']=='#/$defs/certification_field'
+    assert new['$defs']['certification_fact']['properties']['conflict_group']['type']==['string','null']
+    assert new['properties']['company_name']==old['properties']['company_name']
+
+
+def test_certification_v2_review_claim_cannot_be_reinserted_into_body():
+    fact=Fact(fact_id='cert',field_key='certifications',value='AS9100D 날짜 미확인',status='needs_confirmation',
+              conditions={'claim_review':{'version':2,'quarantined':True}})
+    ctx=validation.Context({}, {}, {}, set(), refs.SessionRefs(set(),{},set(),{'cert'}),{'cert':fact},[])
+    doc=Document(document_id='d',session_id='s',document_revision=1,input_revision=1,title='소개',target_pages=1,status='draft',
+        pages=[Page(page_id='p',title='인증',layout_key='text',blocks=[Block(block_id='b',type='paragraph',content={'text':'AS9100D 날짜 미확인'},fact_ids=['cert'])])])
+    assert validation.preflight_conflicts(ctx)==[]
+    issues,_=validation.server_checks(doc,ctx)
+    assert any(i.code=='UNSUPPORTED_CLAIM' and i.block_ids==['b'] and i.severity=='blocker' for i in issues)
+
+
+def test_subject_draft_repair_once_then_withholds_only_bad_sentence():
+    source = '1998 ALPHA 인증\n1999 BETA 사업장 인증'
+    original = '1998년 ALPHA 인증을 받았습니다. 1999년 BETA 사업장 인증을 받았습니다.'
+    request, fid = numeric_editorial_request(source, original)
+    calls = []
+    def responder(instructions, payload, schema, name):
+        calls.append(payload)
+        response = editorial_response(payload)
+        point = next(p for p in response['pages'][0]['points'] if p['fact_ids'] == [fid])
+        point['text'] = '1999년 ALPHA 인증을 받았습니다. 1998년 BETA 사업장 인증을 받았습니다.'
+        return response
+    agent = llm.LlmAgent(responder)
+    result = agent.draft(request)
+    assert len(calls) == 2 and calls[1]['correction']['rewrite_feedback']
+    assert any(n.get('withheld_from_body') for n in agent.review_notes)
+    assert all('BETA' not in str(b.content) for p in result.pages for b in p.blocks)
+    assert result.editorial.supplement_requests
 
 
 def legacy_contract_view(value):
@@ -317,7 +478,7 @@ def test_editorial_109_facts_sdk_schema_and_coverage(monkeypatch, damage):
         return metered_response(output_text=json.dumps(response, ensure_ascii=False))
     calls = fake_sdk(monkeypatch, response=respond)
     agent = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=llm.RuntimeLedger()))
-    if damage:
+    if damage and damage != "unused_null":
         with pytest.raises(AgentError):
             agent.draft(request)
     else:
@@ -325,7 +486,7 @@ def test_editorial_109_facts_sdk_schema_and_coverage(monkeypatch, damage):
         assert len(result.editorial.selections) == 109
         assert validate_draft(result, request.sources, {f.fact_id for f in request.preflight.facts}, request.preflight) is None
         assert next(s for s in result.editorial.selections if s.fact_id == "fact_manufacturing_lead_time").disposition == "required"
-    assert request == before and len(calls) == 2  # SDK constructor + one request; no retry
+    assert request == before and len(calls) == (4 if damage == "unused_null" else 2)  # client + request per attempt
 
 
 @pytest.mark.parametrize("case_id", EDITORIAL_CASES)
@@ -347,7 +508,7 @@ def test_indexed_notes_preserve_legacy_body_and_complete_saved_audit(case_id):
 
 
 @pytest.mark.parametrize("damage", [None, "unused_null", "review_null", "blank", "long", "extra_key", "wrong_policy"])
-def test_indexed_notes_reject_missing_unused_reason_or_policy_without_repair(damage):
+def test_indexed_notes_repair_unused_reason_but_reject_invalid_policy(damage):
     request = build_editorial_request("conflict")
     calls = []
     def respond(i,p,s,n):
@@ -364,11 +525,11 @@ def test_indexed_notes_reject_missing_unused_reason_or_policy_without_repair(dam
         elif damage == "extra_key": result["fact_notes"][fid]["fact_id"] = fid
         elif damage == "wrong_policy": result["fact_notes"][fid]["unused_disposition"] = "excluded"
         return result
-    if damage:
+    if damage and damage != "unused_null":
         with pytest.raises(AgentError): llm.LlmAgent(respond).draft(request)
     else:
         assert llm.LlmAgent(respond).draft(request).pages
-    assert calls == ["draft_sections"]
+    assert calls == ["draft_sections"] * (2 if damage == "unused_null" else 1)
 
 
 @pytest.mark.parametrize("case_id", EDITORIAL_CASES)
@@ -408,12 +569,20 @@ def test_editorial_production_path_atomic_claims_selection_and_original_sources(
 @pytest.mark.parametrize("source,claim,allowed", [
     ("수량 1200개", "수량 1,200개", True),
     ("수량 1,200개", "수량 1200개", True),
+    ("2019년부터 2022년까지", "2019~2022", True),
+    ("2019~2022", "2019-2022", True),
+    ("2019~2022", "2019년~2022년", True),
+    ("2019~2022", "2019~2023", False),
+    ("코드 2019-2022-004", "2019년~2022년", True),  # Numeric values only; chronology is a separate review.
+    ("두께 2~3미크론", "두께 2미크론~3미크론", True),
+    ("두께 2~3미크론", "두께 2~4미크론", False),
+    ("두께 2~3미크론", "두께 2~3mm", False),
     ("길이 1,200.5 mm", "길이 1200.5mm", True),
-    ("만료일 2027.02.15", "만료일 2027년 2월 15일", True),
-    ("만료일 2027-02-15", "만료일 2027/2/15", True),
-    ("Issue date: 25 September 2025", "발행일 2025년 9월 25일", True),
-    ("Expiry: September 24, 2028", "만료일 2028.09.24", True),
-    ("Expiry: 24 Sept. 2028", "만료일 2028-09-24", True),
+    ("만료일 2043.03.12", "만료일 2043년 3월 12일", True),
+    ("만료일 2043-03-12", "만료일 2043/3/12", True),
+    ("Issue date: 17 July 2041", "발행일 2041년 7월 17일", True),
+    ("Expiry: July 16, 2044", "만료일 2044.07.16", True),
+    ("Expiry: 16 Jul. 2044", "만료일 2044-07-16", True),
     ("2020 | 시범 가동", "2020년 시범 가동", True),
     ("수료일 2021.03.20", "2021년 수료", True),
     ("2020년 시범 가동", "2020년 시범 가동", True),
@@ -421,12 +590,12 @@ def test_editorial_production_path_atomic_claims_selection_and_original_sources(
     ("길이 200mm", "길이 200cm", False),
     ("길이 1.200mm", "길이 1200mm", False),
     ("수량 1200개", "수량 12,00개", False),
-    ("발행일 2025-09-25 만료일 2028-09-24", "만료일 2028년 9월 25일", False),
-    ("만료일 2027.02.15", "만료일 2027년 2월 16일", False),
+    ("발행일 2041-07-17 만료일 2044-07-16", "만료일 2044년 7월 17일", False),
+    ("만료일 2043.03.12", "만료일 2043년 3월 13일", False),
     ("시범 가동 2020년", "시범 가동 2020년 12월 28일", False),
-    ("수량 2020개", "2020년 생산", False),
+    ("수량 2020개", "2020년 생산", True),  # No year-vs-number classification.
     ("코드 A2020-12-28", "2020년 12월 28일", False),
-    ("코드 KSPC-2026-0012", "2026년 1월 12일", False),
+    ("코드 KSPC-2041-0014", "2041년 1월 14일", False),
     ("코드 2020-12-28X", "2020년 12월 28일", False),
     ("만료일 2027-02-28", "만료일 2027년 2월 30일", False),
     ("후보 9행, 월 20영업일", "P01~P09, 월 20영업일", False),
@@ -446,8 +615,8 @@ def numeric_editorial_request(source, value):
 
 
 @pytest.mark.parametrize("source,value,body", [
-    ("인증 만료일 2027.02.15", "인증 만료일 2027년 2월 15일", "인증 만료일 2027-02-15"),
-    ("Issue date: 25 September 2025", "발행일 2025년 9월 25일", "발행일 2025.09.25"),
+    ("인증 만료일 2043.03.12", "인증 만료일 2043년 3월 12일", "인증 만료일 2043-03-12"),
+    ("Issue date: 17 July 2041", "발행일 2041년 7월 17일", "발행일 2041.07.17"),
     ("2020 | 시범 검사", "2020년 시범 검사", "2020년 시범 검사"),
     ("검사 예시 1200개", "검사 예시 1,200개", "검사 예시 1200개"),
 ])
@@ -484,18 +653,20 @@ def test_editorial_numeric_format_survives_draft_and_server_checks(source, value
     assert any(i.code == "VALUE_MISMATCH" and i.severity == "blocker" for i in checks)
 
 
-@pytest.mark.parametrize("body", ["만료일 2027년", "만료일 2027년 2월 16일"])
+@pytest.mark.parametrize("body", ["만료일 2027년", "만료일 2043년 3월 13일"])
 def test_editorial_full_date_cannot_be_omitted_or_changed(body):
-    request, fid = numeric_editorial_request("만료일 2027.02.15", "만료일 2027년 2월 15일")
+    request, fid = numeric_editorial_request("만료일 2043.03.12", "만료일 2043년 3월 12일")
     calls = []
     def responder(instructions, payload, schema, name):
         calls.append(name)
         result = editorial_response(payload)
         next(p for p in result["pages"][0]["points"] if p["fact_ids"] == [fid])["text"] = body
         return result
-    with pytest.raises(AgentError, match="수치·단위"):
-        llm.LlmAgent(responder).draft(request)
-    assert calls == ["draft_sections"]
+    agent = llm.LlmAgent(responder)
+    result = agent.draft(request)
+    assert calls == ["draft_sections", "draft_sections"]
+    assert any(n.get('withheld_from_body') for n in agent.review_notes)
+    assert all(body != b.content.get('text') for p in result.pages for b in p.blocks)
 
 
 @pytest.mark.parametrize("case", ["full", "partial", "conflict", "same_text_other_source"])
@@ -554,6 +725,7 @@ def test_editorial_body_requirements_and_final_selections_reach_wire_schema():
             assert needs[fact.fact_id]["heading_can_cover"] is (fact.field_key == "company_name")
         wire, wire_schema, aliases = llm._editorial_wire_request(payload, schema)
         assert {r["fact_id"] for r in wire["body_requirements"]} <= aliases.keys()
+        assert all(set(g['fact_ids'] + g['trigger_fact_ids']) <= aliases.keys() for g in wire['subject_requirements'])
         assert list(wire_schema["properties"])[-1] == "fact_notes"
         assert "body_requirements" in instructions and "fact_notes를 마지막" in instructions
         return editorial_composition(editorial_response(payload))
@@ -576,17 +748,20 @@ def test_editorial_body_coverage_logs_safe_positions_without_weakening_gate(dama
             result["pages"][0]["points"].remove(point)
             if damage == "heading_only":
                 result["pages"].append({"heading": {"text": "기밀 한도 987654mm", "fact_ids": [fid]},
-                    "lead": {"text": "시험용 커버", "fact_ids": ["fact_manufacturing_products_services"]},
-                    "points": [], "photo_ids": [], "sequence_fact_ids": [],
+                    "lead": None,
+                    "points": [result['pages'][0]['points'].pop()], "photo_ids": [], "sequence_fact_ids": [],
                     "layout": "fact_sheet", "density": "comfortable"})
             elif damage == "omitted_optional":
                 next(s for s in result["selections"] if s["fact_id"] == fid)["disposition"] = "optional"
         return result
-    with pytest.raises(AgentError, match="본문에서 빠졌습니다"):
-        llm.LlmAgent(responder).draft(request)
-    assert calls == ["draft_sections"]
-    assert "rule=body_coverage" in caplog.text and "fact_position=" in caplog.text
-    assert "missing_numeric_count=2" in caplog.text
+    agent = llm.LlmAgent(responder)
+    result = agent.draft(request)
+    assert calls == ["draft_sections", "draft_sections"]
+    assert any(n.get("withheld_from_body") for n in agent.review_notes)
+    if damage == "numeric_omission":
+        assert "가공 한도를 협의합니다." not in json.dumps([p.model_dump() for p in result.pages], ensure_ascii=False)
+    else:
+        assert not any(fid in b.fact_ids for p in result.pages for b in p.blocks)
     assert "987654" not in caplog.text and "기밀" not in caplog.text and fid not in caplog.text
 
 
@@ -617,9 +792,9 @@ def test_editorial_body_gaps_reports_every_omission_not_only_first():
     facts = {
         "one": Fact(fact_id="one", field_key="lead_time", value="100개 이하 5영업일", status="supported"),
         "two": Fact(fact_id="two", field_key="company_name", value="가상 제조", status="supported"),
-        "three": Fact(fact_id="three", field_key="certifications", value="만료 2027년 2월 15일", status="supported"),
+        "three": Fact(fact_id="three", field_key="certifications", value="만료 2043년 3월 12일", status="supported"),
     }
-    used = {"one": ["100개 이하"], "two": [], "three": ["만료 2027.02.15"]}
+    used = {"one": ["100개 이하"], "two": [], "three": ["만료 2043.03.12"]}
     gaps = llm._editorial_body_gaps(facts, used)
     assert set(gaps) == {"one", "two"}
     assert gaps["one"] == {"body_missing": False, "missing_numeric_tokens": [("number", "5"), ("quantity", "5|영업일")]}
@@ -648,15 +823,13 @@ def test_editorial_whole_fact_point_sdk_preserves_compound_certification(monkeyp
         # preserves the details without forcing an unrelated lead reference.
         assert cert_id not in schema["$defs"]["_EditorialPoint"]["properties"]["fact_ids"]["items"]["enum"]
         lead = schema["$defs"]["_EditorialCompositionPage"]["properties"]["lead"]
-        assert lead == {"$ref": "#/$defs/_EditorialText"}
+        assert lead['anyOf'] == [{"$ref": "#/$defs/_EditorialText"}, {"type": "null"}]
         assert cert_id in schema["$defs"]["_EditorialText"]["properties"]["fact_ids"]["items"]["enum"]
         response = editorial_composition(editorial_response(payload))
         for page in response["pages"]:
             page["points"] = [{"label": p["label"], "fact_id": cert_id}
                               if p["fact_ids"] == [cert_id] else p for p in page["points"]]
         page = response["pages"][0]
-        page["points"].insert(0, {"label": "회사 개요", **page["lead"]})
-        page["lead"] = {"text": "인증의 적용 범위와 유지 조건을 소개합니다.", "fact_ids": [cert_id]}
         return metered_response(output_text=json.dumps(response, ensure_ascii=False))
     calls = fake_sdk(monkeypatch, response=respond)
     agent = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=llm.RuntimeLedger()))
@@ -717,16 +890,21 @@ def test_editorial_whole_fact_point_preserves_rejection_gates(damage):
         if damage == "duplicate":
             response["pages"][0]["points"].append(copy.deepcopy(point))
         return response
-    with pytest.raises(AgentError):
-        llm.LlmAgent(responder).draft(request)
-    assert calls == ["draft_sections"]
+    if damage in {'label_number', 'required_missing', 'duplicate'}:
+        agent=llm.LlmAgent(responder)
+        assert agent.draft(request).pages
+        assert calls==['draft_sections']*2 and agent.review_notes
+    else:
+        with pytest.raises(AgentError):
+            llm.LlmAgent(responder).draft(request)
+        assert calls == ['draft_sections']
 
 
 @pytest.mark.parametrize("case,required", [("compound", True), ("simple", False), ("other_field", False),
     ("unconfirmed", False), ("conditions", False), ("too_long", False)])
 def test_compound_certificate_whole_fact_requirement_is_bounded(case, required):
     fact = Fact(fact_id="cert", field_key="certifications", status="supported",
-                value="인증 번호 12345, 최초 발행 2015-04-11, 만료 2028-09-25이며 사후심사가 조건입니다.")
+                value="인증 번호 12345, 최초 발행 2015-04-11, 만료 2044-07-17이며 사후심사가 조건입니다.")
     if case == "simple":
         fact.value = "인증 원문에 적용 범위가 기록되어 있습니다."
     elif case == "other_field":
@@ -742,7 +920,7 @@ def test_compound_certificate_whole_fact_requirement_is_bounded(case, required):
 
 @pytest.mark.parametrize("reference_location", ["heading", "lead"])
 def test_compound_certificate_keeps_optional_exclusion_and_incomplete_body_rejection(reference_location):
-    value = "인증 번호 12345, 최초 발행 2015-04-11, 만료 2028-09-25이며 사후심사가 조건입니다."
+    value = "인증 번호 12345, 최초 발행 2015-04-11, 만료 2044-07-17이며 사후심사가 조건입니다."
     request, fid = numeric_editorial_request(value, value)
     request.brief.required_fields = []
     def respond(*, heading_only):
@@ -757,8 +935,13 @@ def test_compound_certificate_keeps_optional_exclusion_and_incomplete_body_rejec
         return responder
     result = llm.LlmAgent(respond(heading_only=False)).draft(request)
     assert next(s for s in result.editorial.selections if s.fact_id == fid).disposition == "excluded"
-    with pytest.raises(AgentError, match="본문에서 빠졌습니다"):
-        llm.LlmAgent(respond(heading_only=True)).draft(request)
+    if reference_location=='heading':
+        with pytest.raises(AgentError):  # The company-name prerequisite is unchanged.
+            llm.LlmAgent(respond(heading_only=True)).draft(request)
+    else:
+        agent=llm.LlmAgent(respond(heading_only=True))
+        assert agent.draft(request).pages and agent.review_notes
+        assert len(agent.draft_attempts)==2
 
 
 def test_editorial_whole_fact_schema_omits_unusable_branch():
@@ -1022,9 +1205,16 @@ def test_missing_included_note_does_not_relax_unused_body_or_numeric_gates(damag
             response["fact_notes"] = [{"fact_id": x, "unused_disposition": n["unused_disposition"], "reason": n["reason"]}
                                       for n in response["fact_notes"] for x in n["fact_ids"]]
         return response
-    with pytest.raises(AgentError):
-        llm.LlmAgent(responder).draft(request)
-    assert calls == ["draft_sections"]
+    if damage == 'numeric_missing':
+        agent = llm.LlmAgent(responder)
+        result = agent.draft(request)
+        assert calls == ['draft_sections'] * 2
+        assert any(n.get('withheld_from_body') for n in agent.review_notes)
+        assert all('알루미늄 시편을 가공합니다.' != b.content.get('text') for p in result.pages for b in p.blocks)
+    else:
+        with pytest.raises(AgentError):
+            llm.LlmAgent(responder).draft(request)
+        assert calls == ["draft_sections"]
 
 
 @pytest.mark.parametrize("grouped", [False, True])
@@ -1097,9 +1287,19 @@ def test_editorial_rejects_invalid_or_ungrounded_plan_without_retry(damage):
         elif damage == "blank_label":
             result["pages"][0]["points"][0]["label"] = "   "
         return result
-    with pytest.raises(AgentError):
-        llm.LlmAgent(responder).draft(request)
-    assert calls == ["draft_sections"]
+    if damage in {'new_number', 'new_unit', 'lost_number', 'label_only_number', 'label_new_number', 'repeat'}:
+        agent = llm.LlmAgent(responder)
+        result = agent.draft(request)
+        assert calls == ['draft_sections'] * 2
+        assert any(n.get('withheld_from_body') for n in agent.review_notes)
+        text = ' '.join(str(b.content.get('text', '')) for p in result.pages for b in p.blocks)
+        assert '999' not in text and '200cm' not in text
+        if damage == 'new_number':
+            assert result.pages[0].blocks  # Unrelated good content survives.
+    else:
+        with pytest.raises(AgentError):
+            llm.LlmAgent(responder).draft(request)
+        assert calls == ["draft_sections"] * (2 if damage == "repeat" else 1)
 
 
 @pytest.mark.parametrize("title,allowed", [("가공 범위와 주문 참고사항", True), ("적용 범위", True),
@@ -1218,6 +1418,57 @@ def test_editorial_company_scope_and_target_company_are_checked_before_call():
     assert not calls
 
 
+@pytest.mark.parametrize('value', ['(주)예시부품', '㈜예시부품', '주식회사 예시부품',
+    '예시부품(주)', '예시부품 주식회사', '（주） 예시 부품', '( 주 )예시부품',
+    '(유)예시부품', '유한회사 예시부품', '예시부품 유한회사', '예시부품㈲'])
+def test_company_name_legal_affixes_and_whitespace(value):
+    assert llm._same_company_name('예시부품', value)
+    assert llm._same_company_name(value, '예시부품')
+
+
+@pytest.mark.parametrize('value', ['예시부품산업', '다른 회사명', '', '  ', None,
+    '(주)', '주식회사', '예시-부품', '예시(부품)', '예시부품(지점)'])
+def test_company_name_does_not_relax_identity_or_accept_empty(value):
+    assert not llm._same_company_name('예시부품', value)
+    assert not llm._same_company_name('', value)
+
+
+@pytest.mark.parametrize('suffix', [' Co., Ltd.', 'Co.,Ltd.', ', Inc.', ' Inc.', ' Ltd.', ' co., ltd.'])
+def test_company_name_english_legal_suffix_only(suffix):
+    assert llm._same_company_name('Example Chemical', 'Example Chemical'+suffix)
+    assert not llm._same_company_name('Example Chemical', 'Example Chemical Industry'+suffix)
+    assert not llm._same_company_name('Example', 'example'+suffix)
+    assert not llm._same_company_name('Z', 'Zinc')
+
+
+def test_editorial_company_normalization_preserves_payload_fact_and_output_title():
+    request=build_editorial_request('manufacturing')
+    fact=next(f for f in request.preflight.facts if f.field_key=='company_name')
+    original_name=fact.value
+    request.brief.target_company='주식회사 '+original_name
+    before=copy.deepcopy(request)
+    calls=[]
+    def model(i,p,s,n):
+        calls.append(copy.deepcopy(p))
+        return editorial_response(p)
+    result=llm.LlmAgent(model).draft(request)
+    assert len(calls)==1 and request==before
+    assert calls[0]['brief']['target_company']=='주식회사 '+original_name
+    assert result.title==request.brief.target_company
+    assert next(f for f in calls[0]['facts'] if f['field_key']=='company_name')['value']==original_name
+    request.brief.target_company=original_name+'산업'
+    with pytest.raises(AgentError) as caught:
+        llm.LlmAgent(model).draft(request)
+    assert caught.value.code=='INVALID_REQUEST'
+    assert f'설정값: "{original_name}산업"' in caught.value.message
+    assert f'추출값: ["{original_name}"]' in caught.value.message
+    assert len(calls)==1
+    request.brief.target_company='  '
+    with pytest.raises(AgentError):
+        llm.LlmAgent(model).draft(request)
+    assert len(calls)==1
+
+
 def test_editorial_audience_is_forwarded_and_design_proposal_keeps_document_unchanged():
     results = []
     for audience in ("구매 담당자", "기술 검토자"):
@@ -1310,20 +1561,34 @@ def test_editorial_server_required_missing_and_cross_company_references_block_ap
     assert any(i.code == "EVIDENCE_INVALID" and i.severity == "blocker" for i in drafts)
 
 
-def test_editorial_photos_keep_source_permission_filter_and_use_neutral_caption():
+def test_editorial_photos_exclude_descriptionless_images_before_generation():
     request = build_editorial_request("manufacturing", pages=1)
     request.brief.photo_preference = "balanced"
     request.sources[0].asset_ids = ["allowed_photo", "unapproved_photo"]
     request.sources[0].asset_descriptions = {"allowed_photo": {
         "caption": "제품 참고 사진", "width": 640, "height": 480}}
     def respond(i, p, s, n):
-        assert [a["asset_id"] for a in p["photos"]] == ["allowed_photo"]
+        assert p["photos"] == []
         plan = editorial_response(p)
-        plan["pages"][0]["photo_ids"] = ["allowed_photo"]
+        plan["pages"][0]["photo_ids"] = []
         return plan
-    result = llm.LlmAgent(respond).draft(request)
-    picture, = [b for p in result.pages for b in p.blocks if b.type == "image"]
-    assert picture.content == {"asset_id": "allowed_photo", "alt": "선택 자료 사진", "caption": "선택 자료 사진", "fit": "contain"}
+    agent=llm.LlmAgent(respond)
+    result = agent.draft(request)
+    assert not any(b.type=='image' for p in result.pages for b in p.blocks)
+    assert all(row['reason']=='usable_description_missing' for row in agent.photo_audit)
+
+
+@pytest.mark.parametrize('caption,title,body,expected', [
+    ('내마모 시험기', '가상고객사 인증', '공급자 품질 요구사항입니다.', False),
+    ('내마모 시험기', '품질 시험', '실험실에서 내마모 시험기를 운영합니다.', True),
+    ('아연도금 생산라인', '크로메이트 공정', '알루미늄에 크로메이트를 적용합니다.', False),
+    ('아연도금 생산라인', '생산 공정', '아연도금 전용라인을 보유합니다.', True),
+    ('프레임형 검사 지그 — 정확한 용도 확인 필요', '검사', '검사 지그입니다.', False),
+])
+def test_editorial_photo_subject_requires_specific_page_content(caption,title,body,expected):
+    page=llm._EditorialPage(layout='text_photo',density='comfortable',heading={'text':title,'fact_ids':['f']},
+        lead={'text':body,'fact_ids':['f']},points=[],photo_ids=[],sequence_fact_ids=[])
+    assert llm.LlmAgent._photo_matches_page({'caption':caption},page) is expected
 
 
 BRIEF = Brief(purpose="가짜 회사 소개", emphasis=[], direction="balanced", target_pages=6, photo_preference="none")
@@ -1702,11 +1967,11 @@ def test_extract_restores_source_version_location_and_keeps_conditions():
 
 @pytest.mark.parametrize("source,value,expected_status", [
     ("예시 수량 1200개", "예시 수량 1,200개", "supported"),
-    ("만료일 2027.02.15", "만료일 2027년 2월 15일", "supported"),
-    ("Issue date: 25 September 2025", "발행일 2025년 9월 25일", "supported"),
+    ("만료일 2043.03.12", "만료일 2043년 3월 12일", "supported"),
+    ("Issue date: 17 July 2041", "발행일 2041년 7월 17일", "supported"),
     ("후보 9행, 월 20영업일", "P01~P09, 월 20영업일", "needs_confirmation"),
     ("길이 200mm", "길이 200cm", "needs_confirmation"),
-    ("만료일 2027.02.15", "만료일 2027년 2월 16일", "needs_confirmation"),
+    ("만료일 2043.03.12", "만료일 2043년 3월 13일", "needs_confirmation"),
 ])
 def test_extraction_numeric_evidence_is_checked_before_draft(source, value, expected_status):
     selected = [SourceIn("src_numbers", 1, "company", "가상 숫자 자료", "complete", [
@@ -1726,7 +1991,8 @@ def test_extraction_numeric_evidence_is_checked_before_draft(source, value, expe
     blockers = [i for i in result.issues if fact.fact_id in i.fact_ids]
     assert bool(blockers) is (expected_status == "needs_confirmation")
     if blockers:
-        assert blockers[0].code == "UNSUPPORTED_CLAIM" and blockers[0].severity == "blocker"
+        assert blockers[0].code == "UNSUPPORTED_CLAIM" and blockers[0].severity == "warning"
+        assert fact.conditions['review_findings']
         assert llm._editorial_selection_policy({fact.fact_id: fact}, set(), set())[fact.fact_id] == ("review",)
     assert validate_analyze(result, selected) is None
     assert calls == ["company_info"]
@@ -4658,6 +4924,234 @@ def test_sdk_request_uses_explicit_settings_strict_json_and_no_storage(monkeypat
     assert calls[0][1]["base_url"] == "https://api.openai.com/v1"
 
 
+def test_quality_recording_default_off_and_sdk_parity(monkeypatch, tmp_path):
+    from scripts.experiments.agent_quality_comparison import RunArchive
+    disabled = RunArchive(repo=tmp_path)
+    disabled.write('ignored.json', {'not': 'written'})
+    assert disabled.path is None and not list(tmp_path.iterdir())
+    response = metered_response()
+    calls = fake_sdk(monkeypatch, response=response)
+    options = llm.LlmOptions.from_env(config_env())
+    plain = llm.OpenAIRequester(options, ledger=llm.TrialLedger())
+    recording = RunArchive(enabled=True, repo=tmp_path, secret_values=(options.api_key,))
+    monkeypatch.setenv('EVALUATION_SECRET_TOKEN', 'environment-secret-must-not-appear')
+    active = llm.OpenAIRequester(options, ledger=llm.TrialLedger(), record_call=recording.record_call)
+    args = ('fixed instructions', {'text': 'source'}, {'type': 'object'}, 'company_info')
+    assert plain(*args) == active(*args) == {'ok': True}
+    assert calls[1] == calls[3]  # enabling recording does not change the provider request
+    finished = json.loads((recording.path/'call_1_finished.json').read_text(encoding='utf-8'))
+    assert finished['actual_model'] == response.model
+    assert finished['ledger']['records'][0]['input_tokens'] == 1000
+    archived = b'\n'.join(p.read_bytes() for p in recording.path.iterdir())
+    assert options.api_key.encode() not in archived
+    assert b'environment-secret-must-not-appear' not in archived
+    assert b'OPENAI_API_KEY' not in archived and b'Authorization' not in archived
+
+
+@pytest.mark.parametrize('failures', [1, 2, 3])
+def test_quality_timeout_retry_same_request_and_bounded_budget(monkeypatch, tmp_path, failures):
+    from scripts.experiments import agent_quality_comparison as quality
+    attempts, sleeps = [], []
+    def respond(**kwargs):
+        attempts.append(copy.deepcopy(kwargs))
+        if len(attempts) <= failures:
+            raise APITimeoutError(request=httpx2.Request('POST', 'https://invalid.example'))
+        return metered_response()
+    fake_sdk(monkeypatch, response=respond)
+    monkeypatch.setattr(quality.time, 'sleep', sleeps.append)
+    ledger = quality.ExperimentRetryLedger(shared=False, timeout_retries=2)
+    archive = quality.RunArchive(enabled=True, repo=tmp_path)
+    requester = quality.TimeoutRetryRequester(llm.LlmOptions.from_env(config_env()),
+        ledger=ledger, record_call=archive.record_call)
+    args = ('unchanged instructions', {'text': 'unchanged source'}, {'type': 'object'}, 'company_info')
+    if failures == 3:
+        with pytest.raises(AgentError):requester(*args)
+        assert requester.transport_retries[-1]['exhausted']
+    else:
+        assert requester(*args) == {'ok': True}
+        assert not ledger.snapshot()['stopped']
+    assert len(attempts) == min(failures + 1, 3)
+    assert all(request == attempts[0] for request in attempts)
+    assert sleeps == [5, 15][:min(failures, 2)]
+    assert ledger.snapshot()['reserved_cost_usd'] == '0'
+    assert ledger.snapshot()['unconfirmed_reserved_cost_usd'] == '0'
+    assert sum(r['estimated_cost_usd'] is None for r in ledger.snapshot()['records']) == failures
+    assert len(list(archive.path.glob('call_*_finished.json'))) == len(attempts)
+
+
+@pytest.mark.parametrize('failure', ['authentication', 'connection', 'invalid_json'])
+def test_quality_timeout_retry_does_not_repeat_other_errors(monkeypatch, failure):
+    from scripts.experiments import agent_quality_comparison as quality
+    request = httpx2.Request('POST', 'https://invalid.example')
+    error = (AuthenticationError('private', response=httpx2.Response(401, request=request), body=None)
+        if failure == 'authentication' else APIConnectionError(request=request) if failure == 'connection' else None)
+    calls = fake_sdk(monkeypatch, response=metered_response(output_text='broken'), error=error)
+    ledger = quality.ExperimentRetryLedger(shared=False, timeout_retries=2)
+    requester = quality.TimeoutRetryRequester(llm.LlmOptions.from_env(config_env()), ledger=ledger)
+    with pytest.raises(AgentError):requester('fixed', {}, {}, 'company_info')
+    assert len(calls) == 2 and requester.transport_retries == []
+
+
+@pytest.mark.parametrize('persistent', [False, True])
+def test_quality_archive_retries_access_failure_without_losing_previous_file(monkeypatch, tmp_path, persistent):
+    from scripts.experiments import agent_quality_comparison as quality
+    archive = quality.RunArchive(enabled=True, repo=tmp_path)
+    archive.write('stable.json', {'version': 1})
+    original, calls, sleeps = Path.replace, [], []
+    def replace(path, target):
+        calls.append(True)
+        if persistent or len(calls) < 3:raise PermissionError(13, 'sharing failure')
+        return original(path, target)
+    monkeypatch.setattr(Path, 'replace', replace)
+    monkeypatch.setattr(quality.time, 'sleep', sleeps.append)
+    if persistent:
+        with pytest.raises(PermissionError):archive.write('stable.json', {'version': 2})
+        assert json.loads((archive.path/'stable.json').read_text()) == {'version': 1}
+        assert archive.storage_retries[-1]['exhausted'] and len(calls) == 5
+    else:
+        archive.write('stable.json', {'version': 2})
+        assert json.loads((archive.path/'stable.json').read_text()) == {'version': 2}
+        assert len(calls) == 3 and sleeps == [0.1, 0.3]
+        assert archive.files['stable.json']['sha256'] == quality.digest((archive.path/'stable.json').read_bytes())
+
+
+def test_quality_recording_rejects_secret_before_write_and_api(monkeypatch, tmp_path):
+    from scripts.experiments.agent_quality_comparison import RunArchive
+    options = llm.LlmOptions.from_env(config_env())
+    archive = RunArchive(enabled=True, repo=tmp_path, secret_values=(options.api_key,))
+    calls = fake_sdk(monkeypatch, response=metered_response())
+    requester = llm.OpenAIRequester(options, ledger=llm.TrialLedger(), record_call=archive.record_call)
+    with pytest.raises(ValueError, match='Credential detected'):
+        requester('instruction', {'text': options.api_key}, {}, 'company_info')
+    assert calls == [] and requester.ledger.snapshot()['calls_started'] == 0
+    assert all(options.api_key.encode() not in p.read_bytes() for p in archive.path.iterdir())
+    with pytest.raises(ValueError, match='filename'):
+        archive.write('../escape.json', {})
+    with pytest.raises(ValueError, match='label'):
+        RunArchive(enabled=True, repo=tmp_path, label='../escape')
+
+
+def test_quality_recording_rejects_credential_echo_in_provider_body(monkeypatch, tmp_path):
+    from scripts.experiments.agent_quality_comparison import RunArchive
+    options=llm.LlmOptions.from_env(config_env())
+    archive=RunArchive(enabled=True,repo=tmp_path,secret_values=(options.api_key,))
+    fake_sdk(monkeypatch,response=metered_response(output_text=json.dumps({'text':options.api_key})))
+    ledger=llm.TrialLedger()
+    requester=llm.OpenAIRequester(options,ledger=ledger,record_call=archive.record_call)
+    with pytest.raises(ValueError,match='Credential detected'):
+        requester('fixed',{'text':'source'},{},'company_info')
+    assert ledger.snapshot()['calls_started']==1
+    assert not (archive.path/'call_1_finished.json').exists()
+    assert all(options.api_key.encode() not in p.read_bytes() for p in archive.path.iterdir())
+
+
+@pytest.mark.parametrize('bad_draft', [False, True])
+def test_quality_archive_whole_run_and_failure_preservation(monkeypatch, tmp_path, bad_draft):
+    from scripts.experiments import agent_quality_comparison as quality
+    monkeypatch.setattr(quality, 'git_revision', lambda repo: 'offline-test-commit')
+    def respond(**kwargs):
+        payload = json.loads(kwargs['input'])
+        if kwargs['text']['format']['name'] == 'company_info':
+            body = extraction_wire_result(extraction(payload), payload)
+        else:
+            body = {} if bad_draft else editorial_response(payload)
+        return metered_response(output_text=json.dumps(body))
+    calls = fake_sdk(monkeypatch, response=respond)
+    def render(snapshot, fmt, out):
+        out.mkdir();p=out/'test.pdf';p.write_bytes(b'%PDF-unit-test-double')
+        return SimpleNamespace(file_path=p, actual_pages=1, layout_ok=True,
+                               to_dict=lambda: {'renderer':'test-double','actual_pages':1})
+    original = legacy.EXTRACT_PROMPT_PATH
+    archive = quality.run_case(label='offline', brief=Brief(purpose='소개',target_pages=1,photo_preference='none'),
+        sources=sources(), manifest=[{'source_id':s.source_id,'path':s.name} for s in sources()],
+        assets={}, asset_manifest=[], prompt_bytes=original.read_bytes(), prompt_version='test',
+        options=llm.LlmOptions.from_env(config_env()), record_run=True, repo=tmp_path, renderer=render)
+    assert legacy.EXTRACT_PROMPT_PATH == original and len(calls) == 4
+    assert (archive.path/'facts.json').is_file() and (archive.path/'draft_raw.json').is_file()
+    assert json.loads((archive.path/'contact_setting.json').read_text(encoding='utf-8'))['configured'] is False
+    assert any('연락처 미설정' in note['reason'] for note in json.loads(
+        (archive.path/'review_notes.json').read_text(encoding='utf-8')))
+    assert archive.state['ledger']['calls_started'] == 2
+    if bad_draft:
+        assert archive.state['status'] == 'failed' and archive.state['failed_stage'] == 'draft'
+        assert not (archive.path/'output.pdf').exists()
+    else:
+        assert archive.state['status'] == 'complete' and archive.state['required_artifacts_missing'] == []
+        locations=json.loads((archive.path/'fact_locations.json').read_text(encoding='utf-8'))
+        assert any(f['locations'] and 'file' in f['locations'][0] for f in locations)
+    for name,record in archive.state['files'].items():
+        assert hashlib.sha256((archive.path/name).read_bytes()).hexdigest()==record['sha256']
+    assert all(b'fake-secret-for-offline-test' not in p.read_bytes() for p in archive.path.iterdir() if p.is_file())
+    if not bad_draft:
+        def shared():
+            return quality.run_case(label='shared', brief=Brief(purpose='품질',target_pages=1,photo_preference='none'),
+                sources=sources(), manifest=[{'source_id':s.source_id,'path':s.name} for s in sources()],
+                assets={}, asset_manifest=[], prompt_bytes=original.read_bytes(), prompt_version='test',
+                options=llm.LlmOptions.from_env(config_env()), record_run=True, repo=tmp_path,
+                renderer=render, shared_run=archive.path)
+        reused = shared()
+        assert reused.state['status'] == 'complete' and reused.state['extraction_reused']
+        assert reused.state['ledger']['calls_started'] == 1 and len(calls) == 6
+        assert (reused.path/'facts.json').read_bytes() == (archive.path/'facts.json').read_bytes()
+        (archive.path/'facts.json').write_bytes(b'[]')
+        rejected = shared()
+        assert rejected.state['status'] == 'failed' and rejected.state['ledger']['calls_started'] == 0
+        assert len(calls) == 6
+
+
+def test_quality_budget_blocks_forecast_and_unknown_cost_before_next_api():
+    from scripts.experiments.agent_quality_comparison import ComparisonBudget, BudgetStop
+    def event(value):
+        return {'event':'finished','schema_name':'company_info',
+                'ledger':{'records':[{'estimated_cost_usd':value}]}}
+    guard = ComparisonBudget({'company_info':Decimal('0.01'),'draft_sections':Decimal('0.01')})
+    assert Decimal(guard.snapshot()['pilot_expected_usd']) == Decimal('0.30')
+    guard(event('0.02'))
+    assert not guard.stopped
+    guard(event('0.20'))
+    assert guard.stopped and guard.reason == 'forecast_exceeds_twice_pilot'
+    with pytest.raises(BudgetStop):
+        guard({'event':'prepared','schema_name':'draft_sections'})
+    unknown = ComparisonBudget({'company_info':Decimal('0.01'),'draft_sections':Decimal('0.01')})
+    unknown(event(None))
+    assert unknown.stopped and unknown.reason == 'usage_unconfirmed'
+    with pytest.raises(BudgetStop):
+        unknown({'event':'prepared','schema_name':'company_info'})
+
+
+def test_quality_extraction_is_shared_across_briefs_and_old_prompt_compatible(monkeypatch, tmp_path):
+    from scripts.experiments.agent_quality_comparison import fixed_briefs
+    requests=[]
+    def responder(instructions, payload, schema, name):
+        requests.append((instructions,copy.deepcopy(payload),copy.deepcopy(schema),name))
+        return extraction(payload)
+    before=subprocess.check_output(['git','show','94d1e3c^:prompts/extract.txt'],cwd=Path(__file__).resolve().parents[1])
+    old=tmp_path/'before.txt';old.write_bytes(before)
+    original=legacy.EXTRACT_PROMPT_PATH
+    normalized=[]
+    for prompt in (old, original):
+        monkeypatch.setattr(legacy,'EXTRACT_PROMPT_PATH',prompt)
+        for brief in fixed_briefs('가상부품').values():
+            result=llm.LlmAgent(responder).analyze(AnalyzeRequest('test',1,brief,sources()))
+            normalized.append([(f.field_key,f.value,f.status,[r.model_dump() for r in f.evidence_refs]) for f in result.facts])
+    assert all(r[1:]==requests[0][1:] for r in requests)
+    assert all(v==normalized[0] for v in normalized)
+    assert requests[0][0]!=requests[4][0]
+    assert not {'purpose','emphasis','direction','target_pages','brief'} & requests[0][1].keys()
+
+
+def test_quality_records_actual_model_even_when_existing_cost_gate_rejects_it(monkeypatch, tmp_path):
+    from scripts.experiments.agent_quality_comparison import RunArchive
+    archive=RunArchive(enabled=True,repo=tmp_path)
+    fake_sdk(monkeypatch,response=metered_response(model='different-returned-snapshot'))
+    requester=llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()),ledger=llm.TrialLedger(),
+                                 record_call=archive.record_call)
+    with pytest.raises(AgentError):
+        requester('instructions',{'text':'source'},{},'company_info')
+    event=json.loads((archive.path/'call_1_finished.json').read_text(encoding='utf-8'))
+    assert event['actual_model']=='different-returned-snapshot' and event['discarded']
+
+
 @pytest.mark.parametrize("partial", [False, True])
 def test_review_sdk_schema_requires_exact_coverage_and_one_block_per_finding(monkeypatch, partial):
     request = review_request()
@@ -7194,3 +7688,744 @@ def test_proposal_receives_per_item_numeric_tokens_and_actionable_rejection():
     assert caught.value.code == "AGENT_OUTPUT_INVALID"
     assert "숫자·날짜" in caught.value.message and "직접 편집" in caught.value.message
     assert request.document.model_dump() == before
+
+
+@pytest.mark.parametrize("repair", [True, False])
+def test_duplicate_body_fact_has_one_bounded_correction(repair):
+    request = build_editorial_request("manufacturing")
+    calls = []
+    def respond(instructions, payload, schema, name):
+        calls.append(payload)
+        result = editorial_response(payload)
+        if len(calls) == 1 or not repair:
+            result["pages"][0]["points"].append(copy.deepcopy(result["pages"][0]["points"][0]))
+        return result
+    agent = llm.LlmAgent(respond)
+    assert agent.draft(request).pages
+    if not repair:
+        assert any('반복' in n['reason'] for n in agent.review_notes)
+    assert len(calls) == 2
+    assert "validation_message" in calls[1]["correction"]
+    assert agent.draft_attempts[0]["status"] == "rejected"
+    assert agent.draft_attempts[1]["status"] == "accepted"
+
+
+@pytest.mark.parametrize("original,expected", [
+    ("정기 사후심사가 조건으로 기재되어 있다.", "정기 사후심사가 조건입니다."),
+    ("2025년 기준이며 현재 보유를 뜻하지 않는다.", "2025년 기준이며 현재 보유를 뜻하지 않습니다."),
+    ("납기는 4영업일이다. 운송은 포함하지 않는다.", "납기는 4영업일입니다. 운송은 포함하지 않습니다."),
+    ("내식성 향상을 보장할 수 없다.", "내식성 향상을 보장할 수 없습니다."),
+])
+def test_whole_fact_customer_style_keeps_numbers_conditions_and_negation(original, expected):
+    assert llm._customer_wording(original) == expected
+    assert "합니다/습니다/입니다" in legacy.load_draft_prompt(editorial=True)
+
+
+@pytest.mark.parametrize("value,held", [
+    ("내식성 72hr이나 시험 조건은 제시되지 않았다.", True),
+    ("실제 생산량 수치는 제시되어 있지 않다.", True),
+    ("2025년 인증이며 정기 사후심사가 유지 조건입니다.", False),
+    ("[시연] 운송 기간은 포함하지 않는다.", False),
+])
+def test_internal_review_holds_whole_claim_with_original_provenance(value, held):
+    request, fid = numeric_editorial_request(value, value)
+    facts = {f.fact_id: f for f in request.preflight.facts}
+    before = copy.deepcopy(facts)
+    ids, notes = llm._editorial_review_notes(facts)
+    assert (fid in ids) is held
+    assert facts == before
+    if held:
+        note = next(n for n in notes if n["fact_id"] == fid)
+        assert note["value"] == value and note["reason"] and note["evidence_refs"]
+
+
+@pytest.mark.parametrize("caption,expected", [("자료 사진", ""), ("선택 자료 사진", ""),
+    ("장비 — 용도 확인 필요", ""), ("아연도금 생산라인 — 처리조 사진", "아연도금 생산라인")])
+def test_specific_photo_caption_or_empty(caption, expected):
+    assert llm.LlmAgent._photo_caption({"caption": caption}) == expected
+
+
+def test_display_company_name_does_not_mutate_identity_or_original_facts():
+    request = build_editorial_request("manufacturing")
+    name = next(f.value for f in request.preflight.facts if f.field_key == "company_name")
+    before = copy.deepcopy(request)
+    agent = llm.LlmAgent(lambda i,p,s,n: editorial_response(p), display_company_name="(주)" + name)
+    result = agent.draft(request)
+    assert result.title == "(주)" + name
+    assert result.pages[0].blocks[0].content["text"] == result.title
+    assert request == before
+
+
+
+def test_repeated_point_label_is_removed_before_materializing_body():
+    request = build_editorial_request("manufacturing")
+    expected = {}
+    def respond(i,p,s,n):
+        result = editorial_response(p)
+        point = result["pages"][0]["points"][0]
+        expected.update(text=point["text"], fid=point["fact_ids"][0])
+        point["text"] = point["label"] + ": " + point["text"]
+        return result
+    result = llm.LlmAgent(respond).draft(request)
+    block = next(b for p in result.pages for b in p.blocks if b.type == "paragraph" and b.fact_ids == [expected["fid"]])
+    assert block.content["text"] == expected["text"]
+
+
+
+def test_editorial_checks_count_body_only_and_report_missing_metadata():
+    from scripts.experiments.agent_quality_comparison import editorial_checks
+    paragraph = {"type":"paragraph", "content":{"text":"아연도금: 조건입니다."}, "fact_ids":["F1"]}
+    doc={"pages":[{"blocks":[{"type":"heading", "content":{"text":"아연도금", "level":2},
+        "fact_ids":["F1"]}, paragraph, paragraph]}]}
+    result=editorial_checks(["자료에는 기재되어 있다. 제공합니다. 선택 자료 사진"],doc)
+    assert result["totals"] == {"source_description":2,"certificate_attribution":0,"plain_endings":1,"formal_endings":1,
+        "demo_footer":0,"generic_photo_caption":1,"mixed_endings":True,"formal_ratio":0.5,
+        "repeated_row_cells":1,"duplicate_body_fact_uses":1}
+    assert editorial_checks(["기재\n되어 있습니다."])["totals"]["source_description"]==1
+    assert editorial_checks([""])["totals"]["duplicate_body_fact_uses"] is None
+
+
+def test_reporting_metrics_separate_allowed_certificate_attribution():
+    from scripts.experiments.agent_quality_comparison import editorial_checks
+    allowed='인증서 기준 범위입니다. 인증서에 기재된 범위입니다. 인증서에 표시된 범위입니다.'
+    report='자료에는 소개 자료로 소개되어 기재되어 설명한다. 설명되어 제시한다. 열거되어 언급되어 말씀드립니다. 안내드립니다. 이력이 있습니다. 수록값 기준입니다.'
+    result=editorial_checks([allowed,report])
+    assert result['pages'][0]['source_description']==0
+    assert result['pages'][0]['certificate_attribution']==3
+    assert result['pages'][1]['source_description']==13
+    assert result['totals']['plain_endings']==2
+    assert result['totals']['formal_endings']==7
+
+
+@pytest.mark.parametrize("scope,mixed", [("real_only", False), ("real_only", True), ("include_demo", False)])
+def test_source_scope_inherits_all_fact_origins_and_excludes_virtual_text(scope, mixed):
+    request = build_editorial_request("manufacturing")
+    fact = next(f for f in request.preflight.facts if f.field_key == "lead_time")
+    original_ref = fact.evidence_refs[0].model_copy(deep=True)
+    source = copy.deepcopy(request.sources[0])
+    source.source_id, source.origin_kind = "virtual-source", "demo"
+    source.segments = [SegmentIn("virtual-segment", {"line_start": 1}, fact.value)]
+    fact.evidence_refs = [EvidenceRef(source_id=source.source_id, source_version=1,
+        segment_id="virtual-segment", locator={"line_start": 1}, excerpt=fact.value)]
+    if mixed:
+        fact.evidence_refs.append(original_ref)
+    request.sources.append(source)
+    before = copy.deepcopy(request)
+    seen = []
+    def respond(i, p, s, n):
+        seen.append(p)
+        visible = [f for f in p['facts'] if not f.get('source_scope_excluded')]
+        result = editorial_response({**p, 'facts': visible})
+        result['selections'] += [{'fact_id': f['fact_id'], 'disposition': 'excluded', 'reason': '출처 범위 제외'}
+                                 for f in p['facts'] if f.get('source_scope_excluded')]
+        return result
+    agent = llm.LlmAgent(respond, source_scope=scope)
+    result = agent.draft(request)
+    used = {fid for page in result.pages for block in page.blocks for fid in block.fact_ids}
+    assert (fact.fact_id in used) is (scope == "include_demo")
+    assert agent.fact_origins[fact.fact_id]['origin_kinds'] == (['demo', 'real'] if mixed else ['demo'])
+    assert bool(agent.used_demo_sources) is (scope == "include_demo")
+    if scope == "real_only":
+        assert not any(u['source_id'] == source.source_id for u in seen[0]['source_units'])
+        assert next(f for f in seen[0]['facts'] if f['fact_id'] == fact.fact_id)['value'] is None
+    else:
+        assert any('[시연]' in b.content.get('text', '') for p in result.pages for b in p.blocks)
+    assert request == before
+
+
+@pytest.mark.parametrize("candidate,accepted", [
+    ("한빛정공은 Al 시편에만 2~3미크론을 적용합니다. 5개 이하에서만 가능합니다.", True),
+    ("한빛정공은 Al 시편에 2~3미크론을 적용합니다. 5개 이하에서 가능합니다.", False),
+    ("다른정공은 Al 시편에만 2~3미크론을 적용합니다. 5개 이하에서만 가능합니다.", False),
+    ("한빛정공은 Al 시편에만 2~3을 적용합니다. 5개 이하에서만 가능합니다.", False),
+    ("한빛정공은 Al 시편에만 2~4미크론을 적용합니다. 5개 이하에서만 가능합니다.", False),
+])
+def test_rewritten_fact_falls_back_without_a_new_block(candidate, accepted):
+    original = "한빛정공은 Al 시편에만 2~3미크론을 적용한다. 5개 이하에서만 가능하다."
+    fact = Fact(fact_id="f",field_key="technology",status="supported",value=original)
+    audit=[]
+    result=llm._fact_prose(fact,candidate,audit)
+    assert result == (candidate if accepted else '한빛정공은 Al 시편에만 2~3미크론을 적용합니다. 5개 이하에서만 가능합니다.')
+    assert audit[0]['fallback'] is not accepted
+    assert fact.value == original
+
+
+def test_draft_wire_requests_rewritten_fact_text_and_cleans_photo_scaffolding():
+    seen=[]
+    def response(i,p,s,n):
+        seen.append(s)
+        return editorial_response(p)
+    llm.LlmAgent(response).draft(build_editorial_request('manufacturing'))
+    fields=seen[0]['$defs']['_EditorialFactPoint']
+    assert fields['required']==['label','fact_id','text']
+    assert llm.LlmAgent._photo_caption({'caption':'소개서의 생산라인과 처리조를 합친 이미지'})=='생산라인과 처리조'
+
+
+@pytest.mark.parametrize("original,kept,removed", [
+    ("가상 시편의 보호처리 용도이다. 내식성 72hr이나 시험 조건은 제시되지 않았다.", "가상 시편의 보호처리", "72hr"),
+    ("가상 시편, 표면 내식성(72hr), 청색 외관이다.", "가상 시편", "72hr"),
+    ("ISO 14001:2015 범위는 표면처리이다. 최초승인일 2040년 4월 19일과 2040년 4월 3일이 서로 다르게 기재되어 있다. 만료일은 2043년 6월 18일이다.", "2043년 6월 18일", "2040년"),
+    ("2039년 가상 공정 승인 이력이 있다. 이는 현재 거래 실적을 뜻하지 않는다.", "2039년 가상 공정 승인 이력", "현재 거래 실적"),
+])
+def test_review_notes_remove_only_the_ambiguous_span(original, kept, removed):
+    fact = Fact(fact_id="f",field_key="technology",status="supported",value=original)
+    held, notes = llm._editorial_review_notes({'f':fact})
+    assert 'f' not in held and kept in notes[0]['body_value']
+    assert removed not in notes[0]['body_value']
+    assert removed in str(notes[0]['removed_spans'])
+    assert fact.value==original
+
+
+def test_optional_lead_has_no_empty_paragraph_and_keeps_fact_coverage():
+    def respond(i,p,s,n):
+        result=editorial_response(p)
+        page=result['pages'][0]
+        page['points'].insert(0,{'label':'주요 사업',**page['lead']})
+        page['lead']=None
+        return result
+    result=llm.LlmAgent(respond).draft(build_editorial_request('manufacturing'))
+    assert all(b.content.get('text','').strip() for p in result.pages for b in p.blocks)
+    assert result.pages[0].blocks[1].type=='heading'
+
+
+def test_semantic_containment_uses_original_spans_and_preserves_extra_conditions():
+    request=build_editorial_request('manufacturing')
+    ref=request.preflight.facts[0].evidence_refs
+    def fact(fid,value):return Fact(fact_id=fid,field_key='capabilities',status='supported',value=value,evidence_refs=ref)
+    richer=fact('a','아연도금 전용라인 보유, 주요 품목 소재 Al·Fe·Cu입니다.')
+    repeated=fact('b','아연도금 전용라인 보유가 자료에 기재되어 있다.')
+    limited=fact('c','아연도금 전용라인은 Al에만 적용합니다.')
+    duplicates=llm._semantic_duplicates({'a':richer,'b':repeated,'c':limited},set(),set())
+    assert duplicates=={'b':'a'}
+    assert llm._semantic_duplicates({'a':richer,'b':repeated},{'b'},set())=={}
+
+
+@pytest.mark.parametrize('heading,source,allowed', [
+    ('1999·2003', '1999 | 사업 시작 2003 | 법인 설립', True),
+    ('2023', '2023 | 전문기업확인서', True),
+    ('2024', '2023 | 전문기업확인서', False),
+    ('2023', '품번 2023', True),
+    ('코드 2023', '2023년 설립', True),
+    ('2023', '수량 2023개', True),
+    ('1991–1997년', '1991 회사 설립\n1997 ISO 9001 인증', True),
+    ('1991~1997년', '1991년 회사 설립\n1997 ISO 9001 인증', True),
+    ('1991–1998년', '1991 회사 설립\n1997 ISO 9001 인증', False),
+])
+def test_heading_numeric_values_do_not_depend_on_calendar_typography(heading, source, allowed):
+    assert (not (validation.numeric_evidence_tokens(heading, year_heading=True)
+                 - validation.numeric_evidence_tokens(source))) is allowed
+
+
+@pytest.mark.parametrize('values,expected', [
+    (['1997 ISO 9001 인증'], '1997년'),
+    (['1991년 회사 설립', '1997 ISO 9001 인증'], '1991–1997년'),
+    (['1997년 ISO 9001:2015 인증 이력'], '1997년'),
+    (['회사 설립 이력'], '연혁'),
+])
+def test_history_subheading_is_derived_only_from_selected_facts(values, expected):
+    facts = [Fact(fact_id=str(i), field_key='history', status='supported', value=v)
+             for i, v in enumerate(values)]
+    assert llm._history_heading(facts) == expected
+
+
+def test_rewrite_still_rejects_added_numbers_without_relying_on_year_types():
+    original = '가상시험 규격은 AMS 4801 Method 2, KDS 규격 및 KS W 규격입니다.'
+    added = original.replace('KDS 규격', 'KDS 0991-0084 규격').replace('KS W 규격', 'KS W 2298 규격')
+    assert 'numeric_unit_date' in llm._rewrite_gaps(original, added)
+
+
+def test_model_history_label_is_replaced_before_numeric_grounding():
+    request, fid = numeric_editorial_request('연혁\n1991 회사 설립\n1997 ISO 9001 인증',
+                                             '1997 ISO 9001 인증')
+    next(f for f in request.preflight.facts if f.fact_id == fid).field_key = 'history'
+    request.brief.required_fields = ['history']
+    def respond(i, p, s, n):
+        result = editorial_response(p)
+        for page in result['pages']:
+            for point in page['points']:
+                if point['fact_ids'] == [fid]:
+                    point['label'] = '1999–2099년'
+        return result
+    result = llm.LlmAgent(respond).draft(request)
+    labels = [b.content['text'] for p in result.pages for b in p.blocks
+              if b.type == 'heading' and b.content.get('level') == 2 and b.fact_ids == [fid]]
+    assert labels == ['1997년']
+
+
+@pytest.mark.parametrize('original,rewritten,allowed', [
+    ('ISO 9001-00987654-1', 'ISO 9001-00987654-1', True),
+    ('ISO 9001-00987654-1', 'ISO9001 - 00987654 - 1', True),
+    ('ISO 9001-00987654-1', '9001-00987654-1', False),
+    ('ISO 9001-00987654-1', 'ISO 9001:2015 및 9001-00987654-1', False),
+    ('ISO 9001-00987654-1', 'XISO 9001-00987654-1', False),
+    ('AS9100-00987654', 'AS9100-00987654', True),
+    ('AS9100-00987654', 'AS9100 및 00987654', False),
+    ('KSPC-2041-0014', 'KSPC-2041-0015', False),
+    ('EX0042-AB-CD', 'EX0042-CD-AB', False),
+    ('EX0042-AB-CD', 'EX0042-AB-CD', True),
+    ('MIL-PRF-8625 TY II', 'MIL-PRF-8625 TY II', True),
+    ('MIL-PRF-8625 TY II', 'MIL-PRF-8625 TY III', False),
+    ('MIL-PRF-8625 TY II', 'MIL-PRF-8625 및 TY II', False),
+    ('인증서 ISO 9001:2015', 'ISO9001:2015 인증서', True),
+    ('등록번호 제10-7654321호', '등록번호 제10-7654322호', False),
+    ('KSPC 범위 731-4 및 731-5', 'KSPC 731-4 및 KSPC 731-5', True),
+    ('승인번호는 00987654', '승인번호는 987654', False),
+    ('ISO 9001 – 00987654-1', 'ISO 9001-00987654-1', True),
+])
+def test_atomic_identifier_retains_prefix_revision_and_type(original, rewritten, allowed):
+    gaps = [g for g in llm._rewrite_gaps(original, rewritten) if g.startswith('identifier:')]
+    assert bool(gaps) is not allowed
+
+
+def test_changed_identifier_falls_back_and_cannot_pass_legacy_body_gate():
+    original='ISO 9001:2015 인증 승인번호는 ISO 9001-00987654-1입니다.'
+    changed=original.replace('는 ISO 9001-', '는 9001-')
+    fact=Fact(fact_id='cert',field_key='certifications',status='supported',value=original)
+    audit=[]
+    assert llm._fact_prose(fact,changed,audit)==original
+    assert audit[0]['fallback'] and 'identifier:ISO9001-00987654-1' in audit[0]['missing']
+    assert ('identifier','ISO9001-00987654-1') in llm._editorial_body_gaps({'cert':fact},{'cert':[changed]})['cert']['missing_numeric_tokens']
+    assert not llm._editorial_body_gaps({'cert':fact},{'cert':[original]})
+
+
+@pytest.mark.parametrize('repair_succeeds', [True, False])
+def test_rewrite_quality_repair_once_then_keep_safe_fallback_without_block(repair_succeeds):
+    request=build_editorial_request('manufacturing')
+    fact=next(f for f in request.preflight.facts if f.field_key=='products_services')
+    fact.value='한빛부품을 보유한다고 기재되어 있다.'
+    fact.evidence_refs[0].excerpt=fact.value
+    next(s for s in request.sources[0].segments if s.segment_id==fact.evidence_refs[0].segment_id).text=fact.value
+    seen=[]
+    def respond(i,p,s,n):
+        seen.append(p)
+        plan=indexed_editorial_composition(editorial_response(p))
+        for page in plan['pages']:
+            for point in page['points']:
+                point['fact_id']=point.pop('fact_ids')[0]
+                if point['fact_id']==fact.fact_id:
+                    point['text']=('한빛부품을 보유하고 있습니다.' if len(seen)>1 and repair_succeeds
+                                   else '보유하고 있습니다.')
+        return plan
+    agent=llm.LlmAgent(respond)
+    result=agent.draft(request)
+    assert len(seen)==2 and seen[1]['correction']['maximum_corrections']==1
+    assert agent.draft_attempts[0]['rule']=='rewrite_quality'
+    assert agent.draft_attempts[1]['status']=='accepted'
+    texts=[b.content['text'] for p in result.pages for b in p.blocks
+           if b.type=='paragraph' and b.fact_ids==[fact.fact_id]]
+    assert texts==(['한빛부품을 보유하고 있습니다.'] if repair_succeeds else [])
+    assert any('다시 쓰기 실패' in n['reason'] for n in agent.review_notes) is not repair_succeeds
+    assert fact.value=='한빛부품을 보유한다고 기재되어 있다.'
+
+
+@pytest.mark.parametrize('original,rewritten', [
+    ('피막을 형성해 기공을 메우는 처리이다.', '피막을 형성하며 기공을 메웁니다.'),
+    ('금속의 부식을 막는다고 설명한다.', '금속의 부식을 막습니다.'),
+    ('MIL-DTL-5541 Type II를 Al에만 2~3미크론 적용한다.', 'Al에만 MIL-DTL-5541 Type II를 2~3미크론 적용합니다.'),
+])
+def test_rewrite_accepts_conjugation_without_protecting_ordinary_korean_words(original, rewritten):
+    assert llm._rewrite_gaps(original, rewritten) == []
+
+
+@pytest.mark.parametrize('original,rewritten', [
+    ('승인번호 00987654-1이다.', '승인번호 00987654과 1입니다.'),
+    ('MIL-DTL-5541이다.', 'MIL-DTL-5542입니다.'),
+    ('5개 미만에만 적용한다.', '5개 이하에 적용합니다.'),
+])
+def test_rewrite_still_protects_identifiers_and_conditions(original, rewritten):
+    assert llm._rewrite_gaps(original, rewritten)
+
+
+def test_formal_fallback_only_changes_sentence_endings():
+    text = '자료에는 메우는 처리라고 설명한다. 기재되어 있다. 적용 가능하다. 실시한다.'
+    assert llm._formal_sentence_endings(text) == '자료에는 메우는 처리라고 설명합니다. 기재되어 있습니다. 적용 가능합니다. 실시합니다.'
+
+
+def test_semantic_selection_skips_same_claim_with_different_ids_and_evidence_subsets():
+    refs=build_editorial_request('manufacturing').preflight.facts[0].evidence_refs
+    def fact(fid, value, extra=False):
+        evidence=refs + ([refs[0].model_copy(update={'segment_id':'extra'})] if extra else [])
+        return Fact(fact_id=fid,field_key='capabilities',status='supported',value=value,evidence_refs=evidence)
+    facts={f.fact_id:f for f in [
+        fact('full','가상시험실에서 시료 확인 및 작업 상태 점검을 수행해 작업 안정성을 확보한다고 소개되어 있다.'),
+        fact('repeat','가상시험실에서 각종 시료 확인과 작업 상태 점검을 수행한다고 소개되어 있다.'),
+        fact('limited','가상시험실에서 Al에만 시료 확인과 작업 상태 점검을 수행한다.'),
+        fact('numeric','가상시험실에서 5개 이하 시료 확인과 작업 상태 점검을 수행한다.'),
+    ]}
+    assert llm._semantic_duplicates(facts,set(),set())=={'repeat':'full'}
+    equipment=fact('equipment','가상시험실의 시료 확인 및 작업 상태 점검과 작업 안정성 설비·계측기로 가상측정기A, 가상측정기B, 가상측정기C, 가상측정기D, 가상측정기E가 열거되어 있다.', True)
+    assert llm._semantic_duplicates({'full':facts['full'],'equipment':equipment},set(),set())=={'full':'equipment'}
+
+@pytest.mark.parametrize('repair', [True, False])
+def test_certificate_preservation_supplement_once_and_keep_initial_facts(repair):
+    source = SourceIn('s', 1, 'registered', 'certificate', 'complete', [SegmentIn('seg', {'page': 1},
+        'Certificate of Registration\nISO 14001:2015\n소재지: 서울시 샘플로 101-9\n만료일자: 2043년 06월 18일')])
+    index = llm.SourceIndex([source])
+    evidence = [{'source_id': 's', 'locator': 'segment:seg', 'quote': source.segments[0].text}]
+    info = {k: {'status': 'not_found', 'facts': []} for k in legacy.COMPANY_INFO_KEYS}
+    info['certifications'] = {'status': 'supported', 'facts': [{'text': 'ISO 14001:2015 인증', 'evidence': evidence}]}
+    initial = llm.LlmAgent._facts(legacy.assign_fact_ids(info), index)
+    before = [f.model_dump() for f in initial]
+    calls=[]
+    def respond(i,p,s,n):
+        calls.append(p)
+        result=copy.deepcopy(info)
+        if repair: result['certifications']['facts'][0]['text'] = 'ISO 14001:2015 인증 사업장은 샘플로 101-9, 만료일은 2043년 6월 18일입니다.'
+        return result
+    agent=llm.LlmAgent(respond)
+    result=agent._supplement_preservation(AnalyzeRequest('s',1,Brief(target_company='회사', purpose='소개'),[source]),index,initial,respond)
+    assert len(calls)==1 and calls[0]['preservation_requirements']
+    assert [f.model_dump() for f in result[:len(before)]]==before
+    reviews=[f for f in result if (f.conditions or {}).get('preservation_review')]
+    assert bool(reviews) is not repair
+    assert all(f.status=='needs_confirmation' and f.evidence_refs[0].locator=={'page':1} for f in reviews)
+    assert all(i.severity=='warning' for i in agent._issues(reviews) if i.code=='UNSUPPORTED_CLAIM')
+    assert agent.extraction_preservation['attempts']==1
+
+
+def test_certificate_requirements_do_not_borrow_other_source_or_read_date_as_code():
+    units=[{'source_id':'s','locator':'segment:a','text':'Certificate of Approval\nAS9100 - 17 May 2042\nExpiry date: 16 July 2044'}]
+    candidates=validation.preservation_candidates(units)
+    assert [c['kind'] for c in candidates]==['expiry']
+    other=Fact(fact_id='x',field_key='certifications',status='supported',value='2044년 7월 16일',
+        evidence_refs=[EvidenceRef(source_id='other',source_version=1,segment_id='b',locator={'page':1},excerpt='2044년 7월 16일')])
+    assert validation.missing_preservation(candidates,[other])
+    other.evidence_refs[0].source_id='s'
+    assert validation.missing_preservation(candidates,[other])==[]
+
+
+def test_certificate_preservation_accepts_bilingual_scope_and_shared_code_prefix():
+    unit={'source_id':'s','locator':'segment:a','text':'KSPC Certificate\nKSPC 731-4(가상검사A)\nKSPC 731-5(가상검사B)\n인증범위: anodizing and zinc plating'}
+    c=validation.preservation_candidates([unit])
+    fact=Fact(fact_id='x',field_key='certifications',status='supported',value='KSPC 731-4, 731-5 범위는 양극산화 및 아연도금입니다.',
+        evidence_refs=[EvidenceRef(source_id='s',source_version=1,segment_id='a',locator={'page':1},excerpt=unit['text'])])
+    assert validation.missing_preservation(c,[fact])==[]
+
+@pytest.mark.parametrize('a,b', [
+ ('4·12·24미크론', '4미크론, 12미크론, 24미크론'),
+ ('4,12,24미크론', '4미크론, 12미크론, 24미크론'),
+ ('4/12/24μm', '4um, 12㎛, 24미크론'),
+ ('2~3미크론', '2미크론~3미크론'),
+ ('4·12·24미크론 적용', '4μm·12μm·24μm 적용'),
+])
+def test_unit_list_expansion_preserves_same_values(a,b):
+    assert validation.quantity_tokens(a)==validation.quantity_tokens(b)
+    assert llm._rewrite_gaps(a,b)==[]
+
+
+def test_quantity_list_does_not_accept_changed_value_unit_or_thousands_split():
+    assert validation.quantity_tokens('1,000kg')=={('1000','kg')}
+    for changed in ['4미크론, 12미크론, 25미크론', '4mm, 12mm, 24mm']:
+        assert llm._rewrite_gaps('4·12·24미크론',changed)
+
+
+def test_process_list_candidates_are_source_segment_bound_and_supplement_combined():
+    units=[{'source_id':'s','locator':'segment:a','text':'두께 <4미크론/12미크론/24미크론>'},
+           {'source_id':'s','locator':'segment:b','text':'공법 <가상전처리법, 가상후처리법 등이 있음>'}]
+    candidates=validation.preservation_candidates(units)
+    assert {c['kind'] for c in candidates}=={'quantity_list','method_list'}
+    ref=EvidenceRef(source_id='s',source_version=1,segment_id='b',locator={'slide':15},excerpt=units[1]['text'])
+    fact=Fact(fact_id='x',field_key='processes',status='supported',value='가상전처리법, 가상후처리법, 4·12·24미크론',evidence_refs=[ref])
+    assert [c['kind'] for c in validation.missing_preservation(candidates,[fact])]==['quantity_list']
+    assert llm._rewrite_gaps('가상전처리법·가상후처리법을 적용합니다.', '가상전처리법을 적용합니다.')==['method:가상후처리법']
+
+
+def test_failed_rewrite_preserves_independent_good_sentence_only():
+    source='승인번호 ISO 9001-00987654-1입니다. 5미크론을 적용합니다.'
+    candidate='승인번호 9001-00987654-1입니다. 5미크론을 적용합니다.'
+    kept,removed=llm._verified_rewrite_sentences(source,candidate)
+    assert kept=='5미크론을 적용합니다.' and removed==['승인번호 9001-00987654-1입니다.']
+
+
+def test_numbered_purpose_requires_rust_prevention_and_keeps_negation():
+    source='크롬도금의 목적은 1)금속 표면이 녹슬지 않고 광택을 띠게 하는 것 2)마모에 강하게 하는 것입니다.'
+    units=[{'source_id':'s','locator':'segment:a','text':source}]
+    assert next(c for c in validation.preservation_candidates(units) if c['kind']=='purpose_list')['tokens']==['gloss','rust_prevention','wear_resistance']
+    assert 'purpose:rust_prevention' in llm._rewrite_gaps('녹 방지, 광택과 내마모성을 제공합니다.', '광택과 내마모성을 제공합니다.')
+
+
+def test_quarantining_identifier_sentence_does_not_create_new_duplicate_block():
+    request=build_editorial_request('manufacturing')
+    targets=[f for f in request.preflight.facts if f.field_key in {'products_services','lead_time'}][:2]
+    assert len(targets)==2
+    for f,code in zip(targets,['ISO 14001:2015','ISO 45001:2018']):
+        f.value=code+' 인증입니다. 5미크론을 적용합니다.'
+        f.evidence_refs[0].excerpt=f.value
+        next(s for s in request.sources[0].segments if s.segment_id==f.evidence_refs[0].segment_id).text=f.value
+    def respond(i,p,s,n):
+        plan=indexed_editorial_composition(editorial_response(p))
+        for page in plan['pages']:
+            for point in page['points']:
+                point['fact_id']=point.pop('fact_ids')[0]
+                if point['fact_id'] in {f.fact_id for f in targets}:
+                    point['text']='인증입니다. 5미크론을 적용합니다.'
+        return plan
+    a=llm.LlmAgent(respond)
+    result=a.draft(request)
+    assert len(a.draft_attempts)==2 and a.draft_attempts[-1]['status']=='accepted'
+    assert sum(b.content.get('text')=='5미크론을 적용합니다.' for p in result.pages for b in p.blocks)==1
+    assert sum(bool(n.get('removed_sentences')) for n in a.review_notes)==2
+
+
+def test_cycle_budget_uses_measured_cumulative_cost_and_no_reservation():
+    from scripts.experiments.agent_quality_comparison import CycleBudget, BudgetStop
+    g=CycleBudget({'company_info':'0.01','draft_sections':'0.01'})
+    assert g.snapshot()['reservation_usd']=='0' and g.snapshot()['spent_usd']=='0'
+    g({'event':'prepared','schema_name':'company_info'})
+    assert g.snapshot()['spent_usd']=='0'
+    g({'event':'finished','schema_name':'company_info','ledger':{'records':[{'estimated_cost_usd':'0.02'}]}})
+    g({'event':'finished','schema_name':'draft_sections','ledger':{'records':[{'estimated_cost_usd':None}]}})
+    assert Decimal(g.snapshot()['spent_usd'])==Decimal('0.03') and g.estimated_usage_calls==1
+    g({'event':'finished','schema_name':'draft_sections','ledger':{'records':[{'estimated_cost_usd':'0.5'}]}})
+    assert g.stopped and g.reason=='forecast_exceeds_cap'
+    with pytest.raises(BudgetStop):g({'event':'prepared','schema_name':'company_info'})
+
+
+def test_cycle_budget_bounds_supplements_and_repairs():
+    from scripts.experiments.agent_quality_comparison import CycleBudget, BudgetStop
+    g=CycleBudget({'company_info':'0.001','draft_sections':'0.001'})
+    for _ in range(6):g({'event':'finished','schema_name':'company_info','ledger':{'records':[{'estimated_cost_usd':'0.001'}]}})
+    with pytest.raises(BudgetStop):g({'event':'prepared','schema_name':'company_info'})
+    g({'event':'prepared','schema_name':'draft_sections'})
+
+
+def test_labelled_calendar_is_not_three_independent_quantity_mismatches():
+    assert validation.subject_value_findings('만료일자: 2043년 6월 18일', ['만료일자: 2043/06/18일'])==[]
+    assert validation.numeric_evidence_tokens('2043년 6월 18일')==validation.numeric_evidence_tokens('2043/06/18일')
+
+
+def test_companion_group_uses_certificate_source_and_process_primary_subject():
+    request = build_editorial_request('manufacturing')
+    source = request.sources[0]
+    values = [('certifications', '인증서: 인증A'), ('certifications', '유지 조건은 매년 심사입니다.'),
+              ('processes', '크로메이트는 알루미늄 후처리이며 아연도금 이후 처리와 구별됩니다.'),
+              ('processes', '아연도금, 크로메이트, 부동태를 제공합니다.')]
+    facts = {}
+    for i, (field, value) in enumerate(values):
+        seg = SegmentIn('comp' + str(i), {'page': 1}, value)
+        source.segments.append(seg)
+        facts[str(i)] = Fact(fact_id=str(i), field_key=field, status='supported', value=value,
+            evidence_refs=[EvidenceRef(source_id=source.source_id, source_version=1,
+                segment_id=seg.segment_id, locator=seg.locator, excerpt=value)])
+    groups = llm._editorial_companion_groups(facts, llm.SourceIndex(request.sources))
+    assert next(g for g in groups if g['subject']=='인증 조건')['fact_ids']==['0','1']
+    chromate = next(g for g in groups if g['subject']=='크로메이트')
+    assert chromate['fact_ids']==['2'] and chromate['trigger_fact_ids']==['2','3']
+
+
+def test_missing_process_companion_gets_one_repair_then_source_fact_restoration():
+    request = build_editorial_request('manufacturing')
+    target = next(f for f in request.preflight.facts if f.field_key=='products_services')
+    target.value = '크롬도금을 제공합니다.'
+    target.evidence_refs[0].excerpt = target.value
+    next(s for s in request.sources[0].segments if s.segment_id==target.evidence_refs[0].segment_id).text=target.value
+    ref = target.evidence_refs[0].model_copy(deep=True)
+    ref.excerpt = '크롬도금은 녹 방지와 내마모성 용도입니다.'
+    ref.segment_id = 'companion_rust'
+    request.sources[0].segments.append(SegmentIn(ref.segment_id, ref.locator, ref.excerpt))
+    extra=Fact(fact_id='companion_rust',field_key='processes',value=ref.excerpt,status='supported',evidence_refs=[ref])
+    request.preflight.facts.append(extra)
+    def respond(i,p,s,n):
+        response=editorial_response(p)
+        response['pages'][0]['points']=[x for x in response['pages'][0]['points'] if extra.fact_id not in x['fact_ids']]
+        return response
+    agent=llm.LlmAgent(respond)
+    result=agent.draft(request)
+    assert len(agent.draft_attempts)==2
+    assert any(extra.fact_id in b.fact_ids and '녹 방지' in b.content.get('text','') for p in result.pages for b in p.blocks)
+    assert any('복원' in n['reason'] for n in agent.review_notes)
+
+
+def test_unused_null_metadata_gets_one_repair_then_local_exclusion():
+    request=build_editorial_request('manufacturing')
+    target=next(f for f in request.preflight.facts if f.field_key=='history')
+    def respond(i,p,s,n):
+        result=indexed_editorial_composition(editorial_response(p))
+        for page in result['pages']:
+            page['points']=[point for point in page['points'] if target.fact_id not in point.get('fact_ids',[])]
+        result['fact_notes'][target.fact_id]=None
+        return result
+    agent=llm.LlmAgent(respond)
+    result=agent.draft(request)
+    assert len(agent.draft_attempts)==2 and agent.draft_attempts[0]['rule']=='missing_unused_reason'
+    assert result.pages and any('미사용 상태' in n['reason'] for n in agent.review_notes)
+    assert not any(target.fact_id in b.fact_ids for p in result.pages for b in p.blocks)
+
+
+def test_saved_comparison_enters_before_any_paid_setup(monkeypatch, tmp_path):
+    from scripts.experiments import agent_quality_comparison as q
+    calls = []
+    monkeypatch.setattr(q, 'render_saved_comparison', lambda source, out: calls.append((source, out)))
+    monkeypatch.setattr(q, 'load_registered', lambda *a, **k: pytest.fail('offline mode read live sources'))
+    monkeypatch.setattr(q.agent_llm, 'LlmOptions', lambda *a, **k: pytest.fail('offline mode requested a model'))
+    q.main(['--saved-manifest', str(tmp_path/'input.json'), '--saved-output', str(tmp_path/'baseline')])
+    assert calls == [(tmp_path/'input.json', tmp_path/'baseline')]
+
+
+@pytest.mark.parametrize('condition', ['supported', 'other_location', 'unconfirmed', 'missing_id', 'other_subject'])
+def test_photo_caption_requires_fact_and_photo_location(condition):
+    from types import SimpleNamespace
+    from app.agent_llm import grounded_photo_captions
+    from app.models import Block, Page, Fact, EvidenceRef
+    ref = EvidenceRef(source_id='s', source_version=1, segment_id='seg', locator={'page':2}, excerpt='시험 설비에는 측정시험기가 있습니다.')
+    fact = Fact(fact_id='f', field_key='equipment', value='측정시험기를 갖추고 있습니다.',
+                status='needs_confirmation' if condition=='unconfirmed' else 'supported', evidence_refs=[ref])
+    page = Page(page_id='p', title='시험 설비', layout_key='text_photo', blocks=[
+        Block(block_id='h',type='heading',content={'level':2,'text':'시험 설비'}),
+        Block(block_id='b',type='paragraph',content={'text':'측정시험기를 갖추고 있습니다.'},fact_ids=['f'],evidence_refs=[ref]),
+        Block(block_id='photo',type='image',content={'asset_id':'a','caption':'운반설비' if condition=='other_subject' else '측정시험기'})])
+    source = SimpleNamespace(source_id='s',source_version=1,asset_ids=['a'],asset_locators={'a':{'page':3 if condition=='other_location' else 2}})
+    before = page.model_dump()
+    pages, audit = grounded_photo_captions([page], {} if condition=='missing_id' else {'f':fact}, [source])
+    assert page.model_dump() == before
+    if condition == 'supported':
+        assert pages[0].blocks[-1].content['caption'] == '측정시험기\n관련 항목: 시험 설비'
+        assert pages[0].blocks[-1].fact_ids == ['f'] and pages[0].blocks[-1].evidence_refs == [ref]
+        assert audit[0]['body_block_id'] == 'b'
+        assert grounded_photo_captions(pages, {'f':fact}, [source]) == (pages, [])
+    else:
+        assert pages == [page] and audit == []
+
+
+@pytest.mark.parametrize('wire,repair', [('legacy', False), ('rewritten', False), ('rewritten', True)])
+def test_draft_redundancy_audit_is_separate_from_rewrite_feedback(wire, repair):
+    request = build_editorial_request('manufacturing')
+    first = '회사 시험실에서 각종 성분 분석을 실시해 품질을 확인합니다.'
+    second = '시험실에서는 성분 분석을 실시하며, 측정기 A와 B를 사용합니다.'
+    source = request.sources[0]
+    segment = SegmentIn('seg_shared_lab', {'page': 10}, first + ' ' + second)
+    source.segments.append(segment)
+    ref = EvidenceRef(source_id=source.source_id, source_version=1,
+                      segment_id=segment.segment_id, locator=segment.locator, excerpt=segment.text)
+    for fid, value in [('lab_activity', first), ('lab_equipment', second)]:
+        request.preflight.facts.append(Fact(fact_id=fid, field_key='capabilities', value=value,
+                                           status='supported', evidence_refs=[ref]))
+    product = next(f for f in request.preflight.facts if f.field_key == 'products_services')
+    if repair:
+        product.value = '한빛부품을 보유한다고 기재되어 있다.'
+        product.evidence_refs[0].excerpt = product.value
+        next(s for s in source.segments if s.segment_id == product.evidence_refs[0].segment_id).text = product.value
+    original_facts = [f.model_dump() for f in request.preflight.facts]
+    calls = []
+
+    def respond(instructions, payload, schema, name):
+        calls.append(payload)
+        plan = editorial_response(payload)
+        if wire == 'rewritten':
+            plan = indexed_editorial_composition(plan)
+            for page in plan['pages']:
+                for point in page['points']:
+                    point['fact_id'] = point.pop('fact_ids')[0]
+                    if repair and point['fact_id'] == product.fact_id:
+                        point['text'] = ('보유하고 있습니다.' if len(calls) == 1
+                                         else '한빛부품을 보유하고 있습니다.')
+        return plan
+
+    agent = llm.LlmAgent(respond)
+    for _ in range(2):  # Reusing the instance must not retain the previous draft's audit.
+        calls.clear()
+        result = agent.draft(request)
+        assert len(calls) == (2 if repair else 1)
+        assert agent.draft_attempts[-1]['status'] == 'accepted'
+        if repair:
+            assert agent.draft_attempts[0]['rule'] == 'rewrite_quality'
+            assert calls[1]['correction']['maximum_corrections'] == 1
+        assert len(agent.redundancy_audit) == 1
+        event = agent.redundancy_audit[0]
+        assert event['before'] == second
+        assert event['after'] == '시험실에서는 측정기 A와 B를 사용합니다.'
+        assert event['origin'] == 'grounded_redundancy'
+        blocks = {b.block_id: b for p in result.pages for b in p.blocks}
+        owner, edited = blocks[event['owner_block_id']], blocks[event['block_id']]
+        assert owner.content['text'] == first and edited.content['text'] == event['after']
+        assert owner.fact_ids == ['lab_activity', 'lab_equipment']
+        assert edited.fact_ids == ['lab_equipment']
+        assert owner.evidence_refs == edited.evidence_refs == [ref]
+        assert all({'fallback', 'fact_id', 'missing'} <= row.keys() for row in agent.rewrite_audit)
+        assert all(row.get('origin') != 'grounded_redundancy' for row in agent.rewrite_audit)
+        assert not llm._rewrite_feedback(result.pages, agent.rewrite_audit)
+        assert not any(note.get('withheld_from_body') for note in agent.review_notes)
+        assert [f.model_dump() for f in request.preflight.facts] == original_facts
+
+
+@pytest.mark.parametrize('case', ['same', 'other_subject', 'condition', 'negative', 'disjoint', 'unconfirmed', 'different_object', 'different_date'])
+def test_redundant_clause_keeps_subject_tail_and_evidence(case):
+    from app.agent_llm import remove_grounded_redundant_clauses
+    from app.models import Block, Page, Fact, EvidenceRef
+    ref = EvidenceRef(source_id='s',source_version=1,segment_id='x',locator={'page':1},excerpt='시험실에서 성분 분석을 실시하며 측정기 A를 사용합니다.')
+    second_ref = ref.model_copy(update={'segment_id':'different'}) if case=='disjoint' else ref
+    first = '회사 시험실에서 각종 성분 분석을 실시해 품질을 확인합니다.'
+    second = '시험실에서는 성분 분석을 실시하며, 측정기 A와 B를 사용합니다.'
+    if case=='other_subject': second=second.replace('시험실','협력사')
+    if case=='negative': first=first.replace('실시해','실시하지 않고')
+    if case=='condition': second=second.replace('성분 분석','승인 후 성분 분석')
+    if case=='different_object': second=second.replace('성분','표면')
+    if case=='different_date': second=second.replace('성분 분석','2025년 성분 분석')
+    facts={fid:Fact(fact_id=fid,field_key='quality',value=value,status='needs_confirmation' if case=='unconfirmed' and fid=='b' else 'supported',evidence_refs=[r])
+           for fid,value,r in [('a',first,ref),('b',second,second_ref)]}
+    page=Page(page_id='p',title='검사',layout_key='text',blocks=[
+        Block(block_id=fid,type='paragraph',content={'text':value},fact_ids=[fid],evidence_refs=[r])
+        for fid,value,r in [('a',first,ref),('b',second,second_ref)]])
+    before=page.model_dump()
+    pages,audit=remove_grounded_redundant_clauses([page],facts)
+    assert page.model_dump()==before
+    if case=='same':
+        assert pages[0].blocks[0].content['text']==first
+        assert pages[0].blocks[1].content['text']=='시험실에서는 측정기 A와 B를 사용합니다.'
+        assert pages[0].blocks[0].fact_ids==['a','b'] and pages[0].blocks[1].fact_ids==['b']
+        assert all(b.evidence_refs==[ref] for b in pages[0].blocks)
+        assert audit[0]['owner_block_id']=='a'
+        assert remove_grounded_redundant_clauses(pages,facts)==(pages,[])
+    else:
+        assert pages==[page] and audit==[]
+
+
+def test_occupancy_is_diagnostic_and_does_not_change_layout_result():
+    from types import SimpleNamespace
+    from scripts.experiments.agent_quality_comparison import layout_diagnostics
+    result = SimpleNamespace(layout_ok=True, details={'measure': {'limit_px': 1000,
+        'pages': [{'height_px': 999, 'min_body_font_pt': 11}, {'height_px': 850, 'min_body_font_pt': 11}]}})
+    assert layout_diagnostics(result) == {'page_occupancy': [.999, .85], 'body_peak': .85,
+                                         'body_over_80': 1, 'minimum_body_pt': 11}
+    assert result.layout_ok is True
+
+
+@pytest.mark.parametrize('duration', ['72hr', '96시간', '12.5hr'])
+def test_review_notes_use_corrosion_duration_without_a_company_specific_value(duration):
+    original = f'가상 시편, 내식성({duration}), 청색 외관입니다.'
+    fact = Fact(fact_id='f', field_key='technology', status='supported', value=original)
+    held, notes = llm._editorial_review_notes({'f': fact})
+    assert not held
+    assert notes[0]['body_value'] == '가상 시편, 내식성, 청색 외관입니다.'
+    assert notes[0]['removed_spans'][0]['text'] == f'({duration})'
+    assert fact.value == original
+
+
+def test_review_notes_keep_duration_for_a_different_subject_in_the_same_sentence():
+    original = '검사는 48hr 이내 진행하며 내식성(72hr), 청색 외관입니다.'
+    fact = Fact(fact_id='f', field_key='technology', status='supported', value=original)
+    held, notes = llm._editorial_review_notes({'f': fact})
+    assert not held and '48hr' in notes[0]['body_value']
+    assert '72hr' not in notes[0]['body_value']
+    independent = fact.model_copy(update={'value': '검사는 72hr 이내 진행합니다.'})
+    assert llm._editorial_review_notes({'f': independent}) == (set(), [])
+
+
+def test_comparison_company_name_is_explicit_and_never_defaulted():
+    from scripts.experiments.agent_quality_comparison import fixed_briefs
+    with pytest.raises(TypeError):
+        fixed_briefs()
+    briefs = fixed_briefs('가상부품')
+    assert len(briefs) == 4
+    assert all(brief.target_company == '가상부품' for brief in briefs.values())
+
+
+def test_paid_comparison_requires_company_before_loading_sources(tmp_path, monkeypatch):
+    from scripts.experiments import agent_quality_comparison as q
+    rubric = tmp_path / 'rubric.json'
+    rubric.write_text('{}', encoding='utf-8')
+    monkeypatch.setattr(q, 'load_registered', lambda *a, **k: pytest.fail('live source access'))
+    monkeypatch.setattr(q.agent_llm, 'LlmOptions', lambda *a, **k: pytest.fail('model setup'))
+    with pytest.raises(SystemExit) as exc:
+        q.main(['--pilot', '--record-run', '--rubric', str(rubric)])
+    assert exc.value.code == 2

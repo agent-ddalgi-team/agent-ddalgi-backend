@@ -680,7 +680,7 @@ def _map_editorial_fact_ids(value: Any, mapping: dict[str, str]) -> Any:
         for key, item in value.items():
             if key == "fact_id":
                 result[key] = one(item)
-            elif key in {"fact_ids", "required_fact_ids", "sequence_fact_ids"}:
+            elif key in {"fact_ids", "required_fact_ids", "sequence_fact_ids", "trigger_fact_ids", "missing_companion_fact_ids"}:
                 if not isinstance(item, list):
                     raise _editorial_invalid("fact_reference")
                 result[key] = [one(fid) for fid in item]
@@ -742,20 +742,32 @@ def _editorial_wire_request(payload: dict, schema: dict) -> tuple[dict, dict, di
 class OpenAIRequester:
     """Responses API 통신 한 곳. 내용 자동 수정·추가 생성 재시도는 하지 않는다."""
 
-    def __init__(self, options: LlmOptions, *, ledger: TrialLedger | RuntimeLedger | None = None):
+    def __init__(self, options: LlmOptions, *, ledger: TrialLedger | RuntimeLedger | None = None,
+                 record_call: Callable[[dict], None] | None = None):
         self.options = options
         self.ledger = ledger if ledger is not None else _trial
+        # Explicit evaluation opt-in. Never serialize options (contains the API key).
+        # Normal application construction leaves this disabled and performs no I/O.
+        self.record_call = record_call
 
     def __call__(self, instructions: str, payload: dict, schema: dict, schema_name: str,
                  *, images: list[ImageIn] | None = None) -> dict:
         options = self.options
         if schema_name == "content_review" and len(_json_input(payload)) > self.ledger.review_input_char_limit:
             raise ReviewInputLimitError()
+        if self.record_call is not None:
+            self.record_call({"event": "prepared", "schema_name": schema_name,
+                              "instructions": instructions, "payload": copy.deepcopy(payload),
+                              "schema": copy.deepcopy(schema), "requested_model": options.model,
+                              "reasoning_effort": "medium", "service_tier": "default",
+                              "timeout_seconds": options.timeout_seconds, "max_retries": options.max_retries,
+                              "max_output_tokens": options.max_output_tokens})
         self.ledger._begin(options, schema_name)
         started, response, error, failure_reason = time.monotonic(), None, None, "request_failed"
         try:
             references, fact_aliases = None, None
-            if schema_name == legacy.MODEL_SCHEMA_NAME and schema == legacy.build_model_output_schema():
+            if schema_name == legacy.MODEL_SCHEMA_NAME and schema in (
+                    legacy.build_model_output_schema(), legacy.build_model_output_schema(claim_status=True)):
                 payload, schema, references = _extraction_wire_request(payload, schema)
             elif schema_name == "draft_sections" and payload.get("prompt_version") == "editorial_v2":
                 payload, schema, fact_aliases = _editorial_wire_request(payload, schema)
@@ -805,6 +817,16 @@ class OpenAIRequester:
             self.ledger._finish(response, time.monotonic() - started, "SERVICE_TEMPORARY_FAILURE", "interrupted")
             raise
         discard = self.ledger._finish(response, time.monotonic() - started, error.code if error else None, failure_reason)
+        if self.record_call is not None:
+            # A strict allow-list: no client, headers, exception text, environment,
+            # response.__dict__, or credentials are handed to the recorder.
+            self.record_call({"event": "finished", "schema_name": schema_name,
+                              "actual_model": getattr(response, "model", None),
+                              "output_text": getattr(response, "output_text", None),
+                              "completion": _response_completion(response),
+                              "elapsed_seconds": time.monotonic() - started,
+                              "error_code": error.code if error else None,
+                              "discarded": discard, "ledger": self.ledger.snapshot()})
         if error is not None:
             if self.ledger.interactive:
                 # 문서 저장·자동 재호출은 하지 않는다. 사용자 재요청 가능 여부만 안내한다.
@@ -894,6 +916,66 @@ def _unique_refs(refs: list[EvidenceRef]) -> list[EvidenceRef]:
     return list(found.values())
 
 
+def _certificate_identity_refs(text: str, refs: list[EvidenceRef], index: SourceIndex) -> list[EvidenceRef]:
+    """Add only the named standard's literal header, from the same certificate.
+
+    Dates, quantities and approval numbers are not borrowed from other fields.
+    This supports v2 claims whose scope/date/maintenance citation is separate
+    from the certificate heading without accepting a different certificate.
+    """
+    pattern = r'(?<![A-Za-z0-9])(?:ISO\s*\d+|AS\s*\d+[A-Z]?|KS\s*Q\s*\d+)(?::\d{4})?(?![A-Za-z0-9])'
+    names = {re.sub(r'\s+', '', m[0]).upper() for m in re.finditer(pattern, text, re.I)}
+    existing = {re.sub(r'\s+', '', m[0]).upper() for r in refs for m in re.finditer(pattern, r.excerpt, re.I)}
+    names = {name for name in names if not any(name == value or (':' not in name and name == value.split(':')[0]) for value in existing)}
+    sids = {r.source_id for r in refs}
+    linked = list(refs)
+    for unit in index.units:
+        if unit['source_id'] not in sids:
+            continue
+        for match in re.finditer(pattern, unit['text'], re.I):
+            name = re.sub(r'\s+', '', match[0]).upper()
+            for wanted in names:
+                if wanted == name or (':' not in wanted and wanted == name.split(':')[0]):
+                    quote = match[0] if ':' in wanted or ':' not in name else match[0].split(':')[0]
+                    linked.append(index.restore({'source_id': unit['source_id'], 'locator': unit['locator'], 'quote': quote}))
+    return _unique_refs(linked)
+
+
+def recheck_recorded_facts(facts: list[Fact], index: SourceIndex) -> tuple[list[Fact], list[dict]]:
+    """Reassess recorded guard decisions without extraction or changing claims.
+
+    Model/manual uncertainty without guard findings remains quarantined. Resolved
+    synthetic missing notices disappear only from this derived view; callers
+    retain the original extraction and the decision audit.
+    """
+    from app.services.validation import numeric_evidence_tokens, subject_value_findings, missing_preservation
+    result, audit = [], []
+    for old in facts:
+        fact = old.model_copy(deep=True)
+        conditions = dict(fact.conditions or {})
+        notice = conditions.get('preservation_review')
+        if notice and not missing_preservation([notice], facts):
+            audit.append({'fact_id': fact.fact_id, 'decision': 'resolved_notice', 'reason': '동일 출처의 명시적 승인명·번호로 누락 아님 확인'})
+            continue
+        if fact.field_key == 'certifications' and fact.value:
+            fact.evidence_refs = _certificate_identity_refs(fact.value, fact.evidence_refs, index)
+        previous = conditions.get('review_findings')
+        if previous and fact.value and all(x['rule'] in {'numeric_evidence', 'subject_value_mismatch'} for x in previous):
+            finding = subject_value_findings(fact.value, [r.excerpt for r in fact.evidence_refs])
+            extra = numeric_evidence_tokens(fact.value) - numeric_evidence_tokens(' '.join(r.excerpt for r in fact.evidence_refs))
+            if not finding and not extra and conditions.get('claim_review', {}).get('status', 'supported') == 'supported':
+                fact.status = 'supported'
+                conditions.pop('review_findings')
+                if 'claim_review' in conditions:
+                    conditions['claim_review'] = {**conditions['claim_review'], 'quarantined': False}
+                conditions['guard_recheck'] = {'version': 2, 'previous_findings': previous, 'decision': 'supported'}
+                audit.append({'fact_id': fact.fact_id, 'decision': 'supported', 'previous_findings': previous,
+                              'evidence_refs': [r.model_dump() for r in fact.evidence_refs]})
+        fact.conditions = conditions or None
+        result.append(fact)
+    return result, audit
+
+
 def _company_name_title(fact: Fact) -> str:
     """원문에 명시된 이름과 정확히 일치할 때만 추출 결과의 설명 문구를 벗긴다."""
     value = fact.value or ""
@@ -909,6 +991,31 @@ def _company_name_title(fact: Fact) -> str:
                    for ref in fact.evidence_refs):
                 return name
     return value
+
+
+def _company_name_key(value: str | None) -> str:
+    """Comparison only: remove whitespace and legal affixes, never the core name.
+
+    Keep case, punctuation and wording in the core name. Do not translate names,
+    use aliases, substring matching, or change the source/display value.
+    """
+    text = re.sub(r"\s+", "", (value or "").translate(str.maketrans({
+        "（": "(", "）": ")", "㈜": "(주)", "㈲": "(유)"})))
+    korean = r"(?:\(주\)|주식회사|\(유\)|유한회사)"
+    while text:
+        stripped = re.sub(r"^" + korean + r"|" + korean + r"$", "", text)
+        # Listed English legal suffixes, including their attached comma. The dot
+        # is mandatory: e.g. Zinc must not be shortened to Z by an Inc matcher.
+        stripped = re.sub(r",?(?:Co\.,?Ltd\.|Ltd\.|Inc\.)$", "", stripped, flags=re.I)
+        if stripped == text:
+            break
+        text = stripped
+    return text
+
+
+def _same_company_name(left: str | None, right: str | None) -> bool:
+    left_key, right_key = _company_name_key(left), _company_name_key(right)
+    return bool(left_key and right_key and left_key == right_key)
 
 
 def _balanced_page_groups(groups: list[list[Block]], count: int) -> list[list[list[Block]]]:
@@ -984,6 +1091,12 @@ class _BrochurePlan(BaseModel):
     pages: list[_BrochurePage] = Field(min_length=1, max_length=10)
 
 
+class _EditorialDuplicate(AgentError):
+    def __init__(self, message: str | None = None, rule: str = "duplicate_body_fact"):
+        self.rule = rule
+        super().__init__("AGENT_OUTPUT_INVALID", message or "같은 사실을 여러 본문 항목에 사용했습니다. 각 fact_id를 lead 또는 point 한 곳에만 배치하고 조건 전체를 그곳에 보존하세요.")
+
+
 class _EditorialText(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     text: str = Field(min_length=1, max_length=1200)
@@ -997,7 +1110,7 @@ class _EditorialPoint(_EditorialText):
 class _EditorialPage(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     heading: _EditorialText
-    lead: _EditorialText
+    lead: _EditorialText | None
     points: list[_EditorialPoint] = Field(max_length=12)
     photo_ids: list[str] = Field(max_length=2)
     layout: EditorialLayout
@@ -1030,10 +1143,11 @@ class _EditorialFactNoteGroup(BaseModel):
 
 
 class _EditorialFactPoint(BaseModel):
-    """An explicit model choice to publish the confirmed fact's complete wording."""
+    """A selected fact and its rewritten prose; absent text replays legacy plans."""
     model_config = ConfigDict(extra="forbid", strict=True)
     label: str = Field(min_length=1, max_length=60)
     fact_id: str
+    text: str | None = Field(default=None, min_length=1, max_length=1200)
 
 
 class _EditorialCompositionPage(_EditorialPage):
@@ -1057,7 +1171,8 @@ class _EditorialGroupedComposition(_EditorialComposition):
 
 def _whole_fact_point_available(fact: Fact) -> bool:
     # Separate legacy condition metadata is not materialized by a value-only point.
-    return bool(fact.value and fact.value.strip() and len(fact.value) <= 1200 and not fact.conditions)
+    conditions = {k: v for k, v in (fact.conditions or {}).items() if k not in {'claim_review', 'guard_recheck'}}
+    return bool(fact.value and fact.value.strip() and len(fact.value) <= 1200 and not conditions)
 
 
 def _whole_fact_point_required(fact: Fact) -> bool:
@@ -1068,6 +1183,477 @@ def _whole_fact_point_required(fact: Fact) -> bool:
             and len(numeric_evidence_tokens(fact.value or "")) >= 4)
 
 
+def _editorial_companion_groups(facts: dict[str, Fact], index: SourceIndex) -> list[dict]:
+    """Already extracted companion claims, never inferred or newly extracted facts."""
+    cert_sources = {u['source_id'] for u in index.units if re.search(
+        r'Certificate of (?:Approval|Registration|.*Quality)|KSPC Certificate|인\s*증\s*서', u['text'], re.I)}
+    groups = []
+    for sid in sorted(cert_sources):
+        ids = [fid for fid, f in facts.items() if f.field_key == 'certifications'
+               and not _history_fact(f) and any(r.source_id == sid for r in f.evidence_refs)]
+        if len(ids) > 1:
+            groups.append({'subject': '인증 조건', 'fact_ids': ids, 'trigger_fact_ids': ids})
+    patterns = {'아연도금': r'아연\s*도금', '아노다이징': r'아노다이징', '흑착': r'흑착',
+        '인산염': r'인산염', '크롬도금': r'크롬\s*도금|경질\s*크롬',
+        '무전해니켈': r'무전해\s*(?:니켈|Ni)', '전해연마': r'전해\s*연마',
+        '크로메이트': r'크로메이트', '부동태': r'부동태'}
+    for label, pattern in patterns.items():
+        members, triggers = [], []
+        for fid, fact in facts.items():
+            if fact.field_key not in {'processes', 'products_services', 'technology', 'capabilities',
+                                      'company_summary', 'business_areas'}:
+                continue
+            value = fact.value or ''
+            found = re.search(pattern, value, re.I)
+            if not found:
+                continue
+            triggers.append(fid)
+            topics = sorted((m.start(), m.end(), name) for name, pat in patterns.items()
+                            if (m := re.search(pat, value, re.I)))
+            # A catalogue listing is a trigger, not a detail to repeat. A
+            # chromate explanation may legitimately compare zinc treatment.
+            primary = (topics[0][2] == label and topics[0][0] < 35 and
+                       (len(topics) == 1 or topics[1][0] - topics[0][1] > 5))
+            if len(topics) == 1 or primary:
+                members.append(fid)
+        if members:
+            groups.append({'subject': label, 'fact_ids': members, 'trigger_fact_ids': triggers})
+    return groups
+
+
+def _customer_wording(value: str) -> str:
+    """Limited presentation-only substitutions; never summarize or drop a clause.
+
+    Complex certificates still use the complete fact, including every condition.
+    Unknown constructions are retained for review instead of guessed grammar.
+    """
+    text = value
+    for old, new in sorted((
+        ("인증서에는 인증 대상이", "인증 대상은"),
+        ("로 기재되어 있으며", "이며"), ("로 기재되어 있다", "입니다"),
+        ("으로 기재되어 있다", "입니다"),
+        ("가 기재되어 있다", "가 있습니다"), ("이 기재되어 있다", "이 있습니다"),
+        ("로 소개되어 있으며", "이며"), ("으로 소개되어 있으며", "이며"),
+        ("로 소개되어 있다", "입니다"), ("으로 소개되어 있다", "입니다"),
+    ), key=lambda pair: len(pair[0]), reverse=True):
+        text = text.replace(old, new)
+    # Sentence-final grammar only: preserve negation, modality, scope and dates.
+    for old, new in (("아니다", "아닙니다"), ("않는다", "않습니다"),
+                     ("한다", "합니다"), ("된다", "됩니다"), ("있다", "있습니다"),
+                     ("없다", "없습니다"), ("이다", "입니다")):
+        text = re.sub(re.escape(old) + r"(?=[.!?](?:\s|$)|$)", new, text)
+    from app.services.validation import numeric_evidence_tokens
+    if numeric_evidence_tokens(text) != numeric_evidence_tokens(value):
+        raise _editorial_invalid("schema")
+    return text
+
+
+def _semantic_terms(value: str) -> list[str]:
+    """Conservative literal anchors, including unfamiliar names, without an LLM.
+
+    Keep source vocabulary rather than accepting synonyms for names/technical
+    terms. Strip only reporting scaffolding and grammatical endings. This may
+    fall back too often; a missed anchor never creates a new rejection rule.
+    """
+    text = re.sub(r"(?:실제\s*)?(?:회사\s*)?(?:소개\s*)?자료(?:에는|에|는|의|상)?", " ", value)
+    text = re.sub(r"(?:기재|소개|설명|제시|기록|열거|명시)(?:되어|돼|된|한다|하며|하고|되며|한다고|되어있|되어\s*있)?[가-힣]*", " ", text)
+    anchors = re.findall(r"[A-Za-z]+(?:[.-][A-Za-z0-9]+)*", text)
+    skip = {"있다", "있습니다", "있으며", "있다고", "있는", "있고", "한다고", "한다는", "이다", "입니다", "한다", "합니다", "된다", "됩니다", "것", "등", "및", "각각", "이는", "해당", "같은", "관련", "대한", "통해", "함께", "모두", "각", "포함한", "포함하는", "위한", "목적", "용도"}
+    for word in re.findall(r"[가-힣]+", text):
+        if word in skip:
+            continue
+        root = re.sub(r"(?:한다고|한다는|된다고|시키는|시키며|시키고|시킨다|합니다|한다|하다|되며|된다|하며|하고|하는|이다|이며|이고|입니다)$", "", word)
+        root = re.sub(r"(?:에서는|에는|으로|에서|에게|까지|부터|보다|이란|라고|을|를|은|는|이|가|과|와|의|도|로)$", "", root)
+        if len(root) >= 2 and root not in skip:
+            anchors.append(root)
+    return sorted(set(anchors))
+
+
+def _rewrite_anchors(value: str) -> list[str]:
+    """Literal names/codes, not Korean vocabulary or conjugated predicates.
+
+    Korean company/product suffixes and explicitly quoted names supplement
+    Latin names and model/specification codes. Ordinary nouns/verbs belong to
+    semantic review, not this lossless-token check.
+    """
+    from app.services.validation import identifier_tokens
+    latin = re.findall(r"[A-Za-z][A-Za-z0-9]*(?:[.\-][A-Za-z0-9]+)*", value)
+    names = re.findall(r"[가-힣]+?(?:케미칼|테크놀러지스|테크놀로지|정공|중공업|화학|전자|부품|산업)(?=[은는이가을를의과와\s,.·(]|$)", value)
+    names += re.findall(r"[‘'\"]([가-힣A-Za-z0-9][가-힣A-Za-z0-9 ·.\-]{1,40})[’'\"]", value)
+    names += re.findall(r"(?<![A-Za-z0-9])[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+(?![A-Za-z0-9])", value)
+    return sorted(set(list(identifier_tokens(value)) + names + [w for w in latin if w.lower() not in
+        {'hr', 'hrs', 'um', 'mm', 'cm', 'm', 'kg', 'g', 'c'}]))
+
+
+def _formal_sentence_endings(value: str) -> str:
+    """Change only declarative endings; never remove reporting/source content."""
+    def formal(match):
+        word = match.group(0)
+        if word.endswith('니다'):
+            return word
+        for old, new in (('아니다', '아닙니다'), ('는다', '습니다'),
+                         ('있다', '있습니다'), ('없다', '없습니다'), ('이다', '입니다')):
+            if word.endswith(old):
+                return word[:-len(old)] + new
+        stem = word[:-1]
+        last = ord(stem[-1]) - 0xAC00
+        if 0 <= last < 11172:
+            final = last % 28
+            if final == 4:  # 한다/된다/메운다: ㄴ declarative -> ㅂ니다
+                return stem[:-1] + chr(ord(stem[-1]) + 13) + '니다'
+            if final == 0:
+                return stem[:-1] + chr(ord(stem[-1]) + 17) + '니다'
+        return stem + '습니다'
+    return re.sub(r'[가-힣]+다(?=[.!?](?:\s|$)|$)', formal, value)
+
+
+def _rewrite_gaps(original: str, rewritten: str) -> list[str]:
+    from app.services.validation import numeric_evidence_tokens, identifier_tokens
+    gaps = []
+    if numeric_evidence_tokens(original) != numeric_evidence_tokens(rewritten):
+        gaps.append("numeric_unit_date")
+    identifiers = identifier_tokens(original)
+    gaps.extend('identifier:' + term for term in sorted(identifiers - identifier_tokens(rewritten)))
+    compact = re.sub(r"\s+", "", rewritten)
+    gaps.extend("anchor:" + term for term in _rewrite_anchors(original)
+                if term not in identifiers and re.sub(r"\s+", "", term) not in compact)
+    conditions = r"이상|이하|미만|초과|이내|최대|최소|한해|한하|않|아니|없|제외|(?<=[가-힣])만(?=[\s,.]|$)"
+    gaps.extend("condition:" + term for term in set(re.findall(conditions, original))
+                if term not in rewritten)
+    # Units omitted from the legacy numeric tokenizer must still be retained.
+    units = r"(?<=\d)\s*(?:미크론|[μµu]m|㎛|℃|°C|퍼센트|%|hr|시간|영업일)"
+    def unit_key(term):
+        return {'미크론':'um', 'μm':'um', 'µm':'um', '㎛':'um', '℃':'°c',
+                '퍼센트':'%'}.get(term.strip().lower(), term.strip().lower())
+    rewritten_units = {unit_key(t) for t in re.findall(units, rewritten, re.I)}
+    gaps.extend("unit:" + term.strip() for term in re.findall(units, original, re.I)
+                if unit_key(term) not in rewritten_units)
+    # Explicit method names/purpose terms survive grammatical rewriting.
+    # This is a narrow vocabulary check, not a semantic similarity threshold.
+    for term in set(re.findall(r'[가-힣A-Za-z]+법(?=[은는이가을를과와\s,·/)]|$)', original)) - {'방법', '공법'}:
+        if term not in rewritten:
+            gaps.append('method:' + term)
+    for label, pattern in {'rust_prevention': r'녹슬지\s*않|녹\s*방지|방청',
+                           'wear_resistance': r'내마모|마모에\s*강',
+                           'gloss': r'광택'}.items():
+        if re.search(pattern, original) and not re.search(pattern, rewritten):
+            gaps.append('purpose:' + label)
+    return gaps
+
+
+def _verified_rewrite_sentences(original: str, candidate: str) -> tuple[str, list[str]]:
+    """Retain independently verified sentences after the one bounded repair.
+
+    An ambiguous split/merge stays in review; unrelated complete sentences are
+    not lost with a damaged identifier or omitted condition elsewhere.
+    """
+    split = lambda value: re.split(r'(?<=[다요][.!?])\s+', value.strip())
+    originals, proposed = split(original), split(candidate)
+    kept, removed, assigned = [], [], set()
+    for sentence in proposed:
+        matches = [i for i, source in enumerate(originals) if i not in assigned
+                   and not _rewrite_gaps(source, sentence)]
+        if matches:
+            kept.append(sentence)
+            assigned.add(matches[0])
+        else:
+            removed.append(sentence)
+    return ' '.join(kept), removed
+
+
+def _fact_prose(fact: Fact, candidate: str | None, audit: list[dict] | None = None) -> str:
+    if candidate is None:  # Read old saved responses without pretending they were rewritten.
+        return _customer_wording(fact.value or "")
+    original = fact.value or ""
+    gaps = _rewrite_gaps(original, candidate)
+    published = _formal_sentence_endings(original) if gaps else candidate
+    if audit is not None:
+        audit.append({"fact_id": fact.fact_id, "fallback": bool(gaps), "missing": gaps,
+                      "candidate": candidate, "published": published})
+    return published
+
+
+def prose_style_counts(text: str) -> dict[str, int]:
+    """Same offline indicators for repair feedback and archived PDF review."""
+    text = re.sub(r'\s+', ' ', text)
+    certificate = r'인증서\s*(?:기준|에\s*기재된|에\s*표시된)'
+    reporting = (r'자료\s*에는|소개\s*자료|소개\s*되어|기재\s*되어|'
+        r'설명\s*(?:한다|합니다|되어)|제시\s*(?:한다|합니다)|열거\s*되어|언급\s*되어|'
+        r'말씀\s*드립니다|안내\s*드립니다|이력이\s*있습니다|수록값\s*기준')
+    return {'source_description': len(re.findall(reporting, re.sub(certificate, '', text))),
+            'certificate_attribution': len(re.findall(certificate, text)),
+            'plain_endings': len(re.findall(r'(?<!니)(?<!니 )다[.!?](?=\s|$)', text)),
+            'formal_endings': len(re.findall(r'니\s*다[.!?](?=\s|$)', text))}
+
+
+def _rewrite_feedback(pages: list[Page], audit: list[dict]) -> list[dict]:
+    """Advisory feedback; unsuccessful rewriting falls back without a new blocker."""
+    if not audit:  # Preserve old saved-response replay without a new paid request.
+        return []
+    feedback = [{"fact_id": row["fact_id"], "missing": row["missing"]}
+                for row in audit if row["fallback"]]
+    for page in pages:
+        for block in page.blocks:
+            if block.type != 'paragraph':
+                continue
+            text = block.content['text']
+            style = []
+            counts = prose_style_counts(text)
+            if counts['source_description']:
+                style.append('자료 설명체를 고객 대상의 사실 문장으로 바꾸세요')
+            if ';' in text or counts['plain_endings']:
+                style.append('세미콜론 없이 완결된 합니다/습니다 문장으로 통일하세요')
+            if style:
+                feedback.append({'fact_ids': list(block.fact_ids), 'style': style})
+    return feedback
+
+
+_INTERNAL_NOTE = re.compile(
+    r"(?:자료|수치|조건|기준\s*시점).{0,45}(?:제시되지|명시되지|명시되어 있지|제시되어 있지|없으며|없다)|"
+    r"현재.{0,12}(?:인증|승인).{0,15}(?:뜻하지|의미하지)|서로 다르게 기재")
+
+
+def _editorial_review_notes(facts: dict[str, Fact]) -> tuple[set[str], list[dict]]:
+    """Remove only identified review spans; retain independent supported clauses.
+
+    The immutable extraction is never edited. body_value is a presentation view
+    whose omitted spans remain attached to the original evidence in the archive.
+    """
+    held, notes = set(), []
+    english = [f for f in facts.values() if f.field_key == "company_name" and f.value
+               and re.search(r"[A-Za-z]", f.value) and not re.search(r"[가-힣]", f.value)]
+    ambiguous = {f.fact_id for f in english} if len({f.value for f in english}) > 1 else set()
+    internal = re.compile(r"현재.{0,15}(?:거래 실적|인증|승인).{0,20}(?:뜻하지|의미하지)|"
+        r"실제.{0,20}담당자.{0,10}발언|아래 내용은.{0,60}구분해|이는 인증서 기재 사항")
+    absent = re.compile(r"(?:제시|명시|설명|확인)(?:되어 있지|되지|이 없|은 없)|기준.{0,12}없")
+    for fid, fact in facts.items():
+        value = fact.value or ""
+        kept, removed = [], []
+        if fid in ambiguous:
+            removed.append({"text": value, "reason": "원문별 영문 표시명이 달라 회사 확인이 필요합니다."})
+        else:
+            # Korean sentence boundaries only: preserve decimals and Co., Ltd.
+            for sentence in re.split(r"(?<=[다요])\.\s+", value):
+                part = sentence.strip()
+                if not part:
+                    continue
+                reason = None
+                duration = re.search(r"내식성\s*(\(?\s*\d+(?:\.\d+)?\s*(?:hr|시간)\)?)", part, re.I)
+                if duration:
+                    if re.match(r"내식성\s*\d", part) and absent.search(part):
+                        removed.append({"text": part, "reason": "내식성 수치의 시험 조건·규격·적용 대상 확인이 필요합니다."})
+                        continue
+                    removed.append({"text": duration[1], "reason": "시험 조건이 연결되지 않은 성능 수치입니다. 확인 전 본문에서 보류합니다."})
+                    part = part[:duration.start(1)] + part[duration.end(1):]
+                if "서로 다르게 기재" in part:
+                    reason = "원문 간 최초 승인일이 달라 하나의 날짜로 확정할 수 없습니다."
+                elif internal.search(part):
+                    reason = "독자용 사실이 아닌 내부 확인 단서입니다. 연혁을 현재 거래·승인으로 해석하지 않도록 담당자 확인이 필요합니다."
+                elif absent.search(part):
+                    # Keep the independently supported half, never turn a
+                    # performance limit into an unconditional performance claim.
+                    split = re.search(r"있으나[,]?\s*|[,]\s*(?=(?:실제|매출의|집계|기준))", part)
+                    if split:
+                        prefix, suffix = part[:split.start()], part[split.end():]
+                        removed.append({"text": suffix, "reason": "자료에 없는 범위·기준 시점 확인이 필요합니다."})
+                        part = prefix + ("있다" if split[0].startswith("있으나") else "")
+                        if any(w in value for w in ("인원", "연 매출", "거래업체")):
+                            part = "자료 수록값 기준: " + part
+                    else:
+                        reason = "자료 부족·미확인 상태 설명입니다. 담당자가 실제 조건을 확인해야 합니다."
+                if reason:
+                    removed.append({"text": part, "reason": reason})
+                elif part.strip(" .;,·"):
+                    kept.append(part.rstrip(" .") + ".")
+        body = " ".join(kept) if removed else value
+        if removed:
+            if not body.strip():
+                held.add(fid)
+            notes.append({"fact_id": fid, "value": value, "body_value": body,
+                "removed_spans": removed, "withheld_from_body": not bool(body.strip()),
+                "reason": " / ".join(dict.fromkeys(x["reason"] for x in removed)),
+                "evidence_refs": [r.model_dump() for r in fact.evidence_refs]})
+        elif fact.field_key in {"history", "certifications"}:
+            notes.append({"fact_id": fid, "value": value, "body_value": value,
+                "removed_spans": [], "withheld_from_body": False,
+                "reason": "기록 시점의 연혁·인증입니다. 현재 승인 상태는 담당자 확인이 필요하며 원래 날짜·범위·유지 조건은 보존합니다.",
+                "evidence_refs": [r.model_dump() for r in fact.evidence_refs]})
+    return held, notes
+
+
+def _semantic_duplicates(facts: dict[str, Fact], required: set[str], excluded_ids: set[str]) -> dict[str, str]:
+    """Select one owner of an evidence-linked claim before asking for prose.
+
+    Extra quantities, negation, names or conditions prevent merging. The richer
+    fact survives, and an explicit required fact is never silently excluded.
+    A fact can cite one span of a richer fact; identical span sets are not
+    necessary. Disjoint evidence requires identical claim terms, not similarity.
+    """
+    from app.services.validation import numeric_evidence_tokens
+    names = {_company_name_key(f.value) for f in facts.values() if f.field_key == "company_name"}
+    def core(fact):
+        value = re.sub(r'공정\s+관리', '공정관리', fact.value or '')
+        value = re.sub(r'(?:실시|수행)(?:해|하여|하며|하고|한다고|하는|합니다|한다)?', '수행', value)
+        terms = set(_semantic_terms(value)) - {'각종', '실제', '수행', '통한'}
+        # These reporting/result scaffolds add no distinct entity/condition;
+        # retain the object (e.g. 신뢰성) as a content-bearing term.
+        terms -= {'제품', '확보'}
+        if fact.field_key in {"company_summary", "business_areas"}:
+            terms -= {"제품", "부품", "회사", "사업", "수행", "생산", "영위", "것"} | names
+        return terms
+    eligible = [f for fid, f in facts.items() if fid not in excluded_ids and f.status == "supported"
+                and f.field_key != "company_name" and f.value and f.evidence_refs]
+    eligible.sort(key=lambda f: (f.fact_id not in required, -len(f.value)))
+    owners, duplicates = [], {}
+    for fact in eligible:
+        terms = core(fact)
+        spans = {(r.source_id, r.segment_id) for r in fact.evidence_refs}
+        match = next((prior for prior in owners if fact.fact_id not in required and len(terms) >= 3
+            and (spans <= {(r.source_id, r.segment_id) for r in prior.evidence_refs}
+                 or terms == core(prior))
+            and terms <= core(prior)
+            and numeric_evidence_tokens(fact.value) <= numeric_evidence_tokens(prior.value)
+            and not any(gap != 'numeric_unit_date' for gap in _rewrite_gaps(fact.value, prior.value))), None)
+        if match:
+            duplicates[fact.fact_id] = match.fact_id
+        else:
+            owners.append(fact)
+    return duplicates
+
+
+def remove_grounded_redundant_clauses(pages: list[Page], facts: dict[str, Fact]) -> tuple[list[Page], list[dict]]:
+    """Remove only a repeated leading conjunction; preserve its subject and tail.
+
+    The complete ordered clause must already start an earlier paragraph on the
+    same page and share an explicit evidence segment. Different dates, objects,
+    polarity, conditions, or merely similar words do not qualify. This is not a
+    fuzzy similarity score or general paraphrase removal.
+    """
+    result = [p.model_copy(deep=True) for p in pages]
+    audit = []
+    def core(text, *, richer_owner=False):
+        if richer_owner:
+            text = re.sub(r'(?<!\S)각종\s+', '', text)
+        text = text.replace('에서는', '에서')
+        text = re.sub(r'(?:하며|하고|하여|해서|해)(?=\s|[,。.!?]|$)', '<CONJ>', text)
+        return re.sub(r'\s+', '', text)
+    def supported(block):
+        return (bool(block.fact_ids) and bool(block.evidence_refs) and
+            all(fid in facts and facts[fid].status == 'supported' and not facts[fid].conditions
+                for fid in block.fact_ids))
+    def spans(block):
+        return {(r.source_id, r.source_version, r.segment_id) for r in block.evidence_refs}
+    for page in result:
+        owners = []
+        for block in page.blocks:
+            if block.type != 'paragraph' or not supported(block):
+                continue
+            text = block.content.get('text', '')
+            match = re.fullmatch(r'(\S+(?:에서는|에서|은|는|이|가))\s+(.+?하며),\s+(.+)', text)
+            if match:
+                subject, clause, tail = match.groups()
+                needle = core(subject + ' ' + clause)
+                owner = next((b for b in owners if spans(block) & spans(b) and
+                    core(b.content['text'], richer_owner=True).startswith((needle, '회사' + needle))), None)
+                rewritten = subject + ' ' + tail
+                if owner and not _rewrite_gaps(text, owner.content['text'] + ' ' + rewritten):
+                    block.content['text'] = rewritten
+                    # The retained owner now covers the repeated part of these
+                    # facts; the original IDs/references on both blocks remain.
+                    owner.fact_ids = list(dict.fromkeys(owner.fact_ids + block.fact_ids))
+                    shared = spans(block) & spans(owner)
+                    refs = owner.evidence_refs + [r for r in block.evidence_refs if
+                        (r.source_id, r.source_version, r.segment_id) in shared]
+                    owner.evidence_refs = list({r.model_dump_json():r for r in refs}.values())
+                    audit.append({'block_id':block.block_id, 'owner_block_id':owner.block_id,
+                        'page_id':page.page_id, 'before':text, 'after':rewritten,
+                        'removed_clause':clause, 'subject_retained':subject, 'fact_ids':block.fact_ids[:],
+                        'evidence_refs':[r.model_dump() for r in block.evidence_refs],
+                        'withheld_from_body':False, 'origin':'grounded_redundancy',
+                        'reason':'같은 쪽의 앞 항목에 동일 주체·서술·원문 근거가 남아 있어 반복된 연결절만 정리했습니다.'})
+            owners.append(block)
+    return result, audit
+
+
+def grounded_photo_captions(pages: list[Page], facts: dict[str, Fact], sources) -> tuple[list[Page], list[dict]]:
+    """Link an existing photo name to a body item only with same-location facts.
+
+    No visual claim is inferred from a filename or a neighbouring paragraph.
+    Names without an explicit supported fact at the photo's source location stay
+    unchanged. Existing image provenance is not replaced.
+    """
+    result = [p.model_copy(deep=True) for p in pages]
+    locations = {aid: (s.source_id, s.source_version, s.asset_locators.get(aid))
+                 for s in sources for aid in s.asset_ids}
+    audit = []
+    key = lambda value: re.sub(r'\s+', '', value).lower()
+    generic = {'생산라인', '처리라인', '시험기', '작업', '구역', '사진', '이미지'}
+    for page in result:
+        items, label = [], None
+        for b in page.blocks:
+            if b.type == 'heading':
+                label = b.content.get('text') if b.content.get('level') == 2 else None
+            elif b.type == 'paragraph' and label:
+                items.append((label, b))
+                label = None
+        for photo in page.blocks:
+            if photo.type != 'image' or photo.fact_ids or photo.evidence_refs:
+                continue
+            name = photo.content.get('caption', '')
+            location = locations.get(photo.content.get('asset_id'))
+            if not isinstance(name, str) or not location or not location[2]:
+                continue
+            tokens = [key(t) for t in re.findall(r'[가-힣A-Za-z0-9]{3,}', name) if t not in generic]
+            for label, body in items:
+                matches = []
+                for fid in body.fact_ids:
+                    fact = facts.get(fid)
+                    if not fact or fact.status != 'supported':
+                        continue
+                    refs = [r for r in fact.evidence_refs if
+                        (r.source_id, r.source_version, r.locator) == location and
+                        any(t in key(r.excerpt or '') and t in key(fact.value or '') and
+                            t in key(body.content.get('text', '')) for t in tokens)]
+                    if refs:
+                        matches.append((fid, refs))
+                if not matches:
+                    continue
+                photo.content['caption'] = name + '\n관련 항목: ' + label
+                photo.fact_ids = [fid for fid, refs in matches]
+                photo.evidence_refs = list({r.model_dump_json(): r for fid, refs in matches for r in refs}.values())
+                audit.append({'block_id': photo.block_id, 'asset_id': photo.content.get('asset_id'),
+                    'decision': 'caption_linked', 'before': name, 'after': photo.content['caption'],
+                    'body_block_id': body.block_id, 'fact_ids': photo.fact_ids,
+                    'reason': 'supported_fact_at_photo_source_location'})
+                break
+    return result, audit
+
+
+def _history_fact(fact: Fact) -> bool:
+    return fact.field_key == "history" or bool(fact.field_key in {"certifications", "customers_markets"}
+        and re.search(r"연혁|이력", fact.value or ""))
+
+
+def _history_heading(facts: list[Fact]) -> str:
+    """Derive a timeline subheading from its own facts, never model labels.
+
+    A dated history entry can start with a bare year (e.g. 2006 ISO 9001).
+    Do not scan broad source excerpts: they may contain other history entries.
+    """
+    years = set()
+    for fact in facts:
+        value = fact.value or ""
+        years.update(int(m[1]) for m in re.finditer(
+            r"(?<![\dA-Za-z])([12]\d{3})\s*년", value))
+        first = re.match(r"\s*([12]\d{3})(?=\s|[|｜~∼–-])", value)
+        if first:
+            years.add(int(first[1]))
+        for match in re.finditer(r"(?<![\w.-])([12]\d{3})\s*년?\s*[~∼–-]\s*([12]\d{3})\s*년?(?![\dA-Za-z./-])", value):
+            years.update(map(int, match.groups()))
+    return (f"{min(years)}–{max(years)}년" if len(years) > 1 else
+            f"{next(iter(years))}년" if years else "연혁")
+
+
 def _expand_editorial_pages(pages: list[_EditorialPage], target: int) -> list[_EditorialPage]:
     """Reach the requested count by splitting existing independent points only.
 
@@ -1076,14 +1662,14 @@ def _expand_editorial_pages(pages: list[_EditorialPage], target: int) -> list[_E
     """
     result = [page.model_copy(deep=True) for page in pages]
     while len(result) < target:
-        candidates = [(sum(len(item.text) for item in [page.lead, *page.points]), n)
+        candidates = [(sum(len(item.text) for item in [page.lead, *page.points] if item is not None), n)
                       for n, page in enumerate(result) if len(page.points) >= 3
                       and not page.sequence_fact_ids and page.layout not in {"timeline", "process_steps"}]
         if not candidates:
             break
         _, index = max(candidates)
         page = result[index]
-        weights = [len(page.lead.text), *(len(p.text) + len(p.label) for p in page.points)]
+        weights = [len(page.lead.text) if page.lead else 0, *(len(p.text) + len(p.label) for p in page.points)]
         cut = min(range(1, len(page.points) - 1),
                   key=lambda n: abs(sum(weights[:n + 1]) - sum(weights[n + 1:])))
         opening = page.points[cut]
@@ -1101,7 +1687,7 @@ def _expand_editorial_pages(pages: list[_EditorialPage], target: int) -> list[_E
 
 
 def _composition_plan(response: dict, facts: dict[str, Fact], policy: dict[str, tuple[str, ...]],
-                      *, target_pages: int | None = None) -> _EditorialPlan:
+                      *, target_pages: int | None = None, rewrite_audit: list[dict] | None = None) -> _EditorialPlan:
     """Resolve explicit whole-fact points, then derive inclusion from actual references.
 
     Previously recorded plans keep their original, strict selection validation.
@@ -1137,6 +1723,8 @@ def _composition_plan(response: dict, facts: dict[str, Fact], policy: dict[str, 
             or (missing_notes and not (grouped_notes or indexed_notes))):
         raise _editorial_invalid("selection_coverage")
     pages = []
+    rewritten_plan = any(isinstance(point, _EditorialFactPoint) and point.text is not None
+                         for page in composition.pages for point in page.points)
     for page in composition.pages:
         points = []
         for item in page.points:
@@ -1151,19 +1739,30 @@ def _composition_plan(response: dict, facts: dict[str, Fact], policy: dict[str, 
                     raise _editorial_invalid("schema")
                 # No omission-triggered insertion: only IDs explicitly selected by the model.
                 # Use the same per-point size limit and downstream provenance/numeric checks.
-                item = _EditorialPoint(label=item.label, text=fact.value or "", fact_ids=[item.fact_id])
+                item = _EditorialPoint(label=item.label, text=_fact_prose(fact, item.text, rewrite_audit), fact_ids=[item.fact_id])
             points.append(item)
-        pages.append(_EditorialPage(**page.model_dump(exclude={"points"}), points=points))
+        resolved = _EditorialPage(**page.model_dump(exclude={"points"}), points=points)
+        for point in resolved.points:
+            point_facts = [facts[fid] for fid in point.fact_ids if fid in facts]
+            if point_facts and all(_history_fact(fact) for fact in point_facts):
+                point.label = _history_heading(point_facts)
+        if rewritten_plan and resolved.lead is not None and len(resolved.lead.fact_ids) == 1:
+            fact = facts.get(resolved.lead.fact_ids[0])
+            if fact is not None:
+                resolved.lead.text = _fact_prose(fact, resolved.lead.text, rewrite_audit)
+        pages.append(resolved)
     if target_pages is not None and len(pages) < target_pages:
         pages = _expand_editorial_pages(pages, target_pages)
     referenced: dict[str, list[int]] = {}
     body_referenced: set[str] = set()
     for n, page in enumerate(pages, 1):
-        body_referenced.update(fid for item in [page.lead, *page.points] for fid in item.fact_ids)
+        body_referenced.update(fid for item in [page.lead, *page.points] if item is not None for fid in item.fact_ids)
         # Match claim()'s existing company-name heading coverage exception.
         body_referenced.update(fid for fid in page.heading.fact_ids
                                if fid in facts and facts[fid].field_key == "company_name")
         for item in [page.heading, page.lead, *page.points]:
+            if item is None:
+                continue
             for fid in item.fact_ids:
                 if fid not in facts:
                     raise _editorial_invalid("fact_reference")
@@ -1231,10 +1830,14 @@ def _constrain_editorial_notes(schema: dict, policy: dict[str, tuple[str, ...]])
 
 def _editorial_body_gaps(facts: dict[str, Fact], used: dict[str, list[str]]) -> dict[str, dict]:
     """The included-fact gate, shared with local response replay; never repairs prose."""
-    from app.services.validation import numeric_evidence_tokens
+    from app.services.validation import numeric_evidence_tokens, identifier_tokens
     gaps = {}
     for fid, texts in used.items():
         missing = numeric_evidence_tokens(facts[fid].value or "") - numeric_evidence_tokens(" ".join(texts))
+        missing.update(('identifier', term) for term in
+            identifier_tokens(facts[fid].value or '') - identifier_tokens(' '.join(texts)))
+        missing.update(('preservation', term) for term in _rewrite_gaps(facts[fid].value or '', ' '.join(texts))
+                       if term.startswith(('method:', 'purpose:', 'condition:')))
         if not texts or missing:
             gaps[fid] = {"body_missing": not texts, "missing_numeric_tokens": sorted(missing)}
     return gaps
@@ -1602,11 +2205,27 @@ class DraftConfirmationGraph:
 class LlmAgent:
     def __init__(self, request_json: JsonRequester, *, max_input_chars: int = _LEGACY_INPUT_LIMIT,
                  settings: Settings | None = None, max_review_input_chars: int | None = None,
-                 legacy_draft: bool = False):
+                 legacy_draft: bool = False, display_company_name: str | None = None,
+                 source_scope: Literal["real_only", "include_demo"] = "include_demo"):
         self.request_json = request_json
         self.max_input_chars = max_input_chars
         # Baseline evaluator only. create_bridge always uses the editorial production path.
         self.legacy_draft = legacy_draft
+        self.draft_attempts: list[dict] = []
+        self.review_notes: list[dict] = []
+        self.photo_audit: list[dict] = []
+        self.display_company_name = display_company_name
+        if source_scope not in {"real_only", "include_demo"}:
+            raise ValueError("Unknown draft source scope")
+        self.source_scope = source_scope
+        self.fact_origins: dict[str, dict] = {}
+        self.used_demo_sources: list[str] = []
+        self.rewrite_audit: list[dict] = []
+        self.redundancy_audit: list[dict] = []
+        self.presentation_facts: list[dict] = []
+        self.semantic_duplicates: dict[str, str] = {}
+        self.claim_findings: list[dict] = []
+        self.extraction_preservation: dict = {}
         if max_review_input_chars is not None and (type(max_review_input_chars) is not int
                 or not 1 <= max_review_input_chars <= _MAX_REVIEW_INPUT_CHARS):
             raise ValueError("내용 검증 입력 상한은 1~400,000자의 정수여야 합니다.")
@@ -1689,8 +2308,11 @@ class LlmAgent:
             info = legacy.extract_company_info(
                 {"schema_version": "1.0", "company_name_hint": request.brief.target_company, "source_units": index.units},
                 request_json=extract_request,
+                claim_status=not self.legacy_draft,
             )
             facts = self._facts(info, index)
+            if not self.legacy_draft:
+                facts = self._supplement_preservation(request, index, facts, extract_request)
         except legacy.AgentError as exc:
             # 검사 규칙 이름만 기록한다. details에는 원문 인용이 들어갈 수 있어 출력하지 않는다.
             rules = {"company_info_keys", "field_shape", "status_value", "status_fact_count",
@@ -1703,6 +2325,50 @@ class LlmAgent:
         issues = self._issues(facts)
         return AnalyzeResult(facts=facts, issues=issues,
                              recommendations=self._recommendations(request, facts, has_text=True))
+
+    def _supplement_preservation(self, request, index, facts, extract_request):
+        from app.services.validation import preservation_candidates, missing_preservation
+        origins = {s.source_id: s.origin_kind for s in request.sources}
+        candidates = preservation_candidates([u for u in index.units if self.source_scope != 'real_only'
+                                              or origins.get(u['source_id']) == 'real'])
+        missing = missing_preservation(candidates, facts)
+        self.extraction_preservation = {'version': 1, 'candidates': candidates,
+            'missing_before': missing, 'attempts': 0, 'outcome': 'not_needed'}
+        if not missing:
+            return facts
+        self.extraction_preservation['attempts'] = 1
+        def supplement(instructions, payload, schema, name):
+            return extract_request(instructions + '\n이번 요청은 누락 정보 보강 1회다. '
+                'preservation_requirements 항목만 원문에서 확인하여 반환하고 나머지 필드는 not_found로 둔다. '
+                '원문의 대상·인증명·조건·숫자를 함께 보존한다. 없는 정보는 만들지 않는다.',
+                {**payload, 'preservation_requirements': missing}, schema, name)
+        try:
+            info = legacy.extract_company_info({'schema_version': '1.0',
+                'company_name_hint': request.brief.target_company, 'source_units': index.units},
+                request_json=supplement, claim_status=True)
+            additions = self._facts(info, index)
+            target_sources = {c['source_id'] for c in missing}
+            existing = {(f.field_key, f.value) for f in facts}
+            for fact in additions:
+                if (fact.status == 'missing' or not fact.evidence_refs or
+                        not {r.source_id for r in fact.evidence_refs} <= target_sources or
+                        (fact.field_key, fact.value) in existing):
+                    continue
+                facts.append(fact)
+                existing.add((fact.field_key, fact.value))
+            self.extraction_preservation['outcome'] = 'completed'
+        except (AgentError, legacy.AgentError, legacy.AgentInputError, ValidationError, KeyError, TypeError, ValueError):
+            # A failed optional supplement cannot erase valid initial extraction.
+            self.extraction_preservation['outcome'] = 'confirmation_required'
+        remaining = missing_preservation(candidates, facts)
+        self.extraction_preservation['missing_after'] = remaining
+        for c in remaining:
+            ref = index.restore({'source_id': c['source_id'], 'locator': c['locator'], 'quote': c['quote']})
+            facts.append(Fact(fact_id='fact_review_' + uuid.uuid4().hex[:16], field_key=c['field_key'],
+                value=c['value'], status='needs_confirmation', evidence_refs=[ref],
+                conditions={'preservation_review': {**c, 'attempts': 1,
+                    'reason': '원문에 있으나 빠진 정보: 1회 보강 후에도 확인되지 않았습니다.'}}))
+        return facts
 
     @staticmethod
     def _recommendations(request: AnalyzeRequest, facts: list[Fact], *, has_text: bool) -> Recommendations:
@@ -1778,12 +2444,32 @@ class LlmAgent:
     @staticmethod
     def _facts(info: dict, index: SourceIndex) -> list[Fact]:
         from app.config import company_name_aliases
-        from app.services.validation import numeric_evidence_tokens
+        from app.services.validation import numeric_evidence_tokens, subject_value_findings
         prefix = "fact_" + uuid.uuid4().hex[:16]
         result: list[Fact] = []
         for key in legacy.COMPANY_INFO_KEYS:
             field_info = info[key]
             status, items = field_info["status"], field_info["facts"]
+            if key == 'certifications' and items and all('claim_status' in i for i in items):
+                groups = {}
+                for item in items:
+                    group = item.get('conflict_group') if item['claim_status'] == 'conflict' else None
+                    groups.setdefault(('conflict', group) if group else ('single', item['fact_id']), []).append(item)
+                for (kind, group), claims in groups.items():
+                    state = ('conflict' if len(claims) > 1 else 'needs_confirmation') if kind == 'conflict' else claims[0]['claim_status']
+                    if state == 'conflict' and len(claims) < 2:
+                        state = 'needs_confirmation'
+                    normalized = {k: {'status': 'not_found', 'facts': []} for k in legacy.COMPANY_INFO_KEYS}
+                    normalized[key] = {'status': state, 'facts': [
+                        {k: v for k, v in item.items() if k not in {'claim_status', 'conflict_group'}} for item in claims]}
+                    for fact in LlmAgent._facts(normalized, index):
+                        if fact.field_key != key:
+                            continue
+                        fact.conditions = {**(fact.conditions or {}), 'claim_review': {
+                            'version': 2, 'status': state, 'conflict_group': group if kind == 'conflict' else None,
+                            'quarantined': fact.status != 'supported'}}
+                        result.append(fact)
+                continue
             # 사용자 확인 별칭은 이름의 동일성에만 적용한다. 원문 인용·출처는 그대로 보존한다.
             if key == "company_name" and items and status in {"needs_confirmation", "conflict"}:
                 groups = [company_name_aliases(item["text"]) for item in items]
@@ -1799,21 +2485,37 @@ class LlmAgent:
                 for item in items:
                     candidate_refs = [index.restore(ev) for ev in item["evidence"]]
                     refs.extend(candidate_refs)
-                    alternatives.append({"value": item["text"],
-                                         "evidence_refs": [ref.model_dump() for ref in candidate_refs]})
+                    candidate = {"value": item["text"],
+                                 "evidence_refs": [ref.model_dump() for ref in candidate_refs]}
+                    findings = subject_value_findings(item['text'], [r.excerpt for r in candidate_refs])
+                    if findings:
+                        candidate['review_findings'] = findings
+                    alternatives.append(candidate)
                 result.append(Fact(fact_id=f"{prefix}_{key}", field_key=key, value=None, status="conflict",
                                    alternatives=alternatives, evidence_refs=_unique_refs(refs)))
             else:
                 for item in items:
                     refs = [index.restore(ev) for ev in item["evidence"]]
+                    if key == 'certifications':
+                        refs = _certificate_identity_refs(item['text'], refs, index)
                     item_status = status
-                    if status == "supported" and (numeric_evidence_tokens(item["text"]) -
-                            numeric_evidence_tokens(" ".join(ref.excerpt for ref in refs))):
+                    extra_numeric = (numeric_evidence_tokens(item['text']) -
+                                     numeric_evidence_tokens(' '.join(ref.excerpt for ref in refs)))
+                    if status == "supported" and extra_numeric:
                         # Preserve the extracted claim and citation, but never present ungrounded numbers as supported.
                         item_status = "needs_confirmation"
                         logger.warning("AI extraction needs confirmation: rule=numeric_evidence field=%s", key)
+                    findings = subject_value_findings(item['text'], [r.excerpt for r in refs])
+                    if status == 'supported' and extra_numeric:
+                        findings.append({'rule': 'numeric_evidence', 'subject': key,
+                            'claimed_value': repr(sorted(extra_numeric)), 'source_values': [],
+                            'reason': '연결된 원문에서 이 수치·단위를 확인할 수 없습니다.',
+                            'source_rows': [r.excerpt for r in refs]})
+                    if findings:
+                        item_status = 'needs_confirmation'
                     result.append(Fact(fact_id=f"{prefix}_{item['fact_id']}", field_key=key,
-                                       value=item["text"], status=item_status, evidence_refs=refs))
+                                       value=item["text"], status=item_status, evidence_refs=refs,
+                                       conditions={'review_findings': findings} if findings else None))
         return result
 
     @staticmethod
@@ -1828,13 +2530,24 @@ class LlmAgent:
         for fact in facts:
             label = {"company_name": "회사명", **legacy.SECTION_TITLES}.get(fact.field_key, "해당 항목")
             if fact.status == "conflict":
-                add("VALUE_CONFLICT", "blocker", f"{label} 내용이 자료마다 다릅니다. ‘사실과 근거 자세히 보기’에서 각각의 원문과 적용 조건을 비교해 주세요.", [fact])
+                local = (fact.conditions or {}).get('claim_review', {}).get('quarantined')
+                add("VALUE_CONFLICT", "warning" if local else "blocker", f"{label} 내용이 자료마다 다릅니다. ‘사실과 근거 자세히 보기’에서 각각의 원문과 적용 조건을 비교해 주세요.", [fact])
             elif fact.status == "needs_confirmation":
                 # 불확실한 사실을 확인 클릭만으로 승인 가능한 경고로 낮추지 않는다.
                 message = ("자료에 나온 이름이 이번 소개서의 회사명인지 확인이 필요합니다. 원문의 회사명 항목·국문/영문 표기·사업장 주소를 비교해 주세요."
                            if fact.field_key == "company_name" else
                            f"{label}을 확정해서 쓰기에는 적용 조건이나 근거가 충분하지 않습니다. ‘사실과 근거 자세히 보기’에서 원문을 확인하고, 필요한 자료를 보완하거나 이번 문서에서 해당 내용을 제외해 주세요.")
-                add("UNSUPPORTED_CLAIM", "blocker", message, [fact])
+                for finding in (fact.conditions or {}).get('review_findings', []):
+                    message += (' ' + finding['reason'] + ' 대상: ' + finding['subject'] +
+                                ', 추출값: ' + finding['claimed_value'] + ', 원문값: ' +
+                                '/'.join(finding['source_values']) + '.')
+                if (fact.conditions or {}).get('preservation_review'):
+                    message = fact.conditions['preservation_review']['reason']
+                severity = 'warning' if (fact.field_key != 'company_name' and
+                    ((fact.conditions or {}).get('review_findings') or
+                     (fact.conditions or {}).get('preservation_review') or
+                     (fact.conditions or {}).get('claim_review', {}).get('quarantined'))) else 'blocker'
+                add("UNSUPPORTED_CLAIM", severity, message, [fact])
         for keys, label in ((('company_name',), "회사명"), (_BUSINESS_KEYS, "주요 사업/공정 설명")):
             group = [fact for fact in facts if fact.field_key in keys]
             if not any(f.status == "supported" for f in group):
@@ -1888,7 +2601,7 @@ class LlmAgent:
             order = _section_order({fact["field"] for fact in supported}, focus)
             if sum(len(f["text"]) for f in supported) > self.max_input_chars:
                 raise AgentError("INVALID_REQUEST", "초안에 사용할 사실이 AI 입력 한도를 넘었습니다.", False)
-            photos = self._brochure_photos(request, excluded)
+            photos = self._brochure_photos(request, excluded, require_description=False)
             if request.brief.target_pages >= 4 and photos:
                 return self._draft_brochure(request, supported, by_id, photos)
             generated = legacy.draft_profile(supported, request_json=self._request,
@@ -1905,25 +2618,70 @@ class LlmAgent:
         if any(facts[fid].field_key in excluded for fid in required):
             raise AgentError("INVALID_REQUEST", "필수 내용과 제외 요청이 겹칩니다. 작성 조건을 정리해 주세요.")
         names = [f for f in facts.values() if f.field_key == "company_name" and f.status == "supported"]
-        if request.brief.target_company and not any(
-                request.brief.target_company == _company_name_title(f) for f in names):
-            raise AgentError("INVALID_REQUEST", "대상 회사명과 확인된 회사명 근거가 일치하지 않습니다. 자료를 보완해 주세요.")
+        if request.brief.target_company is not None and not any(
+                _same_company_name(request.brief.target_company, _company_name_title(f)) for f in names):
+            configured = json.dumps(request.brief.target_company, ensure_ascii=False)
+            extracted = json.dumps([_company_name_title(f) for f in names], ensure_ascii=False)
+            raise AgentError("INVALID_REQUEST", "대상 회사명과 확인된 회사명 근거가 일치하지 않습니다. "
+                             f"설정값: {configured}; 추출값: {extracted}. 자료를 보완해 주세요.")
         photos = self._brochure_photos(request, excluded)
+        self.photo_audit = [{'asset_id': aid, 'source_id': source.source_id,
+                            'decision': 'excluded', 'reason': 'usable_description_missing'}
+            for source in request.sources for aid in source.asset_ids
+            if not self._photo_caption(source.asset_descriptions.get(aid, {}))]
+        origins = {s.source_id: s.origin_kind for s in request.sources}
+        self.fact_origins = {fid: {"source_ids": sorted({r.source_id for r in f.evidence_refs}),
+            "origin_kinds": sorted({origins.get(r.source_id, "unknown") for r in f.evidence_refs})}
+            for fid, f in facts.items()}
+        source_excluded = {fid for fid, origin in self.fact_origins.items()
+                           if self.source_scope == "real_only" and origin["origin_kinds"] != ["real"]}
+        if self.source_scope == "real_only":
+            photos = {aid: meta for aid, meta in photos.items() if meta["origin"] == "real"}
+        required -= source_excluded
+        held, self.review_notes = _editorial_review_notes(facts)
+        body_values = {note["fact_id"]: note["body_value"] for note in self.review_notes}
+        facts = {fid: fact.model_copy(update={"value": body_values[fid]})
+                 if fid in body_values and fid not in held else fact for fid, fact in facts.items()}
+        self.presentation_facts = [f.model_dump() for f in facts.values()]
+        required -= {fid for fid in held if facts[fid].field_key == "company_name"}
+        if required & held:
+            raise AgentError("INVALID_REQUEST", "필수 사실에 담당자 확인이 필요한 조건이 있습니다. 검토 메모를 확인해 주세요.")
         selection_policy = _editorial_selection_policy(facts, required, excluded)
+        selection_policy.update({fid: ("review",) for fid in held})
+        selection_policy.update({fid: ("excluded",) for fid in source_excluded})
+        self.semantic_duplicates = _semantic_duplicates(facts, required, held | source_excluded)
+        selection_policy.update({fid: ("excluded",) for fid in self.semantic_duplicates})
+        display_name = self.display_company_name or request.brief.target_company
+        if display_name and not any(_same_company_name(display_name, _company_name_title(f)) for f in names):
+            raise AgentError("INVALID_REQUEST", "표시용 회사명이 확인된 회사명과 일치하지 않습니다.")
         payload = {
             "prompt_version": "editorial_v2", "brief": request.brief.model_dump(),
-            "facts": [f.model_dump() for f in facts.values()],
+            "display_company_name": display_name,
+            "source_scope": self.source_scope,
+            "semantic_duplicates": [{"fact_id": fid, "covered_by_fact_id": owner}
+                                    for fid, owner in self.semantic_duplicates.items()],
+            "history_fact_ids": [fid for fid, fact in facts.items() if _history_fact(fact)],
+            "history_subheadings": "연혁 항목의 연도·연도 범위 소제목은 연결된 사실의 연도로 서버가 작성합니다. 모델의 소제목은 사용하지 않습니다.",
+            "facts": [{**f.model_dump(), "source_origins": self.fact_origins[fid]["origin_kinds"]}
+                      if fid not in source_excluded else {"fact_id": fid, "field_key": f.field_key,
+                          "status": f.status, "value": None, "evidence_refs": [],
+                          "source_scope_excluded": True} for fid, f in facts.items()],
             "required_fact_ids": sorted(required), "excluded_fields": sorted(excluded),
+            "subject_requirements": _editorial_companion_groups({fid: f for fid, f in facts.items()
+                if f.status == 'supported' and any(d in selection_policy[fid] for d in ('required', 'optional'))}, index),
             "selection_constraints": [{"fact_id": fid, "allowed_dispositions": list(allowed)}
                                       for fid, allowed in selection_policy.items()],
             "body_requirements": [{"fact_id": fid,
                 "numeric_tokens": sorted(numeric_evidence_tokens(fact.value or "")),
+                "preserve_terms": _rewrite_anchors(fact.value or ""),
                 "whole_fact_point_available": _whole_fact_point_available(fact),
                 "whole_fact_point_required": _whole_fact_point_required(fact),
                 "heading_can_cover": fact.field_key == "company_name"}
-                for fid, fact in facts.items() if fact.status == "supported" and fact.field_key not in excluded],
+                for fid, fact in facts.items() if fact.status == "supported" and fact.field_key not in excluded and fid not in held | source_excluded],
             "supplement_requests": missing,
-            "source_units": index.units,
+            "review_only_fact_ids": sorted(held),
+            "source_units": [unit for unit in index.units if self.source_scope != "real_only"
+                             or origins.get(unit["source_id"]) == "real"],
             "source_origins": {s.source_id: s.origin_kind for s in request.sources},
             "photos": [{"asset_id": aid, **meta} for aid, meta in photos.items()],
             "maximum_pages": request.brief.target_pages,
@@ -1961,6 +2719,14 @@ class LlmAgent:
                 refs_schema["minItems"] = refs_schema["maxItems"] = 0
         if whole_fact_ids:
             schema["$defs"]["_EditorialFactPoint"]["properties"]["fact_id"]["enum"] = whole_fact_ids
+            rewritten_point = schema["$defs"]["_EditorialFactPoint"]
+            rewritten_point["properties"]["text"] = {"type": "string", "minLength": 1, "maxLength": 1200}
+            rewritten_point["required"] = ["label", "fact_id", "text"]
+            # Every current-sized fact is rewritten in the same draft call.
+            # The prose branch remains for long/legacy conditional facts only.
+            if set(usable_ids) == set(whole_fact_ids):
+                schema["$defs"]["_EditorialCompositionPage"]["properties"]["points"]["items"] = {
+                    "$ref": "#/$defs/_EditorialFactPoint"}
         else:
             # Avoid advertising an unusable branch (or emitting an invalid empty enum).
             schema["$defs"]["_EditorialCompositionPage"]["properties"]["points"]["items"] = {
@@ -1969,9 +2735,91 @@ class LlmAgent:
         schema["properties"]["pages"].update(minItems=request.brief.target_pages,
                                              maxItems=request.brief.target_pages)
         _constrain_editorial_notes(schema, selection_policy)
-        response = self._request(instructions, payload, schema, "draft_sections")
+        self.draft_attempts = []
+        for attempt in range(2):
+            self.draft_attempts.append({"attempt": attempt + 1, "status": "started"})
+            response = self._request(instructions, payload, schema, "draft_sections")
+            try:
+                result = self._materialize_editorial(request, facts, selection_policy, photos, missing, names, response)
+            except _EditorialDuplicate as exc:
+                self.draft_attempts[-1].update(status="rejected", rule=exc.rule)
+                if attempt:
+                    raise
+                payload = {**payload, "correction": {"validation_message": str(exc),
+                    "previous_response": response, "maximum_corrections": 1}}
+            else:
+                feedback = _rewrite_feedback(result.pages, self.rewrite_audit)
+                feedback += self.claim_findings
+                self.draft_attempts[-1]['rewrite_feedback'] = feedback
+                if not attempt and feedback:
+                    self.draft_attempts[-1].update(status='repair_requested', rule='rewrite_quality')
+                    payload = {**payload, 'correction': {
+                        'validation_message': '선택한 사실과 근거 ID를 유지하고 지적된 본문·소제목만 고치세요. body_missing 사실은 해당 주제의 본문에 쓰거나 사용하지 않는 이유를 기록하세요. 누락된 보호 명칭은 label이 아닌 text에도 모두 넣으세요. 숫자·규격은 해당 fact.value와 연결된 원문에 있는 것만 사용하세요. 자료 설명체를 제거하되 조건·의미를 생략하지 마세요. 이것이 마지막 수정 요청입니다.',
+                        'rewrite_feedback': feedback, 'previous_response': response, 'maximum_corrections': 1}}
+                    continue
+                self.draft_attempts[-1]["status"] = "accepted"
+                for row in self.rewrite_audit:
+                    if row['fallback']:
+                        fact = facts[row['fact_id']]
+                        self.review_notes.append({'fact_id': fact.fact_id,
+                            'value': fact.value, 'body_value': row['published'],
+                            'reason': '다시 쓰기 실패: 마지막 수정 후에도 보호 항목이 빠진 문장은 본문에서 제외했습니다.',
+                            'missing': row['missing'], 'candidate': row['candidate'],
+                            'removed_sentences': row.get('removed_sentences', []),
+                            'withheld_from_body': True,
+                            'evidence_refs': [ref.model_dump() for ref in fact.evidence_refs]})
+                used_sources = {ref.source_id for page in result.pages for block in page.blocks
+                                for ref in block.evidence_refs}
+                used_sources.update(photos[block.content["asset_id"]]["source_id"]
+                    for page in result.pages for block in page.blocks if block.type == "image")
+                self.used_demo_sources = sorted(sid for sid in used_sources if origins[sid] in {"demo", "mock"})
+                return result
+        raise _invalid()
+
+    def _materialize_editorial(self, request, facts, selection_policy, photos, missing, names, response):
+        from app.services.validation import is_label, numeric_evidence_tokens, subject_value_findings
+        self.claim_findings = []
+        source_index = SourceIndex(request.sources)
+        reviewed_body_facts = set()
+        # An indexed null note means "used in body". A known optional fact
+        # accidentally left null is a repairable metadata gap, not a reason to
+        # discard every valid sentence before the body repair path can run.
+        indexed = response.get('fact_notes')
+        if isinstance(indexed, dict) and set(indexed) == set(facts):
+            raw_body = set()
+            for page in response.get('pages', []):
+                for item in [page.get('lead'), *page.get('points', [])]:
+                    if isinstance(item, dict):
+                        raw_body.update(item.get('fact_ids') or ([item['fact_id']] if 'fact_id' in item else []))
+                raw_body.update(fid for fid in page.get('heading', {}).get('fact_ids', [])
+                                if fid in facts and facts[fid].field_key == 'company_name')
+            missing_reasons = {fid for fid, note in indexed.items() if note is None and fid not in raw_body
+                               and 'excluded' in selection_policy[fid]}
+            if missing_reasons:
+                positions = {fid: f'F{n}' for n, fid in enumerate(facts, 1)}
+                if len(self.draft_attempts) < 2:
+                    raise _EditorialDuplicate('본문에 쓰지 않은 사실의 fact_notes를 null로 두지 말고 미사용 사유를 채우세요: '
+                        + ', '.join(positions[fid] for fid in sorted(missing_reasons)), 'missing_unused_reason')
+                response = copy.deepcopy(response)
+                for fid in missing_reasons:
+                    response['fact_notes'][fid] = {'unused_disposition': 'excluded',
+                        'reason': '1회 수정 뒤에도 본문과 미사용 사유가 없어 미사용 사실로 기록했습니다.'}
+                    self.review_notes.append({'fact_id': fid, 'value': facts[fid].value,
+                        'body_value': None, 'withheld_from_body': True,
+                        'reason': '1회 수정 뒤에도 미사용 사유가 빠져 해당 사실의 미사용 상태만 보완했습니다.',
+                        'evidence_refs': [r.model_dump() for r in facts[fid].evidence_refs]})
+                for page in response['pages']:
+                    heading = page['heading']
+                    if missing_reasons.intersection(heading['fact_ids']):
+                        heading['fact_ids'] = [fid for fid in heading['fact_ids'] if fid not in missing_reasons]
+                        if not heading['fact_ids']:
+                            heading['text'] = '주요 내용'
+                    page['sequence_fact_ids'] = [fid for fid in page.get('sequence_fact_ids', []) if fid not in missing_reasons]
         try:
-            plan = _composition_plan(response, facts, selection_policy, target_pages=request.brief.target_pages)
+            self.rewrite_audit = []
+            self.redundancy_audit = []
+            plan = _composition_plan(response, facts, selection_policy, target_pages=request.brief.target_pages,
+                                     rewrite_audit=self.rewrite_audit)
         except ValidationError:
             # Pydantic exceptions include response values; do not log or return the raw exception.
             raise _editorial_invalid("schema") from None
@@ -1981,7 +2829,58 @@ class LlmAgent:
         for fid, decision in selections.items():
             if not decision.reason.strip() or decision.disposition not in selection_policy[fid]:
                 raise _editorial_invalid("selection_policy")
+        companions = _editorial_companion_groups({fid: f for fid, f in facts.items()
+            if f.status == 'supported' and any(d in selection_policy[fid] for d in ('required', 'optional'))}, source_index)
+        body_ids = {fid for page in plan.pages for item in [page.lead, *page.points]
+                    if item is not None for fid in item.fact_ids}
+        for group in companions:
+            if not body_ids.intersection(group['trigger_fact_ids']):
+                continue
+            absent = set(group['fact_ids']) - body_ids
+            if not absent:
+                continue
+            self.claim_findings.append({'subject': group['subject'], 'missing_companion_fact_ids': sorted(absent),
+                'instruction': '소개하는 대상의 추출된 조건을 같은 주제 본문에 모두 포함하세요.'})
+            if len(self.draft_attempts) < 2:
+                continue
+            def relevance(page):
+                ids = {fid for item in [page.lead, *page.points] if item is not None for fid in item.fact_ids}
+                return (len(ids.intersection(group['fact_ids'])),
+                        len(ids.intersection(group['trigger_fact_ids'])), page is not plan.pages[0])
+            destination = max(plan.pages, key=relevance)
+            for fid in sorted(absent):
+                fact = facts[fid]
+                destination.points.append(_EditorialPoint(label=group['subject'],
+                    text=_customer_wording(fact.value or ''), fact_ids=[fid]))
+                selections[fid].disposition = 'required' if 'required' in selection_policy[fid] else 'optional'
+                selections[fid].reason = '소개하는 대상의 추출된 조건을 보존하기 위해 포함했습니다.'
+                body_ids.add(fid)
+                self.review_notes.append({'fact_id': fid, 'value': fact.value, 'body_value': fact.value,
+                    'withheld_from_body': False, 'reason': '1회 수정 뒤에도 빠진 대상별 조건을 저장된 사실에서 복원했습니다.',
+                    'evidence_refs': [r.model_dump() for r in fact.evidence_refs]})
         included = {fid for fid, d in selections.items() if d.disposition in {"required", "optional"}}
+        if len(self.draft_attempts) >= 2:
+            occurrences = {}
+            for page in plan.pages:
+                for item in [page.lead, *page.points]:
+                    if item is not None and len(item.fact_ids) == 1 and item.fact_ids[0] in included:
+                        occurrences.setdefault(item.fact_ids[0], []).append(item)
+            remove = set()
+            for fid, items in occurrences.items():
+                if len(items) < 2:
+                    continue
+                keep = min(items, key=lambda x: (len(_rewrite_gaps(facts[fid].value or '', x.text)), -len(x.text)))
+                for item in items:
+                    if item is keep:
+                        continue
+                    remove.add(id(item))
+                    self.review_notes.append({'fact_id': fid, 'value': item.text, 'body_value': None,
+                        'withheld_from_body': True, 'reason': '1회 수정 후에도 같은 사실이 반복되어 조건이 더 온전한 항목만 남겼습니다.',
+                        'evidence_refs': [r.model_dump() for r in facts[fid].evidence_refs]})
+            for page in plan.pages:
+                if page.lead is not None and id(page.lead) in remove:
+                    page.lead = None
+                page.points = [item for item in page.points if id(item) not in remove]
         if "fact_notes" in response and len(plan.pages) < request.brief.target_pages:
             logger.warning("Editorial draft rejected: rule=minimum_page_count requested=%s actual=%s",
                            request.brief.target_pages, len(plan.pages))
@@ -1993,8 +2892,10 @@ class LlmAgent:
         used: dict[str, list[str]] = {fid: [] for fid in included}
         seen_texts, used_photos, pages = set(), set(), []
         origins = {s.source_id: s.origin_kind for s in request.sources}
+        if any(p.layout in {"cover_text", "cover_photo"} for p in plan.pages[1:]):
+            raise _editorial_invalid("cover_position")
 
-        def claim(item: _EditorialText, kind: str, *, level: int = 1) -> Block:
+        def claim(item: _EditorialText, kind: str, *, level: int = 1) -> Block | None:
             if not item.text.strip():
                 raise _editorial_invalid("blank_text")
             if len(item.fact_ids) != len(set(item.fact_ids)):
@@ -2003,16 +2904,66 @@ class LlmAgent:
                 raise _editorial_invalid("excluded_reference")
             if not item.fact_ids and (kind != "heading" or not is_label(item.text)):
                 raise _editorial_invalid("heading_evidence" if kind == "heading" else "body_evidence")
+            if kind != 'heading' and len(self.draft_attempts) >= 2:
+                for row in self.rewrite_audit:
+                    if row['fallback'] and item.fact_ids == [row['fact_id']]:
+                        fid = row['fact_id']
+                        item.text, removed = _verified_rewrite_sentences(facts[fid].value or '', row['candidate'])
+                        row.update(published=item.text, removed_sentences=removed)
+                        reviewed_body_facts.add(fid)
+                        if not item.text:
+                            return None
             if kind != "heading":
                 normalized = " ".join(item.text.split())
                 if normalized in seen_texts:
-                    raise AgentError("AGENT_OUTPUT_INVALID", "AI가 같은 본문을 반복했습니다. 작성 범위를 조정해 주세요.")
+                    if reviewed_body_facts.intersection(item.fact_ids):
+                        # Sentence quarantine can make two previously distinct
+                        # certificate paragraphs identical. Withhold this
+                        # derived residue, without relaxing model-duplicate rules.
+                        for row in self.rewrite_audit:
+                            if row['fact_id'] in item.fact_ids and row['fallback']:
+                                row['removed_sentences'] = [*row.get('removed_sentences', []), item.text]
+                                row['published'] = ''
+                        return None
+                    raise _EditorialDuplicate()
                 seen_texts.add(normalized)
             evidence = _unique_refs([r for fid in item.fact_ids for r in facts[fid].evidence_refs])
+            if item.fact_ids and all(facts[fid].field_key == 'certifications' for fid in item.fact_ids):
+                evidence = _certificate_identity_refs(item.text, evidence, source_index)
             original = " ".join(r.excerpt for r in evidence)
-            if numeric_evidence_tokens(item.text) - numeric_evidence_tokens(original):
-                logger.warning("Editorial draft rejected: rule=numeric_evidence kind=%s level=%s", kind, level)
-                raise AgentError("AGENT_OUTPUT_INVALID", "생성 문구의 수치·단위·날짜가 연결된 원문에 없습니다.")
+            if kind != 'heading':
+                kept = []
+                for sentence in re.split(r'(?<=[다요])[.!?]\s+', item.text):
+                    findings = subject_value_findings(sentence, [r.excerpt for r in evidence])
+                    extra = numeric_evidence_tokens(sentence) - numeric_evidence_tokens(original)
+                    if not findings and not extra:
+                        kept.append(sentence)
+                        continue
+                    details = {'fact_ids': list(item.fact_ids), 'findings': findings,
+                               'missing_numeric_tokens': sorted(extra),
+                               'instruction': '같은 대상·행위·수치와 원문 위치를 연결해 문장만 수정하세요.'}
+                    self.claim_findings.append(details)
+                    reviewed_body_facts.update(item.fact_ids)
+                    if len(self.draft_attempts) >= 2:
+                        self.review_notes.append({'fact_id': item.fact_ids[0] if item.fact_ids else None,
+                            'value': sentence, 'body_value': None, 'withheld_from_body': True,
+                            'reason': '1회 수정 후에도 수치·대상 연결을 확인할 수 없어 해당 문장만 제외했습니다.',
+                            'findings': findings, 'missing_numeric_tokens': sorted(extra),
+                            'evidence_refs': [r.model_dump() for r in evidence]})
+                item.text = '. '.join(kept).strip()
+                if not item.text:
+                    return None
+            extra_heading = numeric_evidence_tokens(item.text, year_heading=kind == 'heading') - numeric_evidence_tokens(original)
+            if extra_heading:
+                self.claim_findings.append({'fact_ids': item.fact_ids, 'heading': item.text,
+                    'missing_numeric_tokens': sorted(extra_heading), 'instruction': '이 소제목의 근거 없는 수치만 수정하세요.'})
+                if len(self.draft_attempts) >= 2:
+                    self.review_notes.append({'fact_id': item.fact_ids[0] if item.fact_ids else None,
+                        'value': item.text, 'body_value': None, 'withheld_from_body': True,
+                        'reason': '1회 수정 후에도 소제목 수치의 근거가 없어 해당 소제목만 제외했습니다.',
+                        'evidence_refs': [r.model_dump() for r in evidence]})
+                item = item.model_copy(update={'text': '주요 내용', 'fact_ids': []})
+                evidence = []
             for fid in item.fact_ids:
                 # Titles cannot launder an omitted body fact by attaching all IDs.
                 if kind != "heading" or (level == 1 and facts[fid].field_key == "company_name"):
@@ -2025,6 +2976,10 @@ class LlmAgent:
                          fact_ids=item.fact_ids, evidence_refs=evidence)
 
         for n, planned in enumerate(plan.pages):
+            if n == 0 and (self.display_company_name or request.brief.target_company):
+                display = self.display_company_name or request.brief.target_company
+                planned.heading = _EditorialText(text=display, fact_ids=[f.fact_id for f in names
+                    if f.fact_id in included and _same_company_name(display, _company_name_title(f))])
             if not set(planned.sequence_fact_ids) <= included:
                 raise _editorial_invalid("sequence_reference")
             if planned.layout in {"process_steps", "timeline"}:
@@ -2053,25 +3008,104 @@ class LlmAgent:
                 raise _editorial_invalid("photo_reference")
             limit = 2 if request.brief.photo_preference == "many" else 1
             chosen = list(dict.fromkeys(aid for aid in planned.photo_ids if aid not in used_photos))[:limit]
+            matching = []
+            for aid in chosen:
+                relevant = self._photo_matches_page(photos[aid], planned)
+                self.photo_audit.append({'asset_id': aid, 'page': n + 1,
+                    'attempt': len(self.draft_attempts), 'caption': self._photo_caption(photos[aid]),
+                    'decision': 'included' if relevant else 'excluded',
+                    'reason': 'page_subject_match' if relevant else 'page_subject_not_confirmed'})
+                if relevant:
+                    matching.append(aid)
+            chosen = matching
             layout = planned.layout
             if layout in {"cover_text", "cover_photo"} and n != 0:
                 raise _editorial_invalid("cover_position")
             if layout == "cover_photo" and not chosen:
                 layout = "cover_text"
             # The lead and every point are independent editable/provenance units.
-            blocks = [claim(planned.heading, "heading"), claim(planned.lead, "paragraph")]
+            blocks = [claim(planned.heading, "heading")]
+            if planned.lead is not None:
+                if body := claim(planned.lead, "paragraph"):
+                    blocks.append(body)
             for item in planned.points:
-                blocks.append(claim(_EditorialText(text=item.label, fact_ids=item.fact_ids), "heading", level=2))
-                blocks.append(claim(item, "paragraph"))
+                point_facts = [facts[fid] for fid in item.fact_ids]
+                if point_facts and all(_history_fact(fact) for fact in point_facts):
+                    item = item.model_copy(update={"label": _history_heading(point_facts)})
+                prefix = re.match(r"^" + re.escape(item.label) + r"\s*[:：]\s*", item.text)
+                if prefix and not numeric_evidence_tokens(prefix.group()):
+                    item = item.model_copy(update={"text": item.text[prefix.end():]})
+                body = claim(item, "paragraph")
+                if body is not None:
+                    blocks.append(claim(_EditorialText(text=item.label, fact_ids=item.fact_ids), "heading", level=2))
+                    blocks.append(body)
             for aid in chosen:
-                # A label is not evidence of ownership/capacity; descriptions remain internal inputs for review.
+                caption = self._photo_caption(photos[aid])
                 blocks.append(Block(block_id="block_" + uuid.uuid4().hex[:16], type="image",
-                    content={"asset_id": aid, "alt": "선택 자료 사진", "caption": "선택 자료 사진", "fit": "contain"}))
+                    content={"asset_id": aid, "alt": caption, "caption": caption, "fit": "contain"}))
                 used_photos.add(aid)
-            pages.append(Page(page_id="page_" + uuid.uuid4().hex[:16], title=planned.heading.text,
+            pages.append(Page(page_id="page_" + uuid.uuid4().hex[:16], title=blocks[0].content['text'],
                 layout_key=layout, blocks=blocks, design=PageDesign(palette=plan.palette,
                     typography=plan.typography, density=planned.density, brand_color=request.brief.brand_color)))
-        gaps = _editorial_body_gaps(facts, used)
+        # The bounded repair's withheld sentences are review items, not a new
+        # document-wide blocker. All unrelated coverage checks remain intact.
+        gaps = _editorial_body_gaps(facts, {fid: texts for fid, texts in used.items()
+                                         if fid not in reviewed_body_facts})
+        for fid, gap in list(gaps.items()):
+            if gap['body_missing']:
+                if facts[fid].field_key == 'company_name':
+                    continue  # Company identity remains a prerequisite.
+                self.claim_findings.append({'fact_id': fid, **gap,
+                    'instruction': '제목에만 연결한 사실을 관련 본문에 넣거나 미사용 사유를 기록하세요.'})
+                reviewed_body_facts.add(fid)
+                if len(self.draft_attempts) >= 2:
+                    self.review_notes.append({'fact_id': fid, 'value': facts[fid].value,
+                        'body_value': None, 'withheld_from_body': True,
+                        'reason': '1회 수정 후에도 본문 참조가 없어 해당 사실과 제목 참조만 제외했습니다.',
+                        'evidence_refs': [r.model_dump() for r in facts[fid].evidence_refs]})
+                    for page in pages:
+                        for block in page.blocks:
+                            if block.type == 'heading' and fid in block.fact_ids:
+                                block.content['text'] = '주요 내용'
+                                block.fact_ids = []
+                                block.evidence_refs = []
+                                if block.content.get('level') == 1:
+                                    page.title = '주요 내용'
+                del gaps[fid]
+                continue
+            self.claim_findings.append({'fact_id': fid, **gap,
+                'instruction': '원래 사실의 빠진 수치·날짜·식별번호를 본문에 보존하세요.'})
+            reviewed_body_facts.add(fid)
+            for page in pages:
+                kept = []
+                for block in page.blocks:
+                    if block.type == 'paragraph' and fid in block.fact_ids:
+                        retained, removed = _verified_rewrite_sentences(facts[fid].value or '', block.content['text'])
+                        if retained:
+                            block.content['text'] = retained
+                            kept.append(block)
+                            used[fid] = [retained]
+                            if len(self.draft_attempts) >= 2 and removed:
+                                self.review_notes.append({'fact_id': fid, 'value': ' '.join(removed),
+                                    'body_value': retained, 'withheld_from_body': True,
+                                    'reason': '1회 수정 후에도 보호 항목이 빠진 문장만 제외했습니다.',
+                                    'missing': gap['missing_numeric_tokens'],
+                                    'evidence_refs': [r.model_dump() for r in facts[fid].evidence_refs]})
+                            continue
+                        if kept and kept[-1].type == 'heading' and kept[-1].content.get('level') == 2:
+                            kept.pop()
+                        if len(self.draft_attempts) >= 2:
+                            self.review_notes.append({'fact_id': fid, 'value': block.content['text'],
+                                'body_value': None, 'withheld_from_body': True,
+                                'reason': '1회 수정 후에도 필수 수치·날짜·식별번호가 빠진 주장을 보류했습니다.',
+                                'missing': gap['missing_numeric_tokens'],
+                                'evidence_refs': [r.model_dump() for r in facts[fid].evidence_refs]})
+                        continue
+                    kept.append(block)
+                page.blocks = kept
+            used[fid] = [b.content['text'] for p in pages for b in p.blocks
+                         if b.type == 'paragraph' and fid in b.fact_ids]
+            del gaps[fid]
         if gaps:
             # Position is request-local (F1... on the wire). Do not log raw values,
             # model prose, source excerpts, token values or untrusted identifiers.
@@ -2081,6 +3115,20 @@ class LlmAgent:
                     "body_missing=%s missing_numeric_count=%s", positions[fid], facts[fid].field_key,
                     gap["body_missing"], len(gap["missing_numeric_tokens"]))
             raise AgentError("AGENT_OUTPUT_INVALID", "포함하기로 한 사실 또는 수치·단위가 본문에서 빠졌습니다.")
+        # Headings/sequence metadata may link a body fact; body ownership is exclusive.
+        owners: set[str] = set()
+        history_pages: set[int] = set()
+        for page_number, page in enumerate(plan.pages):
+            for item in [page.lead, *page.points]:
+                if item is None:
+                    continue
+                if owners.intersection(item.fact_ids):
+                    raise _EditorialDuplicate()
+                owners.update(item.fact_ids)
+                if any(_history_fact(facts[fid]) for fid in item.fact_ids):
+                    history_pages.add(page_number)
+        if len(history_pages) > 1:
+            raise _EditorialDuplicate("연혁·설립·사업 진출·인증 이력은 한 페이지의 연혁 구역으로 모으세요. 인증 상세 페이지의 관련 없는 도입문은 null로 비우세요.", "scattered_history")
         extracted = {r.segment_id for f in facts.values() for r in f.evidence_refs}
         count_reason = plan.page_count_reason
         original_count = len(response["pages"])
@@ -2092,12 +3140,50 @@ class LlmAgent:
             page_count_reason=count_reason,
             supplement_requests=[f"{key}: 선택 자료에서 확인 가능한 근거를 보완해 주세요." for key in missing],
             unextracted_segment_ids=[seg.segment_id for src in request.sources for seg in src.segments
-                                     if seg.text.strip() and seg.segment_id not in extracted])
-        title = " · ".join(dict.fromkeys(_company_name_title(f) for f in names)) if names else "회사소개서 초안"
+                                      if seg.text.strip() and seg.segment_id not in extracted])
+        for fid in reviewed_body_facts:
+            if not used[fid]:
+                next(s for s in audit.selections if s.fact_id == fid).disposition = 'review'
+            audit.supplement_requests.append(f'{fid}: 수치·대상 연결 확인 필요. 제외 문장과 원문 위치는 검토 메모를 확인하세요.')
+        title = self.display_company_name or request.brief.target_company or (_company_name_title(names[0]) if names else "회사소개서 초안")
+        pages, caption_links = grounded_photo_captions(pages, facts, request.sources)
+        self.photo_audit.extend(caption_links)
+        # Clause-removal events have before/after and block IDs, not the
+        # fallback/fact_id/missing fields consumed by rewrite feedback.
+        pages, self.redundancy_audit = remove_grounded_redundant_clauses(pages, facts)
         return DraftResult(title=title, pages=pages, editorial=audit)
 
     @staticmethod
-    def _brochure_photos(request: DraftRequest, excluded: set[str]) -> dict[str, dict]:
+    def _photo_caption(meta: dict) -> str:
+        caption = meta.get("caption", "")
+        if not isinstance(caption, str) or any(w in caption for w in ("확인 필요", "선택 자료 사진", "참고 사진")):
+            return ""
+        label = caption.split("—", 1)[0].strip()
+        label = re.sub(r"^(?:회사\s*)?소개서의\s*", "", label)
+        label = re.sub(r"(?:을|를)\s*합친\s*이미지$", "", label).strip()
+        return "" if label in {"자료 사진", "사진", "이미지"} else label
+
+    @staticmethod
+    def _photo_matches_page(meta: dict, page: _EditorialPage) -> bool:
+        caption = LlmAgent._photo_caption(meta)
+        if not caption:
+            return False
+        compact = re.sub(r'\s+', '', ' '.join(item.text for item in
+            [page.heading, page.lead, *page.points] if item is not None)).lower()
+        if re.search(r'건물|외관|전경', caption):
+            return page.layout in {'cover_photo', 'cover_text'} or bool(
+                re.search(r'회사|사업장|본사|공장', page.heading.text))
+        # Named processes/instruments must actually occur on the page. Generic
+        # 품질/인증 is not enough to justify a laboratory photograph.
+        subjects = re.findall(r'아연도금|아노다이징|무전해니켈|크로메이트|부동태|인산염피막|흑착색|전해연마|크롬도금|염수분무|물침지|내마모|도막두께|샌딩|광택|pH', caption, re.I)
+        if subjects:
+            return any(term.lower() in compact for term in subjects)
+        terms = [word for word in re.findall(r'[가-힣A-Za-z0-9]+', caption)
+                 if len(word) > 1 and word not in {'사진', '이미지', '처리라인', '생산라인', '장비', '휴대형', '검사장비'}]
+        return bool(terms) and any(term.lower() in compact for term in terms)
+
+    @staticmethod
+    def _brochure_photos(request: DraftRequest, excluded: set[str], *, require_description: bool = True) -> dict[str, dict]:
         if request.brief.photo_preference == "none":
             return {}
         excluded_words = {word for key in excluded for word in {
@@ -2113,6 +3199,7 @@ class LlmAgent:
                 meta = source.asset_descriptions.get(aid, {})
                 caption, w, h = meta.get("caption"), meta.get("width"), meta.get("height")
                 if (not isinstance(caption, str) or not caption.strip() or
+                        (require_description and not LlmAgent._photo_caption(meta)) or
                         type(w) is not int or type(h) is not int or min(w, h) < 160 or
                         any(word in caption for word in excluded_words)):
                     continue

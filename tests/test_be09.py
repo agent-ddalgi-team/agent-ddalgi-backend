@@ -571,6 +571,21 @@ def test_sweep_expires_due_sessions_and_keeps_live_ones(app, settings):
     assert sweeper.sweep_once(settings) == {"expired": 0, "purged": 0, "reclaimed": 0, "late_dirs": 0, "orphan_tmp": 0, "claimed": 0, "done": 0, "retry": 0, "failed": 0}
 
 
+def test_expiry_preserves_explicit_evaluation_archive_but_purges_session(app, settings):
+    # Evaluation archives are siblings of session dirs, never copied to a live session.
+    archive = settings.private_runs_dir / 'quality_runs' / 'pilot_independent'
+    archive.mkdir(parents=True)
+    retained = archive / 'facts.json'
+    retained.write_text('{"evaluation": "synthetic"}', encoding='utf-8')
+    flow = Flow(app, settings)
+    _expire(settings, flow.sid)
+    counts = sweeper.sweep_once(settings)
+    assert counts['expired'] == 1 and counts['done'] == 1
+    assert not (settings.private_runs_dir / flow.sid).exists()
+    assert retained.read_text(encoding='utf-8') == '{"evaluation": "synthetic"}'
+    assert flow.c.get(f'/api/v1/sessions/{flow.sid}').status_code == 410
+
+
 def test_orphan_tmp_dirs_protect_running_jobs(app, settings):
     flow = Flow(app, settings)
     adir = artifacts.artifacts_dir(settings, flow.sid)

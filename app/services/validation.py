@@ -94,11 +94,33 @@ def _norm(text: str) -> str:
     return " ".join(text.split())
 
 
+_QUANTITY_UNITS = r"영업일|개월|시간|억원|만원|미크론|μm|µm|um|㎛|℃|°C|퍼센트|kg|mm|cm|㎡|m²|hr|%|톤|년|월|일|명|개|대|건|회|원|g|m"
+
+
+def _expand_unit_lists(text: str) -> str:
+    number = r'\d+(?:\.\d+)?'
+    pattern = r'(?<![\d.])(' + number + r'(?:\s*[·/,]\s*' + number + r')+)\s*(' + _QUANTITY_UNITS + r')(?![A-Za-z])'
+    def expand(match):
+        if re.fullmatch(r'\d{1,3}(?:,\d{3})+(?:\.\d+)?', match[1]):
+            return match[0]
+        return ' '.join(n + match[2] for n in re.findall(number, match[1]))
+    return re.sub(pattern, expand, text, flags=re.I)
+
+
 def quantity_tokens(text: str) -> set[tuple[str, str]]:
-    """Literal number/unit pairs; semantic equivalence and unit conversions remain review work."""
-    return {(number.replace(",", ""), unit.lower()) for number, unit in re.findall(
-        r"(?<![0-9.])(\d+(?:[.,]\d+)*)\s*(영업일|개월|시간|억원|만원|kg|mm|cm|㎡|m²|%|톤|년|월|일|명|개|대|건|회|원|g|m)(?![A-Za-z])",
-        text, re.IGNORECASE)}
+    """Equivalent unit spelling/shared lists, without converting physical units."""
+    unit = _QUANTITY_UNITS
+    text = _expand_unit_lists(text)
+    result = {(number.replace(",", ""), suffix.lower()) for number, suffix in re.findall(
+        r"(?<![0-9.])(\d+(?:[.,]\d+)*)\s*(" + unit + r")(?![A-Za-z])", text, re.I)}
+    for first, first_unit, last, last_unit in re.findall(
+            r"(?<![\d.])(\d+(?:[.,]\d+)*)\s*(" + unit + r")?\s*[~∼–-]\s*"
+            r"(\d+(?:[.,]\d+)*)\s*(" + unit + r")(?![A-Za-z])", text, re.I):
+        if not first_unit or first_unit.lower() == last_unit.lower():
+            result.update((n.replace(",", ""), last_unit.lower()) for n in (first, last))
+    aliases = {'미크론': 'um', 'μm': 'um', 'µm': 'um', '㎛': 'um', '℃': '°c',
+               '퍼센트': '%', 'm²': '㎡'}
+    return {(n, aliases.get(u, u)) for n, u in result}
 
 
 _MONTHS = {name: n for n, names in enumerate((
@@ -113,15 +135,14 @@ _DATE_PATTERNS = (
     re.compile(r"(?<![\w.-])(?P<d>\d{1,2})\s+(?P<m>" + _MONTH_PATTERN + r")\s+(?P<y>[12]\d{3})(?!\d)", re.I),
     re.compile(r"\b(?P<m>" + _MONTH_PATTERN + r")\s+(?P<d>\d{1,2}),?\s+(?P<y>[12]\d{3})(?!\d)", re.I),
 )
-_CALENDAR_YEAR = re.compile(r"(?<![\dA-Za-z.-])([12]\d{3})(?:\s*년|(?=\s*\|))")
+def numeric_evidence_tokens(text: str, *, year_heading: bool = False) -> set[tuple[str, str]]:
+    """Compare numeric values, with independent unit/date preservation tokens.
 
-
-def numeric_evidence_tokens(text: str) -> set[tuple[str, str]]:
-    """Compare literal quantities and unambiguous calendar dates, without unit conversion.
-
-    Dates stay atomic: matching year/month/day digits in different dates is not evidence.
-    Their year can support a year-only history statement; a year cannot support a full date.
-    This is a formatting check, not proof of subject, date role, conditions or causality.
+    A value never changes type because it has 년, a table delimiter, or a range
+    beside it. Range endpoints are ordinary values too. Full dates additionally
+    stay atomic so matching digits from two different dates cannot invent a date.
+    ``year_heading`` remains accepted for saved callers but has no effect.
+    Subject, chronology and conditions still require semantic review.
     """
     tokens: set[tuple[str, str]] = set()
 
@@ -133,24 +154,277 @@ def numeric_evidence_tokens(text: str) -> set[tuple[str, str]]:
         except ValueError:
             return match[0]  # Invalid dates are not normalized.
         tokens.add(("date", value.isoformat()))
-        tokens.add(("year", str(value.year)))
+        tokens.update(("number", str(n)) for n in (value.year, value.month, value.day))
         return " " * len(match[0])
 
     for pattern in _DATE_PATTERNS:
         text = pattern.sub(calendar, text)
 
-    def year(match: re.Match) -> str:
-        tokens.add(("year", match[1]))
-        return " " * len(match[0])
+    text = _expand_unit_lists(text)
 
-    text = _CALENDAR_YEAR.sub(year, text)
     for number in re.findall(r"\d+(?:[.,]\d+)*", text):
         # Only well-formed thousands grouping is presentation, never decimal punctuation.
         if re.fullmatch(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?", number):
             number = number.replace(",", "")
+        if number.isdigit():
+            number = str(int(number))
         tokens.add(("number", number))
-    tokens.update(("quantity", number + "|" + unit) for number, unit in quantity_tokens(text))
+    # 년 is optional typography in a timeline, not a second numeric type.
+    tokens.update(("quantity", number + "|" + unit) for number, unit in quantity_tokens(text) if unit != "년")
     return tokens
+
+
+def subject_value_findings(text: str, excerpts: list[str]) -> list[dict]:
+    """Narrow, source-derived timeline binding check; no company-specific answers.
+
+    Only explicit year-leading source rows establish bindings. Missing structure
+    is unassessed, never proof of an error. General numeric/identifier checks are
+    independent; a four-digit specification is not made into a timeline year.
+    """
+    compact = lambda s: re.sub(r"[^0-9A-Za-z가-힣]", "", s).lower()
+    actions = r"사업\s*(?:공정\s*)?(?:진출|시작|구축)|(?:회사|법인)\s*설립|(?:공정\s*)?인증|승인|준공|착공|특허출원"
+    bindings: dict[tuple[str, str], dict] = {}
+    for excerpt in excerpts:
+        for line in excerpt.splitlines():
+            row = re.match(r"^\s*((?:19|20)\d{2})(?:년)?\s*(?:[|｜:]\s*)?(.+)$", line)
+            if not row:
+                continue
+            year, description = row.groups()
+            for part in re.split(r"[,/;]", description):
+                event = re.search(actions, part)
+                if not event:
+                    continue
+                subject, action = compact(part[:event.start()]), compact(event[0])
+                if len(subject) < 2:
+                    continue
+                key = (subject, action)
+                binding = bindings.setdefault(key, {'subject': subject, 'action': action,
+                                                     'years': set(), 'source_rows': []})
+                binding['years'].add(year)
+                if line not in binding['source_rows']:
+                    binding['source_rows'].append(line)
+    # Explicit prose years or year-leading rows, not arbitrary four-digit IDs.
+    years = list(re.finditer(r"(?<![\dA-Za-z])((?:19|20)\d{2})(?:년|(?=\s*[|｜]))", text))
+    findings = []
+    for i, match in enumerate(years):
+        clause = text[match.end():years[i + 1].start() if i + 1 < len(years) else len(text)]
+        # "ALPHA 2007년, BETA 2008년" is postfix dating, not a
+        # 2007-scoped statement about BETA. Do not borrow across a new sentence
+        # or an undated catalogue/list introduced after the timeline clause.
+        if re.match(r'\s*[,.;)]', clause):
+            continue
+        clause = re.split(r'\)|(?<=[가-힣])[.!?](?:\s|$)|소개\s*자료|자료의\s*인증|'
+                          r'(?:카탈로그|소개서|자료)\s*(?:의|에는|에)?\s*인증\s*목록', clause, maxsplit=1)[0]
+        claim = compact(clause)
+        for old, new in [('사업에진출', '사업진출'), ('사업을시작', '사업시작'),
+                         ('사업을구축', '사업구축'), ('인증을', '인증')]:
+            claim = claim.replace(old, new)
+        for (subject, action), binding in bindings.items():
+            # Both subject and predicate must occur in this year-scoped clause.
+            pos = claim.find(subject)
+            if pos < 0 or action not in claim[pos + len(subject):]:
+                continue
+            if match[1] not in binding['years']:
+                findings.append({'rule': 'subject_value_mismatch', 'subject': subject,
+                    'action': action, 'claimed_value': match[1],
+                    'source_values': sorted(binding['years']), 'source_rows': binding['source_rows'],
+                    'reason': '같은 대상·행위에 연결된 원문 연도와 다릅니다.'})
+    # Only explicit labelled rows establish quantity bindings. Never infer a
+    # subject from a neighbouring sentence or an unlabelled table column.
+    quantities: dict[str, dict] = {}
+    for excerpt in excerpts:
+        for line in excerpt.splitlines():
+            row = re.fullmatch(r'\s*([^:：|｜\d]{2,40})\s*[:：|｜]\s*(.+)', line)
+            if not row or not quantity_tokens(row[2]):
+                continue
+            if any(kind == 'date' for kind, _ in numeric_evidence_tokens(row[2])):
+                continue  # Calendar components are not independent quantities.
+            label = compact(row[1])
+            binding = quantities.setdefault(label, {'values': set(), 'source_rows': []})
+            binding['values'].update(quantity_tokens(row[2]))
+            binding['source_rows'].append(line)
+    for label, binding in quantities.items():
+        for sentence in re.split(r'[\n;]|(?<=[가-힣])[.!?]\s+', text):
+            row = re.fullmatch(r'\s*([^:：|｜\d]{2,40})\s*[:：|｜]\s*(.+)', sentence)
+            if not row or compact(row[1]) != label:
+                continue
+            for number, unit in quantity_tokens(row[2]) - binding['values']:
+                findings.append({'rule': 'subject_value_mismatch', 'subject': label,
+                    'action': '수치', 'claimed_value': number + unit,
+                    'source_values': sorted(n + u for n, u in binding['values']),
+                    'source_rows': binding['source_rows'],
+                    'reason': '같은 대상의 원문 행에 연결된 수치·단위와 다릅니다.'})
+    return list({(f['subject'], f['action'], f['claimed_value']): f for f in findings}.values())
+
+
+def identifier_tokens(text: str) -> set[str]:
+    """Atomic certificate/specification identifiers, including their prefixes.
+
+    Whitespace and letter case are presentation. Hyphens, revisions and type
+    suffixes are part of the identifier; neither numeric sets nor substring
+    matches can establish that they survived rewriting.
+    """
+    text = re.sub(r"[‐‑‒–—−]", "-", text)
+    standard = (r"(?<![A-Za-z0-9])(?:ISO(?:\s*/\s*IEC)?|AS|KS\s*[A-Z]|"
+                r"AMS(?:-QQ-[A-Z])?|MIL-(?:DTL|PRF|C|A)|KSPC|KDS)\s*-?\s*"
+                r"\d[A-Za-z0-9]*(?:\s*[-:]\s*[A-Za-z0-9]+)*"
+                r"(?:\s+(?:TY|TYPE|Method|Class)\s+[A-Za-z0-9]+)*")
+    code = r"(?<![A-Za-z0-9])[A-Za-z0-9]*[A-Za-z][A-Za-z0-9]*(?:\s*-\s*[A-Za-z0-9]+)+(?![A-Za-z0-9])"
+    # Bare registration numbers must also survive, but calendar dates are not
+    # identifiers. The independent date validator already handles those.
+    without_dates = text
+    for pattern in _DATE_PATTERNS:
+        without_dates = pattern.sub(lambda m: ' ' * len(m[0]), without_dates)
+    serial = r"(?<![0-9.-])\d{2,}(?:\s*-\s*\d{1,})+(?![A-Za-z0-9.-])"
+    spans = [(m.start(), m.end(), m[0]) for pattern, source in
+             ((standard, text), (code, text), (serial, without_dates))
+             for m in re.finditer(pattern, source, re.I)]
+    # Keep the serial component too: expanding an originally abbreviated 510-2
+    # to KSPC 510-2 preserves it. In the opposite direction the original full
+    # prefixed token is still required, so dropping ISO cannot pass.
+    tokens = {re.sub(r"\s+", "", value).upper() for _, _, value in spans}
+    # Approval/registration numbers may be digits only. Their leading zeros
+    # are identity, unlike the numeric-value comparison used for quantities.
+    tokens.update(re.sub(r"\s+", "", m[1]) for m in re.finditer(
+        r"(?:승인|등록|출원|인증서\s*식별|식별)\s*번호\s*(?:는|은|[:：])?\s*(?:제\s*)?(\d+(?:\s*-\s*\d+)*)", text))
+    return tokens
+
+
+def preservation_candidates(units: list[dict]) -> list[dict]:
+    """Deterministic, cited certificate fields. No model is used to find gaps.
+
+    Free prose, unspecified translations and unlabelled numbers are deliberately
+    unassessed. A candidate is a review requirement, never a supported fact.
+    """
+    certificate_sources = {u['source_id'] for u in units if re.search(
+        r'Certificate of (?:Approval|Registration|.*Quality)|KSPC Certificate|인\s*증\s*서', u['text'], re.I)}
+    result = []
+    def add(unit, kind, value, quote, tokens):
+        if not tokens:
+            return
+        process = kind in {'quantity_list', 'method_list', 'purpose_list'}
+        key = hashlib.sha256((unit['source_id'] + (unit['locator'] if process else '') + kind + repr(sorted(tokens))).encode()).hexdigest()[:16]
+        if any(c['candidate_id'] == key for c in result):
+            return
+        result.append({'candidate_id': key, 'field_key': 'processes' if process else 'certifications', 'kind': kind,
+            'value': value, 'tokens': sorted(tokens), 'source_id': unit['source_id'],
+            'locator': unit['locator'], 'quote': quote, 'check_version': 1})
+    for unit in units:
+        text = unit['text']
+        # Process lists are scoped to the exact source segment, never the whole file.
+        if re.search(r'[<（(][^>）)]+[>）)]', text):
+            for bracket in re.finditer(r'[<（(]([^>）)]+)[>）)]', text):
+                quantities = {n + '|' + u for n, u in quantity_tokens(bracket[1])
+                              if u not in {'년', '월', '일'}}
+                if len(quantities) >= 2:
+                    add(unit, 'quantity_list', bracket[0], bracket[0], quantities)
+                methods = set(re.findall(r'[가-힣A-Za-z]+법(?=[\s,·/]|$)', bracket[1]))
+                if len(methods) >= 2:
+                    add(unit, 'method_list', bracket[0], bracket[0], methods)
+        if re.search(r'목적|용도', text) and len(re.findall(r'\d+[.)]', text)) >= 2:
+            # Only an explicit numbered purpose list and known literal equivalents.
+            patterns = {'rust_prevention': r'녹슬지\s*않|녹\s*방지',
+                        'wear_resistance': r'마모에\s*강|내마모', 'gloss': r'광택'}
+            terms = {k for k, p in patterns.items() if re.search(p, text)}
+            if terms:
+                add(unit, 'purpose_list', text, text, terms)
+        if unit['source_id'] not in certificate_sources:
+            continue
+        text = unit['text']
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if re.search(r'만료|유효기간|Expiry', line, re.I):
+                dates = {v for k, v in numeric_evidence_tokens(line) if k == 'date'}
+                add(unit, 'expiry', line, line, dates)
+            if re.search(r'소재지|[가-힣]+로\s*\d|\d+-\d+.*\b(?:ro|Road|Street)\b', line, re.I):
+                # Exact street/lot identifier; translations of the address are allowed.
+                numbers = set(re.findall(r'(?<!\d)\d+-\d+(?!\d)', line))
+                add(unit, 'site', line, line, numbers)
+            if re.match(r'회사명\s*[:：]', line):
+                value = re.split(r'[:：]', line, 1)[1].strip()
+                add(unit, 'subject', value, line, {value})
+            if (re.search(r'AS\s*9100|ISO\s*(?:9001|14001|45001)|KSPC\s*\d', line, re.I)
+                    and not any(k == 'date' for k, _ in numeric_evidence_tokens(line))):
+                add(unit, 'standard', line, line, identifier_tokens(line))
+        # A maintenance clause has two mandatory parts, not merely the word 인증.
+        if re.search(r'continued surveillance audit', text, re.I) and 'criteria' in text.lower():
+            add(unit, 'maintenance', text, text, {'surveillance', 'criteria'})
+        elif re.search(r'유지기준.*지속.*(?:한하여|경우)', text):
+            add(unit, 'maintenance', text, text, {'criteria', 'continued'})
+        if re.search(r'scope|인증범위|registration covers|금속제품의 표면처리', text, re.I):
+            # Fixed bilingual technical vocabulary; never infer process/spec associations.
+            for label, pattern in [('anodizing', r'anodizing|양극산화'),
+                                   ('chromate', r'chromate|크로메이트'),
+                                   ('zinc', r'electroplated zinc|아연도금'),
+                                   ('passivation', r'passivation|부동태'),
+                                   ('surface_treatment', r'surface treatment|표면처리')]:
+                if re.search(pattern, text, re.I):
+                    add(unit, 'scope', label, text, {label})
+    return result
+
+
+def missing_preservation(candidates: list[dict], facts: list[Fact]) -> list[dict]:
+    """Coverage belongs to the same source, including unresolved alternatives.
+
+    Finding a token in another certificate cannot satisfy this requirement.
+    Existing conflict claims count as extracted, never as confirmed/supported.
+    """
+    missing = []
+    for c in candidates:
+        values = []
+        for fact in facts:
+            if (fact.conditions or {}).get('preservation_review'):
+                continue
+            entries = ([{'value': fact.value, 'evidence_refs': fact.evidence_refs}] if fact.value
+                       else fact.alternatives or [])
+            for entry in entries:
+                refs = entry['evidence_refs']
+                process = c['kind'] in {'quantity_list', 'method_list', 'purpose_list'}
+                if any((r.source_id if isinstance(r, EvidenceRef) else r['source_id']) == c['source_id']
+                       and (not process or 'segment:' + (r.segment_id if isinstance(r, EvidenceRef) else r['segment_id']) == c['locator']) for r in refs):
+                    values.append(entry['value'])
+        text = '\n'.join(values)
+        kind, required = c['kind'], set(c['tokens'])
+        if kind == 'quantity_list':
+            actual = {n + '|' + u for n, u in quantity_tokens(text)}
+        elif kind == 'method_list':
+            actual = {term for term in required if term in text}
+        elif kind == 'purpose_list':
+            patterns = {'rust_prevention': r'녹슬지\s*않|녹\s*방지|방청',
+                        'wear_resistance': r'마모에\s*강|내마모', 'gloss': r'광택'}
+            actual = {term for term in required if re.search(patterns[term], text)}
+        elif kind == 'expiry':
+            actual = {v for k, v in numeric_evidence_tokens(text) if k == 'date'}
+        elif kind == 'standard':
+            actual = identifier_tokens(text)
+            # An explicit name + approval-number field is the same identifier
+            # as the certificate's joined form. Never join across claims.
+            for match in re.finditer(r'\b(AS\s*\d+[A-Z]?|ISO\s*\d+)\s*(?:인증서?\s*)?'
+                    r'승인\s*번호\s*(?:는|은|[:：])?\s*(\d+(?:-\d+)*)', text, re.I):
+                actual.update(identifier_tokens(match[1] + '-' + match[2]))
+            # A comma list shares its standard prefix (KSPC 509, 510-2, 510-3).
+            # Never borrow a prefix from another sentence/certificate.
+            for clause in re.split(r'[.\n;]', text):
+                for group in re.finditer(r'\b(KSPC)\s+\d+(?:-\d+)?(?:\s*[,·]\s*\d+(?:-\d+)?)+', clause):
+                    actual.update(group[1] + n for n in re.findall(r'\d+(?:-\d+)?', group[0]))
+                if re.search(r'\bKSPC\s*\d', clause):
+                    actual.update('KSPC' + n for n in re.findall(r'(?<!\d)(\d{3}-\d+)(?!\d)', clause))
+        elif kind == 'site':
+            actual = set(re.findall(r'(?<!\d)\d+-\d+(?!\d)', text))
+        elif kind == 'subject':
+            actual = {v for v in required if re.search(re.escape(v) + r'(?=\s|[,.(]|의|은|는|이|가|$)', text)}
+        else:
+            patterns = {'surveillance': r'surveillance|사후\s*심사|지속.*심사|정기.*심사',
+                'criteria': r'criteria|유지\s*기준|인증\s*기준|LRQA.{0,30}기준',
+                'continued': r'continued|지속|계속', 'anodizing': r'anodizing|양극산화|아노다이징',
+                'chromate': r'chromate|크로메이트', 'zinc': r'electroplated zinc|아연\s*도금|전기도금\s*아연\s*코팅',
+                'passivation': r'passivation|부동태', 'surface_treatment': r'surface treatment|표면\s*처리'}
+            actual = {v for v in required if re.search(patterns[v], text, re.I)}
+        if not required <= actual:
+            missing.append({**c, 'missing_tokens': sorted(required - actual)})
+    return missing
 
 
 def value_in_text(value: str | None, text: str) -> bool:
@@ -396,6 +670,10 @@ def preflight_conflicts(ctx: Context) -> list[IssueDraft]:
         covered_facts.update(issue.fact_ids)
     # 분석 결과에 Issue가 누락되거나 완화돼도 아직 conflict인 Fact를 해결된 것으로 취급하지 않는다.
     for fact in ctx.facts.values():
+        if (fact.conditions or {}).get('claim_review', {}).get('quarantined'):
+            # v2 conflicts are withheld individual claims. Referencing one in a
+            # document still fails the ordinary unsupported-fact check below.
+            continue
         if fact.status == "conflict" and fact.fact_id not in covered_facts:
             conflicts.append(IssueDraft("content", "VALUE_CONFLICT", "blocker",
                                         f"{fact.field_key}의 값이 자료마다 다릅니다. 후보 근거를 확인해 주세요.",
@@ -465,7 +743,7 @@ def server_checks(document: Document, ctx: Context) -> tuple[list[IssueDraft], l
                 if any(ref not in block.evidence_refs for ref in expected_refs):
                     drafts.append(IssueDraft("content", "EVIDENCE_INVALID", "blocker",
                         "주장의 사실 근거 또는 조건 근거가 빠졌습니다.", block_ids=[bid]))
-                if numeric_evidence_tokens(joined) - numeric_evidence_tokens(
+                if numeric_evidence_tokens(joined, year_heading=block.type == 'heading') - numeric_evidence_tokens(
                         " ".join(r.excerpt for r in expected_refs)):
                     drafts.append(IssueDraft("content", "VALUE_MISMATCH", "blocker",
                         "현재 문구의 수치·단위 조합이 연결된 원문에 없습니다.", block_ids=[bid]))
@@ -490,6 +768,12 @@ def server_checks(document: Document, ctx: Context) -> tuple[list[IssueDraft], l
                                              block_ids=[bid], source_ids=[ref.source_id]))
                     break
             for fid in block.fact_ids:
+                fact = ctx.facts.get(fid)
+                if fact and ((fact.conditions or {}).get('claim_review', {}).get('quarantined')
+                             or (fact.conditions or {}).get('preservation_review')
+                             or (fact.conditions or {}).get('review_findings')):
+                    drafts.append(IssueDraft('content', 'UNSUPPORTED_CLAIM', 'blocker',
+                        '확인 필요로 보류한 인증 주장을 본문에서 사용할 수 없습니다.', block_ids=[bid], fact_ids=[fid]))
                 if fid in conflict_by_fact:
                     src = conflict_by_fact[fid]
                     drafts.append(IssueDraft("content", "VALUE_CONFLICT", "blocker", src.message,
