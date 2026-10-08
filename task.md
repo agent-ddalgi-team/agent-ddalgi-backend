@@ -7,6 +7,8 @@
 
 ## 1. Quick Status
 
+- **2026-10-08 [BE-06·10 / F-08] 사진·필수 내용 해결 안내:** 사진 오류별 조치·편집 초점·필수 내용 보완 안내·격리 사진 브라우저30묶음 통과·BE-10 진행중. [기록](task_backend.md#photo-required-recovery-20261008).
+
 - **2026-10-08 [BE-06·10 / F-08] 보완 자료 반영 연결:** 단계별 버튼·미저장 편집 보호·재점검 응답 유실 복구·격리 브라우저29묶음 통과·BE-10 진행중. [기록](task_backend.md#supplement-document-continuation-20261008).
 
 - **2026-10-08 [BE-06·10 / F-08] 본문 수정 후 검사:** 편집 화면 지적/원문·저장 후 내용 검사·응답 유실 복구 확인·BE-10 진행중. [기록](task_backend.md#editor-finding-save-validation-20261008).
