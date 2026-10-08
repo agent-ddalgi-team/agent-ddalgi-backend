@@ -7,6 +7,8 @@
 
 ## 1. Quick Status
 
+- **2026-10-08 [BE-06·10 / F-08] 복구 통합 회귀:** PDF36묶음·DOCX35묶음·백엔드7건 통과·BE-10 진행중. [기록](task_backend.md#recovery-integration-20261008).
+
 - **2026-10-08 [BE-06·10 / F-08] 연결된 필수 문구 복구:** 전후 비교·단일 사실 본문 한정·동일 요청 복구·격리 브라우저28묶음 통과·BE-10 진행중. [기록](task_backend.md#required-text-restoration-20261008).
 
 - **2026-10-08 [BE-06·10 / F-08] 필수 사실 본문 추가:** 사실·페이지 명시 선택·근거 보존·응답 유실 1회 적용·격리 브라우저27묶음 통과·BE-10 진행중. [기록](task_backend.md#required-fact-insertion-20261008).
