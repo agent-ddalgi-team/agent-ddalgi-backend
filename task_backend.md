@@ -150,7 +150,7 @@
 환경 준비가 필요한 PC에서는 저장소 루트의 PowerShell에서 `uv sync --locked --group dev`를 먼저 실행한다. 아래 검사는 `$env:PYTHON_DOTENV_DISABLED = "1"`로 .env 자동 로딩을 끄고 실행한다. 테스트는 임시 DB와 가짜 AI 응답을 사용한다.
 
 - [x] `uv run python -B -m pytest -q -p no:cacheprovider tests/test_agent_llm.py tests/test_be05.py`가 실패 없이 끝난다. 2026-09-29 마지막 실행 **528 passed, 1 warning**(6.44절).
-- [x] 전체 백엔드 pytest: 2026-10-06 test ffb8496 기반/이번 재시작 검사 보완 포함 **1,807 passed / 10 skipped / 3 warnings / 실패0**(736.27초). 실제 Chrome·LibreOffice/가상 자료·임시 DB·대역 AI. Windows의 POSIX 전용8건과 명시 실행이 필요한 실제 유료AI2건은skip이며 통과로 계산하지 않는다. [최신 회귀/완료 기준](#backend-completion-audit-20261006). 이전039b46e의1,764건 결과는 [이전 기록](#backend-regression-20261006)에 보존한다.
+- [x] 전체 백엔드 pytest: 2026-10-08 eval/customer-purpose-quality-20261008/ca15a2d 기반 **2,116 passed / 10 skipped / 3 warnings / 실패0**(991.20초). 실제 Chrome·LibreOffice/가상 자료·임시 DB·대역 AI. Windows에서 실행하지 않는 macOS POSIX 전용8건과 명시적으로 끈 실제 유료AI2건은skip이며 통과로 계산하지 않는다. [최신 전체 회귀](#backend-full-regression-20261008). 이전2026-10-06 ffb8496의1,807건은 [당시 완료 기준](#backend-completion-audit-20261006),039b46e의1,764건은 [이전 기록](#backend-regression-20261006)에 보존한다.
 - [x] `C:\frontend`에서 `node scripts/check-ai-workflow.mjs --publication --photos`가 `result: PASS`로 끝난다. 2026-09-29 설계도 배치 적용 후 재실행 **19개 검사 묶음 통과**, 시연 PDF 4쪽·26,213바이트, 재다운로드 동일.
 - [x] `C:\frontend`에서 TypeScript(`tsc -b`)·ESLint·Prettier·`vite build` 통과.
 - [x] **2026-09-30 Mac 재실행**: `scripts/check_s01_http.py --publication --timeout 120` 및 `--publication --photos --timeout 120` 모두 `status: passed`. 실제 localhost HTTP·Chrome·가상 자료 범위이며 이번 프론트 실행은 포함하지 않는다. [최신 결과](#http-photo-publication-20260930).
@@ -1731,3 +1731,14 @@
 | Git 공유·운영 반영 | 현재 두 브랜치의 로컬 커밋까지. 이번 변경의 push/PR/merge는 별도 사용자 요청에 따름 |
 
 - 사용자에게 이번 오류 안정화 작업의 확인된 범위는 마무리됐다고 보고하되 전체 오류0·BE-10 전체100%로 보고하지 않는다. 백엔드에는 새 필수 기능을 임의로 추가하지 않는다. 다음 필수 작업을 막연하게 새 합성 평가로 만들지 않으며, 후속은 사용자 요청에 따른 변경 공유나 실제 업무 자료의 새 오류 재현이다. 자기 문서3개를 로컬 커밋하고 원격push는 하지 않는다.
+
+<a id="backend-full-regression-20261008"></a>
+
+### 2026-10-08 현재 작업 브랜치의 전체 백엔드 회귀
+
+- BE-01~10/F-08 연결. 사용자 후속 요청에 따라 개별·화면 검수와 별도로 최신 변경이 다른 기능을 깨뜨리지 않았는지 전체 검사를 한 번 실행했다. eval/customer-purpose-quality-20261008/ca15a2d 기준이며 검사 중 제품/시험/환경 파일을 변경하지 않았다. 제품 코드·API·DB·프롬프트·프론트 변경과 새 저장소 파일/의존성 추가는 없다.
+- 실행은 C:/final/backend에서 PYTHON_DOTENV_DISABLED=1, BE09_LIVE_AI=0을 설정하고 `.venv/Scripts/python.exe -X utf8 -B -m pytest -q -ra -p no:cacheprovider --disable-warnings --maxfail=5`다. 사용자 원본 시연DB·API 키를 쓰지 않는 임시 DB/가상 입력/MockAgent 또는 준비된 SDK 응답을 사용했다. Chrome·LibreOffice 출력·폰트·사진·넘침·분량·승인·다운로드·프로세스 정리는 실제 엔진으로 검사했다. 유료 모델 판단 품질 시험을 새로 실행한 것은 아니다.
+- **최종2,116 passed / 10 skipped / 3 warnings / 실패0,991.20초, 종료0**. 전체 대상2,126건은 Agent 응답1,276, API계약44, BE-02 74, BE-03 19, BE-04 92, BE-05 81, BE-06 98, BE-07 94, BE-08규칙39/통합39, BE-09 45, demo43, migrations37, ORM DB23/workflow78, 등록자료 적재44건이다. 수집 확인은 테스트 목록만 읽은 것이며 통과 건수에 추가 합산하지 않는다.
+- 건너뛴8건은 test_be07.py의 macOS 출력 프로세스용 POSIX 검사(980행2/1005행3/1017행2/1033행1)다. 나머지2건은 test_be09.py:777의 BE09_LIVE_AI=1 명시가 필요한 유료 AI 검사이며 이번에는0으로 껐다. 그10건을 이번 환경에서 검증됐다고 보고하지 않는다. 실패가 없으므로 테스트를 재실행하거나 승인/내용 가드를 완화하지 않았다. 경고3건은 상세 경고 출력 비활성화 상태로 집계한 수치이며 이번에 별도 원인을 새로 판정하지 않았다.
+- git 작업본을 확인해 제품 변경이 없음을 확인했고 검사 결과·DoD 최신 참조·plan/task 연결표만 갱신한다. 프론트647ae9a와 미추적 `.claude/`는 그대로이며 변경/커밋하지 않는다. 백엔드 기록3파일만 로컬 커밋하고 원격push는 하지 않는다. 기존2026-10-06 전체 회귀 기록은 지우지 않고 최신 링크만 이번 기준으로 연결했다.
+- 전체 회귀 검수 단위는 완료다. 직전 화면 PDF36/DOCX39묶음과 공통 시나리오를 합산하거나 실제 AI의 전체 안정성 보장으로 계산하지 않는다. BE-10 일반 의미 품질과 Agent 선행/담당 상태는 그대로이며 이번 서버 검사를 근거로 다른 담당 작업을 완료 처리하지 않는다. 새 재현/변경 없이 같은 전체 검사를 반복하지 않는다. 다음 후속은 사용자 요청에 따른 변경 공유·병합 또는 실제 업무 자료의 새 재현 오류 대응이다.
