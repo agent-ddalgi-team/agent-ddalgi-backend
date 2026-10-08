@@ -7,6 +7,28 @@
 
 ## 1. Quick Status
 
+- **2026-10-08 [BE-06·10 / F-08] 최신 브랜치 통합:** test/develop 병합·공개자료 요청 복구 보존·실제 제외 API 검사·98건/PDF36묶음 통과·진행중 유지. [기록](task_backend.md#recovery-branch-integration-20261008).
+
+- **2026-10-08 [BE-06·10 / F-08] 실제 시연 현황 확인:** 현재 문서v2 내용 통과·미해결0·PDF/DOCX7쪽 배치 통과·승인/출력 미실행 확인·BE-10 진행중. [기록](task_backend.md#live-session-recovery-audit-20261008).
+
+- **2026-10-08 [BE-06·10 / F-08] 복구 통합 회귀:** PDF36묶음·DOCX35묶음·백엔드7건 통과·BE-10 진행중. [기록](task_backend.md#recovery-integration-20261008).
+
+- **2026-10-08 [BE-06·10 / F-08] 연결된 필수 문구 복구:** 전후 비교·단일 사실 본문 한정·동일 요청 복구·격리 브라우저28묶음 통과·BE-10 진행중. [기록](task_backend.md#required-text-restoration-20261008).
+
+- **2026-10-08 [BE-06·10 / F-08] 필수 사실 본문 추가:** 사실·페이지 명시 선택·근거 보존·응답 유실 1회 적용·격리 브라우저27묶음 통과·BE-10 진행중. [기록](task_backend.md#required-fact-insertion-20261008).
+
+- **2026-10-08 [BE-06·10 / F-08] 사진·필수 내용 해결 안내:** 사진 오류별 조치·편집 초점·필수 내용 보완 안내·격리 사진 브라우저30묶음 통과·BE-10 진행중. [기록](task_backend.md#photo-required-recovery-20261008).
+
+- **2026-10-08 [BE-06·10 / F-08] 보완 자료 반영 연결:** 단계별 버튼·미저장 편집 보호·재점검 응답 유실 복구·격리 브라우저29묶음 통과·BE-10 진행중. [기록](task_backend.md#supplement-document-continuation-20261008).
+
+- **2026-10-08 [BE-06·10 / F-08] 본문 수정 후 검사:** 편집 화면 지적/원문·저장 후 내용 검사·응답 유실 복구 확인·BE-10 진행중. [기록](task_backend.md#editor-finding-save-validation-20261008).
+
+- **2026-10-08 [BE-06·10 / F-08] 근거 보완 안내:** 항목별 보완 예시·후보별 원문·사실 직접 이동·격리 브라우저26묶음 통과·BE-10 진행중. [기록](task_backend.md#fact-evidence-guidance-20261008).
+
+- **2026-10-08 [BE-06·10 / F-08] 제외 후 재검증 연결:** 한 번 클릭·S03 응답 유실 복구·브라우저28묶음 통과·BE-10 진행중. [기록](task_backend.md#one-click-exclusion-validation-20261008).
+
+- **2026-10-08 [BE-06·10 / F-08] 미사용 선택 사실 처리:** S03 명시 제외·처리 기록 분리·API41건/UI27묶음 통과·BE-10 진행중 유지. [기록](task_backend.md#unused-preflight-review-20261008).
+
 - **2026-10-08 [F-02·08 / BE-03·04·10] 배치 변형 검수:** 관련19건/실제합성4사례 기대충족·정상조건 보존과 실제모호함/충돌 유지·일반품질 진행중. [기록](task_backend.md#layout-heldout-evaluation-20261008).
 
 - **2026-10-08 [F-02·03·05·08 / BE-03·04·06·10 연결] PPT 배치·사건 주체:** 전달/회귀 완료·최종 실추출2회 이전오류 미재현·4쪽 내용passed/문제0·일반품질 진행중. [기록](task_backend.md#pptx-layout-context-20261008).
