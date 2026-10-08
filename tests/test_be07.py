@@ -1368,3 +1368,56 @@ def test_docx_long_process_page_keeps_photo_caption_and_address(settings, out_di
     assert "확인한 가상 시설 사진" in full_text
     assert len(editable.inline_shapes) == 1
     assert abs(editable.inline_shapes[0].height.mm - 35.56) < 0.01
+
+
+@needs_browser
+def test_eval_saved_render_keeps_input_and_reports_target_difference(tmp_path, monkeypatch):
+    from scripts.experiments import agent_quality_comparison as q
+    doc = _doc([Page(page_id='p', title='가상 품질', layout_key='text', blocks=[
+        _blk('h','heading',text='가상 품질',level=1),
+        _blk('b','paragraph',text='가상 부품은 주문 조건을 확인한 뒤 검사합니다.')])])
+    assets = tmp_path/'assets'; assets.mkdir()
+    (assets/'asset_manifest.json').write_text('[]',encoding='utf-8')
+    source = tmp_path/'document.json'; source.write_text(doc.model_dump_json(),encoding='utf-8')
+    manifest = tmp_path/'manifest.json'
+    manifest.write_text(json.dumps({'documents':[{'label':'sample','document_path':'document.json','assets_dir':'assets'}]}),encoding='utf-8')
+    before = source.read_bytes()
+    monkeypatch.setattr(q.agent_llm,'LlmOptions',lambda *a,**kw: pytest.fail('offline replay requested model setup'))
+    results = q.render_saved_comparison(manifest, tmp_path/'comparison')
+    assert source.read_bytes() == before and results[0]['missing_text_blocks'] == []
+    assert results[0]['layout_ok'] and results[0]['pages'] == 1 and not results[0]['target_pages_match']
+    with pytest.raises(FileExistsError): q.render_saved_comparison(manifest, tmp_path/'comparison')
+
+
+@needs_browser
+def test_stage_runner_current_render_resume_and_regression_dispatch(tmp_path, monkeypatch):
+    from scripts.experiments import stage_runner as runner
+    doc = _doc([Page(page_id='p', title='가상 검사', layout_key='text', blocks=[
+        _blk('h','heading',text='가상 검사',level=1),
+        _blk('b','paragraph',text='가상 품목의 수량과 검사 조건을 기록합니다.')])])
+    assets = tmp_path/'assets'; assets.mkdir()
+    (assets/'asset_manifest.json').write_text('[]',encoding='utf-8')
+    source = tmp_path/'document.json'; source.write_text(doc.model_dump_json(),encoding='utf-8')
+    manifest = tmp_path/'manifest.json'
+    manifest.write_text(json.dumps({'documents':[{'label':'sample','document_path':'document.json','assets_dir':'assets'}]}),encoding='utf-8')
+    before = source.read_bytes(); executions=[]
+    # Actual regression is run by the outer suite; verify nested dispatch without recursive pytest.
+    monkeypatch.setattr(pytest,'main',lambda args: executions.append(args) or 0)
+    monkeypatch.chdir(Path.cwd())
+    for name in ('TEMP','TMP','PYTHON_DOTENV_DISABLED','PYTHONDONTWRITEBYTECODE','PYTHONIOENCODING'):
+        monkeypatch.setenv(name,os.environ.get(name,''))
+    monkeypatch.setattr(sys,'dont_write_bytecode',sys.dont_write_bytecode)
+    monkeypatch.setattr(sys,'path',list(sys.path))
+    root=tmp_path/'run'
+    common=['--manifest',str(manifest),'--run-dir',str(root),'--expected-template',layout_checks.TEMPLATE_VERSION]
+    assert runner.main(['stage1',*common,'--docx-label','sample']) == 0
+    record=json.loads((root/'baseline/results.json').read_text(encoding='utf-8'))
+    assert record['api_calls'] == 0 and record['results'][0]['docx_smoke']['text_and_images_preserved']
+    assert not record['results'][0]['target_pages_match']
+    assert runner.main(['stage1',*common,'--docx-label','sample','--resume']) == 0
+    assert runner.main(['stage2',*common]) == 0
+    assert len(executions)==3 and all(set(runner.REGRESSION)<=set(args) for args in executions)
+    assert source.read_bytes()==before
+    (root/'baseline/sample/document.json').write_text('{}',encoding='utf-8')
+    with pytest.raises(ValueError,match='artifact'):
+        runner.main(['stage1',*common,'--docx-label','sample','--resume'])
