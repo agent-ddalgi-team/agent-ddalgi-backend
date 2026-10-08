@@ -532,6 +532,42 @@ def test_same_input_recheck_non_conflict_blocker_invalidates_current_approval(pr
         assert conn.execute("SELECT status FROM approvals WHERE approval_id=?", (approved.json()["approval_id"],)).fetchone()[0] == "invalidated"
 
 
+def test_unused_optional_blocker_explicit_exclusion_survives_validation_and_restore(preflight_bridge_app, monkeypatch):
+    app, settings = preflight_bridge_app
+    _add_unconfirmed_preflight_blocker(monkeypatch)
+    ctx = Ctx(app, with_photo=False)
+    assert ctx.make_clean_and_validate(settings)["status"] == "failed"
+    issue = next(i for i in ctx.open_issues("UNSUPPORTED_CLAIM") if i["origin"] == "preflight")
+    original_pf = ctx.pf
+    monkeypatch.setattr(MockAgent, "analyze", lambda *args: pytest.fail("exclusion must not re-extract"))
+    monkeypatch.setattr(MockAgent, "draft", lambda *args: pytest.fail("exclusion must not regenerate draft"))
+    for action, expected in (("exclude", "passed"), ("restore", "failed")):
+        before = ctx.doc()
+        response = ctx.c.post(f"/api/v1/sessions/{ctx.sid}/preflights/{ctx.pf}/reviews", json={
+            "expected_input_revision": ctx.rev_in, "action": action,
+            "fact_ids": ["fact_night_unconfirmed"], "reason": "사용하지 않은 선택 내용 처리"},
+            headers={"Idempotency-Key": "unused-" + action})
+        assert response.status_code == 200, response.text
+        pf = response.json()
+        ctx.pf = pf["preflight_id"]
+        assert ctx.doc()["pages"] == before["pages"]
+        if ctx.get().get("input_review_required"):
+            route = f"/api/v1/sessions/{ctx.sid}/documents/{ctx.did}/impact-reviews"
+            review = ctx.c.post(route, json={"expected_revision": ctx.rev(), "input_revision": ctx.rev_in,
+                "preflight_id": ctx.pf, "confirmed": True})
+            assert review.status_code == 201, review.text
+            applied = ctx.c.post(route + "/" + review.json()["review_id"] + "/apply", json={
+                "expected_revision": ctx.rev(), "input_revision": ctx.rev_in,
+                "keep_reason": "사용하지 않은 선택 항목만 변경하고 본문은 유지합니다."})
+            assert applied.status_code == 200, applied.text
+        assert ctx.validated()["status"] == expected
+        assert ctx.validated()["status"] == expected  # Same input/result reused without re-extraction.
+        current = _first(ctx.issues(), issue_id=issue["issue_id"])
+        assert current["status"] == ("resolved" if action == "exclude" else "open")
+    old = ctx.c.get(f"/api/v1/sessions/{ctx.sid}/preflights/{original_pf}").json()
+    assert next(f for f in old["facts"] if f["fact_id"] == "fact_night_unconfirmed")["status"] == "needs_confirmation"
+
+
 def test_required_content_needs_real_text_not_only_fact_ids(app, settings):
     ctx = Ctx(app)
     ctx.make_clean_and_validate(settings)
