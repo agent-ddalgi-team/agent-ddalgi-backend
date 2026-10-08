@@ -55,6 +55,8 @@ def legacy_contract_view(value):
         return [legacy_contract_view(v) for v in value]
     if isinstance(value, dict):
         result = {k: legacy_contract_view(v) for k, v in value.items()}
+        if "metadata" in result and "source_id" in result and "segments" in result:
+            assert result.pop("metadata") == {}
         if "purpose" in result and "target_pages" in result:
             for key in ("audience", "usage_context", "tone", "target_company", "dart_corp_code", "required_fields", "brand_color"):
                 assert result.pop(key) == Brief.model_fields[key].get_default(call_default_factory=True)
@@ -730,6 +732,38 @@ def test_editorial_whole_fact_point_sdk_preserves_compound_certification(monkeyp
     checks, _ = validation.server_checks(doc, ctx)
     assert not [i for i in checks if i.severity == "blocker" and i.code != "DEMO_VALUE"]
     assert any(i.code == "DEMO_VALUE" for i in checks) is (origin == "demo")
+
+
+@pytest.mark.parametrize("original,value", [
+    ("연매출 40억", "회사 소개자료에는 연매출 40억으로 기재돼 있다(기준 시점/통화 미기재)"),
+    ("인원 36명", "회사 소개자료에는 인원 36명으로 기재돼 있다(기준 시점 미기재)"),
+    ("거래업체 350여 업체", "회사 소개자료에는 거래업체 350여 업체로 기재돼 있다(기준 시점 미기재)"),
+])
+def test_editorial_sdk_record_scope_reaches_draft_and_preserves_whole_fact(monkeypatch, original, value):
+    request, fid = numeric_editorial_request(original, value)
+    record = next(f for f in request.preflight.facts if f.fact_id == fid)
+    record.field_key = "other_info"
+    request.brief.required_fields = ["other_info"]
+    before = copy.deepcopy(request)
+    def respond(**kwargs):
+        assert kwargs["instructions"] == legacy.load_draft_prompt(editorial=True)
+        assert "기준 시점이 없는 매출·인원·거래업체 수" in kwargs["instructions"]
+        payload = json.loads(kwargs["input"])
+        item = next(f for f in payload["facts"] if f["field_key"] == "other_info")
+        assert item["value"] == value
+        response = editorial_composition(editorial_response(payload))
+        for page in response["pages"]:
+            page["points"] = [{"label": p["label"], "fact_id": item["fact_id"]}
+                              if p["fact_ids"] == [item["fact_id"]] else p for p in page["points"]]
+        return metered_response(output_text=json.dumps(response, ensure_ascii=False))
+    calls = fake_sdk(monkeypatch, response=respond)
+    agent = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=llm.RuntimeLedger()))
+    result = agent.draft(request)
+    body = next(b for p in result.pages for b in p.blocks if b.type == "paragraph"
+                and b.fact_ids == [fid] and b.content["text"] == value)
+    assert body.evidence_refs == record.evidence_refs and request == before
+    assert len([event for event, _ in calls if event == "response"]) == 1
+    assert validate_draft(result, request.sources, {f.fact_id for f in request.preflight.facts}, request.preflight) is None
 
 
 @pytest.mark.parametrize("damage", ["foreign", "excluded", "review", "duplicate", "mixed", "label_number",
@@ -1739,14 +1773,19 @@ def extraction(payload):
     return result
 
 
-def extraction_wire_result(result, payload):
+def extraction_wire_result(result, payload, schema=None):
     """테스트 SDK 대역은 실제 호출의 구간 참조 형식으로 응답한다."""
     result = copy.deepcopy(result)
+    per_fact_status = schema is not None and "status" in schema["$defs"]["fact"]["properties"]
     for item in result.values():
         for fact in item["facts"]:
+            if per_fact_status:
+                fact["status"] = item["status"]
             fact["evidence"] = [{"unit_id": next(u["unit_id"] for u in payload["source_units"]
                 if (u["source_id"], u["locator"]) == (ref["source_id"], ref["locator"]))}
                 for ref in fact["evidence"]]
+        if per_fact_status:
+            item.pop("status")
     return result
 
 
@@ -1955,6 +1994,14 @@ def test_extract_restores_source_version_location_and_keeps_conditions():
 
 
 @pytest.mark.parametrize("source,value,expected_status", [
+    ("표면의 내식성(168hr)은 좋다", "표면 내식성은 168시간으로 제시되어 있다.", "supported"),
+    ("내식성 168 HRS", "내식성 168시간", "supported"),
+    ("내식성 168 hours", "내식성 168시간", "supported"),
+    ("내식성 168시간", "내식성 168hr", "supported"),
+    ("내식성 168hr", "내식성 169시간", "needs_confirmation"),
+    ("내식성 168hr", "내식성 168일", "needs_confirmation"),
+    ("내식성 168hr", "내식성 10080분", "needs_confirmation"),
+    ("168hrcode 시험", "내식성 168시간", "needs_confirmation"),
     ("거래업체:350여 업체", "거래업체가 약 350개 업체라고 기재되어 있다.", "supported"),
     ("거래업체 약 350개 업체", "거래업체 350여 업체", "supported"),
     ("거래업체:1,350여 업체", "거래업체 약 1350개 업체", "supported"),
@@ -1967,9 +2014,30 @@ def test_extract_restores_source_version_location_and_keeps_conditions():
     ("거래업체:350여 업체", "설비 약 350개", "needs_confirmation"),
     ("거래업체 약 350개 업체", "거래업체 350개 업체", "needs_confirmation"),
     ("01. 아연도금 02. 아노다이징 03. 흑착", "공정 9종", "needs_confirmation"),
+    ("01. 아연도금 02. 아노다이징 03. 흑착", "총 3개 공정", "needs_confirmation"),
+    ("총 3개 공정: 아연도금, 아노다이징, 흑착", "총 3개 공정을 운영한다.", "supported"),
+    ("총 3개 공정: 아연도금, 아노다이징, 흑착", "총 4개 공정을 운영한다.", "needs_confirmation"),
+    ("자격관리번호: 2019-001545 / 자료 기재일: 2021.03.20", "2019년 자격 취득", "needs_confirmation"),
+    ("자격관리번호: 2019-001545 / 자료 기재일: 2021.03.20", "자격관리번호 2019-001545", "supported"),
+    ("자격관리번호: 2019-001545 / 자료 기재일: 2021.03.20", "자료 기재일 2021년 3월 20일", "supported"),
+    ("자격관리번호: 2019-001545 / 자료 기재일: 2021.03.20", "자격관리번호 2019-001546", "needs_confirmation"),
+    ("자격관리번호: 2019-001545", "자료 기재일 2021년 3월 20일", "needs_confirmation"),
     ("예시 수량 1200개", "예시 수량 1,200개", "supported"),
     ("만료일 2027.02.15", "만료일 2027년 2월 15일", "supported"),
     ("Issue date: 25 September 2025", "발행일 2025년 9월 25일", "supported"),
+    ("AS9100 - 25 September 2019", "AS9100 원승인일은 2019년 9월 25일이다.", "supported"),
+    ("ISO 9001 - 25 September 2019", "ISO 9001 원승인일은 2019년 9월 25일이다.", "supported"),
+    ("ISO 9001: Original issue date: 25 September 2019", "ISO 9001 원발행일은 2019년 9월 25일이다.", "supported"),
+    ("ISO 9001 - 25 September 2019", "ISO 9001 원승인일은 2019년 9월 26일이다.", "needs_confirmation"),
+    ("ISO 9001 - 25 September 2019", "ISO 9002 원승인일은 2019년 9월 25일이다.", "needs_confirmation"),
+    ("금액 9001원", "금액 9001원으로 기재되어 있다.", "supported"),
+    ("금액 9001원", "금액 9002원으로 기재되어 있다.", "needs_confirmation"),
+    ("금액 9001원", "금액 9001원까지 지급한다.", "supported"),
+    ("금액 9001원", "금액 9002원까지 지급한다.", "needs_confirmation"),
+    ("ISO (9001) - 25 September 2019", "ISO (9001) 원승인일은 2019년 9월 25일이다.", "supported"),
+    ("ISO (9001): Original issue date: 25 September 2019", "ISO (9001) 원발행일은 2019년 9월 25일이다.", "supported"),
+    ("금액 9001원", "금액 (9001)원까지 지급한다.", "supported"),
+    ("금액 9001원", "금액 (9002)원까지 지급한다.", "needs_confirmation"),
     ("2017 | 가상 기관 공정 승인", "연혁에는 가상 기관 공정 승인(2017년)이 기재되어 있다.", "supported"),
     ("2017 | 가상 기관 공정 승인", "연혁에는 가상 기관 공정 승인(2017)이 기재되어 있다.", "needs_confirmation"),
     ("2017 | 가상 기관 공정 승인", "가상 기관 공정 승인(2018년)", "needs_confirmation"),
@@ -4811,6 +4879,137 @@ def fake_sdk(monkeypatch, *, response=None, error=None):
     return calls
 
 
+@pytest.mark.parametrize("scenario", ["mixed", "numeric", "conflict", "duplicates"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_sdk_per_fact_status_keeps_clear_facts_separate_and_checks_each_evidence(monkeypatch, scenario, reverse):
+    texts = ["대표이사: 홍길동", "연매출 40억, 기준 시점 확인 필요", "전화: 02-123-4567",
+             "자격관리번호 2019-001545, 기재일 2021.03.20", "동일 기준 수량 4개", "동일 기준 수량 6개"]
+    source = SourceIn("src_per_fact", 2, "company", "가상 개별 사실 자료", "complete",
+                      [SegmentIn(f"seg_per_fact_{n}", {"paragraph": n}, text) for n, text in enumerate(texts, 1)])
+    request = AnalyzeRequest("ses_per_fact", 1, BRIEF, [source])
+    before_request = copy.deepcopy(request)
+    records = [{"text": texts[0], "status": "supported", "evidence": [{"unit_id": 1}]},
+               {"text": texts[1], "status": "needs_confirmation", "evidence": [{"unit_id": 2}]},
+               {"text": texts[2], "status": "supported", "evidence": [{"unit_id": 3}]}]
+    if scenario == "numeric":
+        records.append({"text": "2019년 자격 취득", "status": "supported", "evidence": [{"unit_id": 4}]})
+    elif scenario == "conflict":
+        records.extend({"text": texts[n - 1], "status": "conflict", "evidence": [{"unit_id": n}]} for n in (5, 6))
+    elif scenario == "duplicates":
+        records.extend(copy.deepcopy(records[:2]))
+    if reverse:
+        records.reverse()
+    body = {key: {"facts": []} for key in legacy.COMPANY_INFO_KEYS}
+    body["other_info"]["facts"] = records
+    before_body = copy.deepcopy(body)
+    def respond(**kwargs):
+        schema = kwargs["text"]["format"]["schema"]
+        assert kwargs["text"]["format"]["strict"] is True
+        assert set(schema["$defs"]["field"]["properties"]) == {"facts"}
+        assert set(schema["$defs"]["fact"]["required"]) == {"text", "evidence", "status"}
+        assert schema["$defs"]["fact"]["properties"]["status"]["enum"] == ["supported", "needs_confirmation", "conflict"]
+        return metered_response(output_text=json.dumps(body, ensure_ascii=False))
+    calls = fake_sdk(monkeypatch, response=respond)
+    agent = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env())), per_fact_status=True)
+    result = agent.analyze(request)
+    selected = [f for f in result.facts if f.field_key == "other_info"]
+    assert request == before_request and body == before_body and validate_analyze(result, [source]) is None
+    assert len([event for event, _ in calls if event == "response"]) == 1
+    clear = [f for f in selected if f.status == "supported"]
+    assert {f.value for f in clear} == {texts[0], texts[2]} and len(clear) == 2
+    assert not any(i.code == "UNSUPPORTED_CLAIM" and set(i.fact_ids) & {f.fact_id for f in clear} for i in result.issues)
+    uncertain = [f for f in selected if f.status == "needs_confirmation"]
+    assert sum(f.value == texts[1] for f in uncertain) == (2 if scenario == "duplicates" else 1)
+    if scenario == "numeric":
+        numeric = next(f for f in selected if f.value == "2019년 자격 취득")
+        assert numeric.status == "needs_confirmation"
+        assert any(numeric.fact_id in i.fact_ids and "연도 2019년" in i.message for i in result.issues)
+    conflicts = [f for f in selected if f.status == "conflict"]
+    assert len(conflicts) == (1 if scenario == "conflict" else 0)
+    if conflicts:
+        assert {candidate["value"] for candidate in conflicts[0].alternatives} == {texts[4], texts[5]}
+        assert any(i.code == "VALUE_CONFLICT" and i.fact_ids == [conflicts[0].fact_id] for i in result.issues)
+    for fact in selected:
+        for ref in fact.evidence_refs:
+            original = next(seg for seg in source.segments if seg.segment_id == ref.segment_id)
+            assert ref.excerpt == original.text and ref.locator == original.locator and ref.source_version == 2
+
+
+@pytest.mark.parametrize("case", [
+    ("연매출 40억", "회사 소개자료에는 연매출 40억으로 기재돼 있다(기준 시점/통화 미기재)", "supported", "supported"),
+    ("인원 36명", "회사 소개자료에는 인원 36명으로 기재돼 있다(기준 시점 미기재)", "supported", "supported"),
+    ("거래업체 350여 업체", "회사 소개자료에는 거래업체 350여 업체로 기재돼 있다(기준 시점 미기재)", "supported", "supported"),
+    ("연매출 40억", "현재 연매출 40억", "needs_confirmation", "needs_confirmation"),
+    ("인원 36명", "현재 인원 36명", "needs_confirmation", "needs_confirmation"),
+    ("거래업체 350여 업체", "현재 거래업체 350여 업체", "needs_confirmation", "needs_confirmation"),
+    ("연매출 40억", "회사 소개자료에는 연매출 40억원으로 기재돼 있다", "supported", "needs_confirmation"),
+    ("인원 36명", "회사 소개자료에는 인원 38명으로 기재돼 있다", "supported", "needs_confirmation"),
+    ("거래업체 350여 업체", "회사 소개자료에는 거래업체 350개로 기재돼 있다", "supported", "needs_confirmation"),
+    ("연매출 40억", "2026년 연매출 40억", "supported", "needs_confirmation"),
+])
+def test_sdk_undated_records_preserve_scope_and_do_not_promote_uncertain_claims(monkeypatch, case):
+    original, value, supplied_status, expected_status = case
+    source = SourceIn("src_record", 3, "company", "가상 기록 범위 검사", "complete", [
+        SegmentIn("seg_record", {"paragraph": 1}, original),
+        SegmentIn("seg_record_ceo", {"paragraph": 2}, "대표이사 홍길동")])
+    request = AnalyzeRequest("ses_record", 1, BRIEF, [source])
+    before = copy.deepcopy(request)
+    body = {key: {"facts": []} for key in legacy.COMPANY_INFO_KEYS}
+    body["other_info"]["facts"] = [
+        {"text": value, "status": supplied_status, "evidence": [{"unit_id": 1}]},
+        {"text": "대표이사 홍길동", "status": "supported", "evidence": [{"unit_id": 2}]}]
+    calls = fake_sdk(monkeypatch, response=metered_response(output_text=json.dumps(body, ensure_ascii=False)))
+    agent = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env())), per_fact_status=True)
+    result = agent.analyze(request)
+    record = next(f for f in result.facts if f.value == value)
+    ceo = next(f for f in result.facts if f.value == "대표이사 홍길동")
+    assert record.status == expected_status and ceo.status == "supported"
+    assert record.evidence_refs == [EvidenceRef(source_id=source.source_id, source_version=3,
+        segment_id="seg_record", locator={"paragraph": 1}, excerpt=original)]
+    blockers = [i for i in result.issues if i.code == "UNSUPPORTED_CLAIM" and record.fact_id in i.fact_ids]
+    assert bool(blockers) is (expected_status == "needs_confirmation")
+    assert not any(ceo.fact_id in i.fact_ids for i in result.issues)
+    assert request == before and validate_analyze(result, [source]) is None
+    assert len([event for event, _ in calls if event == "response"]) == 1
+
+
+@pytest.mark.parametrize("fault", ["missing_status", "unknown_status", "boolean_status", "not_found_fact",
+                                    "extra_field_status", "unknown_unit", "boolean_unit", "single_conflict"])
+def test_sdk_per_fact_status_rejects_malformed_status_and_references_without_retry(monkeypatch, fault):
+    source = SourceIn("src_status", 1, "company", "가상 상태 검사", "complete",
+                      [SegmentIn("seg_status", {"paragraph": 1}, "대표 홍길동")])
+    body = {key: {"facts": []} for key in legacy.COMPANY_INFO_KEYS}
+    item = {"text": "대표 홍길동", "status": "supported", "evidence": [{"unit_id": 1}]}
+    body["other_info"]["facts"] = [item]
+    if fault == "missing_status": item.pop("status")
+    elif fault == "unknown_status": item["status"] = "approved"
+    elif fault == "boolean_status": item["status"] = True
+    elif fault == "not_found_fact": item["status"] = "not_found"
+    elif fault == "extra_field_status": body["other_info"]["status"] = "supported"
+    elif fault == "unknown_unit": item["evidence"] = [{"unit_id": 2}]
+    elif fault == "boolean_unit": item["evidence"] = [{"unit_id": True}]
+    elif fault == "single_conflict": item["status"] = "conflict"
+    before = copy.deepcopy(body)
+    calls = fake_sdk(monkeypatch, response=metered_response(output_text=json.dumps(body, ensure_ascii=False)))
+    agent = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env())), per_fact_status=True)
+    with pytest.raises(AgentError) as error:
+        agent.analyze(AnalyzeRequest("ses_status", 1, BRIEF, [source]))
+    assert error.value.code == "AGENT_OUTPUT_INVALID" and not error.value.retryable and body == before
+    assert len([event for event, _ in calls if event == "response"]) == 1
+
+
+def test_production_bridge_enables_per_fact_status_and_legacy_schema_stays_unchanged(tmp_path, monkeypatch):
+    for key, value in config_env().items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(llm, "_trial", llm.TrialLedger())
+    settings = llm.Settings(private_runs_dir=tmp_path, db_path=tmp_path / "unused.sqlite3", agent_mode="llm")
+    bridge = llm.create_bridge(settings)
+    assert bridge.per_fact_status is True and not settings.db_path.exists()
+    schema = legacy.build_model_output_schema()
+    assert set(schema["$defs"]["field"]["properties"]) == {"status", "facts"}
+    assert set(schema["$defs"]["fact"]["required"]) == {"text", "evidence"}
+
+
 def test_sdk_extraction_selects_references_and_preserves_exact_source_text(monkeypatch):
     request = AnalyzeRequest("ses_test", 2, BRIEF, sources())
     request.sources[0].segments[0].text += "\n원문  공백\t유지: 2026\u00a0년 / OCR오타"
@@ -4821,7 +5020,7 @@ def test_sdk_extraction_selects_references_and_preserves_exact_source_text(monke
         evidence_schema = kwargs["text"]["format"]["schema"]["$defs"]["evidence"]
         assert evidence_schema["properties"] == {"unit_id": {"type": "integer", "enum": [1, 2, 3]}}
         assert [u["text"] for u in units] == [seg.text for src in request.sources for seg in src.segments]
-        body = extraction_wire_result(extraction(payload), payload)
+        body = extraction_wire_result(extraction(payload), payload, kwargs["text"]["format"]["schema"])
         assert all(set(ref) == {"unit_id"} for item in body.values()
                    for fact in item["facts"] for ref in fact["evidence"])
         return metered_response(output_text=json.dumps(body, ensure_ascii=False))
@@ -4836,8 +5035,9 @@ def test_sdk_extraction_selects_references_and_preserves_exact_source_text(monke
 
 
 @pytest.mark.parametrize("include_conditions,split_conditions", [(False, False), (True, False), (True, True)])
+@pytest.mark.parametrize("include_technical_detail", [False, True])
 def test_sdk_extraction_keeps_mock_products_conditions_and_all_original_references(
-        monkeypatch, include_conditions, split_conditions):
+        monkeypatch, include_conditions, split_conditions, include_technical_detail):
     # 기존 가상 원문으로 변환 보존을 검사한다. 기대 응답을 만든 대역이며 모델 품질 평가는 아니다.
     root = Path(__file__).parent / "fixtures" / "ddalgi_mock_bundle_v1"
     originals = {sid: (root / "ingest" / "originals" / f"{sid}.txt").read_text(encoding="utf-8").splitlines()
@@ -4859,6 +5059,16 @@ def test_sdk_extraction_keeps_mock_products_conditions_and_all_original_referenc
             segments_by_line[source_id, line_no] = parts
         selected.append(SourceIn(source_id, 1, "company" if source_id == "MOCK01" else "interview",
                                  "가상 추출 품질 검사", "complete", segments, origin_kind="mock"))
+    if include_technical_detail:
+        # 수치와 뒤쪽 적용 조건의 모든 구간이 변환 과정에서 보존되는지 검사한다. 모델 품질 평가는 아니다.
+        technical_segments = [
+            SegmentIn("seg_technical_subject", {"paragraph": 1}, "가상 공정 X: 알루미늄 시험시편 처리"),
+            SegmentIn("seg_technical_value", {"paragraph": 2}, "내식성(240hr) 시험 수치가 기재되어 있다."),
+            SegmentIn("seg_technical_scope", {"paragraph": 3}, "지정 시험시편에만 적용하며 양산 제품의 성능 보증이 아니다."),
+        ]
+        selected.append(SourceIn("MOCK_TECH", 1, "company", "가상 기술 상세 자료", "complete",
+                                 technical_segments, origin_kind="mock"))
+        segments_by_line["MOCK_TECH", 1] = technical_segments
     request = AnalyzeRequest("ses_extraction_quality", 1, BRIEF, selected)
     before_request = copy.deepcopy(request)
     # 원문의 11개 항목과 추가 조건 4개를 대조하는 기대 목록. SDK 입력에는 넣지 않는다.
@@ -4873,6 +5083,8 @@ def test_sdk_extraction_keeps_mock_products_conditions_and_all_original_referenc
         value = originals[sid][line_no - 1].split(": ", 1)[1]
         values = ["예시 제품 A", "예시 제품 B"] if key == "products_services" else [value]
         records.extend((key, text, sid, line_no) for text in values)
+    if include_technical_detail:
+        records.append(("technology", "가상 공정 X의 알루미늄 시험시편 내식성 240시간은 지정 시험시편에만 적용하며 양산 제품의 성능 보증이 아니다.", "MOCK_TECH", 1))
     def respond(**kwargs):
         payload = json.loads(kwargs["input"])
         assert kwargs["instructions"].startswith(legacy.load_extract_prompt() + "\n서버 source_origins")
@@ -4918,7 +5130,7 @@ def test_sdk_extraction_keeps_mock_products_conditions_and_all_original_referenc
 def test_sdk_extraction_rejects_unknown_or_forged_references_without_retry(monkeypatch, ref):
     def respond(**kwargs):
         payload = json.loads(kwargs["input"])
-        body = extraction_wire_result(extraction(payload), payload)
+        body = extraction_wire_result(extraction(payload), payload, kwargs["text"]["format"]["schema"])
         body["company_name"]["facts"][0]["evidence"] = [ref]
         return metered_response(output_text=json.dumps(body, ensure_ascii=False))
     calls = fake_sdk(monkeypatch, response=respond)
@@ -4935,7 +5147,7 @@ def test_sdk_extraction_rejects_unknown_or_forged_references_without_retry(monke
 def test_sdk_extraction_keeps_legacy_status_and_evidence_checks(monkeypatch):
     def respond(**kwargs):
         payload = json.loads(kwargs["input"])
-        body = extraction_wire_result(extraction(payload), payload)
+        body = extraction_wire_result(extraction(payload), payload, kwargs["text"]["format"]["schema"])
         body["company_name"]["status"] = "not_found"
         return metered_response(output_text=json.dumps(body, ensure_ascii=False))
     fake_sdk(monkeypatch, response=respond)
@@ -5230,7 +5442,7 @@ def run_d04_offline_case(monkeypatch, case_id, *, wrong_lead_time=False):
             # 평가용 이름·기대 상태·정답은 실제 Agent 입력에 섞이지 않는다.
             assert set(payload) == {"company_name_hint", "source_units", "source_origins"}
             assert payload["source_origins"] == {s.source_id: s.origin_kind for s in build_d04_trial_request(case_id).sources}
-            body = extraction_wire_result(d04_fake_extraction(case_id, payload), payload)
+            body = extraction_wire_result(d04_fake_extraction(case_id, payload), payload, kwargs["text"]["format"]["schema"])
         else:
             body = draft_response(payload)
             if wrong_lead_time:
@@ -5771,7 +5983,7 @@ def test_legacy_validation_failure_stops_trial_after_usage_is_recorded(monkeypat
 def test_postprocessing_keeps_guard_and_honors_manual_stop(monkeypatch, phase):
     def respond(**kwargs):
         payload = json.loads(kwargs["input"])
-        body = extraction_wire_result(extraction(payload), payload) if phase == "analyze" else draft_response(payload)
+        body = extraction_wire_result(extraction(payload), payload, kwargs["text"]["format"]["schema"]) if phase == "analyze" else draft_response(payload)
         return metered_response(output_text=json.dumps(body, ensure_ascii=False))
     calls = fake_sdk(monkeypatch, response=respond)
     requester = llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()))
@@ -5806,7 +6018,7 @@ def test_postprocessing_keeps_guard_and_honors_manual_stop(monkeypatch, phase):
 def test_last_successful_result_is_returned_after_postprocessing(monkeypatch):
     def respond(**kwargs):
         payload = json.loads(kwargs["input"])
-        return metered_response(output_text=json.dumps(extraction_wire_result(extraction(payload), payload)))
+        return metered_response(output_text=json.dumps(extraction_wire_result(extraction(payload), payload, kwargs["text"]["format"]["schema"])))
     calls = fake_sdk(monkeypatch, response=respond)
     ledger = llm.TrialLedger(max_calls=1)
     agent = baseline_agent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=ledger))
@@ -5853,7 +6065,7 @@ def test_interactive_failure_does_not_poison_next_user_request(monkeypatch, fail
             if failure == "usage_missing":
                 return metered_response(usage=None)
         payload = json.loads(kwargs["input"])
-        result = extraction_wire_result(extraction(payload), payload)
+        result = extraction_wire_result(extraction(payload), payload, kwargs["text"]["format"]["schema"])
         if failure == "forged_evidence" and len(attempts) == 1:
             next(f for item in result.values() for f in item["facts"])["evidence"] = [{"unit_id": 99999}]
         return metered_response(output_text=json.dumps(result))
@@ -5980,7 +6192,7 @@ def test_interactive_failed_draft_recovers_without_reanalysis(graph_flow, monkey
         if len(attempts) == 1:
             return metered_response(output_text=json.dumps({"draft_sections": []}))
         payload = json.loads(kwargs["input"])
-        result = (extraction_wire_result(extraction(payload), payload)
+        result = (extraction_wire_result(extraction(payload), payload, kwargs["text"]["format"]["schema"])
                   if attempts[-1] == "company_info" else editorial_response(payload))
         return metered_response(output_text=json.dumps(result))
     fake_sdk(monkeypatch, response=respond)
@@ -6510,7 +6722,7 @@ def test_stopped_trial_preserves_existing_document_through_server(tmp_path, monk
                     facts.append({"text": value, "evidence": [{"source_id": unit["source_id"],
                                   "locator": unit["locator"], "quote": value}]})
                 body[key] = {"status": status, "facts": facts}
-            body = extraction_wire_result(body, payload)
+            body = extraction_wire_result(body, payload, kwargs["text"]["format"]["schema"])
         else:
             body = editorial_response(payload) if "facts" in payload else draft_response(payload)
         return metered_response(output_text=json.dumps(body, ensure_ascii=False))
@@ -7239,6 +7451,69 @@ def test_preflight_issue_uses_korean_label_and_action_without_weakening_blocker(
     assert "lead_time" not in issue.message and issue.severity == "blocker"
 
 
+@pytest.mark.parametrize("source,value,detail", [
+    ("자격관리번호 2019-001545, 기재일 2021.03.20", "2019년 자격 취득", "연도 2019년"),
+    ("만료일 2027.02.15", "만료일 2027년 2월 16일", "날짜 2027-02-16"),
+    ("수량 8개", "수량 9개", "수치·단위 9개"),
+    ("금액 9001원", "금액 9002원", "금액 9002원"),
+    ("금액 1200원", "금액 -1200원", "금액 -1200원"),
+    ("금액 9001원", "금액 -9002원", "금액 -9002원"),
+    ("비율 10.21%", "비율 -10.22%", "비율 -10.22%"),
+    ("비율 10.21%", "비율 10.22%", "비율 10.22%"),
+    ("약 350업체", "350업체", "수치·단위 350업체(정확한 수)"),
+    ("규격 9100", "규격 9200", "수치 9200"),
+    ("길이 200mm", "길이 200cm", "수치·단위 200cm"),
+])
+def test_preflight_numeric_issue_explains_gap_and_survives_final_validation(source, value, detail):
+    reference = EvidenceRef(source_id="src_diagnostic", source_version=2, segment_id="seg_diagnostic",
+                            locator={"paragraph": 1}, excerpt=source)
+    fact = Fact(fact_id="fact_diagnostic", field_key="history", value=value,
+                status="needs_confirmation", evidence_refs=[reference])
+    before = fact.model_copy(deep=True)
+    issue = next(i for i in llm.LlmAgent._issues([fact]) if i.fact_ids == [fact.fact_id])
+    assert detail in issue.message and "인용 원문에서 확인되지 않는" in issue.message
+    if detail.startswith(("금액", "비율")):
+        assert "수치·단위" not in issue.message
+    assert "원문을 확인" in issue.message and "선택 항목이면" in issue.message
+    assert issue.code == "UNSUPPORTED_CLAIM" and issue.severity == "blocker" and issue.status == "open"
+    assert issue.source_ids == [reference.source_id] and fact == before
+    ctx = validation.Context({reference.segment_id: source}, {reference.segment_id: reference.source_id},
+                             {}, set(), refs.SessionRefs({reference.segment_id}, {reference.source_id: 2},
+                                                       set(), {fact.fact_id}),
+                             {fact.fact_id: fact}, [issue])
+    carried = validation.preflight_conflicts(ctx)
+    assert len(carried) == 1 and carried[0].message == issue.message
+    assert carried[0].fact_ids == [fact.fact_id] and carried[0].severity == "blocker"
+    assert issue.code in validation.NON_ACKNOWLEDGEABLE
+
+
+def test_preflight_semantic_uncertainty_does_not_invent_numeric_failure_or_change_facts():
+    reference = EvidenceRef(source_id="src_semantic", source_version=1, segment_id="seg_semantic",
+                            locator={"paragraph": 1}, excerpt="試料 X 내식성 240hr, 적용 공정 확인 필요")
+    fact = Fact(fact_id="fact_semantic", field_key="technology", value="시험시편 X 내식성 240시간",
+                status="needs_confirmation", evidence_refs=[reference])
+    before = fact.model_copy(deep=True)
+    issue = next(i for i in llm.LlmAgent._issues([fact]) if i.fact_ids == [fact.fact_id])
+    assert "인용 원문에서 확인되지 않는" not in issue.message
+    assert "적용 조건이나 근거" in issue.message and issue.severity == "blocker" and fact == before
+    supported = fact.model_copy(update={"status": "supported"})
+    assert not any(i.fact_ids == [fact.fact_id] and i.code == "UNSUPPORTED_CLAIM"
+                   for i in llm.LlmAgent._issues([supported]))
+
+
+def test_preflight_numeric_message_is_bounded_and_never_uses_another_facts_evidence():
+    reference = EvidenceRef(source_id="src_short", source_version=1, segment_id="seg_short",
+                            locator={"paragraph": 1}, excerpt="대상 품목 A")
+    fact = Fact(fact_id="fact_missing_years", field_key="history",
+                value="2010년, 2011년, 2012년, 2013년, 2014년", status="needs_confirmation",
+                evidence_refs=[reference])
+    unrelated = Fact(fact_id="fact_unrelated", field_key="history", value="2010년의 별도 사건",
+                     status="supported", evidence_refs=[reference.model_copy(update={"excerpt": "2010년의 별도 사건"})])
+    issue = next(i for i in llm.LlmAgent._issues([unrelated, fact]) if i.fact_ids == [fact.fact_id])
+    assert "연도 2010년" in issue.message and "외 2개" in issue.message and len(issue.message) < 300
+    assert "2013년" not in issue.message and "2014년" not in issue.message
+
+
 def test_brochure_schema_allows_complete_points_with_separate_page_budget():
     schema = llm._BrochurePlan.model_json_schema()['$defs']
     heading = schema['_BrochureHeading']['properties']['text']['maxLength']
@@ -7688,3 +7963,110 @@ def test_reviewed_preflight_rearms_real_confirmation_graph_without_reextraction(
         assert restored.status_code == 200, restored.text
         assert client.get(document_url).json()["document"] == document
         assert calls == ["company_info", "draft_sections"]
+
+@pytest.mark.parametrize("document_date", [None, "2017", "2026-09-30"])
+def test_sdk_keeps_source_and_segment_metadata_without_turning_dates_into_claims(monkeypatch, document_date):
+    source = SourceIn("src_metadata", 3, "company", "metadata fixture", "complete",
+        [SegmentIn("seg_metadata", {"paragraph": 1}, "인원 36명")], metadata={
+            "source_version": 3, "document_date": document_date, "document_date_verified": False,
+            "date_from_filename": "2025", "segments": {"seg_metadata": {
+                "evidence_status": "unverified", "document_date": "2016", "chunk_id": "chunk_fixture",
+                "layout": {"slide": 1, "box_mm": [25.4, 50.8, 50.8, 12.7]}}}})
+    request = AnalyzeRequest("ses_metadata", 1, BRIEF, [source])
+    before = copy.deepcopy(request)
+    def respond(**kwargs):
+        payload = json.loads(kwargs["input"])
+        assert payload["source_metadata"][source.source_id] == {k: v for k, v in source.metadata.items() if k != "segments"}
+        assert payload["source_units"][0]["metadata"] == source.metadata["segments"]["seg_metadata"]
+        assert payload["source_units"][0]["text"] == "인원 36명"
+        assert "수치의 기준일" in kwargs["instructions"]
+        body = {key: {"facts": []} for key in legacy.COMPANY_INFO_KEYS}
+        body["other_info"]["facts"] = [{"text": "인원 36명", "status": "needs_confirmation", "evidence": [{"unit_id": 1}]}]
+        return metered_response(output_text=json.dumps(body, ensure_ascii=False))
+    calls = fake_sdk(monkeypatch, response=respond)
+    agent = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env())), per_fact_status=True)
+    result = agent.analyze(request)
+    fact = next(f for f in result.facts if f.field_key == "other_info")
+    assert fact.status == "needs_confirmation" and fact.evidence_refs[0].source_version == 3
+    assert fact.evidence_refs[0].excerpt == "인원 36명" and fact.evidence_refs[0].segment_id == "seg_metadata"
+    assert request == before and len([e for e, _ in calls if e == "response"]) == 1
+
+@pytest.mark.parametrize("custom_requester", [False, True])
+def test_job_trace_identifies_actual_openai_requester_not_configured_mode(tmp_path, custom_requester):
+    from app.services import jobs
+    settings = Settings(private_runs_dir=tmp_path / "runs", db_path=tmp_path / "runs" / "trace.sqlite3", agent_mode="mock")
+    with TestClient(create_app(settings)) as client:
+        sid = client.post("/api/v1/sessions", json={"brief": BRIEF.model_dump()}).json()["session_id"]
+    requester = (lambda *args: {}) if custom_requester else llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()))
+    bridge = llm.LlmAgent(requester)
+    with connect(settings.db_path) as conn:
+        job = jobs.create(conn, sid, "preflight", "pending", input_revision=1)
+        ai_jobs._trace_executor(conn, job.job_id, settings, bridge)
+        executor = jobs.get(conn, sid, job.job_id).progress.trace["stages"][0]
+        assert executor["configured_mode"] == "mock" and executor["agent_invoked"] is True
+        assert executor["actual_mode"] == ("custom" if custom_requester else "llm")
+        assert executor["model"] == (None if custom_requester else "gpt-6-luna")
+
+
+@pytest.mark.parametrize("per_fact", [False, True])
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("scenario", ["fabricated_year", "real_conflict", "borrowed_from_other_candidate", "real_pair_with_bad_candidate", "equivalent_date_notation"])
+def test_conflict_candidates_require_their_own_numeric_evidence(monkeypatch, per_fact, reverse, scenario):
+    pairs = [("2021년 본사 공장을 설립했다", "2016년 본사 공장을 설립했다"),
+             ("2016년 본사를 준공했다", "2016년 본사를 준공했다")]
+    uncertain_indices, conflict_indices = {0, 1}, set()
+    if scenario == "real_conflict":
+        pairs[0] = ("2021년 본사 공장을 설립했다", "2021년 본사 공장을 설립했다")
+        uncertain_indices, conflict_indices = set(), {0, 1}
+    elif scenario == "borrowed_from_other_candidate":
+        pairs[1] = ("2016년 본사를 준공했다", "2021년 본사를 준공했다")
+    elif scenario == "real_pair_with_bad_candidate":
+        pairs = [("2016년 본사를 준공했다", "2016년 본사를 준공했다"),
+                 ("2017년 본사를 준공했다", "2017년 본사를 준공했다"), pairs[0]]
+        uncertain_indices, conflict_indices = {2}, {0, 1}
+    elif scenario == "equivalent_date_notation":
+        pairs = [("2016년 3월 20일 본사 준공", "2016.03.20 본사 준공"),
+                 ("2017년 3월 20일 본사 준공", "2017.03.20 본사 준공")]
+        uncertain_indices, conflict_indices = set(), {0, 1}
+    segments = [SegmentIn(f"seg_candidate_{i}", {"paragraph": i + 1}, original)
+                for i, (_, original) in enumerate(pairs)]
+    # The invented year exists elsewhere and in metadata, neither is this candidate's evidence.
+    segments.append(SegmentIn("seg_unrelated_date", {"paragraph": 99}, "자료 작성일 2021년"))
+    source = SourceIn("src_candidate", 3, "company", "가상 충돌 검사", "complete", segments,
+                      metadata={"document_date": "2021", "segments": {}})
+    request = AnalyzeRequest("ses_candidate", 1, BRIEF, [source])
+    body = {key: ({"facts": []} if per_fact else {"status": "not_found", "facts": []})
+            for key in legacy.COMPANY_INFO_KEYS}
+    records = [{"text": claim, "evidence": [{"unit_id": i + 1}], **({"status": "conflict"} if per_fact else {})}
+               for i, (claim, _) in enumerate(pairs)]
+    body["history"] = {"facts": list(reversed(records)) if reverse else records,
+                       **({} if per_fact else {"status": "conflict"})}
+    original_body, original_request = copy.deepcopy(body), copy.deepcopy(request)
+    calls = fake_sdk(monkeypatch, response=metered_response(output_text=json.dumps(body, ensure_ascii=False)))
+    agent = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env())), per_fact_status=per_fact)
+    result = agent.analyze(request)
+    history = [f for f in result.facts if f.field_key == "history"]
+    uncertain = [f for f in history if f.status == "needs_confirmation"]
+    conflicts = [f for f in history if f.status == "conflict"]
+    assert {f.value for f in uncertain} == {pairs[i][0] for i in uncertain_indices}
+    assert len(conflicts) == bool(conflict_indices)
+    assert not any(f.status == "supported" for f in history)
+    if conflicts:
+        assert {a["value"] for a in conflicts[0].alternatives} == {pairs[i][0] for i in conflict_indices}
+        assert any(i.code == "VALUE_CONFLICT" and conflicts[0].fact_id in i.fact_ids for i in result.issues)
+    else:
+        assert not any(i.code == "VALUE_CONFLICT" and set(i.fact_ids) & {f.fact_id for f in history} for i in result.issues)
+    for fact in uncertain:
+        assert any(i.code == "UNSUPPORTED_CLAIM" and i.severity == "blocker" and fact.fact_id in i.fact_ids for i in result.issues)
+        if scenario == "fabricated_year" and fact.value == pairs[0][0]:
+            assert any(fact.fact_id in i.fact_ids and "연도 2021년" in i.message for i in result.issues)
+    restored = [(f.value, f.evidence_refs) for f in uncertain]
+    restored += [(a["value"], [EvidenceRef.model_validate(r) for r in a["evidence_refs"]])
+                 for f in conflicts for a in f.alternatives]
+    for claim, evidence in restored:
+        ordinal = next(i for i, pair in enumerate(pairs) if pair[0] == claim)
+        assert len(evidence) == 1 and evidence[0].segment_id == f"seg_candidate_{ordinal}"
+        assert evidence[0].excerpt == pairs[ordinal][1] and evidence[0].source_version == 3
+    assert body == original_body and request == original_request
+    assert validate_analyze(result, [source]) is None
+    assert len([event for event, _ in calls if event == "response"]) == 1

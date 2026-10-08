@@ -10,6 +10,8 @@
 """
 from __future__ import annotations
 
+from collections import Counter
+
 import hashlib
 import json
 import logging
@@ -193,6 +195,11 @@ def run_layout_check_job(settings: Settings, session_id: str, job_id: str, docum
             document = _document_current(conn, session_row, document_id, document_revision, input_revision)
             snapshot = export_render.build_snapshot(conn, settings, session_id, document)
             pub_start = publication.check_document(conn, document)
+            jobs.record_trace(conn, job_id, "render_input", {"actual_mode": "renderer", "format": fmt,
+                "document_id": document_id, "document_revision": document_revision,
+                "input_revision": input_revision, "page_count": len(document.pages),
+                "block_count": sum(len(p.blocks) for p in document.pages),
+                "layout_keys": dict(Counter(p.layout_key for p in document.pages))})
             active_jobs = {r["job_id"] for r in conn.execute(
                 f"SELECT job_id FROM jobs WHERE status IN ({','.join('?' * len(jobs.ACTIVE))})", jobs.ACTIVE).fetchall()}
         # 임시 폴더는 세션이 살아 있음을 확인한 뒤 만든다(BE-09: 닫힌 세션 폴더 재생성 방지). 실행 중 Job의 폴더는 지우지 않는다.
@@ -240,6 +247,10 @@ def run_layout_check_job(settings: Settings, session_id: str, job_id: str, docum
                  json.dumps([f.__dict__ for f in result.findings], ensure_ascii=False),
                  json.dumps(fail_reasons), result.renderer, artifact["artifact_id"], "pdf", json.dumps(preview_ids), job_id,
                  pub.checked_at, json.dumps(warnings, ensure_ascii=False), json.dumps(pub.as_out(), ensure_ascii=False), int(snapshot.demo)))
+            jobs.record_trace(conn, job_id, "render_result", {"renderer": result.renderer,
+                "actual_pages": result.actual_pages, "layout_ok": result.layout_ok, "status": status,
+                "template_version": result.template_version, "check_results":
+                    {c.check_key: c.result for c in result.checks}})
             jobs.succeed(conn, job_id, {"layout_check_id": layout_check_id, "format": fmt, "status": status,
                                          "layout_ok": result.layout_ok, "publication_policy_ok": pub.ok,
                                          "actual_pages": result.actual_pages, "artifact_id": artifact["artifact_id"],

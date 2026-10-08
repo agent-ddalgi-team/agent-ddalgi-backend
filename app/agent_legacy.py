@@ -123,10 +123,11 @@ def _keep_model_keywords(node: dict[str, Any]) -> dict[str, Any]:
     return kept
 
 
-def build_model_output_schema() -> dict[str, Any]:
+def build_model_output_schema(*, per_fact_status: bool = False) -> dict[str, Any]:
     """profile.schema.json의 company_info 구조에서 GPT용 출력 스키마를 파생한다.
 
-    바뀌는 점은 두 가지뿐이다: fact_id 제외(코드가 F001부터 부여), strict 모드가 받지 않는 키워드 제외.
+    기본 형식은 fact_id(코드가 F001부터 부여)와 strict 미지원 키워드만 제외한다.
+    운영용 per_fact_status는 개별 상태를 추가하고 항목 요약 상태는 어댑터가 계산한다.
     sources·is_mock·validation·schema_version은 company_info 밖에 있으므로 처음부터 들어가지 않는다.
     """
     defs = {name: _keep_model_keywords(_PROFILE_SCHEMA['$defs'][name]) for name in _MODEL_SCHEMA_DEFS}
@@ -134,6 +135,12 @@ def build_model_output_schema() -> dict[str, Any]:
     defs['fact']['required'] = [key for key in defs['fact']['required'] if key != 'fact_id']
     # 원래 규격의 status에는 enum만 있다. 모델용 스키마에만 문자열 타입을 명시한다.
     defs['field']['properties']['status'] = {'type': 'string', **defs['field']['properties']['status']}
+    if per_fact_status:
+        # Production extraction judges each fact; the field summary is derived by the adapter.
+        defs['fact']['properties']['status'] = {'type': 'string', 'enum': ['supported', 'needs_confirmation', 'conflict']}
+        defs['fact']['required'].append('status')
+        defs['field']['properties'].pop('status')
+        defs['field']['required'].remove('status')
     company_info = _keep_model_keywords(_PROFILE_SCHEMA['properties']['company_info'])
     return {**company_info, '$defs': defs}
 
@@ -187,13 +194,14 @@ def _iter_facts(company_info: dict[str, Any]):
             yield key, i, fact
 
 
-def _check_field_shape(key: str, field: Any) -> None:
+def _check_field_shape(key: str, field: Any, *, per_fact_status: bool = False) -> None:
     if not isinstance(field, dict) or set(field) != set(FIELD_KEYS) or not isinstance(field['facts'], list):
         raise _invalid_output('field_shape', '항목은 status와 facts 배열만 가져야 합니다.', field=key)
+    fact_keys = {*MODEL_FACT_KEYS, "status"} if per_fact_status else set(MODEL_FACT_KEYS)
     for i, fact in enumerate(field['facts']):
-        if (not isinstance(fact, dict) or set(fact) != set(MODEL_FACT_KEYS)
+        if (not isinstance(fact, dict) or set(fact) != fact_keys
                 or not isinstance(fact['text'], str) or not isinstance(fact['evidence'], list)):
-            raise _invalid_output('field_shape', 'fact는 text 문자열과 evidence 배열만 가져야 합니다(fact_id 포함 금지).',
+            raise _invalid_output('field_shape', 'fact는 호출 스키마의 text·evidence 및 허용된 경우 status만 가져야 합니다(fact_id 포함 금지).',
                                   field=key, fact_index=i)
         for j, evidence in enumerate(fact['evidence']):
             if (not isinstance(evidence, dict) or set(evidence) != set(EVIDENCE_KEYS)
@@ -202,7 +210,7 @@ def _check_field_shape(key: str, field: Any) -> None:
                                       field=key, fact_index=i, evidence_index=j)
 
 
-def check_company_info(company_info: Any, agent_input: dict[str, Any]) -> None:
+def check_company_info(company_info: Any, agent_input: dict[str, Any], *, per_fact_status: bool = False) -> None:
     """GPT가 준 company_info를 정해진 순서로 검사한다. 첫 실패에서 INVALID_OUTPUT으로 멈추고 아무것도 고치지 않는다.
 
     순서: 1 14개 키·모양 → 2 status별 facts 개수 → 3 빈 값 → 4 근거 위치 존재 → 5 quote 원문 포함.
@@ -217,7 +225,7 @@ def check_company_info(company_info: Any, agent_input: dict[str, Any]) -> None:
         raise _invalid_output('company_info_keys', 'company_info 14개 키가 정확히 일치하지 않습니다.',
                               missing_keys=missing, unexpected_keys=unexpected)
     for key in COMPANY_INFO_KEYS:
-        _check_field_shape(key, company_info[key])
+        _check_field_shape(key, company_info[key], per_fact_status=per_fact_status)
 
     # 2) status가 4개 중 하나이고, status별 facts 개수 규칙을 지키는가
     for key in COMPANY_INFO_KEYS:
@@ -230,6 +238,19 @@ def check_company_info(company_info: Any, agent_input: dict[str, Any]) -> None:
             expected = f'{low}개' if high == low else f'{low}개 이상'
             raise _invalid_output('status_fact_count', f'{status}의 facts 개수 규칙을 어겼습니다.',
                                   field=key, status=status, expected=expected, actual=count)
+
+    if per_fact_status:
+        for key in COMPANY_INFO_KEYS:
+            statuses = [fact['status'] for fact in company_info[key]['facts']]
+            if any(type(status) is not str or status not in {'supported', 'needs_confirmation', 'conflict'}
+                   for status in statuses):
+                raise _invalid_output('fact_status_value', '개별 사실의 상태가 허용된 값이 아닙니다.', field=key)
+            if 'conflict' in statuses and statuses.count('conflict') < 2:
+                raise _invalid_output('conflict_candidates', '충돌 사실에는 최소 두 후보가 필요합니다.', field=key)
+            expected = ('not_found' if not statuses else 'conflict' if 'conflict' in statuses
+                        else 'needs_confirmation' if 'needs_confirmation' in statuses else 'supported')
+            if company_info[key]['status'] != expected:
+                raise _invalid_output('field_status_summary', '항목 요약 상태가 개별 사실 상태와 일치하지 않습니다.', field=key)
 
     # 3) text / source_id / locator / quote가 비어 있지 않고, fact마다 evidence가 1개 이상인가
     for key, i, fact in _iter_facts(company_info):
@@ -270,11 +291,14 @@ def _deduplicate_supported_facts(company_info: dict[str, Any]) -> dict[str, Any]
     """
     result = copy.deepcopy(company_info)
     for field in result.values():
-        if field['status'] != 'supported':
+        if field['status'] != 'supported' and not any('status' in fact for fact in field['facts']):
             continue
         seen = set()
         distinct = []
         for fact in field['facts']:
+            if fact.get('status', field['status']) != 'supported':
+                distinct.append(fact)
+                continue
             evidence = frozenset(tuple(ref[name] for name in EVIDENCE_KEYS) for ref in fact['evidence'])
             key = (fact['text'], evidence)
             if key not in seen:
@@ -295,12 +319,16 @@ def assign_fact_ids(company_info: dict[str, Any]) -> dict[str, Any]:
         facts = []
         for fact in company_info[key]['facts']:
             count += 1
-            facts.append({'fact_id': f'F{count:03d}', 'text': fact['text'], 'evidence': copy.deepcopy(fact['evidence'])})
+            item = {'fact_id': f'F{count:03d}', 'text': fact['text'], 'evidence': copy.deepcopy(fact['evidence'])}
+            if 'status' in fact:
+                item['status'] = fact['status']
+            facts.append(item)
         numbered[key] = {'status': company_info[key]['status'], 'facts': facts}
     return numbered
 
 
-def extract_company_info(agent_input: dict[str, Any], *, request_json: RequestJson) -> dict[str, Any]:
+def extract_company_info(agent_input: dict[str, Any], *, request_json: RequestJson,
+                         per_fact_status: bool = False) -> dict[str, Any]:
     """허용된 source_units에서 company_info 14개 항목을 추출하고 검사한다.
 
     호출부는 JSON 객체만 반환한다. 원 응답 전체 검사 후 supported 완전중복만 줄이고 fact_id를 붙인다.
@@ -309,8 +337,8 @@ def extract_company_info(agent_input: dict[str, Any], *, request_json: RequestJs
     check_agent_input(agent_input)
     instructions = load_extract_prompt()
     model_output = _request_checked(request_json, instructions, _source_payload(agent_input),
-                                    build_model_output_schema(), MODEL_SCHEMA_NAME)
-    check_company_info(model_output, agent_input)
+                                    build_model_output_schema(per_fact_status=per_fact_status), MODEL_SCHEMA_NAME)
+    check_company_info(model_output, agent_input, per_fact_status=per_fact_status)
     return assign_fact_ids(_deduplicate_supported_facts(model_output))
 
 
