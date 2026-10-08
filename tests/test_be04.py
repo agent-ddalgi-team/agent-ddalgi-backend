@@ -733,3 +733,128 @@ def test_optional_conflict_exclusion_closes_only_related_issue_and_restore_reope
         fact = next(fact for fact in latest["facts"] if fact["field_key"] == "lead_time")
         assert client.post(base + latest["preflight_id"] + "/reviews", json={**body,
             "expected_input_revision": changed_rev, "fact_ids": [fact["fact_id"]]}).status_code == 422
+
+@pytest.mark.parametrize("orm", [False, True])
+@pytest.mark.parametrize("configured_mode", ["mock", "llm"])
+def test_job_trace_preserves_input_metadata_counts_executor_and_no_source_text(settings, monkeypatch, orm, configured_mode):
+    from app.services import preflights
+    settings.private_runs_dir.mkdir(parents=True, exist_ok=True)
+    if orm:
+        init_orm_db(settings.db_path, settings.private_runs_dir)
+    settings = replace(settings, agent_mode=configured_mode)
+    seen = []
+    original = MockAgent.analyze
+    async def capture(self, request):
+        seen.append(request)
+        return await original(self, request)
+    monkeypatch.setattr(MockAgent, "analyze", capture)
+    monkeypatch.setattr(ai_jobs, "get_bridge", lambda _: MockAgent())
+    with TestClient(create_app(settings)) as api:
+        sid = _session(api)
+        text = "회사명: 예시 회사\n회사 개요: 제조 시험 기업\n사업 분야: 표면처리\n시험 값: 168시간"
+        src = _upload(api, sid, ("secret-original-name.txt", text.encode()))
+        with connect(settings.db_path) as conn:
+            conn.execute("UPDATE sources SET document_date='2017', document_date_verified=0, date_from_filename='2025' WHERE source_id=?", (src[0],))
+            conn.execute("UPDATE segments SET evidence_status='unverified', document_date='2016', chunk_id='chunk_fixed' WHERE source_id=?", (src[0],))
+        revision = _select(api, sid, src)
+        r = api.post(f"/api/v1/sessions/{sid}/preflights", json={"expected_input_revision": revision})
+        job = api.get(f"/api/v1/sessions/{sid}/jobs/{r.json()['job_id']}").json()
+        assert job["status"] == "succeeded", job
+        trace = job["progress"]["trace"]
+        stages = {s["stage"]: s for s in trace["stages"]}
+        assert trace["input_revision"] == revision and trace["outcome"]["status"] == "succeeded"
+        assert stages["executor"]["configured_mode"] == configured_mode
+        assert stages["executor"]["actual_mode"] == "mock" and stages["executor"]["model"] is None
+        assert stages["agent_input"]["source_count"] == 1
+        source = seen[0].sources[0]
+        assert source.source_id == src[0] and source.source_version == 1
+        assert stages["agent_input"]["segment_count"] == len(source.segments)
+        assert stages["agent_input"]["input_text_chars"] == sum(len(s.text) for s in source.segments)
+        assert source.metadata["document_date"] == "2017" and source.metadata["document_date_verified"] is False
+        assert source.metadata["date_from_filename"] == "2025"
+        assert all(m["document_date"] == "2016" and m["evidence_status"] == "unverified"
+                   and m["chunk_id"] == "chunk_fixed" for m in source.metadata["segments"].values())
+        serialized = json.dumps(trace, ensure_ascii=False)
+        assert "secret-original-name" not in serialized and "예시 회사" not in serialized and "168시간" not in serialized
+        assert "unverified" not in serialized  # Status presence counts only, no arbitrary source-authored labels.
+        assert stages["result_checked"]["fact_status_counts"]["supported"] >= 2
+        # Missing/unavailable selections are explained without exposing the other source.
+        with connect(settings.db_path) as conn:
+            excluded = []
+            assert preflights.build_sources(conn, sid, ["foreign_source"], exclusions=excluded) == []
+            assert excluded == [{"source_id": "foreign_source", "reason": "outside_evidence_scope"}]
+            if orm:
+                conn.execute("UPDATE sources SET source_version=2, current_run_id=NULL, document_date='2099', date_from_filename='2099' WHERE source_id=?", (src[0],))
+                pinned = preflights.build_sources(conn, sid, src)[0]
+                assert pinned.source_version == 1 and pinned.metadata["document_date"] is None
+                assert pinned.metadata["document_date_verified"] is None and pinned.metadata["date_from_filename"] is None
+                assert all(m["document_date"] == "2016" for m in pinned.metadata["segments"].values())
+
+
+@pytest.mark.parametrize("outcome", ["failed", "cancelled", "succeeded"])
+def test_job_trace_terminal_guards_and_session_purge(client, settings, outcome):
+    from app.services import jobs
+    sid = _session(client)
+    with connect(settings.db_path) as conn:
+        job = jobs.create(conn, sid, "preflight", "pending", input_revision=1)
+        assert jobs.record_trace(conn, job.job_id, "agent_input", {"source_count": 2}) == 1
+        jobs.set_progress(conn, job.job_id, "analyzing", "working")
+        if outcome == "failed": jobs.fail(conn, job.job_id, "AGENT_OUTPUT_INVALID", "fixed", True)
+        elif outcome == "cancelled": jobs.cancel_for_session(conn, sid)
+        else: jobs.succeed(conn, job.job_id, {"type": "preflight", "preflight_id": "pf_test"})
+        before = conn.execute("SELECT progress_json FROM jobs WHERE job_id=?", (job.job_id,)).fetchone()[0]
+        assert jobs.record_trace(conn, job.job_id, "late", {"source_count": 99}) == 0
+        assert jobs.set_progress(conn, job.job_id, "late", None) == 0
+        assert jobs.succeed(conn, job.job_id, {}) == 0 and jobs.fail(conn, job.job_id, "LATE", "fixed", True) == 0
+        assert conn.execute("SELECT progress_json FROM jobs WHERE job_id=?", (job.job_id,)).fetchone()[0] == before
+        assert jobs.get(conn, sid, job.job_id).progress.trace is not None
+        jobs.purge_errors_for_session(conn, sid)
+        assert jobs.get(conn, sid, job.job_id).progress.trace is None
+        assert jobs.get(conn, sid, job.job_id).status == outcome
+
+
+def test_job_trace_bound_is_explicit_not_silent(client, settings):
+    from app.services import jobs
+    sid = _session(client)
+    with connect(settings.db_path) as conn:
+        job = jobs.create(conn, sid, "read", "pending")
+        for i in range(20): jobs.record_trace(conn, job.job_id, f"parsed:{i}", {"segment_count": i})
+        trace = jobs.get(conn, sid, job.job_id).progress.trace
+        assert len(trace["stages"]) == 16 and trace["omitted_stage_count"] == 4
+        jobs.record_trace(conn, job.job_id, "agent_input", {"source_id": "x" * 70000})
+        trace = jobs.get(conn, sid, job.job_id).progress.trace
+        assert trace["stages"][0]["summary_omitted"] == "trace_size_limit"
+
+@pytest.mark.parametrize("purpose", ["품질 담당자용 인증과 시험 근거", "생산기술 담당자용 공정과 설비 검토", "신규 고객 소개용 주요 서비스"])
+def test_customer_request_table_transfer_and_job_trace_without_llm_quality_claim(client, settings, purpose):
+    from test_be03 import make_docx
+    from app.services import preflights
+    table = [["공정/설비/시험", "대상과 조건"], ["아노다이징", "알루미늄 시편"],
+             ["시험 장비 A", "시편 2개 조건"], ["시험 시간", "168시간; 시험 종류 미기재"]]
+    data = make_docx(["회사명: 예시 회사", "회사 개요: 제조업 시험 기업", "사업 분야: 표면처리"], table)
+    sid = client.post("/api/v1/sessions", json={"brief": BRIEF | {"purpose": purpose, "target_pages": 1}}).json()["session_id"]
+    src = _upload(client, sid, ("manufacturing-fixture.docx", data))
+    revision = _select(client, sid, src)
+    pf = _preflight(client, sid, revision)
+    with connect(settings.db_path) as conn:
+        source = preflights.build_sources(conn, sid, src)[0]
+    cells = [g for g in source.segments if "table" in g.locator]
+    assert len(cells) == 8
+    assert {(g.locator["row"], g.locator["col"]): g.text for g in cells} == {
+        (r, c): value for r, row in enumerate(table, 1) for c, value in enumerate(row, 1)}
+    assert all(source.metadata["segments"][g.segment_id]["extraction_method"] == "parser" for g in source.segments)
+    accepted = client.post(f"/api/v1/sessions/{sid}/drafts", json={"preflight_id": pf["preflight_id"],
+        "input_revision": revision, "confirmed": True})
+    assert accepted.status_code == 202, accepted.text
+    job = client.get(f"/api/v1/sessions/{sid}/jobs/{accepted.json()['job_id']}").json()
+    assert job["status"] == "succeeded", job
+    stages = {s["stage"]: s for s in job["progress"]["trace"]["stages"]}
+    assert stages["agent_input"]["preflight_id"] == pf["preflight_id"]
+    assert stages["agent_input"]["segment_count"] == 11
+    assert stages["executor"]["actual_mode"] == "mock" and stages["executor"]["model"] is None
+    assert stages["result_checked"]["page_count"] >= 1
+    assert job["result_ref"]["document_revision"] == 1
+    document = client.get(f"/api/v1/sessions/{sid}/documents/{job['result_ref']['document_id']}").json()["document"]
+    for page in document["pages"]:
+        for block in page["blocks"]:
+            assert all(r["source_id"] == src[0] and r["source_version"] == 1 for r in block["evidence_refs"])

@@ -55,6 +55,8 @@ def legacy_contract_view(value):
         return [legacy_contract_view(v) for v in value]
     if isinstance(value, dict):
         result = {k: legacy_contract_view(v) for k, v in value.items()}
+        if "metadata" in result and "source_id" in result and "segments" in result:
+            assert result.pop("metadata") == {}
         if "purpose" in result and "target_pages" in result:
             for key in ("audience", "usage_context", "tone", "target_company", "dart_corp_code", "required_fields", "brand_color"):
                 assert result.pop(key) == Brief.model_fields[key].get_default(call_default_factory=True)
@@ -7961,3 +7963,45 @@ def test_reviewed_preflight_rearms_real_confirmation_graph_without_reextraction(
         assert restored.status_code == 200, restored.text
         assert client.get(document_url).json()["document"] == document
         assert calls == ["company_info", "draft_sections"]
+
+@pytest.mark.parametrize("document_date", [None, "2017", "2026-09-30"])
+def test_sdk_keeps_source_and_segment_metadata_without_turning_dates_into_claims(monkeypatch, document_date):
+    source = SourceIn("src_metadata", 3, "company", "metadata fixture", "complete",
+        [SegmentIn("seg_metadata", {"paragraph": 1}, "인원 36명")], metadata={
+            "source_version": 3, "document_date": document_date, "document_date_verified": False,
+            "date_from_filename": "2025", "segments": {"seg_metadata": {
+                "evidence_status": "unverified", "document_date": "2016", "chunk_id": "chunk_fixture"}}})
+    request = AnalyzeRequest("ses_metadata", 1, BRIEF, [source])
+    before = copy.deepcopy(request)
+    def respond(**kwargs):
+        payload = json.loads(kwargs["input"])
+        assert payload["source_metadata"][source.source_id] == {k: v for k, v in source.metadata.items() if k != "segments"}
+        assert payload["source_units"][0]["metadata"] == source.metadata["segments"]["seg_metadata"]
+        assert payload["source_units"][0]["text"] == "인원 36명"
+        assert "수치의 기준일" in kwargs["instructions"]
+        body = {key: {"facts": []} for key in legacy.COMPANY_INFO_KEYS}
+        body["other_info"]["facts"] = [{"text": "인원 36명", "status": "needs_confirmation", "evidence": [{"unit_id": 1}]}]
+        return metered_response(output_text=json.dumps(body, ensure_ascii=False))
+    calls = fake_sdk(monkeypatch, response=respond)
+    agent = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env())), per_fact_status=True)
+    result = agent.analyze(request)
+    fact = next(f for f in result.facts if f.field_key == "other_info")
+    assert fact.status == "needs_confirmation" and fact.evidence_refs[0].source_version == 3
+    assert fact.evidence_refs[0].excerpt == "인원 36명" and fact.evidence_refs[0].segment_id == "seg_metadata"
+    assert request == before and len([e for e, _ in calls if e == "response"]) == 1
+
+@pytest.mark.parametrize("custom_requester", [False, True])
+def test_job_trace_identifies_actual_openai_requester_not_configured_mode(tmp_path, custom_requester):
+    from app.services import jobs
+    settings = Settings(private_runs_dir=tmp_path / "runs", db_path=tmp_path / "runs" / "trace.sqlite3", agent_mode="mock")
+    with TestClient(create_app(settings)) as client:
+        sid = client.post("/api/v1/sessions", json={"brief": BRIEF.model_dump()}).json()["session_id"]
+    requester = (lambda *args: {}) if custom_requester else llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()))
+    bridge = llm.LlmAgent(requester)
+    with connect(settings.db_path) as conn:
+        job = jobs.create(conn, sid, "preflight", "pending", input_revision=1)
+        ai_jobs._trace_executor(conn, job.job_id, settings, bridge)
+        executor = jobs.get(conn, sid, job.job_id).progress.trace["stages"][0]
+        assert executor["configured_mode"] == "mock" and executor["agent_invoked"] is True
+        assert executor["actual_mode"] == ("custom" if custom_requester else "llm")
+        assert executor["model"] == (None if custom_requester else "gpt-6-luna")

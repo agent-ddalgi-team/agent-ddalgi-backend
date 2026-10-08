@@ -76,11 +76,46 @@ def get(conn: Connection, session_id: str, job_id: str) -> JobOut:
     )
 
 
+def record_trace(conn: Connection, job_id: str, stage: str, details: dict[str, Any]) -> int:
+    """세션 Job의 수량/버전/상태만 보존한다. 원문·프롬프트·파일 경로·사유 문구는 전달하지 않는다."""
+    row = conn.execute("SELECT progress_json, input_revision FROM jobs WHERE job_id=? AND status IN "
+                       f"({_marks(ACTIVE)})", (job_id, *ACTIVE)).fetchone()
+    if row is None:
+        return 0
+    progress = json.loads(row["progress_json"])
+    trace = progress.setdefault("trace", {"version": 1, "input_revision": row["input_revision"], "stages": []})
+    event = {"stage": stage, "recorded_at": to_iso(now()), **details}
+    # 같은 단계의 최신 요약으로 치환해 파일 수에 따라 기록이 계속 늘지 않는다.
+    remaining = [e for e in trace["stages"] if e["stage"] != stage]
+    if len(remaining) > 15:
+        trace["omitted_stage_count"] = trace.get("omitted_stage_count", 0) + len(remaining) - 15
+    trace["stages"] = remaining[-15:] + [event]
+    encoded = json.dumps(progress, ensure_ascii=False)
+    if len(encoded.encode("utf-8")) > 65536:
+        # 관측 크기가 업무 자체를 실패시키지 않으며 잘린 사실을 조용히 확정하지 않는다.
+        event = {"stage": stage, "recorded_at": to_iso(now()), "summary_omitted": "trace_size_limit"}
+        trace["stages"] = [event]
+        encoded = json.dumps(progress, ensure_ascii=False)
+    return conn.execute(f"UPDATE jobs SET progress_json=? WHERE job_id=? AND status IN ({_marks(ACTIVE)})",
+                        (encoded, job_id, *ACTIVE)).rowcount
+
+
+def _progress(conn: Connection, job_id: str, stage: str | None, message: str | None,
+              outcome: dict | None = None) -> str:
+    row = conn.execute("SELECT progress_json FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+    progress = json.loads(row["progress_json"]) if row else {}
+    if stage is not None:
+        progress.update(stage=stage, message=message)
+    if outcome is not None and "trace" in progress:
+        progress["trace"]["outcome"] = outcome
+    return json.dumps(progress, ensure_ascii=False)
+
+
 def set_progress(conn: Connection, job_id: str, stage: str, message: str | None,
                  status: str = "running") -> int:
     cur = conn.execute(
         f"UPDATE jobs SET status=?, progress_json=?, updated_at=? WHERE job_id=? AND status IN ({_marks(ACTIVE)})",
-        (status, json.dumps({"stage": stage, "message": message}, ensure_ascii=False), to_iso(now()), job_id, *ACTIVE),
+        (status, _progress(conn, job_id, stage, message), to_iso(now()), job_id, *ACTIVE),
     )
     return cur.rowcount
 
@@ -90,7 +125,7 @@ def succeed(conn: Connection, job_id: str, result_ref: dict[str, Any], *,
     cur = conn.execute(
         f"UPDATE jobs SET status='succeeded', progress_json=?, result_ref_json=?, error_json=NULL, updated_at=? "
         f"WHERE job_id=? AND status IN ({_marks(allow)})",
-        (json.dumps({"stage": "done", "message": None}), json.dumps(result_ref, ensure_ascii=False),
+        (_progress(conn, job_id, "done", None, {"status": "succeeded"}), json.dumps(result_ref, ensure_ascii=False),
          to_iso(now()), job_id, *allow),
     )
     return cur.rowcount
@@ -100,8 +135,8 @@ def fail(conn: Connection, job_id: str, code: str, message: str, retryable: bool
          details: dict[str, Any] | None = None, *, allow: tuple[str, ...] = ACTIVE) -> int:
     error = {"code": code, "message": message, "retryable": retryable, "details": details or {}, "request_id": None}
     cur = conn.execute(
-        f"UPDATE jobs SET status='failed', error_json=?, updated_at=? WHERE job_id=? AND status IN ({_marks(allow)})",
-        (json.dumps(error, ensure_ascii=False), to_iso(now()), job_id, *allow),
+        f"UPDATE jobs SET status='failed', progress_json=?, error_json=?, updated_at=? WHERE job_id=? AND status IN ({_marks(allow)})",
+        (_progress(conn, job_id, None, None, {"status": "failed", "code": code}), json.dumps(error, ensure_ascii=False), to_iso(now()), job_id, *allow),
     )
     return cur.rowcount
 
@@ -126,6 +161,11 @@ def purge_errors_for_session(conn: Connection, session_id: str) -> int:
         stripped = {"code": error.get("code", "INTERNAL_ERROR"), "message": "", "retryable": bool(error.get("retryable", False)),
                     "details": {}, "request_id": None}
         conn.execute("UPDATE jobs SET error_json=? WHERE job_id=?", (json.dumps(stripped, ensure_ascii=False), r["job_id"]))
+    for r in conn.execute("SELECT job_id, progress_json FROM jobs WHERE session_id=?", (session_id,)).fetchall():
+        progress = json.loads(r["progress_json"])
+        progress.pop("trace", None)
+        progress["message"] = None
+        conn.execute("UPDATE jobs SET progress_json=? WHERE job_id=?", (json.dumps(progress), r["job_id"]))
     return len(rows)
 
 
