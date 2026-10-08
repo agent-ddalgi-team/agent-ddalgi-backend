@@ -8005,3 +8005,67 @@ def test_job_trace_identifies_actual_openai_requester_not_configured_mode(tmp_pa
         assert executor["configured_mode"] == "mock" and executor["agent_invoked"] is True
         assert executor["actual_mode"] == ("custom" if custom_requester else "llm")
         assert executor["model"] == (None if custom_requester else "gpt-6-luna")
+
+
+@pytest.mark.parametrize("per_fact", [False, True])
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("scenario", ["fabricated_year", "real_conflict", "borrowed_from_other_candidate", "real_pair_with_bad_candidate", "equivalent_date_notation"])
+def test_conflict_candidates_require_their_own_numeric_evidence(monkeypatch, per_fact, reverse, scenario):
+    pairs = [("2021년 본사 공장을 설립했다", "2016년 본사 공장을 설립했다"),
+             ("2016년 본사를 준공했다", "2016년 본사를 준공했다")]
+    uncertain_indices, conflict_indices = {0, 1}, set()
+    if scenario == "real_conflict":
+        pairs[0] = ("2021년 본사 공장을 설립했다", "2021년 본사 공장을 설립했다")
+        uncertain_indices, conflict_indices = set(), {0, 1}
+    elif scenario == "borrowed_from_other_candidate":
+        pairs[1] = ("2016년 본사를 준공했다", "2021년 본사를 준공했다")
+    elif scenario == "real_pair_with_bad_candidate":
+        pairs = [("2016년 본사를 준공했다", "2016년 본사를 준공했다"),
+                 ("2017년 본사를 준공했다", "2017년 본사를 준공했다"), pairs[0]]
+        uncertain_indices, conflict_indices = {2}, {0, 1}
+    elif scenario == "equivalent_date_notation":
+        pairs = [("2016년 3월 20일 본사 준공", "2016.03.20 본사 준공"),
+                 ("2017년 3월 20일 본사 준공", "2017.03.20 본사 준공")]
+        uncertain_indices, conflict_indices = set(), {0, 1}
+    segments = [SegmentIn(f"seg_candidate_{i}", {"paragraph": i + 1}, original)
+                for i, (_, original) in enumerate(pairs)]
+    # The invented year exists elsewhere and in metadata, neither is this candidate's evidence.
+    segments.append(SegmentIn("seg_unrelated_date", {"paragraph": 99}, "자료 작성일 2021년"))
+    source = SourceIn("src_candidate", 3, "company", "가상 충돌 검사", "complete", segments,
+                      metadata={"document_date": "2021", "segments": {}})
+    request = AnalyzeRequest("ses_candidate", 1, BRIEF, [source])
+    body = {key: ({"facts": []} if per_fact else {"status": "not_found", "facts": []})
+            for key in legacy.COMPANY_INFO_KEYS}
+    records = [{"text": claim, "evidence": [{"unit_id": i + 1}], **({"status": "conflict"} if per_fact else {})}
+               for i, (claim, _) in enumerate(pairs)]
+    body["history"] = {"facts": list(reversed(records)) if reverse else records,
+                       **({} if per_fact else {"status": "conflict"})}
+    original_body, original_request = copy.deepcopy(body), copy.deepcopy(request)
+    calls = fake_sdk(monkeypatch, response=metered_response(output_text=json.dumps(body, ensure_ascii=False)))
+    agent = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env())), per_fact_status=per_fact)
+    result = agent.analyze(request)
+    history = [f for f in result.facts if f.field_key == "history"]
+    uncertain = [f for f in history if f.status == "needs_confirmation"]
+    conflicts = [f for f in history if f.status == "conflict"]
+    assert {f.value for f in uncertain} == {pairs[i][0] for i in uncertain_indices}
+    assert len(conflicts) == bool(conflict_indices)
+    assert not any(f.status == "supported" for f in history)
+    if conflicts:
+        assert {a["value"] for a in conflicts[0].alternatives} == {pairs[i][0] for i in conflict_indices}
+        assert any(i.code == "VALUE_CONFLICT" and conflicts[0].fact_id in i.fact_ids for i in result.issues)
+    else:
+        assert not any(i.code == "VALUE_CONFLICT" and set(i.fact_ids) & {f.fact_id for f in history} for i in result.issues)
+    for fact in uncertain:
+        assert any(i.code == "UNSUPPORTED_CLAIM" and i.severity == "blocker" and fact.fact_id in i.fact_ids for i in result.issues)
+        if scenario == "fabricated_year" and fact.value == pairs[0][0]:
+            assert any(fact.fact_id in i.fact_ids and "연도 2021년" in i.message for i in result.issues)
+    restored = [(f.value, f.evidence_refs) for f in uncertain]
+    restored += [(a["value"], [EvidenceRef.model_validate(r) for r in a["evidence_refs"]])
+                 for f in conflicts for a in f.alternatives]
+    for claim, evidence in restored:
+        ordinal = next(i for i, pair in enumerate(pairs) if pair[0] == claim)
+        assert len(evidence) == 1 and evidence[0].segment_id == f"seg_candidate_{ordinal}"
+        assert evidence[0].excerpt == pairs[ordinal][1] and evidence[0].source_version == 3
+    assert body == original_body and request == original_request
+    assert validate_analyze(result, [source]) is None
+    assert len([event for event, _ in calls if event == "response"]) == 1

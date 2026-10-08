@@ -1900,6 +1900,30 @@ class LlmAgent:
         from app.services.validation import numeric_evidence_tokens
         prefix = "fact_" + uuid.uuid4().hex[:16]
         result: list[Fact] = []
+
+        def append_conflict(key: str, candidates: list[dict]) -> None:
+            # Check each candidate against its own citations, never the union or source metadata.
+            checked = []
+            for item in candidates:
+                candidate_refs = [index.restore(ev) for ev in item["evidence"]]
+                unsupported = bool(numeric_evidence_tokens(item["text"]) - numeric_evidence_tokens(
+                    " ".join(ref.excerpt for ref in candidate_refs)))
+                checked.append((item, candidate_refs, unsupported))
+            grounded = [(item, refs) for item, refs, unsupported in checked if not unsupported]
+            if len(grounded) >= 2:
+                result.append(Fact(fact_id=f"{prefix}_{key}", field_key=key, value=None, status="conflict",
+                    alternatives=[{"value": item["text"], "evidence_refs": [r.model_dump() for r in refs]}
+                                  for item, refs in grounded],
+                    evidence_refs=_unique_refs([ref for _, refs in grounded for ref in refs])))
+            for item, refs, unsupported in checked:
+                if unsupported or len(grounded) < 2:
+                    # Keep both the rejected claim and an unpaired candidate visible. Numeric support
+                    # alone cannot promote the remaining model-labelled conflict to a confirmed fact.
+                    result.append(Fact(fact_id=f"{prefix}_{item['fact_id']}", field_key=key,
+                        value=item["text"], status="needs_confirmation", evidence_refs=refs))
+            if any(unsupported for _, _, unsupported in checked):
+                logger.warning("AI extraction needs confirmation: rule=conflict_numeric_evidence field=%s", key)
+
         for key in legacy.COMPANY_INFO_KEYS:
             field_info = info[key]
             status, items = field_info["status"], field_info["facts"]
@@ -1916,25 +1940,11 @@ class LlmAgent:
             if status == "not_found":
                 result.append(Fact(fact_id=f"{prefix}_{key}", field_key=key, value=None, status="missing"))
             elif status == "conflict" and not any("status" in item for item in items):
-                alternatives, refs = [], []
-                for item in items:
-                    candidate_refs = [index.restore(ev) for ev in item["evidence"]]
-                    refs.extend(candidate_refs)
-                    alternatives.append({"value": item["text"],
-                                         "evidence_refs": [ref.model_dump() for ref in candidate_refs]})
-                result.append(Fact(fact_id=f"{prefix}_{key}", field_key=key, value=None, status="conflict",
-                                   alternatives=alternatives, evidence_refs=_unique_refs(refs)))
+                append_conflict(key, items)
             else:
                 conflicting = [] if aliases_resolved else [item for item in items if item.get("status") == "conflict"]
                 if conflicting:
-                    alternatives, conflict_refs = [], []
-                    for item in conflicting:
-                        candidate_refs = [index.restore(ev) for ev in item["evidence"]]
-                        conflict_refs.extend(candidate_refs)
-                        alternatives.append({"value": item["text"],
-                                             "evidence_refs": [ref.model_dump() for ref in candidate_refs]})
-                    result.append(Fact(fact_id=f"{prefix}_{key}", field_key=key, value=None, status="conflict",
-                                       alternatives=alternatives, evidence_refs=_unique_refs(conflict_refs)))
+                    append_conflict(key, conflicting)
                 for item in items:
                     item_status = "supported" if aliases_resolved else item.get("status", status)
                     if item_status == "conflict":
