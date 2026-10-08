@@ -7,6 +7,8 @@
 
 ## 1. Quick Status
 
+- **2026-10-08 [BE-06·10 / F-08] 제외 후 재검증 연결:** 한 번 클릭·S03 응답 유실 복구·브라우저28묶음 통과·BE-10 진행중. [기록](task_backend.md#one-click-exclusion-validation-20261008).
+
 - **2026-10-08 [BE-06·10 / F-08] 미사용 선택 사실 처리:** S03 명시 제외·처리 기록 분리·API41건/UI27묶음 통과·BE-10 진행중 유지. [기록](task_backend.md#unused-preflight-review-20261008).
 
 - **2026-10-07 [F-02·03·05·06·08 / BE-04·06·07·10] 실자료 표본 검수:** 실제AI3회/점검74사실·4쪽초안·PDF/DOCX배치통과·내용3건 분류/업체 수 표기 보완·승인 미실행·BE-10 진행중. [기록](task_backend.md#real-registered-audit-20261007).
