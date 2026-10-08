@@ -7,6 +7,8 @@
 
 ## 1. Quick Status
 
+- **2026-10-08 [BE-07·08·09·10 / F-08] DOCX 승인·만료 검수:** 실제 LibreOffice 1/4/6/8/10쪽 승인/다운로드 및 만료 접근 회귀12건 통과·현재 시연 세션 만료/새 작업 필요·일반품질 진행중. [기록](task_backend.md#docx-approval-expiry-check-20261008).
+
 - **2026-10-08 [BE-01~10 / F-08] 전체 백엔드 회귀:** 현재 작업 브랜치2,116통과/10건너뜀/경고3/실패0·제품 추가 수정 없음. 회귀 완료/BE-10 일반품질 진행중 유지. [기록](task_backend.md#backend-full-regression-20261008).
 - **2026-10-08 [BE-10 / F-08] 최신 공유 기준 통합:** 최신test/develop 충돌 없이 반영·추가 평가 도구38건 통과·백엔드PR44/프론트PR24 병합 확인. [기록](task_backend.md#sharing-base-integration-20261008).
 - **2026-10-08 [BE-07·08·10 / F-08] 시연 출력 대조:** 읽기 전용 스냅샷 PDF/DOCX 각7쪽·본문 누락0·사진4개·글꼴 일치 확인/원본 상태 유지·BE-10 일반품질 진행중. [기록](task_backend.md#demo-format-parity-20261008).
