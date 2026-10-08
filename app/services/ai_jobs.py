@@ -465,10 +465,14 @@ def _prepare_draft_layout(settings: Settings, request: DraftRequest, job_id: str
     # Browser work must not hold a DB write lock. The final save rechecks session,
     # input revision and Job ownership after this potentially long operation.
     try:
-        prepared = export_render.paginate_draft(snapshot, work_dir, settings)
+        prepared = export_render.paginate_draft(snapshot, work_dir, settings,
+            reduction_priorities=export_render.draft_reduction_priorities(
+                request.preflight.facts, request.brief, result.editorial))
     finally:
         artifacts.discard_temp(work_dir)
     audit = result.editorial.model_copy(deep=True)
+    for note in prepared.review_notes:
+        audit.supplement_requests.append('조판 검토: ' + json.dumps(note, ensure_ascii=False))
     audit.generated_pages = len(prepared.pages)
     if len(prepared.pages) != len(result.pages):
         audit.page_count_reason += (f" PDF 분량 사전 확인에서 내용을 보존하며 {len(result.pages)}쪽을 "

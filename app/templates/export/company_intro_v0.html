@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-{#- 회사소개서 템플릿 v6 (기존 파일 경로 유지). 이 파일을 바꾸면 app/services/layout_checks.py의 TEMPLATE_VERSION을 올린다.
+{#- 회사소개서 템플릿 v11 (기존 파일 경로 유지). 이 파일을 바꾸면 app/services/layout_checks.py의 TEMPLATE_VERSION을 올린다.
     모든 문서 값은 Jinja2 autoescape로 이스케이프된다. 외부 리소스 없음(CSP default-src 'none'), 폰트·이미지는 data URI. -#}
 <html lang="ko">
 <head>
@@ -23,6 +23,8 @@ section.page { width: {{ content_w_mm }}mm; box-sizing: border-box; padding-top:
 section.page + section.page { break-before: page; page-break-before: always; }
 .page-label { font-size: 8pt; color: #8a8a8a; text-align: right; margin: 0 0 3mm 0; }
 h1, h2, h3 { font-weight: 700; line-height: 1.3; margin: 0 0 4mm 0; break-after: avoid; page-break-after: avoid; }
+h1, h2, h3, .page-label { word-break: keep-all; overflow-wrap: normal; hyphens: none; }
+.identifier { display: inline-block; white-space: nowrap; word-break: normal; overflow-wrap: normal; hyphens: none; }
 h1 { font-size: 20pt; } h2 { font-size: 14pt; margin-top: 2mm; } h3 { font-size: 12pt; margin-top: 1mm; }
 p { margin: 0 0 3mm 0; white-space: pre-wrap; word-break: keep-all; overflow-wrap: anywhere; }
 ul { margin: 0 0 3mm 0; padding-left: 6mm; }
@@ -50,7 +52,8 @@ figcaption { font-size: 9pt; color: #555; margin-top: 1.5mm; word-break: keep-al
 .brochure figure { background: #f1f6f7; padding: 3mm; margin: 2mm 0; }
 .brochure figure img.contain { width: 100%; height: 74mm; max-height: none; max-width: 100%; object-fit: contain; }
 .brochure figure img.crop { width: 100%; height: 74mm; object-fit: cover; }
-.brochure figcaption { text-align: left; color: #163b55; font-size: 9pt; line-height: 1.5; padding: 3mm 1mm 1mm; }
+.brochure figcaption { text-align: left; color: #435663; font-size: 10pt; line-height: 1.5;
+  padding: 0; margin: 2mm auto 0; white-space: pre-line; }
 .brochure.multi-photo figure { grid-column: auto; }
 .brochure.layout-cover_photo figure img.contain, .brochure.layout-cover_photo figure img.crop { height: 119mm; }
 .brochure.layout-cover_photo h1 { font-size: 32pt; margin-top: 8mm; }
@@ -73,10 +76,11 @@ figcaption { font-size: 9pt; color: #555; margin-top: 1.5mm; word-break: keep-al
 .brochure.layout-cover_photo h1 { color: white; font-size: 30pt; margin: 3mm 0; }
 .brochure.layout-cover_photo p { color: #d2e2e4; }
 .brochure.layout-cover_photo figure { padding: 0; background: #102d3d; }
-.brochure.layout-cover_photo figcaption { color: #bfd4d9; font-size: 8pt; }
+.brochure.layout-cover_photo figcaption { color: #bfd4d9; font-size: 9pt; }
 .brochure.layout-contact_photo ul { background: #102d3d; color: white; }
 /* editorial_v1: server-selected tokens, consistent readable type, atomic claim cards. */
-.editorial { --ink: #24323c; --accent: #435663; --tint: #f1f3f4; }
+.editorial { --ink: #24323c; --accent: #435663; --tint: #f1f3f4; --minimum-body-pt: 11pt; }
+.editorial .page-body p, .editorial .page-body li { font-size: max(11pt, var(--minimum-body-pt)); }
 .editorial.palette-ocean { --ink: #183b50; --accent: #247a83; --tint: #edf5f6; }
 .editorial.palette-forest { --ink: #244438; --accent: #3a7360; --tint: #eef4ef; }
 .editorial.palette-clay { --ink: #513931; --accent: #975c43; --tint: #f7f1ec; }
@@ -85,7 +89,11 @@ figcaption { font-size: 9pt; color: #555; margin-top: 1.5mm; word-break: keep-al
 .editorial h2 { color: var(--ink); border-color: var(--brand, var(--accent)); }
 .editorial p { color: #293640; font-size: 11pt; line-height: 1.7; margin: 0 0 3mm; }
 .editorial .page-body > p:first-of-type { font-size: 14pt; line-height: 1.65; padding: 0 0 4mm; }
-.editorial .page-body { gap: 4mm 5mm; }
+.editorial .page-body { display: block; }
+.editorial .page-label { break-after: avoid; page-break-after: avoid; }
+.editorial .page-body > .blk { margin-bottom: 4mm; }
+.editorial.multi-photo figure { display: inline-block; vertical-align: top; box-sizing: border-box; width: 48%; }
+.editorial.multi-photo figure + figure { margin-left: 3%; }
 .editorial figure, .editorial ul { background: var(--tint); }
 .editorial.layout-cover_text .page-body { border-top: 2mm solid var(--brand, var(--accent)); padding-top: 8mm; }
 .editorial.layout-cover_text h1 { font-size: 34pt; max-width: 155mm; }
@@ -104,31 +112,40 @@ figcaption { font-size: 9pt; color: #555; margin-top: 1.5mm; word-break: keep-al
 .editorial.type-restrained h1 { font-size: 25pt; letter-spacing: 0; }
 .editorial .blk { break-inside: avoid; page-break-inside: avoid; }
 /* Keep each subheading with its evidence-linked paragraph. Long conditions get the full width. */
-.editorial .entry { grid-column: 1 / -1; min-width: 0; padding: 4mm 5mm;
-  background: var(--tint); border-top: 0.6mm solid var(--brand, var(--accent)); break-inside: avoid; }
+.editorial .entry { grid-column: 1 / -1; min-width: 0; padding: 3mm 4mm;
+  margin-bottom: 3mm; background: var(--tint); border-top: 0.6mm solid var(--brand, var(--accent)); break-inside: avoid; }
 .editorial .entry h2 { font-size: 12pt; line-height: 1.4; padding: 0; border: 0; margin: 0 0 2mm; color: var(--ink); }
+.editorial.layout-cover_photo .entry { padding: 4mm 5mm; }
 .editorial .entry p { font-size: 11pt; line-height: 1.7; margin: 0; padding: 0; color: #293640; }
 .editorial.layout-product_grid .entry:not(.wide) { grid-column: auto; }
 .editorial.layout-fact_sheet .entry, .editorial.layout-certification_summary .entry,
 .editorial.layout-product_grid .entry.wide { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 3fr);
   gap: 4mm; background: none; border-top-width: 0.3mm; }
 .editorial .entry .blk { grid-column: auto; }
-.editorial.density-compact .entry { padding: 3mm 4mm; }
+.editorial .entry.stacked { display: block; }
+.editorial.density-compact .page-label { margin-bottom: 4mm; }
+.editorial.density-compact h1 { font-size: 25pt; margin: 2mm 0 3mm; }
+.editorial.density-compact .page-body { gap: 1.5mm 4mm; }
+.editorial.density-compact .page-body > p:first-of-type { font-size: 12pt; line-height: 1.5; padding-bottom: 2mm; }
+.editorial.density-compact .entry { padding: 1.5mm 2mm; margin-bottom: 1.5mm; }
+.editorial.density-compact .entry h2 { font-size: 11pt; margin-bottom: 1mm; }
+.editorial.density-compact .entry p { font-size: 11pt; line-height: 1.45; padding: 0; }
+.editorial .page-body > h1:not(:first-child) { font-size: 18pt; margin-top: 6mm; }
 </style>
 </head>
 <body>
 {%- for page in pages %}
 <section class="page{% if page.layout != 'text' %} brochure layout-{{ page.layout }}{% if page.photo_count > 1 %} multi-photo{% endif %}{% endif %}{% if page.design %} editorial palette-{{ page.design.palette }} density-{{ page.design.density }} type-{{ page.design.typography }}{% endif %}"{% if page.design and page.design.brand_color %} style="--brand: {{ page.design.brand_color }}"{% endif %} data-page-id="{{ page.page_id }}">
-  <div class="page-label">{% if page.layout != 'text' %}<span class="series">COMPANY PROFILE</span>{% endif %}<span>{{ loop.index }} / {{ page.title }}</span></div>
+  <div class="page-label">{% if page.layout != 'text' %}<span class="series">COMPANY PROFILE</span>{% endif %}<span>{{ loop.index }} / {{ page.title|identifiers }}</span></div>
 <div class="page-body">
 {%- for b in page.blocks %}
-{% if b.group_start %}<div class="entry{% if b.wide %} wide{% endif %}">{% endif %}
+{% if b.group_start %}<div class="entry{% if b.wide %} wide{% endif %}{% if b.stacked %} stacked{% endif %}">{% endif %}
 {%- if b.type == "heading" %}
-  <h{{ b.level }} class="blk" data-block-id="{{ b.block_id }}">{{ b.text }}</h{{ b.level }}>
+  <h{{ b.level }} class="blk" data-block-id="{{ b.block_id }}">{{ b.text|identifiers }}</h{{ b.level }}>
 {%- elif b.type == "paragraph" %}
-  <p class="blk" data-block-id="{{ b.block_id }}">{{ b.text }}</p>
+  <p class="blk" data-block-id="{{ b.block_id }}">{{ b.text|identifiers }}</p>
 {%- elif b.type == "list" %}
-  <ul class="blk" data-block-id="{{ b.block_id }}">{% for item in b.list_items %}<li>{{ item }}</li>{% endfor %}</ul>
+  <ul class="blk" data-block-id="{{ b.block_id }}">{% for item in b.list_items %}<li>{{ item|identifiers }}</li>{% endfor %}</ul>
 {%- elif b.type == "image" %}
   <figure class="blk" data-block-id="{{ b.block_id }}"><img class="{{ b.fit }}" src="data:{{ b.mime_type }};base64,{{ b.data_b64 }}" alt="{{ b.alt }}">{% if b.caption %}<figcaption>{{ b.caption }}</figcaption>{% endif %}</figure>
 {%- elif b.type == "broken_image" %}
@@ -138,6 +155,7 @@ figcaption { font-size: 9pt; color: #555; margin-top: 1.5mm; word-break: keep-al
 {%- endif %}
 {% if b.group_end %}</div>{% endif %}
 {%- endfor %}
+{% if loop.last and confirmed_contact %}<div class="entry stacked"><h2>문의</h2><p>{{ confirmed_contact }}</p></div>{% endif %}
 </div>
 </section>
 {%- endfor %}
@@ -147,6 +165,22 @@ figcaption { font-size: 9pt; color: #555; margin-top: 1.5mm; word-break: keep-al
   // 결과 JSON을 body 끝에 붙여 --dump-dom으로 회수한다(--virtual-time-budget이 이 시점까지 기다리게 한다).
   var PX_PER_MM = 96 / 25.4;
   var limit = {{ content_h_mm }} * PX_PER_MM;
+  function alignCaptions() {
+    // Fit the element to the visible contain image, removing letterbox space.
+    // Caption width and left edge follow the photo, not the surrounding panel.
+    document.querySelectorAll('.brochure figure.blk').forEach(function(figure) {
+      var img = figure.querySelector('img');
+      if (!img || !img.complete || !img.naturalWidth) return;
+      var rect = img.getBoundingClientRect();
+      if (img.classList.contains('contain')) {
+        var scale = Math.min(rect.width / img.naturalWidth, rect.height / img.naturalHeight);
+        img.style.width = (img.naturalWidth * scale) + 'px';
+        img.style.height = (img.naturalHeight * scale) + 'px';
+      }
+      var caption = figure.querySelector('figcaption');
+      if (caption) caption.style.width = img.getBoundingClientRect().width + 'px';
+    });
+  }
   function fitPhotos() {
     // Only reduce contain photo boxes on overflowing editorial pages. Text, captions,
     // image aspect ratios and block order stay intact. Small or text-heavy pages
@@ -186,9 +220,18 @@ figcaption { font-size: 9pt; color: #555; margin-top: 1.5mm; word-break: keep-al
     return fits;
   }
   function measure() {
+    alignCaptions();
     var photoFits = fitPhotos();
+    alignCaptions();
     var out = { limit_px: limit, fonts_ready: document.fonts.check('{{ base_font_pt }}pt "{{ font_family }}"') && document.fonts.check('bold {{ base_font_pt }}pt "{{ font_family }}"'),
                 fonts_status: document.fonts.status, pages: [], photo_fits: photoFits };
+    out.photo_captions = Array.from(document.querySelectorAll('.brochure figure.blk')).map(function(figure) {
+      var img = figure.querySelector('img'), caption = figure.querySelector('figcaption');
+      if (!img || !caption) return null;
+      var photo = img.getBoundingClientRect(), cap = caption.getBoundingClientRect();
+      return {block_id: figure.getAttribute('data-block-id'), left_delta_px: cap.left - photo.left,
+        gap_mm: (cap.top - photo.bottom) / PX_PER_MM, font_pt: parseFloat(getComputedStyle(caption).fontSize)*.75};
+    }).filter(Boolean);
     var pages = document.querySelectorAll("section.page");
     for (var i = 0; i < pages.length; i++) {
       var pg = pages[i];
@@ -199,6 +242,29 @@ figcaption { font-size: 9pt; color: #555; margin-top: 1.5mm; word-break: keep-al
       var blocks = pg.querySelectorAll(".blk");
       var horizontal = pg.scrollWidth > pg.clientWidth + 1;
       var overlaps = [];
+      var wordBreaks = [];
+      var labels = pg.querySelectorAll("h1, h2, h3, .page-label");
+      for (var a = 0; a < labels.length; a++) {
+        var walker = document.createTreeWalker(labels[a], NodeFilter.SHOW_TEXT);
+        var node;
+        while ((node = walker.nextNode())) {
+          var pattern = /[가-힣]{2,}/g, match;
+          while ((match = pattern.exec(node.textContent))) {
+            var range = document.createRange();
+            range.setStart(node, match.index); range.setEnd(node, match.index + match[0].length);
+            var rects = Array.from(range.getClientRects());
+            if (rects.length > 1 && Math.max.apply(null, rects.map(function(r){return r.top;})) -
+                Math.min.apply(null, rects.map(function(r){return r.top;})) > 2) {
+              wordBreaks.push({block_id: labels[a].getAttribute("data-block-id"), word: match[0]});
+            }
+          }
+        }
+      }
+      var bodyUnits = pg.querySelectorAll(".page-body p, .page-body li, .page-body figure").length;
+      var bodyFonts = Array.from(pg.querySelectorAll('.page-body p, .page-body li')).map(function(el) {
+        return parseFloat(getComputedStyle(el).fontSize) * 0.75;
+      });
+      var minimumBody = pg.classList.contains('editorial') && bodyFonts.length ? Math.min.apply(null, bodyFonts) : null;
       for (var j = 0; j < blocks.length; j++) {
         var r = blocks[j].getBoundingClientRect();
         if (r.bottom > bottom) { bottom = r.bottom; }
@@ -217,7 +283,19 @@ figcaption { font-size: 9pt; color: #555; margin-top: 1.5mm; word-break: keep-al
         }
       }
       var height = bottom - top;
-      out.pages.push({ page_id: pg.getAttribute("data-page-id"), height_px: height, overflow: height > limit + 0.5 || horizontal || overlaps.length > 0,
+      // Atomic editable item measurements for draft-only page balancing.
+      var groups = Array.from(pg.querySelector('.page-body').children).filter(function(el) {
+        return el.matches('.entry, .blk');
+      }).map(function(el) {
+        var ids = el.hasAttribute('data-block-id') ? [el.getAttribute('data-block-id')] :
+          Array.from(el.querySelectorAll('[data-block-id]')).map(function(b) {return b.getAttribute('data-block-id');});
+        var style = getComputedStyle(el);
+        return {block_ids: ids, height_px: el.getBoundingClientRect().height +
+          parseFloat(style.marginTop || 0) + parseFloat(style.marginBottom || 0)};
+      });
+      out.pages.push({ page_id: pg.getAttribute("data-page-id"), height_px: height, overflow: height > limit + 0.5 || horizontal || overlaps.length > 0 || bodyUnits === 0 || wordBreaks.length > 0,
+                       item_groups: groups,
+                       body_units: bodyUnits, min_body_font_pt: minimumBody, hangul_word_breaks: wordBreaks,
                        horizontal_overflow: horizontal, overlapping_blocks: overlaps,
                        excess_px: Math.max(0, height - limit), first_overflow_block_id: first });
     }

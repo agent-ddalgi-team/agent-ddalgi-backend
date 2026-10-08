@@ -384,7 +384,7 @@ def test_editorial_draft_layout_preparation_saves_once_and_rechecks_boundaries(c
             page_count_reason="시험 구성", selections=[FactSelection(fact_id=f.fact_id,
                 disposition="optional" if f.status == "supported" else "review", reason="시험 근거") for f in request.preflight.facts])
         return result
-    def paginate(snapshot, out_dir, config):
+    def paginate(snapshot, out_dir, config, *, reduction_priorities=None):
         calls.append("paginate")
         assert out_dir.is_dir() and config.db_path == settings.db_path
         # Acquiring a second writer also verifies browser work holds no DB write lock.

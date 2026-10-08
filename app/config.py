@@ -70,6 +70,8 @@ class Settings:
     # 렌더 옵션(용지·여백·폰트)은 설정이 아니라 app/services/layout_checks.py의 DEFAULT_RENDER_OPTIONS(해시 대상)다.
     export_browser_path: str | None = None
     export_render_timeout_s: int = 90
+    # Optional local render workspace (HTML/PDF and Chrome profile); no public API field.
+    export_work_dir: Path | None = None
     # BE-08: Export 만료(분). 세션 만료와 같거나 그 이전으로 잘린다.
     export_ttl_minutes: int = 120
     # BE-09: 세션 종료·만료 정리. 배경 sweep 주기(초, 0이면 배경 스레드 없음 — 테스트·CLI 전용), 삭제 재시도 상한, 처리 중 점유 유효시간(초).

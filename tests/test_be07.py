@@ -35,6 +35,13 @@ BANNED = ("거산", "케미칼", "Geosan")
 
 # 템플릿·폰트·DOCX 배치 상수·PDF 렌더 상수의 sha256(줄바꿈 정규화). 이 중 하나라도 바꾸면 TEMPLATE_VERSION을 올리고 여기 값을 갱신한다.
 TEMPLATE_FINGERPRINTS = {
+    "template_v13": "2077b206f74c365cdd09514e2d7444193fdf2a7a03895cbe8d8b674cff4c608e",
+    "template_v12": "6d1452d1cb505bf9c15f88183b25caa6828445262adc924e5584a50a08805e2a",
+    "template_v10": "5f6630d99d2561b95c29400431f6c44bc4f76ce8a017c8b0411c9e3ca1b193c1",
+    "template_v11": "625f5697a31e5c04c5454196e737b2066b83bce83763c2fb9c037e727efd1332",
+    "template_v9": "b45637affe6e3f6489e8d199eb35b4ca28efe1e2cd62e49a4dd2d3e76621d3de",
+    "template_v8": "67b2db454b19b8bb7ce28a35cb35a1e80dad233473cc19674fd8f17df61e8044",
+    "template_v7": "ea2d90beadd732c442cf38f046d217f2533b4b7a58b093277d9b475f1a9b58a9",
     "template_v6": "20677eaf1d7238e726d7a9b13e7648ad79440be189dc17b8203cfa8ad0229950",
     "template_v5": "f8f7d40b6c886b14eb813bbdf561bf1c540d6483c336a78bee377bac46b60fa9",
     "template_v4": "538839538005c76d91e68a091398ce4cd20842499f62d147c52852339d98b237",
@@ -192,9 +199,9 @@ def _editorial_photo_snapshot(layout="text_photo", *, fit="contain", long=False,
     from app.models import PageDesign
     blocks = [_blk("photo_title", "heading", text="시연 제조공정", level=1),
               _blk("photo_lead", "paragraph", text="시험용 부품의 표면 처리와 피막 처리를 소개하며, 공정별 적용 소재와 가능한 용도를 구분해 설명합니다.")]
-    texts = (["시연 회사", "EXAMPLE COMPANY"] if layout == "cover_photo" else [
+    texts = (["시연 회사", "EXAMPLE COMPANY", "입력한 적용 조건을 확인합니다."] if layout == "cover_photo" else [
         "시연 공정은 시험용 금속 표면에 적용하며, 적용 소재와 처리 조건에 따라 결과를 확인합니다."
-    ] * 4)
+    ] * 5)  # Leave enough content to exercise photo resizing after caption whitespace is removed.
     if sparse:
         texts = []
     if long:
@@ -324,6 +331,96 @@ def test_draft_pagination_leaves_a_fitting_document_unchanged(out_dir, settings)
     assert prepared.pages == snap.pages
 
 
+@needs_browser
+def test_physical_page_limit_rejects_exact_logical_count_over_target(out_dir, settings):
+    doc = _doc([Page(page_id=f'p{n}', title='범위', layout_key='text', blocks=[
+        _blk(f'b{n}', 'paragraph', text='확인된 조건을 보존합니다.')]) for n in range(2)])
+    doc.target_pages = 1
+    result = er.render(er.snapshot_from_document(doc, {}), 'pdf', out_dir, settings)
+    assert result.actual_pages == 2 and not result.layout_ok
+    assert result.details['final_page_limit'] == {'requested': 1, 'actual': 2, 'passed': False}
+    assert any(f.details.get('rule') == 'final_page_limit' for f in result.findings)
+
+
+def test_page_limit_does_not_trust_logical_count_or_engine_success(out_dir, settings, monkeypatch):
+    snap = _editorial_photo_snapshot(sparse=True)
+    monkeypatch.setattr(er, 'render', lambda *a: er.RenderResult('pdf', out_dir/'unused.pdf', snap.target_pages+1,
+        [], [], True, 'v', 'r', 'a', 'test', 0, {}))
+    result = er.paginate_draft(snap, out_dir, settings)
+    assert result.outcome != 'passed' and result.pages == snap.pages
+
+
+def test_physical_empty_header_page_and_short_orphan_tail_are_findings():
+    snap = er.snapshot_from_document(_doc([Page(page_id='p', title='본문', layout_key='text', blocks=[
+        _blk('h','heading',text='본문',level=1),_blk('b','paragraph',text='실제 본문입니다.')])]),{})
+    info={'pages':2,'page_texts':['COMPANY PROFILE\n1 / 본문\n본문','마지막 짧은 문장입니다.'],'page_images':[0,0]}
+    findings=er._physical_page_findings(info,snap)
+    assert findings[0].details['empty_body'] and findings[1].details['orphan_tail']
+    assert er._physical_page_findings({'pages':1,'page_texts':['1 / 본문\n본문\n실제 본문입니다.'],'page_images':[0]},snap)==[]
+
+
+def test_minimum_body_font_rejects_shrink_but_allows_browser_rounding():
+    assert er._overflow_findings({'pages':[{'page_id':'p','overflow':False,'min_body_font_pt':10.995}]})==[]
+    assert er._overflow_findings({'pages':[{'page_id':'p','overflow':False,'min_body_font_pt':10}]})[0].details['rule']=='minimum_body_font'
+
+
+def test_background_reduction_protects_conditions_and_records_removed_claim():
+    page=Page(page_id='p',title='공정',layout_key='text',blocks=[
+        _blk('h','heading',text='연혁',level=2),
+        Block(block_id='history',type='paragraph',content={'text':'과거 설립 이력입니다.'},fact_ids=['history']),
+        Block(block_id='condition',type='paragraph',content={'text':'매년 심사 조건입니다.'},fact_ids=['condition'])])
+    note=er._reduce_background(page,{'history':90})
+    assert note['fact_ids']==['history'] and '11pt' in note['reason'] and note['value']=='과거 설립 이력입니다.'
+    assert [b.block_id for b in page.blocks]==['condition']
+    assert er._reduce_background(page,{'condition':90}) is None
+
+
+def test_reduction_priorities_respect_required_and_purpose():
+    from app.models import Brief, Fact
+    from types import SimpleNamespace
+    facts=[Fact(fact_id=k,field_key=k,value='조건',status='supported',evidence_refs=[])
+           for k in ['history','certifications','processes','company_summary']]
+    audit=SimpleNamespace(selections=[SimpleNamespace(fact_id=f.fact_id,disposition='optional') for f in facts])
+    assert er.draft_reduction_priorities(facts,Brief(target_company='회사',purpose='신규 고객 소개'),audit)=={'history':90}
+    assert er.draft_reduction_priorities(facts,Brief(target_company='회사',purpose='연혁',required_fields=['company_summary']),audit)=={}
+
+
+@needs_browser
+def test_korean_label_word_is_not_split_in_the_middle(out_dir,settings):
+    from app.models import PageDesign
+    doc=_doc([Page(page_id='p_keep',title='소재 처리 사항',layout_key='fact_sheet',design=PageDesign(),blocks=[
+        _blk('title','heading',text='소재 처리 사항',level=1),
+        _blk('label','heading',text='표면처리 적용 소재와 처리 사항',level=2),
+        _blk('body','paragraph',text='시험용 소재의 적용 조건을 확인합니다. '+LONG_UNIT*2)])])
+    result=er.render(er.snapshot_from_document(doc,{}),'pdf',out_dir,settings)
+    assert result.layout_ok and result.actual_pages==1
+    assert result.details['measure']['pages'][0]['hangul_word_breaks']==[]
+    assert result.details['measure']['pages'][0]['body_units']>0
+
+
+@needs_browser
+def test_identifier_hyphens_stay_on_one_pdf_line(out_dir, settings):
+    from app.models import PageDesign
+    from pypdf import PdfReader
+    identifiers=['00987654-1','EX0042-AB-CD','MIL-DTL-5541']
+    blocks=[_blk('title','heading',text='인증 범위',level=1)]
+    for i,identifier in enumerate(identifiers):
+        blocks.extend([_blk(f'h{i}','heading',text='승인번호 '+identifier,level=2),
+                       _blk(f'b{i}','paragraph',text='적용 범위와 승인 식별번호를 확인합니다. '*3+identifier+'입니다.')])
+    doc=_doc([Page(page_id='p_codes',title='식별번호',layout_key='fact_sheet',design=PageDesign(),blocks=blocks)])
+    snapshot=er.snapshot_from_document(doc,{})
+    html=er.build_html(snapshot)
+    assert all(f'<span class="identifier">{code}</span>' in html for code in identifiers)
+    result=er.render(snapshot,'pdf',out_dir,settings)
+    assert result.layout_ok and result.actual_pages==1
+    lines=PdfReader(result.file_path).pages[0].extract_text().splitlines()
+    assert all(any(code in line for line in lines) for code in identifiers)
+
+
+def test_identifier_wrapper_does_not_interpret_source_html():
+    assert str(er._identifier_html('<img src=x onerror="A-B"> MIL-DTL-5541')) == '&lt;img src=x onerror=&#34;<span class="identifier">A-B</span>&#34;&gt; <span class="identifier">MIL-DTL-5541</span>'
+
+
 def test_draft_pagination_unavailable_preserves_every_block(out_dir, settings, monkeypatch):
     snap = _editorial_photo_snapshot(long=True)
     def unavailable(*args):
@@ -369,9 +466,47 @@ def test_draft_pagination_bounds_repeated_overflow_without_losing_content(out_di
     assert "".join(b.content["text"] for p in prepared.pages for b in p.blocks) == page.blocks[0].content["text"]
 
 
+def test_balanced_items_preserve_atomic_groups_order_and_context():
+    from app.models import PageDesign
+    pages = [Page(page_id='cover', title='표지', layout_key='cover_text', blocks=[])]
+    rows = [{'page_id': 'cover', 'height_px': 100, 'item_groups': []}]
+    for n, count in enumerate((2, 6)):
+        blocks = [_blk(f't{n}', 'heading', level=1, text=f'주제 {n}')]
+        groups = [{'block_ids': [f't{n}'], 'height_px': 60}]
+        for j in range(count):
+            blocks += [_blk(f'h{n}_{j}', 'heading', level=2, text=f'조건 {j}'),
+                       Block(block_id=f'b{n}_{j}', type='paragraph', content={'text': f'수치 {j}를 유지합니다.'}, fact_ids=[f'f{n}_{j}'])]
+            groups.append({'block_ids': [f'h{n}_{j}', f'b{n}_{j}'], 'height_px': 100})
+        pages.append(Page(page_id=f'p{n}', title=f'주제 {n}', layout_key='fact_sheet', design=PageDesign(), blocks=blocks))
+        rows.append({'page_id': f'p{n}', 'height_px': 110 + count * 100, 'item_groups': groups})
+    before = [b.model_dump() for p in pages for b in p.blocks]
+    result = er._balanced_items(pages, {'pages': rows})
+    assert result != pages and len(result) == len(pages)
+    assert [b.model_dump() for p in result for b in p.blocks] == before
+    assert result[0] == pages[0] and result[2].title == '주제 1'
+    for page in result:
+        for i, b in enumerate(page.blocks):
+            if b.type == 'heading':
+                assert i + 1 < len(page.blocks)
+    pages[2].blocks.append(_blk('image', 'image', asset_id='photo'))
+    assert er._balanced_items(pages, {'pages': rows}) == pages
+
+
+@needs_browser
+def test_caption_tracks_visible_photo_edge_and_keeps_body_distinct(out_dir, settings):
+    result = er.render(_editorial_photo_snapshot(sparse=True), 'pdf', out_dir, settings)
+    assert result.layout_ok
+    captions = result.details['measure']['photo_captions']
+    assert len(captions) == 1
+    assert abs(captions[0]['left_delta_px']) < 1
+    assert abs(captions[0]['gap_mm'] - 2) < .05
+    assert 9.9 < captions[0]['font_pt'] < 10.1
+    assert result.details['measure']['pages'][0]['min_body_font_pt'] >= 10.99
+
+
 def test_identity_values_come_from_layout_checks(out_dir):
     r = er.render(_fixture_snapshot("1pages"), "docx", out_dir)
-    assert r.template_version == layout_checks.TEMPLATE_VERSION == "template_v6"
+    assert r.template_version == layout_checks.TEMPLATE_VERSION == "template_v13"
     assert r.render_options_hash == layout_checks.RENDER_OPTIONS_HASH == layout_checks.render_options_hash(layout_checks.DEFAULT_RENDER_OPTIONS)
     assert len(r.render_options_hash) == 16 and int(r.render_options_hash, 16) >= 0
     changed = dict(layout_checks.DEFAULT_RENDER_OPTIONS, margin_mm=20)
@@ -675,6 +810,24 @@ def test_pdf_render_pages_fonts_text(settings, out_dir):
     assert sorted(p.name for p in out_dir.iterdir()) == [r.file_path.name]
     r10 = er.render(_fixture_snapshot("10pages"), "pdf", out_dir, settings)
     assert r10.actual_pages == 10 and r10.layout_ok is True
+
+
+@needs_browser
+def test_pdf_nested_windows_workspace_keeps_artifact_and_cleanup_in_original_directory(settings, tmp_path):
+    target=tmp_path
+    # Keep the PDF filename itself within MAX_PATH while the browser's nested
+    # cache exceeds it; this reproduces the production failure being fixed.
+    remaining=230-len(str(target.resolve()))-1
+    if remaining > 0:
+        target=target/('n'*remaining)
+    target.mkdir(parents=True)
+    alias=er._browser_work_dir(target)
+    assert alias.samefile(target)
+    result=er.render(_fixture_snapshot('1pages'), 'pdf', target, settings)
+    assert result.file_path.parent == target
+    assert result.actual_pages == 1 and result.layout_ok
+    assert sorted(p.name for p in target.iterdir()) == [result.file_path.name]
+    assert '예시 회사' in er.pdf_info(result.file_path)['first_page_text']
 
 
 @needs_browser
@@ -1040,6 +1193,21 @@ def test_instruction_image_is_not_accessible_in_render_snapshot(app, settings, o
     assert any(f.kind == "broken_image" and f.details.get("reason") == "not_accessible" for f in result.findings)
 
 
+def test_source_demo_notice_preserves_session_identity(app, settings):
+    flow = Flow(app)
+    with connect(settings.db_path) as conn:
+        document = get_current(conn, flow.sid, flow.did)
+        ids = {ref.source_id for p in document.pages for b in p.blocks for ref in b.evidence_refs}
+        assert ids
+        for sid in ids:
+            conn.execute("UPDATE sources SET origin_kind='demo' WHERE source_id=?", (sid,))
+        snapshot = er.build_snapshot(conn, settings, flow.sid, document)
+        session_demo = bool(conn.execute('SELECT demo FROM sessions WHERE session_id=?', (flow.sid,)).fetchone()['demo'])
+    assert snapshot.demo == session_demo
+    assert snapshot.source_demo and snapshot.show_demo_notice
+    assert er.DEMO_FOOTER_TEXT in er.build_html(snapshot)
+
+
 @needs_browser
 def test_demo_pdf_footer_on_every_physical_page_and_measured_space(out_dir, settings):
     from pypdf import PdfReader
@@ -1093,7 +1261,9 @@ def _brochure_snapshot(*, long_text=False):
                                            "가상 도면 — 개정 A-01 확인", "확인 상태 — 외관 기준 합의 대기"])]
           if key in {"process_steps", "product_grid"} else []),
     ]) for i, key in enumerate(layouts)]
-    return er.snapshot_from_document(_doc(pages), {"photo": er.asset_from_bytes("photo", _png(600, 400))}, demo=True)
+    doc = _doc(pages)
+    doc.target_pages = 6  # Five layout examples, within the requested final cap.
+    return er.snapshot_from_document(doc, {"photo": er.asset_from_bytes("photo", _png(600, 400))}, demo=True)
 
 
 def test_brochure_html_preserves_block_order_and_escapes_unknown_layout():
@@ -1105,6 +1275,25 @@ def test_brochure_html_preserves_block_order_and_escapes_unknown_layout():
         assert f'layout-{p.layout_key}' in html
     snapshot.pages[0].layout_key = '\"><script>alert(1)</script>'
     assert '<script>alert(1)</script>' not in er.build_html(snapshot)
+
+
+def test_confirmed_contact_setting_is_escaped_last_page_only_and_changes_identity(out_dir):
+    import docx
+    pages = [Page(page_id=f'p{i}', title='안내', layout_key='editorial_text', blocks=[
+        _blk(f'b{i}', 'paragraph', text='제공 서비스를 안내합니다.')]) for i in range(2)]
+    document = _doc(pages)
+    empty = er.snapshot_from_document(document, {})
+    assert er.snapshot_from_document(document, {}, confirmed_contact='  ').content_hash == empty.content_hash
+    configured = er.snapshot_from_document(document, {}, confirmed_contact='담당 부서 <확인> 010-0000-0000')
+    html = er.build_html(configured)
+    assert configured.content_hash != empty.content_hash
+    assert html.count('담당 부서 &lt;확인&gt; 010-0000-0000') == 1
+    assert html.index('담당 부서 &lt;확인&gt;') > html.index('data-page-id="p1"')
+    assert '010-0000-0000' not in er.build_html(empty)
+    doc = docx.Document(er.render(configured, 'docx', out_dir).file_path)
+    assert doc.paragraphs[-1].text == '담당 부서 <확인> 010-0000-0000'
+    with pytest.raises(ValueError):
+        er.snapshot_from_document(document, {}, confirmed_contact='x' * 501)
 
 
 @needs_browser
@@ -1127,3 +1316,34 @@ def test_brochure_layout_never_hides_long_content_to_pass_overflow(out_dir):
     result = er.render(_brochure_snapshot(long_text=True), "pdf", out_dir)
     assert not result.layout_ok
     assert any(f.kind == "overflow" for f in result.findings)
+
+@pytest.mark.parametrize('mode', ['ok', 'timeout', 'interrupt', 'read_error'])
+def test_render_browser_is_reaped_and_pipes_closed_on_every_exit(monkeypatch, mode):
+    class Process:
+        pid=4321
+        returncode=None
+        stdout=io.BytesIO()
+        stderr=io.BytesIO()
+        calls=0
+        waited=False
+        def poll(self):return self.returncode
+        def wait(self, timeout):self.waited=True;return self.returncode
+        def communicate(self, timeout):
+            self.calls+=1
+            if self.calls==1:
+                if mode=='timeout':raise subprocess.TimeoutExpired('browser',timeout)
+                if mode=='interrupt':raise KeyboardInterrupt()
+                if mode=='read_error':raise OSError('pipe read failed')
+            self.returncode=0
+            return b'dom', b''
+    proc=Process();killed=[]
+    def kill(p):killed.append(p.pid);p.returncode=-9
+    monkeypatch.setattr(er.sys,'platform','win32')
+    monkeypatch.setattr(er.subprocess,'Popen',lambda *a,**k:proc)
+    monkeypatch.setattr(er,'_kill_tree',kill)
+    if mode=='ok':assert er._run(['browser'],1,'print-to-pdf').stdout==b'dom'
+    else:
+        error={'timeout':er.RenderError,'interrupt':KeyboardInterrupt,'read_error':OSError}[mode]
+        with pytest.raises(error):er._run(['browser'],1,'print-to-pdf')
+    assert killed==([] if mode=='ok' else [4321])
+    assert proc.poll() is not None and proc.stdout.closed and proc.stderr.closed

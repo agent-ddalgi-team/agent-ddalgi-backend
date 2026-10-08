@@ -164,6 +164,14 @@ class Flow:
         """mock 초안의 안내 문단·사진 자리를 지워 검증이 passed가 되게 한다(BE-06 make_clean_and_validate와 같은 규칙)."""
         ops = []
         for page in self.doc()["pages"]:
+            removable = [b for b in page['blocks'] if (b['type'] == 'paragraph'
+                         and b['content']['text'] == '추가 확인 필요') or b['type'] == 'image_placeholder']
+            remaining = [b for b in page['blocks'] if b not in removable]
+            if not any(b['type'] != 'heading' for b in remaining):
+                # A clean approval fixture cannot leave a heading-only page.
+                # The renderer now correctly reports that as empty-body overflow.
+                ops.append({'op': 'delete_page', 'page_id': page['page_id']})
+                continue
             for b in page["blocks"]:
                 if (b["type"] == "paragraph" and b["content"]["text"] == "추가 확인 필요") or b["type"] == "image_placeholder":
                     ops.append({"op": "delete_block", "block_id": b["block_id"]})
@@ -472,6 +480,10 @@ def test_stress_document_layout_failed_then_fixed_and_issue_separation(app, sett
     assert lc["status"] == "failed" and "overflow:finding" in lc["fail_reasons"] and "placeholder_remaining:finding" in lc["fail_reasons"]
     open_layout = flow.open_issues()
     codes = {i["code"]: i for i in open_layout if i["scope"] == "layout"}
+    # Physical empty/tail pages can add another overflow issue. Keep checking
+    # that the original excessive paragraph is identified, not the last issue.
+    codes['LAYOUT_OVERFLOW'] = next(i for i in open_layout
+        if i['code'] == 'LAYOUT_OVERFLOW' and 'b_long' in i['block_ids'])
     assert set(codes) == {"LAYOUT_OVERFLOW", "PLACEHOLDER_REMAINING"}
     assert all(i["origin"] == "layout" and i["layout_format"] == "pdf" and i["severity"] == "blocker" for i in codes.values())
     assert codes["PLACEHOLDER_REMAINING"]["block_ids"] == ["b_ph"] and codes["LAYOUT_OVERFLOW"]["block_ids"] == ["b_long"]

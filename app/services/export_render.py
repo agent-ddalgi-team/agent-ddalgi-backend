@@ -120,6 +120,12 @@ class RenderSnapshot:
     assets: dict[str, SnapshotAsset]
     content_hash: str            # {"title","pages"} 정규화 JSON sha256 — 정보용(계약 필드 아님)
     demo: bool = False
+    confirmed_contact: str | None = None  # Operator-confirmed setting, never an extracted fact.
+    source_demo: bool = False  # Notice only; never changes the session/approval identity.
+
+    @property
+    def show_demo_notice(self) -> bool:
+        return self.demo or self.source_demo
 
     @property
     def manifest_items(self) -> list[tuple[str, str]]:
@@ -138,8 +144,10 @@ class RenderSnapshot:
         return layout_checks.manifest_hash(self.manifest_items)
 
 
-def _document_content_hash(title: str, pages: list[Page], demo: bool = False) -> str:
+def _document_content_hash(title: str, pages: list[Page], demo: bool = False, confirmed_contact: str | None = None) -> str:
     payload = {"title": title, "pages": [p.model_dump() for p in pages], "demo": demo}
+    if confirmed_contact:
+        payload["confirmed_contact"] = confirmed_contact
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -170,14 +178,19 @@ def asset_from_bytes(asset_id: str, data: bytes | None, *, mime_type: str = "ima
     return SnapshotAsset(asset_id, content_hash or digest, mime, width, height, data, True, None)
 
 
-def snapshot_from_document(document: Document, assets: dict[str, SnapshotAsset], *, demo: bool = False) -> RenderSnapshot:
+def snapshot_from_document(document: Document, assets: dict[str, SnapshotAsset], *, demo: bool = False,
+                           confirmed_contact: str | None = None) -> RenderSnapshot:
     """DB 없이 스냅샷을 만든다(테스트·실험용). 문서가 참조하는데 assets에 없는 asset_id는 not_found로 채운다."""
     assets = dict(assets)
+    if confirmed_contact is not None and (not isinstance(confirmed_contact, str) or len(confirmed_contact) > 500):
+        raise ValueError("Confirmed contact must be at most 500 characters")
+    confirmed_contact = confirmed_contact.strip() or None if confirmed_contact is not None else None
     for aid in layout_checks.image_asset_ids(document):
         if aid not in assets:
             assets[aid] = SnapshotAsset(aid, "", "image/png", 0, 0, None, False, "not_found")
     return RenderSnapshot(document.document_id, document.document_revision, document.input_revision, document.title,
-                          document.target_pages, _copy_pages(document.pages), assets, _document_content_hash(document.title, document.pages, demo), demo)
+                          document.target_pages, _copy_pages(document.pages), assets,
+                          _document_content_hash(document.title, document.pages, demo, confirmed_contact), demo, confirmed_contact)
 
 
 def _copy_pages(pages: list[Page]) -> list[Page]:
@@ -199,6 +212,12 @@ def build_snapshot(conn: Connection, settings: Settings, session_id: str, docume
 
     session_row = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
     demo = bool(session_row["demo"]) if session_row is not None else False
+    source_demo = False
+    # A document using a virtual source cannot lose its notice merely because
+    # the session flag is off. Derive this from used provenance, not all uploads.
+    for source_id in {r.source_id for p in document.pages for b in p.blocks for r in b.evidence_refs}:
+        origin = conn.execute("SELECT origin_kind FROM sources WHERE source_id=?", (source_id,)).fetchone()
+        source_demo = source_demo or bool(origin is not None and origin["origin_kind"] in {"demo", "mock"})
     assets: dict[str, SnapshotAsset] = {}
     for aid in layout_checks.image_asset_ids(document):
         if aid in assets:
@@ -209,7 +228,8 @@ def build_snapshot(conn: Connection, settings: Settings, session_id: str, docume
             continue
         chash, mime = row["content_hash"], row["mime_type"]
         accessible = row["deleted_at"] is None and (row["scope"] == "registered" or (row["scope"] == "session" and row["session_id"] == session_id))
-        source = conn.execute("SELECT role FROM sources WHERE source_id=?", (row["source_id"],)).fetchone()
+        source = conn.execute("SELECT role, origin_kind FROM sources WHERE source_id=?", (row["source_id"],)).fetchone()
+        source_demo = source_demo or bool(source is not None and source["origin_kind"] in {"demo", "mock"})
         if source is not None and source["role"] == "instruction":
             accessible = False  # 작성 조건의 원본 미리보기는 허용해도 생성 문서의 회사 근거/사진으로 쓸 수 없다.
         if accessible:
@@ -238,7 +258,9 @@ def build_snapshot(conn: Connection, settings: Settings, session_id: str, docume
             continue
         assets[aid] = asset_from_bytes(aid, data, mime_type=mime, content_hash=chash, max_pixels=max_asset_pixels)
     return RenderSnapshot(document.document_id, document.document_revision, document.input_revision, document.title,
-                          document.target_pages, _copy_pages(document.pages), assets, _document_content_hash(document.title, document.pages, demo), demo)
+                          document.target_pages, _copy_pages(document.pages), assets,
+                          _document_content_hash(document.title, document.pages, demo or source_demo), demo,
+                          source_demo=source_demo)
 
 
 # ---------------- 결과 ----------------
@@ -397,6 +419,8 @@ def _view_blocks(snapshot: RenderSnapshot, page: Page) -> list[dict[str, Any]]:
             if block["type"] == "heading" and block["level"] == 2 and following["type"] == "paragraph":
                 block["group_start"] = True
                 block["wide"] = len(following["text"]) >= 50
+                block["stacked"] = (len(following["text"]) >= 180 or
+                    any(len(word) >= 10 for word in re.findall(r"[가-힣]+", block["text"])))
                 following["group_end"] = True
         if layout_checks.render_layout(page.layout_key) == "product_grid":
             pending = None
@@ -427,6 +451,19 @@ def _font_b64(path: Path) -> str:
         raise RenderError("template_missing", f"동봉 폰트를 읽을 수 없습니다: {path.name}") from exc
 
 
+def _identifier_html(value: str):
+    """Escape every source character; add only our fixed no-wrap wrapper."""
+    from markupsafe import Markup, escape
+    pattern = re.compile(r'(?<![A-Za-z0-9])[A-Za-z0-9]+(?:[-][A-Za-z0-9]+)+(?![A-Za-z0-9])')
+    parts, pos = [], 0
+    for match in pattern.finditer(value):
+        parts.extend((escape(value[pos:match.start()]), Markup('<span class="identifier">'),
+                      escape(match[0]), Markup('</span>')))
+        pos = match.end()
+    parts.append(escape(value[pos:]))
+    return Markup('').join(parts)
+
+
 def build_html(snapshot: RenderSnapshot) -> str:
     """스냅샷 → 단일 HTML(폰트·이미지 data URI, 외부 리소스 없음). 실험 스크립트도 이 함수를 쓴다."""
     from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -434,6 +471,7 @@ def build_html(snapshot: RenderSnapshot) -> str:
     if not TEMPLATE_FILE.is_file():
         raise RenderError("template_missing", f"템플릿이 없습니다: {TEMPLATE_FILE.name}")
     env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)), autoescape=select_autoescape(default=True, default_for_string=True))
+    env.filters['identifiers'] = _identifier_html
     opts = layout_checks.DEFAULT_RENDER_OPTIONS
     margin = opts["margin_mm"]
     template = env.get_template(TEMPLATE_FILE.name)
@@ -441,8 +479,9 @@ def build_html(snapshot: RenderSnapshot) -> str:
         title=_clean_text(snapshot.title), nonce=secrets.token_urlsafe(16),
         font_family=opts["font_family"], font_regular_b64=_font_b64(FONT_FILES["regular"]), font_bold_b64=_font_b64(FONT_FILES["bold"]),
         page_size=opts["page_size"], margin_mm=margin, base_font_pt=opts["base_font_pt"],
-        content_w_mm=PAGE_W_MM - 2 * margin, content_h_mm=PAGE_H_MM - 2 * margin - (DEMO_FOOTER_MM if snapshot.demo else 0),
-        demo=snapshot.demo, demo_footer_text=DEMO_FOOTER_TEXT, demo_footer_mm=DEMO_FOOTER_MM,
+        content_w_mm=PAGE_W_MM - 2 * margin, content_h_mm=PAGE_H_MM - 2 * margin - (DEMO_FOOTER_MM if snapshot.show_demo_notice else 0),
+        demo=snapshot.show_demo_notice, demo_footer_text=DEMO_FOOTER_TEXT, demo_footer_mm=DEMO_FOOTER_MM,
+        confirmed_contact=_clean_text(snapshot.confirmed_contact) if snapshot.confirmed_contact else None,
         image_max_h_mm=IMAGE_MAX_H_MM, image_crop_h_mm=IMAGE_CROP_H_MM,
         pages=[{"page_id": p.page_id, "title": _clean_text(p.title),
                 "design": p.design.model_dump() if p.design else None,
@@ -695,7 +734,7 @@ def _run_mac_pdf(cmd: list[str], timeout: int) -> subprocess.CompletedProcess:
 
 
 def _run(cmd: list[str], timeout: int, what: str) -> subprocess.CompletedProcess:
-    """브라우저를 실행하고 stdout/stderr를 모은다. 시간 초과 시 자식 프로세스까지 종료한다."""
+    """One browser per render; reap this process tree on timeout/interruption too."""
     if sys.platform == "darwin" and what == "print-to-pdf":
         return _run_mac_pdf(cmd, timeout)
     try:
@@ -712,6 +751,19 @@ def _run(cmd: list[str], timeout: int, what: str) -> subprocess.CompletedProcess
         except Exception:
             pass
         raise RenderError("render_timeout", f"브라우저 {what} 단계가 {timeout}초 안에 끝나지 않았습니다.") from exc
+    finally:
+        # A KeyboardInterrupt or pipe/read failure must not leak this render's
+        # isolated browser into the next item in a sequential batch. Never
+        # enumerate or terminate unrelated browser processes by name.
+        if proc.poll() is None:
+            _kill_tree(proc)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        for stream in (proc.stdout, proc.stderr):
+            if stream is not None:
+                stream.close()
     return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
 
@@ -763,8 +815,11 @@ def pdf_info(pdf_path: Path, *, expected_footer: str | None = None) -> dict[str,
     missing_footer: list[int] = []
     footer_token = "".join(expected_footer.split()) if expected_footer is not None else None
     first_text = ""
+    page_texts, page_images = [], []
     for page_number, page in enumerate(reader.pages, start=1):
-        text = (page.extract_text() or "") if page_number == 1 or footer_token is not None else ""
+        text = page.extract_text() or ""
+        page_texts.append(text)
+        page_images.append(len(page.images))
         if page_number == 1:
             first_text = text
         if footer_token is not None and footer_token not in "".join(text.split()):
@@ -776,12 +831,41 @@ def pdf_info(pdf_path: Path, *, expected_footer: str | None = None) -> dict[str,
             except Exception:
                 pass
     return {"pages": len(reader.pages), "fonts": sorted(fonts),
-            "first_page_text": first_text, "missing_footer_pages": missing_footer}
+            "first_page_text": first_text, "missing_footer_pages": missing_footer,
+            "page_texts": page_texts, "page_images": page_images}
+
+
+def _physical_page_findings(info: dict, snapshot: RenderSnapshot) -> list[Finding]:
+    findings = []
+    titles = [p.title for p in snapshot.pages]
+    headings = [b.content.get("text", "") for p in snapshot.pages for b in p.blocks if b.type == "heading"]
+    for n, text in enumerate(info.get("page_texts", [])):
+        compact = re.sub(r"\s+", "", text)
+        compact = compact.replace(re.sub(r"\s+", "", DEMO_FOOTER_TEXT), "").replace("COMPANYPROFILE", "")
+        for title in titles:
+            compact = re.sub(r"\d+/" + re.escape(re.sub(r"\s+", "", title)), "", compact)
+        for heading in headings:
+            compact = compact.replace(re.sub(r"\s+", "", heading), "")
+        if info.get('page_images', [0] * info['pages'])[n]:
+            continue
+        empty = not compact
+        orphan = (n == info['pages']-1 and info['pages'] > len(snapshot.pages)
+                  and len(compact) < 180)
+        if empty or orphan:
+            page = snapshot.pages[min(n, len(snapshot.pages)-1)]
+            findings.append(Finding("overflow", page.page_id, None,
+                "본문 없는 물리 페이지입니다." if empty else "마지막 물리 페이지에 짧은 본문만 분리되었습니다.",
+                {"physical_page": n+1, "empty_body": empty, "orphan_tail": orphan}))
+    return findings
 
 
 def _overflow_findings(measure: dict[str, Any]) -> list[Finding]:
     out = []
     for p in measure.get("pages", []):
+        minimum = p.get('min_body_font_pt')
+        if isinstance(minimum, (int, float)) and minimum < 10.98:
+            out.append(Finding('overflow', p['page_id'], None, '본문 글자 크기가 11pt 하한보다 작습니다.',
+                {'rule': 'minimum_body_font', 'minimum_pt': minimum, 'required_pt': 11}))
         if p.get("overflow"):
             excess_mm = round(float(p.get("excess_px", 0)) * 25.4 / 96, 1)
             causes = []
@@ -791,12 +875,44 @@ def _overflow_findings(measure: dict[str, Any]) -> list[Finding]:
                 causes.append("내용이 본문 가로 경계를 넘칩니다")
             if p.get("overlapping_blocks"):
                 causes.append("블록이 서로 겹칩니다")
+            if p.get("body_units") == 0:
+                causes.append("본문 없는 페이지입니다")
+            if p.get("hangul_word_breaks"):
+                causes.append("제목의 한글 단어가 중간에서 끊깁니다")
             out.append(Finding("overflow", p["page_id"], p.get("first_overflow_block_id"),
                                " / ".join(causes or ["페이지 내용이 본문 영역을 넘칩니다"]) + ". 재배치하거나 내용을 나누어 주세요.",
                                {"excess_mm": excess_mm, "height_mm": round(float(p.get("height_px", 0)) * 25.4 / 96, 1),
                                 "horizontal_overflow": p.get("horizontal_overflow", False),
                                 "overlapping_blocks": p.get("overlapping_blocks", [])}))
     return out
+
+
+def _browser_work_dir(directory: Path) -> Path:
+    """Use the same Windows directory's 8.3 alias for Chromium's nested caches.
+
+    No move/junction/global temp directory: session ownership and cleanup paths
+    stay unchanged. Volumes without short names retain the original path.
+    """
+    if sys.platform != "win32":
+        return directory
+    import ctypes
+    get_short = ctypes.WinDLL("kernel32", use_last_error=True).GetShortPathNameW
+    get_short.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+    get_short.restype = ctypes.c_uint32
+    size = get_short(str(directory), None, 0)
+    if not 0 < size <= 32768:
+        return directory
+    buffer = ctypes.create_unicode_buffer(size)
+    copied = get_short(str(directory), buffer, size)
+    if not 0 < copied < size:
+        return directory
+    candidate = Path(buffer.value)
+    try:
+        if len(str(candidate)) < len(str(directory)) and candidate.samefile(directory):
+            return candidate
+    except OSError:
+        pass
+    return directory
 
 
 def _render_pdf(snapshot: RenderSnapshot, out_dir: Path, settings: Settings | None, timeout: int) -> tuple[Path, int | None, list[Finding], list[LayoutCheckRecord], str, dict[str, Any]]:
@@ -808,12 +924,15 @@ def _render_pdf(snapshot: RenderSnapshot, out_dir: Path, settings: Settings | No
     html = build_html(snapshot)
     findings = _snapshot_findings(snapshot)
     details: dict[str, Any] = {"browser_path": str(browser)}
-    tmp_dir = Path(tempfile.mkdtemp(prefix=".render_", dir=out_dir))
+    work_dir = settings.export_work_dir if settings and settings.export_work_dir else out_dir
+    work_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir = Path(tempfile.mkdtemp(prefix=".render_", dir=work_dir))
+    html_path, pdf_tmp = tmp_dir / "page.html", tmp_dir / "out.pdf"
     try:
-        html_path = tmp_dir / "page.html"
         html_path.write_text(html, encoding="utf-8")
-        pdf_tmp = tmp_dir / "out.pdf"
-        measure = print_pdf_and_measure(browser, html_path, pdf_tmp, tmp_dir / "profile", timeout)
+        browser_dir = _browser_work_dir(tmp_dir)
+        measure = print_pdf_and_measure(browser, browser_dir / "page.html", browser_dir / "out.pdf",
+                                        browser_dir / "profile", timeout)
         overflow_reason: str | None = None
         if measure is None:
             overflow_reason = "measure_failed"
@@ -823,10 +942,10 @@ def _render_pdf(snapshot: RenderSnapshot, out_dir: Path, settings: Settings | No
             findings += _overflow_findings(measure)
             details["measure"] = measure
         try:
-            info = pdf_info(pdf_tmp, expected_footer=DEMO_FOOTER_TEXT if snapshot.demo else None)
+            info = pdf_info(pdf_tmp, expected_footer=DEMO_FOOTER_TEXT if snapshot.show_demo_notice else None)
         except Exception as exc:  # noqa: BLE001
             raise RenderError("render_failed", "만들어진 PDF를 읽을 수 없습니다.", {"error": type(exc).__name__}) from exc
-        if snapshot.demo and (not info["pages"] or info["missing_footer_pages"]):
+        if snapshot.show_demo_notice and (not info["pages"] or info["missing_footer_pages"]):
             raise RenderError("demo_footer_missing", "시연 표시가 없는 PDF는 제공할 수 없습니다. 지원되는 브라우저에서 다시 검사해 주세요.",
                               {"page_numbers": info["missing_footer_pages"]})
         if info["pages"] != len(snapshot.pages):
@@ -840,6 +959,15 @@ def _render_pdf(snapshot: RenderSnapshot, out_dir: Path, settings: Settings | No
             else:
                 findings.append(Finding("overflow", snapshot.pages[-1].page_id, None,
                     "실제 PDF 쪽수와 저장 문서의 쪽수가 다릅니다. 넘침이나 빈 페이지를 확인해 주세요.", mismatch))
+        physical_findings = _physical_page_findings(info, snapshot)
+        findings.extend(physical_findings)
+        details["physical_page_checks"] = [f.details for f in physical_findings]
+        details['final_page_limit'] = {'requested': snapshot.target_pages, 'actual': info['pages'],
+                                       'passed': info['pages'] <= snapshot.target_pages}
+        if info['pages'] > snapshot.target_pages:
+            findings.append(Finding('overflow', snapshot.pages[-1].page_id, None,
+                '최종 PDF가 요청한 쪽수 상한을 초과했습니다. 내용을 검토하거나 배치를 조정해 주세요.',
+                {'rule': 'final_page_limit', 'requested_pages': snapshot.target_pages, 'actual_pages': info['pages']}))
         try:
             os.replace(pdf_tmp, final)
         except OSError as exc:
@@ -852,7 +980,8 @@ def _render_pdf(snapshot: RenderSnapshot, out_dir: Path, settings: Settings | No
                 leftover.unlink(missing_ok=True)
             except OSError:
                 pass
-        rmtree_retry(tmp_dir)
+        # The same deep cache paths also exceed Win32 limits during deletion.
+        rmtree_retry(_browser_work_dir(tmp_dir))
     details["fonts"] = info["fonts"]
     checks = [_record("overflow", "pdf", findings, not_checked_reason=overflow_reason),
               _record("broken_image", "pdf", findings), _record("placeholder_remaining", "pdf", findings)]
@@ -926,7 +1055,9 @@ def _render_docx(snapshot: RenderSnapshot, out_dir: Path) -> tuple[Path, int | N
         raise RenderError("render_failed", "DOCX 본문을 만들지 못했습니다.", {"error": type(exc).__name__}) from exc
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    tmp = out_dir / f".{final.stem}.{secrets.token_hex(6)}.tmp"   # 같은 문서를 동시에 만들어도 서로 다른 임시 파일
+    # Job directories already carry document/session identity; keep the unique
+    # temporary basename short enough for Windows' legacy path limit.
+    tmp = out_dir / f".d{secrets.token_hex(6)}.tmp"
     try:
         doc.save(str(tmp))
         if not tmp.is_file() or tmp.stat().st_size == 0:
@@ -958,7 +1089,7 @@ def _build_docx(snapshot: RenderSnapshot, family: str, base_pt: float, content_w
     section = doc.sections[0]
     section.page_width, section.page_height = Mm(PAGE_W_MM), Mm(PAGE_H_MM)
     section.left_margin = section.right_margin = section.top_margin = section.bottom_margin = Mm(layout_checks.DEFAULT_RENDER_OPTIONS["margin_mm"])
-    if snapshot.demo:
+    if snapshot.show_demo_notice:
         section.bottom_margin = Mm(layout_checks.DEFAULT_RENDER_OPTIONS["margin_mm"] + DEMO_FOOTER_MM)
         section.footer_distance = Mm(10)
         footer = section.footer.paragraphs[0]
@@ -998,11 +1129,16 @@ def _build_docx(snapshot: RenderSnapshot, family: str, base_pt: float, content_w
                 doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
                 if b["caption"]:
                     cap = doc.add_paragraph(b["caption"], style="Caption")
-                    cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    cap.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                    cap.paragraph_format.left_indent = Mm((content_w - w_mm) / 2)
+                    cap.paragraph_format.right_indent = Mm((content_w - w_mm) / 2)
             elif b["type"] == "broken_image":
                 _docx_box(doc, "[이미지를 열 수 없음]", f"{b['asset_id']} ({b['reason']})" + (f"\n{b['caption']}" if b["caption"] else ""), True)
             elif b["type"] == "image_placeholder":
                 _docx_box(doc, "[사진 자리]", b["description"], False)
+    if snapshot.confirmed_contact:
+        doc.add_heading("문의", level=2)
+        doc.add_paragraph(_clean_text(snapshot.confirmed_contact))
     return doc
 
 
@@ -1032,6 +1168,34 @@ class DraftPagination:
     pages: list[Page]
     outcome: Literal["passed", "unresolved", "unavailable", "limit"]
     attempts: int
+    review_notes: list[dict] = field(default_factory=list)
+
+
+def draft_reduction_priorities(facts, brief, editorial) -> dict[str, int]:
+    """Optional background can yield space; process/certificate conditions cannot."""
+    optional = {s.fact_id for s in editorial.selections if s.disposition == 'optional'}
+    intent = ' '.join([brief.purpose, *brief.emphasis])
+    weights = {'history': 90, 'customers': 70, 'company_summary': 60, 'business_areas': 60}
+    intent_words = {'history': r'연혁|역사|설립', 'customers': r'고객|거래|납기',
+                    'company_summary': r'신규|소개|개요', 'business_areas': r'사업|신규|소개'}
+    return {f.fact_id: weights[f.field_key] for f in facts if f.fact_id in optional
+        and f.field_key in weights and f.field_key not in brief.required_fields
+        and not re.search(intent_words[f.field_key], intent)}
+
+
+def _reduce_background(page: Page, priorities: dict[str, int]) -> dict | None:
+    candidates = [(min(priorities[fid] for fid in b.fact_ids), i, b)
+        for i, b in enumerate(page.blocks) if b.type == 'paragraph' and b.fact_ids
+        and set(b.fact_ids) <= priorities.keys()]
+    if not candidates or sum(b.type in {'paragraph', 'list'} for b in page.blocks) <= 1:
+        return None
+    _, i, block = max(candidates, key=lambda row: (row[0], len(row[2].content.get('text', ''))))
+    removed = page.blocks.pop(i)
+    if i and page.blocks[i-1].type == 'heading' and page.blocks[i-1].content.get('level') == 2:
+        page.blocks.pop(i-1)
+    return {'page_id': page.page_id, 'fact_ids': removed.fact_ids, 'value': removed.content.get('text'),
+        'evidence_refs': [r.model_dump() for r in removed.evidence_refs], 'withheld_from_body': True,
+        'reason': '11pt 본문 하한과 최종 쪽수 상한을 지키기 위해 목적상 덜 중요한 선택 배경 항목을 제외했습니다.'}
 
 
 def _split_draft_page(page: Page, first_block_id: str | None) -> list[Page] | None:
@@ -1048,6 +1212,10 @@ def _split_draft_page(page: Page, first_block_id: str | None) -> list[Page] | No
     index = next((i for i, group in enumerate(groups) if any(b.block_id == first_block_id for b in group)),
                  len(groups) - 1)
     if index > 0:
+        # A tiny final row should travel with another row, not become a tail page.
+        tail_size = sum(len(str(b.content.get("text", ""))) for g in groups[index:] for b in g)
+        if index > 1 and tail_size < 180:
+            index -= 1
         left = [b for group in groups[:index] for b in group]
         right = [b for group in groups[index:] for b in group]
     else:
@@ -1082,35 +1250,151 @@ def _split_draft_page(page: Page, first_block_id: str | None) -> list[Page] | No
     return [first, continuation]
 
 
-def paginate_draft(snapshot: RenderSnapshot, out_dir: Path, settings: Settings) -> DraftPagination:
+def _balanced_items(pages: list[Page], measure: dict) -> list[Page]:
+    """Repartition adjacent compatible text pages at measured item boundaries.
+
+    Covers/photos stay in place. The flattened editable blocks (including their
+    order, IDs and provenance) are unchanged. No occupancy threshold is used.
+    """
+    proposed = _copy_pages(pages)
+    measured = {p['page_id']: p for p in measure.get('pages', [])}
+    tables = {'fact_sheet', 'certification_summary', 'product_grid'}
+    used = set()
+    for i in range(1, len(pages) - 1):
+        left, right = pages[i:i + 2]
+        if i in used or not left.design or left.design != right.design:
+            continue
+        if left.layout_key != right.layout_key and not {left.layout_key, right.layout_key} <= tables:
+            continue
+        if any(b.type not in {'heading', 'paragraph', 'list'} for p in (left, right) for b in p.blocks):
+            continue
+        rows = [measured.get(p.page_id, {}) for p in (left, right)]
+        groups = []
+        valid = True
+        for page, row in zip((left, right), rows):
+            raw = row.get('item_groups', [])
+            if [bid for g in raw for bid in g['block_ids']] != [b.block_id for b in page.blocks]:
+                valid = False
+                break
+            by_id = {b.block_id: b for b in page.blocks}
+            for g in raw:
+                blocks = [by_id[bid] for bid in g['block_ids']]
+                if groups and groups[-1][0][-1].type == 'heading':
+                    groups[-1][0].extend(blocks)
+                    groups[-1][1] += g['height_px']
+                else:
+                    groups.append([blocks, g['height_px']])
+        if not valid or len(groups) < 4:
+            continue
+        overhead = max(0, *(row['height_px'] - sum(g['height_px'] for g in row['item_groups']) for row in rows))
+        original_peak = max(row['height_px'] for row in rows)
+        best = None
+        for cut in range(1, len(groups)):
+            parts = [groups[:cut], groups[cut:]]
+            if any(sum(b.type in {'paragraph', 'list'} for g in part for b in g[0]) < 2 for part in parts):
+                continue
+            heights = [overhead + sum(g[1] for g in part) for part in parts]
+            score = max(heights)
+            if score < original_peak - 24 and (best is None or score < best[0]):
+                best = (score, parts)
+        if best is None:
+            continue
+        active_title = left.title
+        for target, part in zip(proposed[i:i + 2], best[1]):
+            target.blocks = [b for g in part for b in g[0]]
+            if target.blocks[0].type == 'heading' and target.blocks[0].content.get('level') == 1:
+                active_title = target.blocks[0].content['text']
+            target.title = active_title
+            for b in target.blocks:
+                if b.type == 'heading' and b.content.get('level') == 1:
+                    active_title = b.content['text']
+        used.update((i, i + 1))
+    return proposed
+
+
+def paginate_draft(snapshot: RenderSnapshot, out_dir: Path, settings: Settings, *,
+                   reduction_priorities: dict[str, int] | None = None) -> DraftPagination:
     """Measure a new draft before saving and move overflowing groups to new pages.
 
-    No AI, DB writes, saved-document edits or approval artifacts. Preserve all
-    content; bounded work (8 renders, 40 pages, 120 seconds) leaves unresolved
-    cases for the existing layout gate instead of claiming success.
+    No AI, DB writes, saved-document edits or approval artifacts. Compact spacing
+    first, keeping 11pt body text. Only explicitly ranked optional background may
+    be removed, with source-linked review notes. Other content stays intact.
+    Work is bounded to 8 renders and 120 seconds.
     """
     pages = _copy_pages(snapshot.pages)
+    notes = []
+    maximum = min(40, snapshot.target_pages)
+    if len(pages) > maximum:
+        return DraftPagination(pages, 'limit', 0)
     origins = {page.page_id: page.page_id for page in pages}
     deadline = time.monotonic() + 120
     for attempt in range(1, 9):
         remaining = int(deadline - time.monotonic())
-        if remaining < 1 or len(pages) > 40:
-            return DraftPagination(pages, "limit", attempt - 1)
-        candidate = replace(snapshot, pages=pages, content_hash=_document_content_hash(snapshot.title, pages, snapshot.demo))
+        if remaining < 1 or len(pages) > maximum:
+            return DraftPagination(pages, "limit", attempt - 1, notes)
+        candidate = replace(snapshot, pages=pages, content_hash=_document_content_hash(
+            snapshot.title, pages, snapshot.show_demo_notice, snapshot.confirmed_contact))
         bounded = replace(settings, export_render_timeout_s=min(settings.export_render_timeout_s, remaining))
         try:
             result = render(candidate, "pdf", out_dir, bounded)
         except RenderError:
-            return DraftPagination(pages, "unavailable", attempt)
-        if result.layout_ok:
-            return DraftPagination(pages, "passed", attempt)
+            return DraftPagination(pages, "unavailable", attempt, notes)
+        if result.layout_ok and result.actual_pages is not None and result.actual_pages <= maximum:
+            measure = result.details.get('measure', {})
+            balanced = _balanced_items(pages, measure)
+            if balanced != pages and attempt <= 6 and deadline - time.monotonic() > 10:
+                trial = replace(candidate, pages=balanced, content_hash=_document_content_hash(
+                    snapshot.title, balanced, snapshot.show_demo_notice, snapshot.confirmed_contact))
+                try:
+                    checked = render(trial, 'pdf', out_dir, replace(bounded,
+                        export_render_timeout_s=max(1, int(deadline - time.monotonic()))))
+                    before = [p['height_px'] for p in measure['pages'][1:]]
+                    after = [p['height_px'] for p in checked.details.get('measure', {}).get('pages', [])[1:]]
+                    if (checked.layout_ok and checked.actual_pages == result.actual_pages and len(after) == len(before)
+                            and after and max(after) <= max(before) + .5
+                            and sum(h * h for h in after) < sum(h * h for h in before)):
+                        return DraftPagination(balanced, 'passed', attempt + 1, notes)
+                except RenderError:
+                    pass
+                # Restore the accepted PDF too; a rejected candidate is never published.
+                render(candidate, 'pdf', out_dir, replace(bounded,
+                    export_render_timeout_s=max(1, int(deadline - time.monotonic()))))
+                return DraftPagination(pages, 'passed', attempt + 2, notes)
+            return DraftPagination(pages, "passed", attempt, notes)
         measure = result.details.get("measure")
         if (not _valid_measure(measure, candidate) or result.not_checked
                 or any(f.kind != "overflow" for f in result.findings)):
-            return DraftPagination(pages, "unresolved", attempt)
+            return DraftPagination(pages, "unresolved", attempt, notes)
         if attempt == 8:
-            return DraftPagination(pages, "limit", attempt)
+            return DraftPagination(pages, "limit", attempt, notes)
         measured = {p["page_id"]: p for p in measure["pages"]}
+        # Spend whitespace before spending pages. Keep the body at 11 pt and
+        # preserve every block/reference. Compact rows use the full width.
+        compacted = False
+        for page in pages:
+            item = measured[page.page_id]
+            if (page.design and item['overflow'] and (page.design.density != 'compact' or
+                    page.layout_key in {'fact_sheet', 'certification_summary', 'timeline', 'product_grid'})
+                    and not item.get('horizontal_overflow') and not item.get('overlapping_blocks')
+                    and any(b.type == 'paragraph' for b in page.blocks)):
+                page.design = page.design.model_copy(update={'density': 'compact', 'typography': 'restrained'})
+                if page.layout_key in {'fact_sheet', 'certification_summary', 'timeline', 'product_grid'}:
+                    page.layout_key = 'text_photo'
+                compacted = True
+        if compacted:
+            continue
+        if len(pages) == maximum and reduction_priorities:
+            reduced = False
+            for page in pages:
+                item = measured[page.page_id]
+                if (item['overflow'] and not item.get('horizontal_overflow')
+                        and not item.get('overlapping_blocks')):
+                    note = _reduce_background(page, reduction_priorities)
+                    if note:
+                        notes.append(note)
+                        reduced = True
+            if reduced:
+                continue
         next_pages, changed = [], False
         carry: Page | None = None
         for i, page in enumerate(pages):
@@ -1138,9 +1422,9 @@ def paginate_draft(snapshot: RenderSnapshot, out_dir: Path, settings: Settings) 
                 next_pages.append(page)
             changed = changed or split is not None
         if not changed:
-            return DraftPagination(pages, "unresolved", attempt)
-        if len(next_pages) > 40:
-            return DraftPagination(pages, "limit", attempt)
+            return DraftPagination(pages, "unresolved", attempt, notes)
+        if len(next_pages) > maximum:
+            return DraftPagination(pages, "limit", attempt, notes)
         pages = next_pages
     raise AssertionError("bounded pagination exhausted")
 
