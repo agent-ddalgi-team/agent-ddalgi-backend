@@ -732,6 +732,38 @@ def test_editorial_whole_fact_point_sdk_preserves_compound_certification(monkeyp
     assert any(i.code == "DEMO_VALUE" for i in checks) is (origin == "demo")
 
 
+@pytest.mark.parametrize("original,value", [
+    ("연매출 40억", "회사 소개자료에는 연매출 40억으로 기재돼 있다(기준 시점/통화 미기재)"),
+    ("인원 36명", "회사 소개자료에는 인원 36명으로 기재돼 있다(기준 시점 미기재)"),
+    ("거래업체 350여 업체", "회사 소개자료에는 거래업체 350여 업체로 기재돼 있다(기준 시점 미기재)"),
+])
+def test_editorial_sdk_record_scope_reaches_draft_and_preserves_whole_fact(monkeypatch, original, value):
+    request, fid = numeric_editorial_request(original, value)
+    record = next(f for f in request.preflight.facts if f.fact_id == fid)
+    record.field_key = "other_info"
+    request.brief.required_fields = ["other_info"]
+    before = copy.deepcopy(request)
+    def respond(**kwargs):
+        assert kwargs["instructions"] == legacy.load_draft_prompt(editorial=True)
+        assert "기준 시점이 없는 매출·인원·거래업체 수" in kwargs["instructions"]
+        payload = json.loads(kwargs["input"])
+        item = next(f for f in payload["facts"] if f["field_key"] == "other_info")
+        assert item["value"] == value
+        response = editorial_composition(editorial_response(payload))
+        for page in response["pages"]:
+            page["points"] = [{"label": p["label"], "fact_id": item["fact_id"]}
+                              if p["fact_ids"] == [item["fact_id"]] else p for p in page["points"]]
+        return metered_response(output_text=json.dumps(response, ensure_ascii=False))
+    calls = fake_sdk(monkeypatch, response=respond)
+    agent = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=llm.RuntimeLedger()))
+    result = agent.draft(request)
+    body = next(b for p in result.pages for b in p.blocks if b.type == "paragraph"
+                and b.fact_ids == [fid] and b.content["text"] == value)
+    assert body.evidence_refs == record.evidence_refs and request == before
+    assert len([event for event, _ in calls if event == "response"]) == 1
+    assert validate_draft(result, request.sources, {f.fact_id for f in request.preflight.facts}, request.preflight) is None
+
+
 @pytest.mark.parametrize("damage", ["foreign", "excluded", "review", "duplicate", "mixed", "label_number",
                                     "too_long", "conditions", "required_missing"])
 def test_editorial_whole_fact_point_validates_and_removes_exact_repeats(damage):
@@ -4899,6 +4931,44 @@ def test_sdk_per_fact_status_keeps_clear_facts_separate_and_checks_each_evidence
         for ref in fact.evidence_refs:
             original = next(seg for seg in source.segments if seg.segment_id == ref.segment_id)
             assert ref.excerpt == original.text and ref.locator == original.locator and ref.source_version == 2
+
+
+@pytest.mark.parametrize("case", [
+    ("연매출 40억", "회사 소개자료에는 연매출 40억으로 기재돼 있다(기준 시점/통화 미기재)", "supported", "supported"),
+    ("인원 36명", "회사 소개자료에는 인원 36명으로 기재돼 있다(기준 시점 미기재)", "supported", "supported"),
+    ("거래업체 350여 업체", "회사 소개자료에는 거래업체 350여 업체로 기재돼 있다(기준 시점 미기재)", "supported", "supported"),
+    ("연매출 40억", "현재 연매출 40억", "needs_confirmation", "needs_confirmation"),
+    ("인원 36명", "현재 인원 36명", "needs_confirmation", "needs_confirmation"),
+    ("거래업체 350여 업체", "현재 거래업체 350여 업체", "needs_confirmation", "needs_confirmation"),
+    ("연매출 40억", "회사 소개자료에는 연매출 40억원으로 기재돼 있다", "supported", "needs_confirmation"),
+    ("인원 36명", "회사 소개자료에는 인원 38명으로 기재돼 있다", "supported", "needs_confirmation"),
+    ("거래업체 350여 업체", "회사 소개자료에는 거래업체 350개로 기재돼 있다", "supported", "needs_confirmation"),
+    ("연매출 40억", "2026년 연매출 40억", "supported", "needs_confirmation"),
+])
+def test_sdk_undated_records_preserve_scope_and_do_not_promote_uncertain_claims(monkeypatch, case):
+    original, value, supplied_status, expected_status = case
+    source = SourceIn("src_record", 3, "company", "가상 기록 범위 검사", "complete", [
+        SegmentIn("seg_record", {"paragraph": 1}, original),
+        SegmentIn("seg_record_ceo", {"paragraph": 2}, "대표이사 홍길동")])
+    request = AnalyzeRequest("ses_record", 1, BRIEF, [source])
+    before = copy.deepcopy(request)
+    body = {key: {"facts": []} for key in legacy.COMPANY_INFO_KEYS}
+    body["other_info"]["facts"] = [
+        {"text": value, "status": supplied_status, "evidence": [{"unit_id": 1}]},
+        {"text": "대표이사 홍길동", "status": "supported", "evidence": [{"unit_id": 2}]}]
+    calls = fake_sdk(monkeypatch, response=metered_response(output_text=json.dumps(body, ensure_ascii=False)))
+    agent = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env())), per_fact_status=True)
+    result = agent.analyze(request)
+    record = next(f for f in result.facts if f.value == value)
+    ceo = next(f for f in result.facts if f.value == "대표이사 홍길동")
+    assert record.status == expected_status and ceo.status == "supported"
+    assert record.evidence_refs == [EvidenceRef(source_id=source.source_id, source_version=3,
+        segment_id="seg_record", locator={"paragraph": 1}, excerpt=original)]
+    blockers = [i for i in result.issues if i.code == "UNSUPPORTED_CLAIM" and record.fact_id in i.fact_ids]
+    assert bool(blockers) is (expected_status == "needs_confirmation")
+    assert not any(ceo.fact_id in i.fact_ids for i in result.issues)
+    assert request == before and validate_analyze(result, [source]) is None
+    assert len([event for event, _ in calls if event == "response"]) == 1
 
 
 @pytest.mark.parametrize("fault", ["missing_status", "unknown_status", "boolean_status", "not_found_fact",
