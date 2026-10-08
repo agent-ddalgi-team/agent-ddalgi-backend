@@ -7,6 +7,8 @@
 
 ## 1. Quick Status
 
+- **2026-10-08 [BE-06·10 / F-08] 최신 브랜치 통합:** test/develop 병합·공개자료 요청 복구 보존·실제 제외 API 검사·98건/PDF36묶음 통과·진행중 유지. [기록](task_backend.md#recovery-branch-integration-20261008).
+
 - **2026-10-08 [BE-06·10 / F-08] 실제 시연 현황 확인:** 현재 문서v2 내용 통과·미해결0·PDF/DOCX7쪽 배치 통과·승인/출력 미실행 확인·BE-10 진행중. [기록](task_backend.md#live-session-recovery-audit-20261008).
 
 - **2026-10-08 [BE-06·10 / F-08] 복구 통합 회귀:** PDF36묶음·DOCX35묶음·백엔드7건 통과·BE-10 진행중. [기록](task_backend.md#recovery-integration-20261008).
