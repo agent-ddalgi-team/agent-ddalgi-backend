@@ -1751,3 +1751,60 @@
 - 프론트 test/supplement-required-ui-20261008에 origin/develop e6e0868을 병합한 로컬 커밋은5537e86이다. 병합으로 제품 파일 내용이 추가 변경되지 않았으므로 직전647ae9a 기준 빌드·PDF36/DOCX39묶음 결과를 유지하며 이번에 다시 실행했다고 보고하지 않는다. 미추적 .claude/는 제외한다.
 - 새로 유입된 test_agent_llm.py의8077행 이후 평가 도구 테스트와 test_be07.py의 실제 저장 렌더 비교/단계 재개2개를 선택 실행했다. PYTHON_DOTENV_DISABLED=1/BE09_LIVE_AI=0·임시 자료 사용, **38 passed / 1 warning / 실패0,13.58초**다. Chrome PDF와 DOCX 보존 경로를 포함하며 유료 호출·사용자 시연 DB 변경은 없다. 경고 원인을 이번에 따로 판정하지 않았다.
 - 직전 전체2,116통과 결과는 병합 전 기준이며 이번38건은 추가 도구 검수다. 새 전체 회귀 결과로 합산하지 않는다. 최신 기준 diff·충돌 표시·비밀/로컬 산출물 제외를 확인하고 통합을 로컬 커밋한다. 원격push/PR/merge는 아직 하지 않았다. 다음 공유 대상은 백엔드test, 프론트develop이며 BE-10 일반 의미 품질 진행중 상태는 유지한다.
+
+<a id="demo-format-parity-20261008"></a>
+
+### 2026-10-08 병합 후 최근 시연 문서의 PDF/DOCX 대조
+
+- 사용자 요청으로 두 작업 브랜치를push하고 백엔드PR44(test), 프론트PR24(develop)를 생성했다. 이후 사용자의 병합 완료 안내에 따라 GitHub 상태MERGED/백엔드f6d95d9·프론트647578a를 확인하고 로컬test/develop을 fast-forward했다. 프론트 미추적.claude/는 그대로 보존한다. 후속 검수 기록은 qa/demo-format-parity-20261008에 남긴다.
+- 시연 DB는 읽기 전용mode=ro로 열었다. 최근 문서doc_672640f17ee2441c/revision1/input22의 저장된 실제gpt-6-luna 내용검증passed/Issue0과 기존PDF배치passed7쪽을 확인했다. queued/running Job0, DB quick_check ok, 백엔드openapi와 프론트HTTP200이다. 내용검증Job succeeded와 결과passed를 구분해서 확인했으며 새 유료 호출은 하지 않았다.
+- 화면 세션 조작 도구가 없어 사용자 세션의API/쿠키를 우회하지 않았다. 기존documents.get_current/build_snapshot으로 같은 문서를 고정하고 실제제품render 함수를Chrome PDF/LibreOffice DOCX에 사용했다. 결과는 시스템Temp/ddalgi-format-audit-121xm6ku이며 원본 시연DB에layout_checks/approval/export 기록을 추가하지 않았다. 따라서 이번 통과는 스냅샷 출력 검수이고 화면에서DOCX 검사 완료로 저장된 것은 아니다.
+- PDF와DOCX 각각 **실제7쪽/layout_ok=true/필수not_checked0/findings0**, 사진4개가 유효한해시/자산으로 전달되고DOCX drawing4개다. 사진 공개허가검사ok이며 허가를 새로 변경하지 않았다. 예상헤더/제목/본문/사진 설명 문구를정규화해PDF텍스트·DOCX변환PDF텍스트·DOCX XML에대조한누락은모두0건이다. 순서·근거·회사 사실을새로의미검증한시험으로확대하지않는다.
+- 실제PDF와DOCX변환PDF의사용글꼴은Pretendard Regular/Bold다. DOCX에fontTable Pretendard·Regular/Bold odttf와스타일폰트를확인했고OOXML GUID 마스크를복원한전체바이트SHA256이제품템플릿의두TTF와각각일치했다. 목록의다른기본폰트등록과실제사용폰트를구분했다. 같은서체지만PDF카드/표/색상과DOCX단일열·글자/사진크기는기존설계상차이가있으며동일디자인으로보고하지않는다.
+- 전체7쪽쌍의contact sheet와가장촘촘한3쪽의양쪽PNG를시각확인했다. 검사범위에서잘린글자/겹침/깨진한글·빈쪽은발견하지못했다. 시편조건/원문관계등새AI품질평가나Word엔진검증은미실행이며LibreOffice결과를모든Word환경의쪽수일치로확대하지않는다.
+- 첫임시도구의SnapshotAsset.valid오기는실제ok필드로바로잡았고대조헤더의0시작번호를1시작으로수정했다. 두오류는검사도구오류이며제품결함으로처리하지않는다. 출력재생성없이저장된검수파일로올바른조건을재대조했다. 문서/버전/검증/배치/승인/출력행의전후해시동일·DB quick_check ok를확인했다.
+- 제품코드·프롬프트·프론트·환경·의존성변경이없어전체회귀를반복하지않는다. 자기기록3파일만로컬커밋하며원격push는하지않는다. 이번문서의형식별내용/폰트보존검수는완료이며BE-10/F-08일반품질·Agent상태는유지한다. 사용자최종승인과다운로드는화면에서명시적으로진행할후속이며대신승인하지않았다.
+
+<a id="docx-approval-expiry-check-20261008"></a>
+
+### 2026-10-08 DOCX 승인·다운로드 경로와 시연 세션 만료
+
+- 후속은 최근 시연 문서의 DOCX 검사 결과 저장·승인/다운로드 연결 확인이었다. Computer Use 스킬과 필수 안내를 읽었으나 해당 런타임의 node_repl 도구가 제공되지 않아 화면 조작을 실행하지 않았다. 대신 동일 문서의 읽기 전용 DB 복제에 대한 API 검수를 준비했으나, 첫 읽기에서 현재 문서 본문이 이미 정리된 것을 발견했다. 시연 세션은 expired, purged_at 있음, content_json={}이며 활성 세션은0개다. 앞선7쪽 스냅샷 출력 검수 당시와 상태가 달라졌다.
+- 최초 임시 도구의 직접 documents.get_current 호출은 정리된 본문에서 KeyError:title로 중단했다. 이는 세션 유효성 검사를 먼저 하지 않은 내부 검수 도구 호출이며 사용자 API의500으로 판정하지 않는다. 복제·새 소유자 지정·문서 승인 단계에는 도달하지 않았고 원본 DB를 쓰지 않았다. 정리된 내용을 임시 파일에서 복원하거나 세션 만료 시각·DB 행·사용자 승인 정책을 수정하지 않는다.
+- 최근 세션에서 같은 문서의 실화면 검수는 미실행으로 남긴다. 이 상태에서 동일 문서를 새로 생성/확정하는 유료 호출도 하지 않았다. 현재 시연 DB의 quick_check는ok다. 프론트 useSources의401/410 처리에 저장된 작업 정보를 비우는 동작과 새 작업 안내가 있음을 코드로 확인했으며 브라우저에서 실제 클릭한 검수와 구분한다.
+- 대체 검수는 기존 tests/test_be08.py::test_actual_docx_check_approve_download_reuse_and_invalidate의1/4/6/8/10쪽5건, tests/test_be09.py::test_request_path_expiry_is_persisted_and_cleaned 및 test_idempotent_replay_after_expiry_or_close_returns_410_not_content다. PYTHON_DOTENV_DISABLED=1/BE09_LIVE_AI=0·임시 DB/가상 자료·실제 LibreOffice로 **12 passed / 1 warning / 실패0,49.12초**. 경고 원인은 이번에 별도 판정하지 않았다.
+- DOCX 자체의 변환 미리보기/사진/본문·목표 쪽수, 확인하지 않은 승인과 다른 형식 승인 차단, 동일 키 승인 재사용·다운로드 MIME/바이트/해시, 출력 재사용 시 초안 호출 증가 없음, 편집 뒤 기존 다운로드409·종료 뒤410·정리를 확인했다. 만료 조회/업로드/Job과 멱등 재전송은 내용 유출 없이410 SESSION_EXPIRED이며 늦은 요청이 내용을 되살리지 않는지를 확인했다. 최근7쪽 시연 문서의 직접 승인 통과로 확대하지 않는다.
+- 제품/프론트/환경/의존성 변경이 없고 새로운 제품 결함은 재현되지 않았다. 자기 기록3파일만 기존 qa/demo-format-parity-20261008에 로컬 커밋한다. 다음 실화면 검수는 사용자가 새 작업을 시작한 뒤 현재 입력·점검·문서에서 이어가야 한다. BE-10/F-08 일반품질·Agent 상태는 유지하며 이 확인으로 서비스의 모든 오류가 해결됐다고 보고하지 않는다.
+
+<a id="session-expiry-guidance-20261008"></a>
+
+### 2026-10-08 사용자가 작업 만료를 확인할 수 있도록 안내 보완
+
+- 사용자의 후속 요청과 프로그램 안에서 문제를 알 수 있어야 한다는 기존 요구에 따라 프론트를 대조했다. 기존 만료 시각은 S01 접힌 상세 영역에만 있고 S02/S03에는 표시되지 않았다. App 헤더의 서버 보관 문구는 임시 보관을 드러내지 않았고 SystemStatusModal에는 미구현10분 전 자동 배너·잠금 모달 및120분 연장 버튼이 구현된 것처럼 적혀 있었다. contracts7.5/docs/screens는10분 전 알림·명시 연장을 합의 대기로 기록하므로 해당 기능을 임의 추가하지 않는다.
+- 프론트 develop647578a에서 fix/session-expiry-guidance-20261008을 만들고 기존 SourceSelectionView의 단계별 hidden 영역 밖에 Session.expires_at 안내를 추가했다. 작업이 있을 때만 전 단계에 표시하며 time.dateTime도 서버 값을 사용한다. 저장은 현재 작업 안의 임시 보관, 종료·만료 뒤 첨부/문서 정리와 이미 내려받은 파일 유지가 안내된다. 새 컴포넌트 파일·의존성·타이머·주기 API 요청은 추가하지 않았다.
+- 만료 시각 다시 확인은 기존 work.refresh만 호출한다. 사용자 클릭으로 현재 서버 값을 조회하며 기한 연장·AI 호출·문서 저장을 수행하지 않는다. 저장/작성으로 서버의 만료 시각이 달라질 수 있어 '확인된 작업 만료 시각'으로 표시한다. 작업/AI 진행 중에는 버튼이 비활성이고 만료 응답은 기존401/410 복구 흐름을 따른다. 만료를 추측해 문서를 자동 잠그거나 사실/승인을 바꾸지 않는다.
+- App 헤더를 '현재 작업 안에 임시 저장'으로 정정하고 SystemStatusModal의E09 설명에서 없는 연장 버튼과 자동 알림 약속을 제거했다. 실제 무활동120분/생성24시간 정책과 승인·다운로드/새 작업 경로를 설명한다. 프론트 README에는 병합 기준과 현재 브랜치·안내·검수 제한을 갱신했다. 백엔드 제품/API/DB/TTL·.env와 사용자 자료는 변경하지 않았다.
+- **npm run build(TypeScript/Vite)·변경3개TSX ESLint·git diff --check 통과**. 번들508.76kB로500kB 경고는 유지된다. 코드 위치가 S01/S02/S03 공통 렌더임을 확인했으며 세 단계의 실제 화면 클릭·만료 응답 통합 검수를 새로 수행한 것은 아니다. 텍스트/조회 안내 변경에 전체 회귀나 새 유료 시험을 반복하지 않았다.
+- 프론트4개 파일만 로컬 커밋47a1154이며 미추적.claude/는 제외했다. 백엔드는 자기 기록3파일만 기존 qa/demo-format-parity-20261008에 커밋한다. 원격push/PR은 이번에 하지 않는다. BE-10/F-08 일반품질·Agent 상태는 유지하며 다음은 새 작업이 있는 실제 화면에서 만료 안내/조회와 정상 작성 단계 연결 확인이다.
+
+<a id="session-expiry-ui-check-20261008"></a>
+
+### 2026-10-08 만료 안내의 세 단계 실제 브라우저 검수
+
+- 사용자 후속 요청에 따라 직전 프론트47a1154의 만료 안내를 실제 화면에서 확인했다. 기존 scripts/check-ai-workflow.mjs에 --session-expiry 옵션만 추가했다. 이 옵션은 isolated mock만 허용하며 기존 새 세션/첨부/점검/초안 흐름 후 세 단계를 실제 버튼으로 이동하고 만료 안내의 가시성·서버 시각 일치·조회 효과를 대조한다. 새로운 저장소 파일·제품/서버 로직·의존성·환경 설정을 추가하지 않았다.
+- `AI_CHECK_BACKEND=C:/final/backend`, `AI_CHECK_LIVE=0`, `node scripts/check-ai-workflow.mjs --session-expiry` **PASS,15 시나리오 묶음/오류0/종료0**. 격리 ORMv11 DB·실제HTTP 서버/Vite/Chrome이며 모델 의미 응답은MockAgent다. 요청은 preflight3회(의도적 응답 유실/입력 변경 포함), draft1회, proposal0회이며 유료 AI 호출0이다. 단계별 만료 조회가 점검/초안 요청을 추가하지 않았으며 사용자 원본 시연DB/세션을 대신 생성하거나 승인하지 않았다.
+- S01/S02/S03 각각 화면 상단에 만료 안내가 실제로 보이며 조회 뒤 time.dateTime이 서버Session.expires_at과 일치한다. 조회 전후 expires_at/last_activity_at/input_revision과 DocumentOut 전체(본문·검증·승인 포함)가 동일하다. 클릭 이후 관찰한 모든 API 요청은GET이며 저장·기한 연장·새 AI 호출이 없다. 마지막에는 새 테스트 세션 종료·저장된 AI 참조 정리까지 통과했다.
+- 출력 위치는 시스템Temp/ddalgi-ai-ui-5kihXh다. session-expiry-s01/s02/s03.png를 모두 시각 확인했고 상단 안내/조회 버튼의 잘림·겹침을 발견하지 못했다. 기본 시나리오의 회사 변경/첨부·공개 자료 단독 점검, 선택 없음 차단, 점검/초안 응답 유실·재로드, 사실/근거·필수 제외 보호도 통과했다. 이번 명령은 publication 옵션이 없어 PDF/DOCX 출력·승인 검사를 재실행한 것은 아니다.
+- 추가 검사 스크립트ESLint/Node 구문 검사/git diff --check 통과. 프론트README의 미실행 표시를 이번 실제 검수로 갱신하고2파일을 로컬 커밋ae50182에 저장했다. 미추적.claude/는 제외한다. 제품 코드가 바뀌지 않아 빌드/전체 회귀를 반복하지 않았고 직전 빌드 결과와 번들 경고는 유지한다.
+- 백엔드는 자기 기록3파일만 qa/demo-format-parity-20261008에 로컬 커밋한다. 이번 만료 안내의 구현/화면 검수 단위는 완료이며 원격 공유는 별도 요청에 따른다. 만료된 시연 문서 복원·세션 연장·실제 AI 일반품질 완료로 확대하지 않고 BE-10/F-08 및 Agent 상태를 유지한다.
+
+<a id="expired-workflow-ui-recovery-20261008"></a>
+
+### 2026-10-08 실제 만료 응답 후 새 작업 시작의 화면 검수
+
+- 사용자 후속 요청에 따라 기존 --session-expiry 검사의 마지막 단계에 만료 복귀를 추가했다. 기존 mkdtemp로 만든 ddalgi-ai-ui-*/runs/app.sqlite3와 해당 테스트 세션의 경로/ID만 검증하고 테스트 DB의expires_at을 과거로 설정한다. 제품에 테스트용 라우트·middleware를 추가하거나410응답을 가짜로 만들지 않는다. 이후 세션 정책 검사·내용 정리·410은 기존 실제API가 수행한다.
+- `AI_CHECK_BACKEND=C:/final/backend`, `AI_CHECK_LIVE=0`, `node scripts/check-ai-workflow.mjs --session-expiry` **PASS,16 시나리오 묶음/오류0/종료0**. 실제 격리HTTP/Vite/Chrome·가상 AI·임시 ORMv11 DB다. 점검3/초안1/수정안0요청은 직전과 동일하며 만료 인식과 새 작업 시작에는 점검/초안을 추가하지 않았다. 유료 호출0·사용자 시연DB/세션/환경 변경0이다.
+- S03에서 실제 만료 뒤 만료 시각 다시 확인을 눌렀다. 조회만으로410을 받고 S01 시작 화면에 만료 안내와 작업 시작/이어하기 버튼이 나타났다. 저장된 AI/출력 작업 참조가null이고 이전 초안과 만료 안내 영역이 사라졌으며 숨겨진 이전 초안으로 계속 이동하지 않는다. 기존 세션GET은410이고 새 작업 시작은다른 세션ID를 만든다. 새 세션에는 만료 안내가 다시 보이지만 이전 초안은 없으며 POST는세션 생성만 발생한다.
+- 새 테스트 세션 종료와 AI 참조 정리도 통과했다. 임시 위치는 Temp/ddalgi-ai-ui-7CCFld, session-expired-start.png를 시각 확인해 만료 문구·사용 가능한 새 작업 버튼·비활성 편집/승인 단계·빈 자료 상태를 확인했다. 이 옵션은 기존 문서에서 최종 승인까지 수행하지 않으므로 실제 승인된 산출물의 만료 검수로 확대하지 않는다. 해당 서버 승인/다운로드 만료 검사는 앞선12건 결과로 구분한다.
+- 검사 도구ESLint/Node 구문/git diff --check 통과. 프론트 제품 변경 없이 기존 검사/README2파일을 로컬 커밋292fe2d에 저장하고 미추적.claude/는 제외했다. 백엔드는 자기 기록3파일만 기존qa브랜치에 로컬커밋한다. 전체 회귀·빌드·유료 AI 시험은 새로 반복하지 않았고 원격push/PR도 하지 않는다.
+- 만료 안내/복귀의 구현·실화면 검수 단위는 완료이며 새로운 제품 결함은 발견하지 못했다. 다른 담당 상태와 BE-10/F-08 일반품질은 유지한다. 새 재현 오류나 요구 없이 동일 검사를 늘리지 않으며 다음 공유 대상은 프론트develop과 백엔드test다.
