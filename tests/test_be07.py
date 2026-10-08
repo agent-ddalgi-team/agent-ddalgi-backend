@@ -504,6 +504,29 @@ def test_caption_tracks_visible_photo_edge_and_keeps_body_distinct(out_dir, sett
     assert result.details['measure']['pages'][0]['min_body_font_pt'] >= 10.99
 
 
+@pytest.mark.parametrize('mode', ['no_settings', 'default', 'explicit'])
+def test_render_work_dir_keeps_default_output_location(mode, tmp_path, monkeypatch):
+    from app.config import Settings, load_settings
+    assert Settings(private_runs_dir=tmp_path, db_path=tmp_path / 'unused.sqlite3').export_work_dir is None
+    assert load_settings().export_work_dir is None
+    output, custom = tmp_path / 'output', tmp_path / 'custom'
+    config = None if mode == 'no_settings' else Settings(
+        private_runs_dir=tmp_path, db_path=tmp_path / 'unused.sqlite3',
+        export_work_dir=custom if mode == 'explicit' else None)
+    monkeypatch.setattr(er, 'find_browser', lambda settings: Path('local-browser'))
+    monkeypatch.setattr(er, 'browser_version', lambda browser: 'test')
+    monkeypatch.setattr(er, 'build_html', lambda snapshot: '<html></html>')
+    monkeypatch.setattr(er, '_snapshot_findings', lambda snapshot: [])
+    captured = []
+    def stop_before_browser(*, prefix, dir):
+        captured.append((prefix, dir))
+        raise OSError('intentional stop before browser')
+    monkeypatch.setattr(er.tempfile, 'mkdtemp', stop_before_browser)
+    with pytest.raises(OSError, match='intentional stop before browser'):
+        er._render_pdf(_fixture_snapshot('1pages'), output, config, 90)
+    assert captured == [('.render_', custom if mode == 'explicit' else output)]
+
+
 def test_identity_values_come_from_layout_checks(out_dir):
     r = er.render(_fixture_snapshot("1pages"), "docx", out_dir)
     assert r.template_version == layout_checks.TEMPLATE_VERSION == "template_v13"

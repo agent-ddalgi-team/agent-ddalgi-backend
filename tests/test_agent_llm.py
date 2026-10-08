@@ -8509,3 +8509,72 @@ def test_paid_comparison_requires_company_before_loading_sources(tmp_path, monke
     with pytest.raises(SystemExit) as exc:
         q.main(['--pilot', '--record-run', '--rubric', str(rubric)])
     assert exc.value.code == 2
+
+
+@pytest.mark.parametrize('labels', [['../escape'], ['a/b'], ['same', 'SAME'], ['CON']])
+def test_stage_runner_rejects_unsafe_or_duplicate_labels(tmp_path, labels):
+    import json
+    from scripts.experiments.stage_runner import load_manifest
+    path = tmp_path / 'manifest.json'
+    path.write_text(json.dumps({'documents': [
+        {'label': label, 'document_path': 'saved.json', 'assets_dir': 'assets'}
+        for label in labels]}), encoding='utf-8')
+    with pytest.raises(ValueError):
+        load_manifest(path)
+
+
+def test_stage_runner_manifest_paths_are_relative_to_manifest(tmp_path):
+    import json
+    from scripts.experiments.stage_runner import load_manifest
+    path = tmp_path / 'manifest.json'
+    path.write_text(json.dumps({'documents': [
+        {'label': 'sample', 'document_path': 'saved.json', 'assets_dir': 'assets'}]}), encoding='utf-8')
+    entry = load_manifest(path)[0]
+    assert entry['document_path'] == tmp_path / 'saved.json'
+    assert entry['assets_dir'] == tmp_path / 'assets'
+
+
+@pytest.mark.parametrize('change', ['product', 'runner', 'input', 'artifact'])
+def test_stage_runner_resume_rejects_changed_evidence(tmp_path, change):
+    from copy import deepcopy
+    from scripts.experiments.stage_runner import tree_hashes, verify_resume
+    folder = tmp_path / 'sample'
+    folder.mkdir()
+    (folder / 'page.png').write_bytes(b'original')
+    code = {'files': {'app/render.py': 'old'}, 'runner_sha256': 'runner'}
+    context = {'manifest_sha256': 'input'}
+    record = {'code': deepcopy(code), 'context': deepcopy(context),
+              'results': [{'label': 'sample', 'artifacts': tree_hashes(folder)}]}
+    verify_resume(record, code, context, tmp_path)
+    if change == 'product': code['files']['app/render.py'] = 'changed'
+    if change == 'runner': code['runner_sha256'] = 'changed'
+    if change == 'input': context['manifest_sha256'] = 'changed'
+    if change == 'artifact': (folder / 'page.png').write_bytes(b'changed')
+    with pytest.raises(ValueError):
+        verify_resume(record, code, context, tmp_path)
+
+
+def test_stage_runner_checks_original_instead_of_rewritten_copy():
+    from types import SimpleNamespace
+    from app.models import Block, Page
+    from scripts.experiments.stage_runner import preservation
+    page = Page(page_id='p', title='설비', layout_key='text', blocks=[
+        Block(block_id='b', type='paragraph', content={'text': '시험기 A 9대를 사용합니다.'})])
+    before = SimpleNamespace(pages=[page])
+    after = SimpleNamespace(pages=[page.model_copy(deep=True)])
+    after.pages[0].blocks[0].content['text'] = '시험기를 사용합니다.'
+    with pytest.raises(ValueError, match='Unrecorded body change'):
+        preservation(before, after, 'stage4', [])
+
+
+def test_stage_runner_blocks_external_connections_and_restores_socket(monkeypatch):
+    import socket
+    from scripts.experiments.stage_runner import offline_network
+    calls = []
+    original = lambda sock, address: calls.append(address)
+    monkeypatch.setattr(socket.socket, 'connect', original)
+    with offline_network():
+        socket.socket.connect(None, ('127.0.0.1', 9999))
+        with pytest.raises(ValueError, match='External network disabled'):
+            socket.socket.connect(None, ('203.0.113.1', 443))
+    assert socket.socket.connect is original and calls == [('127.0.0.1', 9999)]
