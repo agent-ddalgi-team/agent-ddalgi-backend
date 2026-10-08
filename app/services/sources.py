@@ -545,6 +545,7 @@ def run_dart_import(settings: Settings, session_id: str, job_id: str, revision: 
             if jobs.get(conn, session_id, job_id).status == "running":
                 return
             jobs.set_progress(conn, job_id, "dart_fetch", "DART 회사와 최근 공시를 조회하는 중")
+            jobs.record_trace(conn, job_id, "public_fetch", {"actual_mode": "public_api", "provider": "dart", "ai_called": False})
         docs = _dart_documents(settings, target, corp_code)
         source_ids = []
         with upload_storage() as written, connect(settings.db_path, immediate=True) as conn:
@@ -572,9 +573,11 @@ def run_dart_import(settings: Settings, session_id: str, job_id: str, revision: 
                 if doc["partial"]:
                     result.status = "partial"
                     result.warnings.append(warning("TEXT_LIMIT", "공시 원문 중 앞부분 25,000자 범위만 읽었습니다. 저장된 원문과 출처를 확인해 필요한 내용을 별도로 첨부해 주세요."))
+                # 날짜를 먼저 저장해 같은 추출 실행의 구간에도 원문 날짜가 연결된다.
+                conn.execute("UPDATE sources SET document_date=? WHERE source_id=?", (doc["date"], item.source_id))
                 source_row = conn.execute("SELECT * FROM sources WHERE source_id=?", (item.source_id,)).fetchone()
                 reading._apply_result(conn, source_row, result)
-                conn.execute("UPDATE sources SET document_date=? WHERE source_id=?", (doc["date"], item.source_id))
+            jobs.record_trace(conn, job_id, "public_fetch_result", {"provider": "dart", "source_count": len(source_ids)})
             jobs.succeed(conn, job_id, {"type": "sources", "source_ids": source_ids})
             sessions.touch(conn, settings, row)
     except ApiError as exc:

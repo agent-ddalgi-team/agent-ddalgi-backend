@@ -227,7 +227,11 @@ def test_upload_then_background_read_updates_status_and_job(client, settings):
     assert all(i["parse_status"] == "queued" for i in up["items"])  # 202 시점에는 아직 대기
     # TestClient는 응답 뒤 백그라운드 작업까지 돌린 다음 돌아온다.
     job = client.get(f"/api/v1/sessions/{sid}/jobs/{up['job_id']}").json()
-    assert job["status"] == "succeeded" and job["progress"] == {"stage": "done", "message": None}
+    assert job["status"] == "succeeded" and job["progress"]["stage"] == "done" and job["progress"]["message"] is None
+    trace = job["progress"]["trace"]
+    assert trace["outcome"] == {"status": "succeeded"}
+    assert trace["stages"][0]["actual_mode"] == "parser"
+    assert len([s for s in trace["stages"] if s["stage"].startswith("parsed:")]) == 3
     assert job["result_ref"] == {"type": "sources", "source_ids": [i["source_id"] for i in up["items"]]}
     items = client.get(f"/api/v1/sessions/{sid}/sources").json()["items"]
     by_name = {i["name"]: i for i in items}

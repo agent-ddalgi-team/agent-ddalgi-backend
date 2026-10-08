@@ -193,6 +193,7 @@ class SourceDeleteOut(BaseModel):
 class JobProgress(BaseModel):
     stage: str
     message: str | None = None
+    trace: dict[str, Any] | None = None
 
 
 class JobError(BaseModel):

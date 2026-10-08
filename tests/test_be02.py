@@ -600,6 +600,11 @@ def test_dart_import_real_source_history_replay_and_dedup(dart_client):
     assert response.status_code == 202
     job = client.get(root + "/jobs/" + response.json()["job_id"]).json()
     assert job["status"] == "succeeded" and job["result_ref"]["type"] == "sources"
+    stages = {s["stage"]: s for s in job["progress"]["trace"]["stages"]}
+    assert stages["public_fetch"] == {"stage": "public_fetch", "recorded_at": stages["public_fetch"]["recorded_at"],
+        "actual_mode": "public_api", "provider": "dart", "ai_called": False}
+    assert stages["public_fetch_result"]["source_count"] == 2
+    assert "test-dart-key" not in str(job["progress"])
     items = client.get(root + "/sources").json()["items"]
     assert len(items) == 2 and all(item["scope"] == "session" and item["origin_kind"] == "real" for item in items)
     assert all(item["text_available"] and item["warnings"][0]["code"] == "PUBLIC_OPEN_DATA" for item in items)
@@ -615,6 +620,10 @@ def test_dart_import_real_source_history_replay_and_dedup(dart_client):
     with connect(settings.db_path) as conn:
         selected = build_sources(conn, session["session_id"], source_ids)
         assert len(selected) == 2 and all(source.segments for source in selected)
+        filing = next(source for source in selected if any("감사보고서" in segment.text for segment in source.segments))
+        assert filing.metadata["document_date"] == "20261007"
+        assert all(m["document_date"] == "20261007" and m["extraction_method"] == "parser"
+                   for m in filing.metadata["segments"].values())
         from app.services import db_history
         if db_history.enabled(conn):
             assert conn.execute("SELECT count(*) FROM extraction_runs WHERE session_id=?", (session["session_id"],)).fetchone()[0] == 2

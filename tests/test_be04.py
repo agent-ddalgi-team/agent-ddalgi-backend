@@ -733,3 +733,300 @@ def test_optional_conflict_exclusion_closes_only_related_issue_and_restore_reope
         fact = next(fact for fact in latest["facts"] if fact["field_key"] == "lead_time")
         assert client.post(base + latest["preflight_id"] + "/reviews", json={**body,
             "expected_input_revision": changed_rev, "fact_ids": [fact["fact_id"]]}).status_code == 422
+
+@pytest.mark.parametrize("orm", [False, True])
+@pytest.mark.parametrize("configured_mode", ["mock", "llm"])
+def test_job_trace_preserves_input_metadata_counts_executor_and_no_source_text(settings, monkeypatch, orm, configured_mode):
+    from app.services import preflights
+    settings.private_runs_dir.mkdir(parents=True, exist_ok=True)
+    if orm:
+        init_orm_db(settings.db_path, settings.private_runs_dir)
+    settings = replace(settings, agent_mode=configured_mode)
+    seen = []
+    original = MockAgent.analyze
+    async def capture(self, request):
+        seen.append(request)
+        return await original(self, request)
+    monkeypatch.setattr(MockAgent, "analyze", capture)
+    monkeypatch.setattr(ai_jobs, "get_bridge", lambda _: MockAgent())
+    with TestClient(create_app(settings)) as api:
+        sid = _session(api)
+        text = "회사명: 예시 회사\n회사 개요: 제조 시험 기업\n사업 분야: 표면처리\n시험 값: 168시간"
+        src = _upload(api, sid, ("secret-original-name.txt", text.encode()))
+        with connect(settings.db_path) as conn:
+            conn.execute("UPDATE sources SET document_date='2017', document_date_verified=0, date_from_filename='2025' WHERE source_id=?", (src[0],))
+            conn.execute("UPDATE segments SET evidence_status='unverified', document_date='2016', chunk_id='chunk_fixed' WHERE source_id=?", (src[0],))
+        revision = _select(api, sid, src)
+        r = api.post(f"/api/v1/sessions/{sid}/preflights", json={"expected_input_revision": revision})
+        job = api.get(f"/api/v1/sessions/{sid}/jobs/{r.json()['job_id']}").json()
+        assert job["status"] == "succeeded", job
+        trace = job["progress"]["trace"]
+        stages = {s["stage"]: s for s in trace["stages"]}
+        assert trace["input_revision"] == revision and trace["outcome"]["status"] == "succeeded"
+        assert stages["executor"]["configured_mode"] == configured_mode
+        assert stages["executor"]["actual_mode"] == "mock" and stages["executor"]["model"] is None
+        assert stages["agent_input"]["source_count"] == 1
+        source = seen[0].sources[0]
+        assert source.source_id == src[0] and source.source_version == 1
+        assert stages["agent_input"]["segment_count"] == len(source.segments)
+        assert stages["agent_input"]["input_text_chars"] == sum(len(s.text) for s in source.segments)
+        assert source.metadata["document_date"] == "2017" and source.metadata["document_date_verified"] is False
+        assert source.metadata["date_from_filename"] == "2025"
+        assert all(m["document_date"] == "2016" and m["evidence_status"] == "unverified"
+                   and m["chunk_id"] == "chunk_fixed" for m in source.metadata["segments"].values())
+        serialized = json.dumps(trace, ensure_ascii=False)
+        assert "secret-original-name" not in serialized and "예시 회사" not in serialized and "168시간" not in serialized
+        assert "unverified" not in serialized  # Status presence counts only, no arbitrary source-authored labels.
+        assert stages["result_checked"]["fact_status_counts"]["supported"] >= 2
+        # Missing/unavailable selections are explained without exposing the other source.
+        with connect(settings.db_path) as conn:
+            excluded = []
+            assert preflights.build_sources(conn, sid, ["foreign_source"], exclusions=excluded) == []
+            assert excluded == [{"source_id": "foreign_source", "reason": "outside_evidence_scope"}]
+            if orm:
+                conn.execute("UPDATE sources SET source_version=2, current_run_id=NULL, document_date='2099', date_from_filename='2099' WHERE source_id=?", (src[0],))
+                pinned = preflights.build_sources(conn, sid, src)[0]
+                assert pinned.source_version == 1 and pinned.metadata["document_date"] is None
+                assert pinned.metadata["document_date_verified"] is None and pinned.metadata["date_from_filename"] is None
+                assert all(m["document_date"] == "2016" for m in pinned.metadata["segments"].values())
+
+
+@pytest.mark.parametrize("outcome", ["failed", "cancelled", "succeeded"])
+def test_job_trace_terminal_guards_and_session_purge(client, settings, outcome):
+    from app.services import jobs
+    sid = _session(client)
+    with connect(settings.db_path) as conn:
+        job = jobs.create(conn, sid, "preflight", "pending", input_revision=1)
+        assert jobs.record_trace(conn, job.job_id, "agent_input", {"source_count": 2}) == 1
+        jobs.set_progress(conn, job.job_id, "analyzing", "working")
+        if outcome == "failed": jobs.fail(conn, job.job_id, "AGENT_OUTPUT_INVALID", "fixed", True)
+        elif outcome == "cancelled": jobs.cancel_for_session(conn, sid)
+        else: jobs.succeed(conn, job.job_id, {"type": "preflight", "preflight_id": "pf_test"})
+        before = conn.execute("SELECT progress_json FROM jobs WHERE job_id=?", (job.job_id,)).fetchone()[0]
+        assert jobs.record_trace(conn, job.job_id, "late", {"source_count": 99}) == 0
+        assert jobs.set_progress(conn, job.job_id, "late", None) == 0
+        assert jobs.succeed(conn, job.job_id, {}) == 0 and jobs.fail(conn, job.job_id, "LATE", "fixed", True) == 0
+        assert conn.execute("SELECT progress_json FROM jobs WHERE job_id=?", (job.job_id,)).fetchone()[0] == before
+        assert jobs.get(conn, sid, job.job_id).progress.trace is not None
+        jobs.purge_errors_for_session(conn, sid)
+        assert jobs.get(conn, sid, job.job_id).progress.trace is None
+        assert jobs.get(conn, sid, job.job_id).status == outcome
+
+
+def test_job_trace_bound_is_explicit_not_silent(client, settings):
+    from app.services import jobs
+    sid = _session(client)
+    with connect(settings.db_path) as conn:
+        job = jobs.create(conn, sid, "read", "pending")
+        for i in range(20): jobs.record_trace(conn, job.job_id, f"parsed:{i}", {"segment_count": i})
+        trace = jobs.get(conn, sid, job.job_id).progress.trace
+        assert len(trace["stages"]) == 16 and trace["omitted_stage_count"] == 4
+        jobs.record_trace(conn, job.job_id, "agent_input", {"source_id": "x" * 70000})
+        trace = jobs.get(conn, sid, job.job_id).progress.trace
+        assert trace["stages"][0]["summary_omitted"] == "trace_size_limit"
+
+@pytest.mark.parametrize("purpose", ["품질 담당자용 인증과 시험 근거", "생산기술 담당자용 공정과 설비 검토", "신규 고객 소개용 주요 서비스"])
+def test_customer_request_table_transfer_and_job_trace_without_llm_quality_claim(client, settings, purpose):
+    from test_be03 import make_docx
+    from app.services import preflights
+    table = [["공정/설비/시험", "대상과 조건"], ["아노다이징", "알루미늄 시편"],
+             ["시험 장비 A", "시편 2개 조건"], ["시험 시간", "168시간; 시험 종류 미기재"]]
+    data = make_docx(["회사명: 예시 회사", "회사 개요: 제조업 시험 기업", "사업 분야: 표면처리"], table)
+    sid = client.post("/api/v1/sessions", json={"brief": BRIEF | {"purpose": purpose, "target_pages": 1}}).json()["session_id"]
+    src = _upload(client, sid, ("manufacturing-fixture.docx", data))
+    revision = _select(client, sid, src)
+    pf = _preflight(client, sid, revision)
+    with connect(settings.db_path) as conn:
+        source = preflights.build_sources(conn, sid, src)[0]
+    cells = [g for g in source.segments if "table" in g.locator]
+    assert len(cells) == 8
+    assert {(g.locator["row"], g.locator["col"]): g.text for g in cells} == {
+        (r, c): value for r, row in enumerate(table, 1) for c, value in enumerate(row, 1)}
+    assert all(source.metadata["segments"][g.segment_id]["extraction_method"] == "parser" for g in source.segments)
+    accepted = client.post(f"/api/v1/sessions/{sid}/drafts", json={"preflight_id": pf["preflight_id"],
+        "input_revision": revision, "confirmed": True})
+    assert accepted.status_code == 202, accepted.text
+    job = client.get(f"/api/v1/sessions/{sid}/jobs/{accepted.json()['job_id']}").json()
+    assert job["status"] == "succeeded", job
+    stages = {s["stage"]: s for s in job["progress"]["trace"]["stages"]}
+    assert stages["agent_input"]["preflight_id"] == pf["preflight_id"]
+    assert stages["agent_input"]["segment_count"] == 11
+    assert stages["executor"]["actual_mode"] == "mock" and stages["executor"]["model"] is None
+    assert stages["result_checked"]["page_count"] >= 1
+    assert job["result_ref"]["document_revision"] == 1
+    document = client.get(f"/api/v1/sessions/{sid}/documents/{job['result_ref']['document_id']}").json()["document"]
+    for page in document["pages"]:
+        for block in page["blocks"]:
+            assert all(r["source_id"] == src[0] and r["source_version"] == 1 for r in block["evidence_refs"])
+
+
+def _layout_pptx(*, duplicate=False, rotated=False, offset=0):
+    from pptx import Presentation
+    from pptx.util import Inches
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    # Deliberately put the bodies before the titles in XML order.
+    entries = [(4, 2, "알루미늄 소재 후처리 내식성 168hr"),
+               (4, 4, "금속 산화피막 설명"),
+               (1, 2, "크로메이트"), (1, 4, "부동태")]
+    if duplicate == True:
+        entries.append((1, 6, "알루미늄 소재 후처리 내식성 168hr"))
+    for x, y, text in entries:
+        box = slide.shapes.add_textbox(Inches(x), Inches(y + offset), Inches(2), Inches(.5))
+        box.text = text
+        if rotated and text.startswith("알루미늄"):
+            box.rotation = 90
+    if duplicate in ("group", "rotated"):
+        owner = slide.shapes.add_group_shape().shapes if duplicate == "group" else slide.shapes
+        box = owner.add_textbox(Inches(1), Inches(6), Inches(2), Inches(.5))
+        box.text = "알루미늄 소재 후처리 내식성 168hr"
+        if duplicate == "rotated":
+            box.rotation = 90
+    buf = io.BytesIO()
+    prs.save(buf)
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("case", ["valid", "changed_text", "wrong_slide", "ambiguous", "rotated",
+                                   "hash_mismatch", "missing_hash", "missing_file", "oversize", "outside_root", "corrupt", "group_duplicate", "rotated_duplicate"])
+def test_pptx_context_never_attaches_unmatched_or_untrusted_geometry(tmp_path, case):
+    import hashlib
+    from app.agent_bridge import SegmentIn
+    from app.services.preflights import _source_layout
+    root = tmp_path / "runs"
+    root.mkdir()
+    settings = Settings(private_runs_dir=root, db_path=root / "test.sqlite3")
+    data = b"not a pptx" if case == "corrupt" else _layout_pptx(duplicate=case.removesuffix("_duplicate") if case.endswith("_duplicate") else case == "ambiguous", rotated=case == "rotated")
+    filename = "../outside.pptx" if case == "outside_root" else "deck.pptx"
+    path = root / filename
+    if case != "missing_file":
+        path.write_bytes(data)
+    digest = hashlib.sha256(data).hexdigest()
+    if case == "hash_mismatch":
+        digest = "0" * 64
+    if case == "missing_hash":
+        digest = None
+    if case == "oversize":
+        settings = replace(settings, max_file_bytes=len(data) - 1)
+    segment = SegmentIn("selected", {"slide": 2 if case == "wrong_slide" else 1},
+                        "없는 설명" if case == "changed_text" else "알루미늄 소재 후처리 내식성 168hr")
+    result = _source_layout(settings, filename, digest, [segment])
+    if case == "valid":
+        assert result == {"selected": {"slide": 1, "box_mm": [101.6, 50.8, 50.8, 12.7]}}
+        assert "크로메이트" not in json.dumps(result, ensure_ascii=False)  # unselected title is not leaked
+    else:
+        assert result == {}
+    assert segment.locator == {"slide": 2 if case == "wrong_slide" else 1}
+
+
+@pytest.mark.parametrize("orm", [False, True])
+def test_preflight_passes_pptx_layout_from_selected_version_without_rewriting_evidence(settings, monkeypatch, orm):
+    import hashlib
+    from app.services import preflights
+    if orm:
+        settings.private_runs_dir.mkdir(parents=True, exist_ok=True)
+        init_orm_db(settings.db_path, settings.private_runs_dir)
+    seen = []
+    original = MockAgent.analyze
+    async def capture(self, request):
+        seen.append(request)
+        return await original(self, request)
+    monkeypatch.setattr(MockAgent, "analyze", capture)
+    monkeypatch.setattr(ai_jobs, "get_bridge", lambda _: MockAgent())
+    with TestClient(create_app(settings)) as api:
+        sid = _session(api)
+        ids = _upload(api, sid, ("two-processes.pptx", _layout_pptx()))
+        rev = _select(api, sid, ids)
+        with connect(settings.db_path) as conn:
+            before = preflights.build_sources(conn, sid, ids)[0]
+            # Existing registered excerpts may have only a slide locator.
+            for segment in before.segments:
+                conn.execute("UPDATE segments SET locator_json=? WHERE segment_id=?", ('{"slide":1}', segment.segment_id))
+            before = preflights.build_sources(conn, sid, ids)[0]
+            if orm:
+                data = _layout_pptx(offset=1)
+                (settings.private_runs_dir / "new-version.pptx").write_bytes(data)
+                conn.execute("UPDATE sources SET source_version=2, current_run_id=NULL, stored_path=?, content_hash=? WHERE source_id=?",
+                             ("new-version.pptx", hashlib.sha256(data).hexdigest(), ids[0]))
+        _preflight(api, sid, rev)
+        source = seen[0].sources[0]
+        assert source.source_version == 1 and source.segments == before.segments
+        title = next(s for s in source.segments if s.text == "크로메이트")
+        body = next(s for s in source.segments if "168hr" in s.text)
+        assert source.metadata["segments"][title.segment_id]["layout"]["box_mm"] == [25.4, 50.8, 50.8, 12.7]
+        assert source.metadata["segments"][body.segment_id]["layout"]["box_mm"] == [101.6, 50.8, 50.8, 12.7]
+        with connect(settings.db_path) as conn:
+            after = preflights.build_sources(conn, sid, ids)[0]
+            assert after.segments == before.segments
+            # A foreign session's selected IDs cannot bring their file context in.
+            other = _session(api)
+            assert preflights.build_sources(conn, other, ids, settings=settings) == []
+
+
+# Held-out layout cases: expected relationships are test data, never prompt input.
+def _pptx_layout_quality_case(case):
+    from pptx import Presentation
+    from pptx.util import Inches
+    prs = Presentation()
+    prs.slide_width, prs.slide_height = Inches(12), Inches(7)
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    company = "기업명: 예시배치기업. 사업: 산업용 표면처리 제품 제조."
+    body_a = "알루미늄 하우징용. 시험 조건: 22도, 48시간. 출하 성능 보증값 아님."
+    body_b = "스테인리스 부품용. 검사 조건: 35도, 12시간. 출하 성능 보증값 아님."
+    event = "가공설비 사진. 2018년에 제2공장 준공. 2022년 설비 교체."
+    if case in ("columns", "mirrored_reordered"):
+        ax, bx = (1, 6) if case == "columns" else (6, 1)
+        entries = [(bx, 2, body_b), (ax, 1, "막처리 A"), (ax, 2, body_a), (bx, 1, "세정 B"), (1, 4, event)]
+        if case == "mirrored_reordered":
+            entries.reverse()
+        expected = {"a": body_a, "b": body_b, "event": event}
+    elif case == "ambiguous":
+        # Overlapping titles alone cannot determine which process the note describes.
+        note = "공정 적용 소재는 알루미늄 또는 스테인리스 중 확인 필요. 검사시간은 12시간 또는 48시간으로 기록되었으나 공정별 대응은 미확정."
+        entries = [(1, 1, "막처리 A"), (1, 1, "세정 B"), (1, 2, note)]
+        expected = {"ambiguous": note}
+    elif case == "conflict":
+        one = "설비대장: 2024년 12월 31일 A공장 가공설비 4대."
+        two = "현장조사: 2024년 12월 31일 A공장 가공설비 6대."
+        entries = [(1, 1, one), (1, 3, two)]
+        expected = {"conflict": [one, two]}
+    else:
+        raise ValueError(case)
+    entries.append((1, .1, company))
+    for x, y, text in entries:
+        box = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(4), Inches(.7))
+        box.text = text
+    buf = io.BytesIO()
+    prs.save(buf)
+    return buf.getvalue(), expected
+
+
+@pytest.mark.parametrize("case", ["columns", "mirrored_reordered", "ambiguous", "conflict"])
+def test_pptx_layout_varied_cases_preserve_original_context_without_invented_relations(tmp_path, case):
+    import hashlib
+    from app.agent_bridge import SegmentIn
+    from app.parsers import parse
+    from app.services.preflights import _source_layout
+    data, expected = _pptx_layout_quality_case(case)
+    path = tmp_path / "fixture.pptx"
+    path.write_bytes(data)
+    settings = Settings(private_runs_dir=tmp_path, db_path=tmp_path / "unused.sqlite3")
+    parsed = parse(data, ".pptx")
+    assert parsed.status == "complete"
+    segments = [SegmentIn(f"s{i}", s.locator.copy(), s.text) for i, s in enumerate(parsed.segments)]
+    before = [(s.segment_id, s.locator.copy(), s.text) for s in segments]
+    layout = _source_layout(settings, path.name, hashlib.sha256(data).hexdigest(), segments)
+    assert set(layout) == {s.segment_id for s in segments}
+    by_text = {s.text: layout[s.segment_id] for s in segments}
+    if case in ("columns", "mirrored_reordered"):
+        assert by_text["막처리 A"]["box_mm"][0] == by_text[expected["a"]]["box_mm"][0]
+        assert by_text["세정 B"]["box_mm"][0] == by_text[expected["b"]]["box_mm"][0]
+        assert (by_text["막처리 A"]["box_mm"][0] < by_text["세정 B"]["box_mm"][0]) == (case == "columns")
+        assert expected["event"] in by_text
+    elif case == "ambiguous":
+        assert by_text["막처리 A"] == by_text["세정 B"]
+        assert expected["ambiguous"] in by_text  # no automatic label assignment
+    else:
+        assert all(text in by_text for text in expected["conflict"])
+    assert [(s.segment_id, s.locator, s.text) for s in segments] == before
+    assert all(set(v) == {"slide", "box_mm"} for v in layout.values())

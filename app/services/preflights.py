@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import uuid
+from pathlib import Path
 
 from app.db import Connection
+from app.config import Settings
 from app.agent_bridge import SegmentIn, SourceIn
 from app.errors import ApiError
 from app.models import Brief, DataSufficiency, Fact, Issue, PreflightOut, PreflightReviewCreate, Recommendations, SufficiencyCategory
@@ -13,7 +16,8 @@ from app.services.sources import evidence_scope
 from app.timeutil import now, to_iso
 
 
-def build_sources(conn: Connection, session_id: str, selected_source_ids: list[str]) -> list[SourceIn]:
+def build_sources(conn: Connection, session_id: str, selected_source_ids: list[str], *,
+                  exclusions: list[dict] | None = None, settings: Settings | None = None) -> list[SourceIn]:
     """선택한 자료만 Agent 입력으로 만든다. 이 세션의 첨부 또는 등록 자료(근거 사용 허용)만.
 
     다른 세션의 자료와 use_as_company_evidence=false인 등록 자료는 선택돼 있어도 절대 포함하지 않는다.
@@ -26,26 +30,46 @@ def build_sources(conn: Connection, session_id: str, selected_source_ids: list[s
             f"SELECT src.* FROM sources src WHERE src.source_id=? AND {scope}",
             (source_id, *params)).fetchone()
         if row is None:
+            if exclusions is not None:
+                exclusions.append({"source_id": source_id, "reason": "outside_evidence_scope"})
             continue
         run_sql, run_params = "", ()
         source_version, name, parse_status = row["source_version"], row["name"], row["parse_status"]
+        stored_path, content_hash = row["stored_path"], row["content_hash"]
         if has_history:
             pinned = conn.execute(
-                "SELECT sel.source_version, sel.run_id, v.original_name, r.status FROM session_source_selections sel "
+                "SELECT sel.source_version, sel.run_id, v.original_name, v.stored_path, v.content_hash, r.status FROM session_source_selections sel "
                 "JOIN sessions s ON s.session_id=sel.session_id AND s.input_revision=sel.input_revision "
                 "JOIN source_versions v ON v.source_id=sel.source_id AND v.version=sel.source_version "
                 "JOIN extraction_runs r ON r.run_id=sel.run_id "
                 "WHERE sel.session_id=? AND sel.source_id=? AND v.purged_at IS NULL AND r.purged_at IS NULL",
                 (session_id, source_id)).fetchone()
             if pinned is None:
+                if exclusions is not None:
+                    exclusions.append({"source_id": source_id, "reason": "selected_run_unavailable"})
                 continue
             source_version, name, parse_status = pinned["source_version"], pinned["original_name"], pinned["status"]
+            stored_path, content_hash = pinned["stored_path"], pinned["content_hash"]
             run_sql, run_params = " AND run_id=?", (pinned["run_id"],)
         if parse_status not in {"complete", "partial"}:
+            if exclusions is not None:
+                exclusions.append({"source_id": source_id, "reason": "parse_not_usable"})
             continue
-        segments = [SegmentIn(r["segment_id"], json.loads(r["locator_json"]), r["text"]) for r in conn.execute(
-            "SELECT segment_id, locator_json, text FROM segments WHERE source_id=?" + run_sql + " ORDER BY ordinal",
-            (source_id, *run_params))]
+        segment_rows = conn.execute(
+            "SELECT segment_id, locator_json, text, chunk_id, evidence_status, document_date, extraction_method "
+            "FROM segments WHERE source_id=?" + run_sql + " ORDER BY ordinal", (source_id, *run_params)).fetchall()
+        segments = [SegmentIn(r["segment_id"], json.loads(r["locator_json"]), r["text"]) for r in segment_rows]
+        # 버전별 source 날짜 스냅샷은 기존 이력에 없다. 옛 버전에 최신 날짜를 붙이지 않는다.
+        metadata = {"source_version": source_version,
+                    "document_date": row["document_date"] if source_version == row["source_version"] else None,
+                    "document_date_verified": bool(row["document_date_verified"]) if source_version == row["source_version"] and row["document_date_verified"] is not None else None,
+                    "date_from_filename": row["date_from_filename"] if source_version == row["source_version"] else None,
+                    "segments": {r["segment_id"]: {key: r[key] for key in
+                        ("chunk_id", "evidence_status", "document_date", "extraction_method") if r[key] is not None}
+                        for r in segment_rows}}
+        if settings is not None:
+            for segment_id, layout in _source_layout(settings, stored_path, content_hash, segments).items():
+                metadata["segments"][segment_id]["layout"] = layout
         asset_rows = conn.execute(
             "SELECT asset_id, photo_locator_json, caption_candidate, width, height, scope, approved_for_external_use "
             "FROM assets WHERE source_id=? AND status='ready' AND deleted_at IS NULL" + run_sql,
@@ -60,8 +84,44 @@ def build_sources(conn: Connection, session_id: str, selected_source_ids: list[s
         result.append(SourceIn(source_id=row["source_id"], source_version=source_version, kind=row["kind"],
                                name=name, parse_status=parse_status, segments=segments,
                                asset_ids=assets, origin_kind=row["origin_kind"], asset_locators=asset_locators,
-                               asset_descriptions=asset_descriptions))
+                               asset_descriptions=asset_descriptions, metadata=metadata))
     return result
+
+
+def _source_layout(settings: Settings, stored_path: str | None, content_hash: str | None,
+                   segments: list[SegmentIn]) -> dict[str, dict]:
+    """Match the selected file version and unique text on the same slide.
+
+    Coordinates are context, not new evidence. Unselected boxes, duplicate
+    matches, changed files and unsupported layouts supply no extra context.
+    """
+    if not stored_path or not content_hash or Path(stored_path).suffix.lower() != ".pptx":
+        return {}
+    try:
+        root = settings.private_runs_dir.resolve()
+        path = (root / stored_path).resolve()
+        if not path.is_relative_to(root) or path.stat().st_size > settings.max_file_bytes:
+            return {}
+        with path.open("rb") as stream:
+            data = stream.read(settings.max_file_bytes + 1)
+        if len(data) > settings.max_file_bytes or hashlib.sha256(data).hexdigest() != content_hash:
+            return {}
+        from app.parsers.office import pptx_text_layout
+        matches: dict[tuple, list[dict]] = {}
+        for item in pptx_text_layout(data):
+            key = (item["layout"]["slide"], " ".join(item["text"].split()))
+            matches.setdefault(key, []).append(item["layout"])
+        result = {}
+        for segment in segments:
+            slide = segment.locator.get("slide")
+            if type(slide) is not int or slide <= 0:
+                continue
+            options = matches.get((slide, " ".join(segment.text.split())), [])
+            if len(options) == 1:
+                result[segment.segment_id] = options[0]
+        return result
+    except (OSError, ValueError):
+        return {}
 
 
 def photo_locator(raw: str | None) -> dict[str, int]:

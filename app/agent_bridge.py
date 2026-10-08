@@ -47,6 +47,8 @@ class SourceIn:
     asset_locators: dict[str, dict[str, int]] = field(default_factory=dict)  # 선택 사진의 원본 쪽수만, 파일 경로 제외
     # 서버가 전달하는 배치 후보. 회사 사실이 아니며 공개 허가/선택 범위는 저장·승인 때도 재확인한다.
     asset_descriptions: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # 선택한 버전/추출 구간의 메타. 날짜는 사실의 기준일·현재성 보증이 아니다.
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

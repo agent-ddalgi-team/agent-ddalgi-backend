@@ -307,6 +307,9 @@ def run_export_job(settings: Settings, session_id: str, job_id: str, export_id: 
             if row["status"] == "failed":
                 return  # 확정된 실패는 늦은 콜백으로 되살리지 않는다. 새 키 요청만 새 행/명시적 재시도를 만든다.
             jobs.set_progress(conn, job_id, "publishing", "승인 산출물을 확인하는 중")
+            jobs.record_trace(conn, job_id, "export_input", {"actual_mode": "approved_artifact",
+                "document_id": row["document_id"], "document_revision": row["document_revision"],
+                "input_revision": row["input_revision"], "format": row["format"], "ai_called": False})
             if row["status"] != "ready":
                 conn.execute("UPDATE exports SET status='generating', updated_at=? WHERE export_id=?", (to_iso(now()), export_id))
             verdict = publish(conn, settings, conn.execute("SELECT * FROM exports WHERE export_id=?", (export_id,)).fetchone())
