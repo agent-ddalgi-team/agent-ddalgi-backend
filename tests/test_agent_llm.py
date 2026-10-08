@@ -7281,6 +7281,69 @@ def test_preflight_issue_uses_korean_label_and_action_without_weakening_blocker(
     assert "lead_time" not in issue.message and issue.severity == "blocker"
 
 
+@pytest.mark.parametrize("source,value,detail", [
+    ("자격관리번호 2019-001545, 기재일 2021.03.20", "2019년 자격 취득", "연도 2019년"),
+    ("만료일 2027.02.15", "만료일 2027년 2월 16일", "날짜 2027-02-16"),
+    ("수량 8개", "수량 9개", "수치·단위 9개"),
+    ("금액 9001원", "금액 9002원", "금액 9002원"),
+    ("금액 1200원", "금액 -1200원", "금액 -1200원"),
+    ("금액 9001원", "금액 -9002원", "금액 -9002원"),
+    ("비율 10.21%", "비율 -10.22%", "비율 -10.22%"),
+    ("비율 10.21%", "비율 10.22%", "비율 10.22%"),
+    ("약 350업체", "350업체", "수치·단위 350업체(정확한 수)"),
+    ("규격 9100", "규격 9200", "수치 9200"),
+    ("길이 200mm", "길이 200cm", "수치·단위 200cm"),
+])
+def test_preflight_numeric_issue_explains_gap_and_survives_final_validation(source, value, detail):
+    reference = EvidenceRef(source_id="src_diagnostic", source_version=2, segment_id="seg_diagnostic",
+                            locator={"paragraph": 1}, excerpt=source)
+    fact = Fact(fact_id="fact_diagnostic", field_key="history", value=value,
+                status="needs_confirmation", evidence_refs=[reference])
+    before = fact.model_copy(deep=True)
+    issue = next(i for i in llm.LlmAgent._issues([fact]) if i.fact_ids == [fact.fact_id])
+    assert detail in issue.message and "인용 원문에서 확인되지 않는" in issue.message
+    if detail.startswith(("금액", "비율")):
+        assert "수치·단위" not in issue.message
+    assert "원문을 확인" in issue.message and "선택 항목이면" in issue.message
+    assert issue.code == "UNSUPPORTED_CLAIM" and issue.severity == "blocker" and issue.status == "open"
+    assert issue.source_ids == [reference.source_id] and fact == before
+    ctx = validation.Context({reference.segment_id: source}, {reference.segment_id: reference.source_id},
+                             {}, set(), refs.SessionRefs({reference.segment_id}, {reference.source_id: 2},
+                                                       set(), {fact.fact_id}),
+                             {fact.fact_id: fact}, [issue])
+    carried = validation.preflight_conflicts(ctx)
+    assert len(carried) == 1 and carried[0].message == issue.message
+    assert carried[0].fact_ids == [fact.fact_id] and carried[0].severity == "blocker"
+    assert issue.code in validation.NON_ACKNOWLEDGEABLE
+
+
+def test_preflight_semantic_uncertainty_does_not_invent_numeric_failure_or_change_facts():
+    reference = EvidenceRef(source_id="src_semantic", source_version=1, segment_id="seg_semantic",
+                            locator={"paragraph": 1}, excerpt="試料 X 내식성 240hr, 적용 공정 확인 필요")
+    fact = Fact(fact_id="fact_semantic", field_key="technology", value="시험시편 X 내식성 240시간",
+                status="needs_confirmation", evidence_refs=[reference])
+    before = fact.model_copy(deep=True)
+    issue = next(i for i in llm.LlmAgent._issues([fact]) if i.fact_ids == [fact.fact_id])
+    assert "인용 원문에서 확인되지 않는" not in issue.message
+    assert "적용 조건이나 근거" in issue.message and issue.severity == "blocker" and fact == before
+    supported = fact.model_copy(update={"status": "supported"})
+    assert not any(i.fact_ids == [fact.fact_id] and i.code == "UNSUPPORTED_CLAIM"
+                   for i in llm.LlmAgent._issues([supported]))
+
+
+def test_preflight_numeric_message_is_bounded_and_never_uses_another_facts_evidence():
+    reference = EvidenceRef(source_id="src_short", source_version=1, segment_id="seg_short",
+                            locator={"paragraph": 1}, excerpt="대상 품목 A")
+    fact = Fact(fact_id="fact_missing_years", field_key="history",
+                value="2010년, 2011년, 2012년, 2013년, 2014년", status="needs_confirmation",
+                evidence_refs=[reference])
+    unrelated = Fact(fact_id="fact_unrelated", field_key="history", value="2010년의 별도 사건",
+                     status="supported", evidence_refs=[reference.model_copy(update={"excerpt": "2010년의 별도 사건"})])
+    issue = next(i for i in llm.LlmAgent._issues([unrelated, fact]) if i.fact_ids == [fact.fact_id])
+    assert "연도 2010년" in issue.message and "외 2개" in issue.message and len(issue.message) < 300
+    assert "2013년" not in issue.message and "2014년" not in issue.message
+
+
 def test_brochure_schema_allows_complete_points_with_separate_page_budget():
     schema = llm._BrochurePlan.model_json_schema()['$defs']
     heading = schema['_BrochureHeading']['properties']['text']['maxLength']

@@ -1655,6 +1655,39 @@ class DraftConfirmationGraph:
             return True
 
 
+def _numeric_evidence_summary(fact: Fact) -> str:
+    """Explain the existing numeric guard; never infer a correction or change status."""
+    from app.services.validation import numeric_evidence_tokens
+    missing = numeric_evidence_tokens(fact.value or "") - numeric_evidence_tokens(
+        " ".join(ref.excerpt for ref in fact.evidence_refs))
+    # Prefer the typed value over the same bare number; preserve signs and units.
+    typed_numbers = {value.split("|", 1)[0] for kind, value in missing if kind != "number"}
+    order = {"year": 0, "date": 1, "currency": 2, "percent": 3, "quantity": 4, "number": 5}
+    details = []
+    for kind, value in sorted(missing, key=lambda token: (order[token[0]], token[1])):
+        if kind == "number" and value in typed_numbers:
+            continue
+        if kind == "quantity":
+            number, unit = value.split("|", 1)
+            if (unit == "원" and any(k == "currency" and v.lstrip("+-") == number for k, v in missing)
+                    or unit == "%" and any(k == "percent" and v.lstrip("+-") == number for k, v in missing)):
+                continue
+            if unit == "approximate_organizations":
+                display = f"약 {number}업체"
+            elif unit == "exact_organizations":
+                display = f"{number}업체(정확한 수)"
+            else:
+                display = number + unit
+            details.append("수치·단위 " + display[:60])
+        else:
+            label, suffix = {"year": ("연도", "년"), "date": ("날짜", ""),
+                             "currency": ("금액", "원"), "percent": ("비율", "%"),
+                             "number": ("수치", "")}[kind]
+            details.append(f"{label} {value[:60]}{suffix}")
+    extra = f" 외 {len(details) - 3}개" if len(details) > 3 else ""
+    return ", ".join(details[:3]) + extra
+
+
 class LlmAgent:
     def __init__(self, request_json: JsonRequester, *, max_input_chars: int = _LEGACY_INPUT_LIMIT,
                  settings: Settings | None = None, max_review_input_chars: int | None = None,
@@ -1887,9 +1920,15 @@ class LlmAgent:
                 add("VALUE_CONFLICT", "blocker", f"{label} 내용이 자료마다 다릅니다. ‘사실과 근거 자세히 보기’에서 각각의 원문과 적용 조건을 비교해 주세요.", [fact])
             elif fact.status == "needs_confirmation":
                 # 불확실한 사실을 확인 클릭만으로 승인 가능한 경고로 낮추지 않는다.
-                message = ("자료에 나온 이름이 이번 소개서의 회사명인지 확인이 필요합니다. 원문의 회사명 항목·국문/영문 표기·사업장 주소를 비교해 주세요."
-                           if fact.field_key == "company_name" else
-                           f"{label}을 확정해서 쓰기에는 적용 조건이나 근거가 충분하지 않습니다. ‘사실과 근거 자세히 보기’에서 원문을 확인하고, 필요한 자료를 보완하거나 이번 문서에서 해당 내용을 제외해 주세요.")
+                numeric = _numeric_evidence_summary(fact)
+                action = ("‘사실과 근거 자세히 보기’에서 원문을 확인하고 필요한 자료를 보완해 주세요. "
+                          "선택 항목이면 이번 문서에서 해당 내용을 제외할 수 있습니다.")
+                if fact.field_key == "company_name":
+                    message = "자료에 나온 이름이 이번 소개서의 회사명인지 확인이 필요합니다. 원문의 회사명 항목·국문/영문 표기·사업장 주소를 비교해 주세요."
+                elif numeric:
+                    message = f"{label} 내용에 인용 원문에서 확인되지 않는 수치가 있습니다: {numeric}. " + action
+                else:
+                    message = f"{label} 내용은 적용 조건이나 근거를 추가로 확인해야 합니다. " + action
                 add("UNSUPPORTED_CLAIM", "blocker", message, [fact])
         for keys, label in ((('company_name',), "회사명"), (_BUSINESS_KEYS, "주요 사업/공정 설명")):
             group = [fact for fact in facts if fact.field_key in keys]
@@ -2242,7 +2281,7 @@ brief는 작성 조건이며 회사 사실이 아니다. facts·사진 캡션 �
 가능하면 요청 쪽수로 표지→회사/사업→제품→기술→업무 흐름→품질/인증→사례→상담을 구성하되, 목적·강조·제외 요청에 맞춰 재구성한다.
 부족한 내용은 지어내거나 같은 문장을 반복해 쪽수를 채우지 않는다. 자료가 부족하면 더 적은 쪽을 반환한다.
 heading은 페이지의 구체 주제를 최대 40자로, lead는 핵심 설명을 최대 160자로 작성한다. points는 0~4개, 각각 최대 160자다.
-총 글자수는 페이지당 600자 이내. 문장은 축약해도 품목·수량·단위·범위·예외·시점·대기 상태를 삭제하지 않는다.
+총 글자수는 페이지당 600자 이내. 문장은 축약해도 품목·수치·단위·범위·예외·시점·대기 상태를 삭제하지 않는다.
 글자 한도에 맞추려고 문장 끝을 잘라내지 않는다. 긴 항목은 주장 자체를 줄여 완결된 문장으로 다시 쓰거나 여러 point로 나눈다.
 모든 항목을 억지로 한 페이지에 넣지 않는다. 조건까지 쓸 공간이 없으면 다른 페이지로 옮기거나 해당 주장을 통째로 제외한다.
 부정·미정·검토 대기 조건은 문장 앞부분에 우선 배치한다. '뜻하', '미정이', '未'처럼 중간에 끝난 문장을 반환하지 않는다.
