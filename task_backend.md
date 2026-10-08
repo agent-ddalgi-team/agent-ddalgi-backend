@@ -1751,3 +1751,16 @@
 - 프론트 test/supplement-required-ui-20261008에 origin/develop e6e0868을 병합한 로컬 커밋은5537e86이다. 병합으로 제품 파일 내용이 추가 변경되지 않았으므로 직전647ae9a 기준 빌드·PDF36/DOCX39묶음 결과를 유지하며 이번에 다시 실행했다고 보고하지 않는다. 미추적 .claude/는 제외한다.
 - 새로 유입된 test_agent_llm.py의8077행 이후 평가 도구 테스트와 test_be07.py의 실제 저장 렌더 비교/단계 재개2개를 선택 실행했다. PYTHON_DOTENV_DISABLED=1/BE09_LIVE_AI=0·임시 자료 사용, **38 passed / 1 warning / 실패0,13.58초**다. Chrome PDF와 DOCX 보존 경로를 포함하며 유료 호출·사용자 시연 DB 변경은 없다. 경고 원인을 이번에 따로 판정하지 않았다.
 - 직전 전체2,116통과 결과는 병합 전 기준이며 이번38건은 추가 도구 검수다. 새 전체 회귀 결과로 합산하지 않는다. 최신 기준 diff·충돌 표시·비밀/로컬 산출물 제외를 확인하고 통합을 로컬 커밋한다. 원격push/PR/merge는 아직 하지 않았다. 다음 공유 대상은 백엔드test, 프론트develop이며 BE-10 일반 의미 품질 진행중 상태는 유지한다.
+
+<a id="demo-format-parity-20261008"></a>
+
+### 2026-10-08 병합 후 최근 시연 문서의 PDF/DOCX 대조
+
+- 사용자 요청으로 두 작업 브랜치를push하고 백엔드PR44(test), 프론트PR24(develop)를 생성했다. 이후 사용자의 병합 완료 안내에 따라 GitHub 상태MERGED/백엔드f6d95d9·프론트647578a를 확인하고 로컬test/develop을 fast-forward했다. 프론트 미추적.claude/는 그대로 보존한다. 후속 검수 기록은 qa/demo-format-parity-20261008에 남긴다.
+- 시연 DB는 읽기 전용mode=ro로 열었다. 최근 문서doc_672640f17ee2441c/revision1/input22의 저장된 실제gpt-6-luna 내용검증passed/Issue0과 기존PDF배치passed7쪽을 확인했다. queued/running Job0, DB quick_check ok, 백엔드openapi와 프론트HTTP200이다. 내용검증Job succeeded와 결과passed를 구분해서 확인했으며 새 유료 호출은 하지 않았다.
+- 화면 세션 조작 도구가 없어 사용자 세션의API/쿠키를 우회하지 않았다. 기존documents.get_current/build_snapshot으로 같은 문서를 고정하고 실제제품render 함수를Chrome PDF/LibreOffice DOCX에 사용했다. 결과는 시스템Temp/ddalgi-format-audit-121xm6ku이며 원본 시연DB에layout_checks/approval/export 기록을 추가하지 않았다. 따라서 이번 통과는 스냅샷 출력 검수이고 화면에서DOCX 검사 완료로 저장된 것은 아니다.
+- PDF와DOCX 각각 **실제7쪽/layout_ok=true/필수not_checked0/findings0**, 사진4개가 유효한해시/자산으로 전달되고DOCX drawing4개다. 사진 공개허가검사ok이며 허가를 새로 변경하지 않았다. 예상헤더/제목/본문/사진 설명 문구를정규화해PDF텍스트·DOCX변환PDF텍스트·DOCX XML에대조한누락은모두0건이다. 순서·근거·회사 사실을새로의미검증한시험으로확대하지않는다.
+- 실제PDF와DOCX변환PDF의사용글꼴은Pretendard Regular/Bold다. DOCX에fontTable Pretendard·Regular/Bold odttf와스타일폰트를확인했고OOXML GUID 마스크를복원한전체바이트SHA256이제품템플릿의두TTF와각각일치했다. 목록의다른기본폰트등록과실제사용폰트를구분했다. 같은서체지만PDF카드/표/색상과DOCX단일열·글자/사진크기는기존설계상차이가있으며동일디자인으로보고하지않는다.
+- 전체7쪽쌍의contact sheet와가장촘촘한3쪽의양쪽PNG를시각확인했다. 검사범위에서잘린글자/겹침/깨진한글·빈쪽은발견하지못했다. 시편조건/원문관계등새AI품질평가나Word엔진검증은미실행이며LibreOffice결과를모든Word환경의쪽수일치로확대하지않는다.
+- 첫임시도구의SnapshotAsset.valid오기는실제ok필드로바로잡았고대조헤더의0시작번호를1시작으로수정했다. 두오류는검사도구오류이며제품결함으로처리하지않는다. 출력재생성없이저장된검수파일로올바른조건을재대조했다. 문서/버전/검증/배치/승인/출력행의전후해시동일·DB quick_check ok를확인했다.
+- 제품코드·프롬프트·프론트·환경·의존성변경이없어전체회귀를반복하지않는다. 자기기록3파일만로컬커밋하며원격push는하지않는다. 이번문서의형식별내용/폰트보존검수는완료이며BE-10/F-08일반품질·Agent상태는유지한다. 사용자최종승인과다운로드는화면에서명시적으로진행할후속이며대신승인하지않았다.

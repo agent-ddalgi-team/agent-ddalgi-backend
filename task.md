@@ -8,7 +8,8 @@
 ## 1. Quick Status
 
 - **2026-10-08 [BE-01~10 / F-08] 전체 백엔드 회귀:** 현재 작업 브랜치2,116통과/10건너뜀/경고3/실패0·제품 추가 수정 없음. 회귀 완료/BE-10 일반품질 진행중 유지. [기록](task_backend.md#backend-full-regression-20261008).
-- **2026-10-08 [BE-10 / F-08] 최신 공유 기준 통합:** 최신test/develop 충돌 없이 반영·추가 평가 도구38건 통과·로컬 통합 완료/원격 공유 후속. [기록](task_backend.md#sharing-base-integration-20261008).
+- **2026-10-08 [BE-10 / F-08] 최신 공유 기준 통합:** 최신test/develop 충돌 없이 반영·추가 평가 도구38건 통과·백엔드PR44/프론트PR24 병합 확인. [기록](task_backend.md#sharing-base-integration-20261008).
+- **2026-10-08 [BE-07·08·10 / F-08] 시연 출력 대조:** 읽기 전용 스냅샷 PDF/DOCX 각7쪽·본문 누락0·사진4개·글꼴 일치 확인/원본 상태 유지·BE-10 일반품질 진행중. [기록](task_backend.md#demo-format-parity-20261008).
 
 - **2026-10-08 [BE-06·07·08·10 / F-08] 오류 복구 최종 검수:** 현재 브랜치 PDF36/DOCX39묶음·각4쪽 승인/다운로드·빌드 통과, 검사 도구 새로고침 대기 보완. 이번 복구 검수 단위 완료/BE-10 일반품질 진행중 유지. [기록](task_backend.md#final-recovery-ui-audit-20261008).
 
