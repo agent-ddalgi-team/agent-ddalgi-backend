@@ -7,6 +7,8 @@
 
 ## 1. Quick Status
 
+- **2026-10-08 [BE-06·10 / F-08] 실제 시연 현황 확인:** 현재 문서v2 내용 통과·미해결0·PDF/DOCX7쪽 배치 통과·승인/출력 미실행 확인·BE-10 진행중. [기록](task_backend.md#live-session-recovery-audit-20261008).
+
 - **2026-10-08 [BE-06·10 / F-08] 복구 통합 회귀:** PDF36묶음·DOCX35묶음·백엔드7건 통과·BE-10 진행중. [기록](task_backend.md#recovery-integration-20261008).
 
 - **2026-10-08 [BE-06·10 / F-08] 연결된 필수 문구 복구:** 전후 비교·단일 사실 본문 한정·동일 요청 복구·격리 브라우저28묶음 통과·BE-10 진행중. [기록](task_backend.md#required-text-restoration-20261008).
