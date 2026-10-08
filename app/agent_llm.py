@@ -648,12 +648,20 @@ def _extraction_wire_request(payload: dict, schema: dict) -> tuple[dict, dict, d
     return wire, wire_schema, references
 
 
-def _restore_extraction_evidence(result: dict, references: dict[int, dict]) -> dict:
+def _restore_extraction_evidence(result: dict, references: dict[int, dict], *,
+                                 per_fact_status: bool = False) -> dict:
     """임의 인용을 보정하지 않는다. 유효한 참조에 원문 구간 전체를 정확히 연결한다."""
     restored = copy.deepcopy(result)
     try:
         for item in restored.values():
+            if per_fact_status and (not isinstance(item, dict) or set(item) != {"facts"}
+                                    or not isinstance(item["facts"], list)):
+                raise _invalid()
             for fact in item["facts"]:
+                if per_fact_status and (not isinstance(fact, dict) or set(fact) != {"text", "status", "evidence"}
+                                        or type(fact["status"]) is not str
+                                        or fact["status"] not in {"supported", "needs_confirmation", "conflict"}):
+                    raise _invalid()
                 if not isinstance(fact["evidence"], list):
                     raise _invalid()
                 refs = []
@@ -663,6 +671,10 @@ def _restore_extraction_evidence(result: dict, references: dict[int, dict]) -> d
                         raise _invalid()
                     refs.append(copy.deepcopy(references[ref["unit_id"]]))
                 fact["evidence"] = refs
+            if per_fact_status:
+                statuses = [fact["status"] for fact in item["facts"]]
+                item["status"] = ("not_found" if not statuses else "conflict" if "conflict" in statuses
+                                  else "needs_confirmation" if "needs_confirmation" in statuses else "supported")
     except (KeyError, TypeError, AttributeError):
         raise _invalid() from None
     # 14개 항목·상태·사실 개수·선택 자료·원문 일치 검사는 기존 추출 경로에서 계속 수행한다.
@@ -757,7 +769,8 @@ class OpenAIRequester:
         started, response, error, failure_reason = time.monotonic(), None, None, "request_failed"
         try:
             references, fact_aliases = None, None
-            if schema_name == legacy.MODEL_SCHEMA_NAME and schema == legacy.build_model_output_schema():
+            per_fact_status = schema == legacy.build_model_output_schema(per_fact_status=True)
+            if schema_name == legacy.MODEL_SCHEMA_NAME and (per_fact_status or schema == legacy.build_model_output_schema()):
                 payload, schema, references = _extraction_wire_request(payload, schema)
             elif schema_name == "draft_sections" and payload.get("prompt_version") == "editorial_v2":
                 payload, schema, fact_aliases = _editorial_wire_request(payload, schema)
@@ -780,7 +793,7 @@ class OpenAIRequester:
                 )
             result = self._decode(response)
             if references is not None:
-                result = _restore_extraction_evidence(result, references)
+                result = _restore_extraction_evidence(result, references, per_fact_status=per_fact_status)
             if fact_aliases is not None:
                 result = _map_editorial_fact_ids(result, fact_aliases)
         except RateLimitError as exc:
@@ -1691,11 +1704,12 @@ def _numeric_evidence_summary(fact: Fact) -> str:
 class LlmAgent:
     def __init__(self, request_json: JsonRequester, *, max_input_chars: int = _LEGACY_INPUT_LIMIT,
                  settings: Settings | None = None, max_review_input_chars: int | None = None,
-                 legacy_draft: bool = False):
+                 legacy_draft: bool = False, per_fact_status: bool = False):
         self.request_json = request_json
         self.max_input_chars = max_input_chars
         # Baseline evaluator only. create_bridge always uses the editorial production path.
         self.legacy_draft = legacy_draft
+        self.per_fact_status = per_fact_status
         if max_review_input_chars is not None and (type(max_review_input_chars) is not int
                 or not 1 <= max_review_input_chars <= _MAX_REVIEW_INPUT_CHARS):
             raise ValueError("내용 검증 입력 상한은 1~400,000자의 정수여야 합니다.")
@@ -1777,13 +1791,14 @@ class LlmAgent:
 
             info = legacy.extract_company_info(
                 {"schema_version": "1.0", "company_name_hint": request.brief.target_company, "source_units": index.units},
-                request_json=extract_request,
+                request_json=extract_request, per_fact_status=self.per_fact_status,
             )
             facts = self._facts(info, index)
         except legacy.AgentError as exc:
             # 검사 규칙 이름만 기록한다. details에는 원문 인용이 들어갈 수 있어 출력하지 않는다.
             rules = {"company_info_keys", "field_shape", "status_value", "status_fact_count",
-                     "empty_value", "evidence_empty", "evidence_location_unknown", "quote_not_in_source"}
+                     "empty_value", "evidence_empty", "evidence_location_unknown", "quote_not_in_source",
+                     "fact_status_value", "field_status_summary", "conflict_candidates"}
             logger.warning("AI extraction rejected: rule=%s",
                            exc.rule if exc.rule in rules else "other")
             raise _invalid() from None
@@ -1873,6 +1888,7 @@ class LlmAgent:
         for key in legacy.COMPANY_INFO_KEYS:
             field_info = info[key]
             status, items = field_info["status"], field_info["facts"]
+            aliases_resolved = False
             # 사용자 확인 별칭은 이름의 동일성에만 적용한다. 원문 인용·출처는 그대로 보존한다.
             if key == "company_name" and items and status in {"needs_confirmation", "conflict"}:
                 groups = [company_name_aliases(item["text"]) for item in items]
@@ -1881,9 +1897,10 @@ class LlmAgent:
                     if all(refs_for_item and any(item["text"] in ref.excerpt for ref in refs_for_item)
                            for item, refs_for_item in zip(items, refs)):
                         status = "supported"
+                        aliases_resolved = True
             if status == "not_found":
                 result.append(Fact(fact_id=f"{prefix}_{key}", field_key=key, value=None, status="missing"))
-            elif status == "conflict":
+            elif status == "conflict" and not any("status" in item for item in items):
                 alternatives, refs = [], []
                 for item in items:
                     candidate_refs = [index.restore(ev) for ev in item["evidence"]]
@@ -1893,10 +1910,22 @@ class LlmAgent:
                 result.append(Fact(fact_id=f"{prefix}_{key}", field_key=key, value=None, status="conflict",
                                    alternatives=alternatives, evidence_refs=_unique_refs(refs)))
             else:
+                conflicting = [] if aliases_resolved else [item for item in items if item.get("status") == "conflict"]
+                if conflicting:
+                    alternatives, conflict_refs = [], []
+                    for item in conflicting:
+                        candidate_refs = [index.restore(ev) for ev in item["evidence"]]
+                        conflict_refs.extend(candidate_refs)
+                        alternatives.append({"value": item["text"],
+                                             "evidence_refs": [ref.model_dump() for ref in candidate_refs]})
+                    result.append(Fact(fact_id=f"{prefix}_{key}", field_key=key, value=None, status="conflict",
+                                       alternatives=alternatives, evidence_refs=_unique_refs(conflict_refs)))
                 for item in items:
+                    item_status = "supported" if aliases_resolved else item.get("status", status)
+                    if item_status == "conflict":
+                        continue
                     refs = [index.restore(ev) for ev in item["evidence"]]
-                    item_status = status
-                    if status == "supported" and (numeric_evidence_tokens(item["text"]) -
+                    if item_status == "supported" and (numeric_evidence_tokens(item["text"]) -
                             numeric_evidence_tokens(" ".join(ref.excerpt for ref in refs))):
                         # Preserve the extracted claim and citation, but never present ungrounded numbers as supported.
                         item_status = "needs_confirmation"
@@ -2806,4 +2835,4 @@ def create_bridge(settings: Settings) -> LlmAgent:
     if isinstance(requester.ledger, TrialLedger):
         requester.ledger.validate_configuration(options)
     return LlmAgent(requester, max_input_chars=options.max_input_chars, settings=settings,
-                    max_review_input_chars=_review_input_limit())
+                    max_review_input_chars=_review_input_limit(), per_fact_status=True)

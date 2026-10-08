@@ -1739,14 +1739,19 @@ def extraction(payload):
     return result
 
 
-def extraction_wire_result(result, payload):
+def extraction_wire_result(result, payload, schema=None):
     """테스트 SDK 대역은 실제 호출의 구간 참조 형식으로 응답한다."""
     result = copy.deepcopy(result)
+    per_fact_status = schema is not None and "status" in schema["$defs"]["fact"]["properties"]
     for item in result.values():
         for fact in item["facts"]:
+            if per_fact_status:
+                fact["status"] = item["status"]
             fact["evidence"] = [{"unit_id": next(u["unit_id"] for u in payload["source_units"]
                 if (u["source_id"], u["locator"]) == (ref["source_id"], ref["locator"]))}
                 for ref in fact["evidence"]]
+        if per_fact_status:
+            item.pop("status")
     return result
 
 
@@ -4840,6 +4845,99 @@ def fake_sdk(monkeypatch, *, response=None, error=None):
     return calls
 
 
+@pytest.mark.parametrize("scenario", ["mixed", "numeric", "conflict", "duplicates"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_sdk_per_fact_status_keeps_clear_facts_separate_and_checks_each_evidence(monkeypatch, scenario, reverse):
+    texts = ["대표이사: 홍길동", "연매출 40억, 기준 시점 확인 필요", "전화: 02-123-4567",
+             "자격관리번호 2019-001545, 기재일 2021.03.20", "동일 기준 수량 4개", "동일 기준 수량 6개"]
+    source = SourceIn("src_per_fact", 2, "company", "가상 개별 사실 자료", "complete",
+                      [SegmentIn(f"seg_per_fact_{n}", {"paragraph": n}, text) for n, text in enumerate(texts, 1)])
+    request = AnalyzeRequest("ses_per_fact", 1, BRIEF, [source])
+    before_request = copy.deepcopy(request)
+    records = [{"text": texts[0], "status": "supported", "evidence": [{"unit_id": 1}]},
+               {"text": texts[1], "status": "needs_confirmation", "evidence": [{"unit_id": 2}]},
+               {"text": texts[2], "status": "supported", "evidence": [{"unit_id": 3}]}]
+    if scenario == "numeric":
+        records.append({"text": "2019년 자격 취득", "status": "supported", "evidence": [{"unit_id": 4}]})
+    elif scenario == "conflict":
+        records.extend({"text": texts[n - 1], "status": "conflict", "evidence": [{"unit_id": n}]} for n in (5, 6))
+    elif scenario == "duplicates":
+        records.extend(copy.deepcopy(records[:2]))
+    if reverse:
+        records.reverse()
+    body = {key: {"facts": []} for key in legacy.COMPANY_INFO_KEYS}
+    body["other_info"]["facts"] = records
+    before_body = copy.deepcopy(body)
+    def respond(**kwargs):
+        schema = kwargs["text"]["format"]["schema"]
+        assert kwargs["text"]["format"]["strict"] is True
+        assert set(schema["$defs"]["field"]["properties"]) == {"facts"}
+        assert set(schema["$defs"]["fact"]["required"]) == {"text", "evidence", "status"}
+        assert schema["$defs"]["fact"]["properties"]["status"]["enum"] == ["supported", "needs_confirmation", "conflict"]
+        return metered_response(output_text=json.dumps(body, ensure_ascii=False))
+    calls = fake_sdk(monkeypatch, response=respond)
+    agent = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env())), per_fact_status=True)
+    result = agent.analyze(request)
+    selected = [f for f in result.facts if f.field_key == "other_info"]
+    assert request == before_request and body == before_body and validate_analyze(result, [source]) is None
+    assert len([event for event, _ in calls if event == "response"]) == 1
+    clear = [f for f in selected if f.status == "supported"]
+    assert {f.value for f in clear} == {texts[0], texts[2]} and len(clear) == 2
+    assert not any(i.code == "UNSUPPORTED_CLAIM" and set(i.fact_ids) & {f.fact_id for f in clear} for i in result.issues)
+    uncertain = [f for f in selected if f.status == "needs_confirmation"]
+    assert sum(f.value == texts[1] for f in uncertain) == (2 if scenario == "duplicates" else 1)
+    if scenario == "numeric":
+        numeric = next(f for f in selected if f.value == "2019년 자격 취득")
+        assert numeric.status == "needs_confirmation"
+        assert any(numeric.fact_id in i.fact_ids and "연도 2019년" in i.message for i in result.issues)
+    conflicts = [f for f in selected if f.status == "conflict"]
+    assert len(conflicts) == (1 if scenario == "conflict" else 0)
+    if conflicts:
+        assert {candidate["value"] for candidate in conflicts[0].alternatives} == {texts[4], texts[5]}
+        assert any(i.code == "VALUE_CONFLICT" and i.fact_ids == [conflicts[0].fact_id] for i in result.issues)
+    for fact in selected:
+        for ref in fact.evidence_refs:
+            original = next(seg for seg in source.segments if seg.segment_id == ref.segment_id)
+            assert ref.excerpt == original.text and ref.locator == original.locator and ref.source_version == 2
+
+
+@pytest.mark.parametrize("fault", ["missing_status", "unknown_status", "boolean_status", "not_found_fact",
+                                    "extra_field_status", "unknown_unit", "boolean_unit", "single_conflict"])
+def test_sdk_per_fact_status_rejects_malformed_status_and_references_without_retry(monkeypatch, fault):
+    source = SourceIn("src_status", 1, "company", "가상 상태 검사", "complete",
+                      [SegmentIn("seg_status", {"paragraph": 1}, "대표 홍길동")])
+    body = {key: {"facts": []} for key in legacy.COMPANY_INFO_KEYS}
+    item = {"text": "대표 홍길동", "status": "supported", "evidence": [{"unit_id": 1}]}
+    body["other_info"]["facts"] = [item]
+    if fault == "missing_status": item.pop("status")
+    elif fault == "unknown_status": item["status"] = "approved"
+    elif fault == "boolean_status": item["status"] = True
+    elif fault == "not_found_fact": item["status"] = "not_found"
+    elif fault == "extra_field_status": body["other_info"]["status"] = "supported"
+    elif fault == "unknown_unit": item["evidence"] = [{"unit_id": 2}]
+    elif fault == "boolean_unit": item["evidence"] = [{"unit_id": True}]
+    elif fault == "single_conflict": item["status"] = "conflict"
+    before = copy.deepcopy(body)
+    calls = fake_sdk(monkeypatch, response=metered_response(output_text=json.dumps(body, ensure_ascii=False)))
+    agent = llm.LlmAgent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env())), per_fact_status=True)
+    with pytest.raises(AgentError) as error:
+        agent.analyze(AnalyzeRequest("ses_status", 1, BRIEF, [source]))
+    assert error.value.code == "AGENT_OUTPUT_INVALID" and not error.value.retryable and body == before
+    assert len([event for event, _ in calls if event == "response"]) == 1
+
+
+def test_production_bridge_enables_per_fact_status_and_legacy_schema_stays_unchanged(tmp_path, monkeypatch):
+    for key, value in config_env().items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(llm, "_trial", llm.TrialLedger())
+    settings = llm.Settings(private_runs_dir=tmp_path, db_path=tmp_path / "unused.sqlite3", agent_mode="llm")
+    bridge = llm.create_bridge(settings)
+    assert bridge.per_fact_status is True and not settings.db_path.exists()
+    schema = legacy.build_model_output_schema()
+    assert set(schema["$defs"]["field"]["properties"]) == {"status", "facts"}
+    assert set(schema["$defs"]["fact"]["required"]) == {"text", "evidence"}
+
+
 def test_sdk_extraction_selects_references_and_preserves_exact_source_text(monkeypatch):
     request = AnalyzeRequest("ses_test", 2, BRIEF, sources())
     request.sources[0].segments[0].text += "\n원문  공백\t유지: 2026\u00a0년 / OCR오타"
@@ -4850,7 +4948,7 @@ def test_sdk_extraction_selects_references_and_preserves_exact_source_text(monke
         evidence_schema = kwargs["text"]["format"]["schema"]["$defs"]["evidence"]
         assert evidence_schema["properties"] == {"unit_id": {"type": "integer", "enum": [1, 2, 3]}}
         assert [u["text"] for u in units] == [seg.text for src in request.sources for seg in src.segments]
-        body = extraction_wire_result(extraction(payload), payload)
+        body = extraction_wire_result(extraction(payload), payload, kwargs["text"]["format"]["schema"])
         assert all(set(ref) == {"unit_id"} for item in body.values()
                    for fact in item["facts"] for ref in fact["evidence"])
         return metered_response(output_text=json.dumps(body, ensure_ascii=False))
@@ -4960,7 +5058,7 @@ def test_sdk_extraction_keeps_mock_products_conditions_and_all_original_referenc
 def test_sdk_extraction_rejects_unknown_or_forged_references_without_retry(monkeypatch, ref):
     def respond(**kwargs):
         payload = json.loads(kwargs["input"])
-        body = extraction_wire_result(extraction(payload), payload)
+        body = extraction_wire_result(extraction(payload), payload, kwargs["text"]["format"]["schema"])
         body["company_name"]["facts"][0]["evidence"] = [ref]
         return metered_response(output_text=json.dumps(body, ensure_ascii=False))
     calls = fake_sdk(monkeypatch, response=respond)
@@ -4977,7 +5075,7 @@ def test_sdk_extraction_rejects_unknown_or_forged_references_without_retry(monke
 def test_sdk_extraction_keeps_legacy_status_and_evidence_checks(monkeypatch):
     def respond(**kwargs):
         payload = json.loads(kwargs["input"])
-        body = extraction_wire_result(extraction(payload), payload)
+        body = extraction_wire_result(extraction(payload), payload, kwargs["text"]["format"]["schema"])
         body["company_name"]["status"] = "not_found"
         return metered_response(output_text=json.dumps(body, ensure_ascii=False))
     fake_sdk(monkeypatch, response=respond)
@@ -5272,7 +5370,7 @@ def run_d04_offline_case(monkeypatch, case_id, *, wrong_lead_time=False):
             # 평가용 이름·기대 상태·정답은 실제 Agent 입력에 섞이지 않는다.
             assert set(payload) == {"company_name_hint", "source_units", "source_origins"}
             assert payload["source_origins"] == {s.source_id: s.origin_kind for s in build_d04_trial_request(case_id).sources}
-            body = extraction_wire_result(d04_fake_extraction(case_id, payload), payload)
+            body = extraction_wire_result(d04_fake_extraction(case_id, payload), payload, kwargs["text"]["format"]["schema"])
         else:
             body = draft_response(payload)
             if wrong_lead_time:
@@ -5813,7 +5911,7 @@ def test_legacy_validation_failure_stops_trial_after_usage_is_recorded(monkeypat
 def test_postprocessing_keeps_guard_and_honors_manual_stop(monkeypatch, phase):
     def respond(**kwargs):
         payload = json.loads(kwargs["input"])
-        body = extraction_wire_result(extraction(payload), payload) if phase == "analyze" else draft_response(payload)
+        body = extraction_wire_result(extraction(payload), payload, kwargs["text"]["format"]["schema"]) if phase == "analyze" else draft_response(payload)
         return metered_response(output_text=json.dumps(body, ensure_ascii=False))
     calls = fake_sdk(monkeypatch, response=respond)
     requester = llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()))
@@ -5848,7 +5946,7 @@ def test_postprocessing_keeps_guard_and_honors_manual_stop(monkeypatch, phase):
 def test_last_successful_result_is_returned_after_postprocessing(monkeypatch):
     def respond(**kwargs):
         payload = json.loads(kwargs["input"])
-        return metered_response(output_text=json.dumps(extraction_wire_result(extraction(payload), payload)))
+        return metered_response(output_text=json.dumps(extraction_wire_result(extraction(payload), payload, kwargs["text"]["format"]["schema"])))
     calls = fake_sdk(monkeypatch, response=respond)
     ledger = llm.TrialLedger(max_calls=1)
     agent = baseline_agent(llm.OpenAIRequester(llm.LlmOptions.from_env(config_env()), ledger=ledger))
@@ -5895,7 +5993,7 @@ def test_interactive_failure_does_not_poison_next_user_request(monkeypatch, fail
             if failure == "usage_missing":
                 return metered_response(usage=None)
         payload = json.loads(kwargs["input"])
-        result = extraction_wire_result(extraction(payload), payload)
+        result = extraction_wire_result(extraction(payload), payload, kwargs["text"]["format"]["schema"])
         if failure == "forged_evidence" and len(attempts) == 1:
             next(f for item in result.values() for f in item["facts"])["evidence"] = [{"unit_id": 99999}]
         return metered_response(output_text=json.dumps(result))
@@ -6022,7 +6120,7 @@ def test_interactive_failed_draft_recovers_without_reanalysis(graph_flow, monkey
         if len(attempts) == 1:
             return metered_response(output_text=json.dumps({"draft_sections": []}))
         payload = json.loads(kwargs["input"])
-        result = (extraction_wire_result(extraction(payload), payload)
+        result = (extraction_wire_result(extraction(payload), payload, kwargs["text"]["format"]["schema"])
                   if attempts[-1] == "company_info" else editorial_response(payload))
         return metered_response(output_text=json.dumps(result))
     fake_sdk(monkeypatch, response=respond)
@@ -6552,7 +6650,7 @@ def test_stopped_trial_preserves_existing_document_through_server(tmp_path, monk
                     facts.append({"text": value, "evidence": [{"source_id": unit["source_id"],
                                   "locator": unit["locator"], "quote": value}]})
                 body[key] = {"status": status, "facts": facts}
-            body = extraction_wire_result(body, payload)
+            body = extraction_wire_result(body, payload, kwargs["text"]["format"]["schema"])
         else:
             body = editorial_response(payload) if "facts" in payload else draft_response(payload)
         return metered_response(output_text=json.dumps(body, ensure_ascii=False))
