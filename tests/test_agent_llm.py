@@ -1986,6 +1986,19 @@ def test_extract_restores_source_version_location_and_keeps_conditions():
     ("예시 수량 1200개", "예시 수량 1,200개", "supported"),
     ("만료일 2027.02.15", "만료일 2027년 2월 15일", "supported"),
     ("Issue date: 25 September 2025", "발행일 2025년 9월 25일", "supported"),
+    ("AS9100 - 25 September 2019", "AS9100 원승인일은 2019년 9월 25일이다.", "supported"),
+    ("ISO 9001 - 25 September 2019", "ISO 9001 원승인일은 2019년 9월 25일이다.", "supported"),
+    ("ISO 9001: Original issue date: 25 September 2019", "ISO 9001 원발행일은 2019년 9월 25일이다.", "supported"),
+    ("ISO 9001 - 25 September 2019", "ISO 9001 원승인일은 2019년 9월 26일이다.", "needs_confirmation"),
+    ("ISO 9001 - 25 September 2019", "ISO 9002 원승인일은 2019년 9월 25일이다.", "needs_confirmation"),
+    ("금액 9001원", "금액 9001원으로 기재되어 있다.", "supported"),
+    ("금액 9001원", "금액 9002원으로 기재되어 있다.", "needs_confirmation"),
+    ("금액 9001원", "금액 9001원까지 지급한다.", "supported"),
+    ("금액 9001원", "금액 9002원까지 지급한다.", "needs_confirmation"),
+    ("ISO (9001) - 25 September 2019", "ISO (9001) 원승인일은 2019년 9월 25일이다.", "supported"),
+    ("ISO (9001): Original issue date: 25 September 2019", "ISO (9001) 원발행일은 2019년 9월 25일이다.", "supported"),
+    ("금액 9001원", "금액 (9001)원까지 지급한다.", "supported"),
+    ("금액 9001원", "금액 (9002)원까지 지급한다.", "needs_confirmation"),
     ("2017 | 가상 기관 공정 승인", "연혁에는 가상 기관 공정 승인(2017년)이 기재되어 있다.", "supported"),
     ("2017 | 가상 기관 공정 승인", "연혁에는 가상 기관 공정 승인(2017)이 기재되어 있다.", "needs_confirmation"),
     ("2017 | 가상 기관 공정 승인", "가상 기관 공정 승인(2018년)", "needs_confirmation"),
@@ -4852,8 +4865,9 @@ def test_sdk_extraction_selects_references_and_preserves_exact_source_text(monke
 
 
 @pytest.mark.parametrize("include_conditions,split_conditions", [(False, False), (True, False), (True, True)])
+@pytest.mark.parametrize("include_technical_detail", [False, True])
 def test_sdk_extraction_keeps_mock_products_conditions_and_all_original_references(
-        monkeypatch, include_conditions, split_conditions):
+        monkeypatch, include_conditions, split_conditions, include_technical_detail):
     # 기존 가상 원문으로 변환 보존을 검사한다. 기대 응답을 만든 대역이며 모델 품질 평가는 아니다.
     root = Path(__file__).parent / "fixtures" / "ddalgi_mock_bundle_v1"
     originals = {sid: (root / "ingest" / "originals" / f"{sid}.txt").read_text(encoding="utf-8").splitlines()
@@ -4875,6 +4889,16 @@ def test_sdk_extraction_keeps_mock_products_conditions_and_all_original_referenc
             segments_by_line[source_id, line_no] = parts
         selected.append(SourceIn(source_id, 1, "company" if source_id == "MOCK01" else "interview",
                                  "가상 추출 품질 검사", "complete", segments, origin_kind="mock"))
+    if include_technical_detail:
+        # 수치와 뒤쪽 적용 조건의 모든 구간이 변환 과정에서 보존되는지 검사한다. 모델 품질 평가는 아니다.
+        technical_segments = [
+            SegmentIn("seg_technical_subject", {"paragraph": 1}, "가상 공정 X: 알루미늄 시험시편 처리"),
+            SegmentIn("seg_technical_value", {"paragraph": 2}, "내식성(240hr) 시험 수치가 기재되어 있다."),
+            SegmentIn("seg_technical_scope", {"paragraph": 3}, "지정 시험시편에만 적용하며 양산 제품의 성능 보증이 아니다."),
+        ]
+        selected.append(SourceIn("MOCK_TECH", 1, "company", "가상 기술 상세 자료", "complete",
+                                 technical_segments, origin_kind="mock"))
+        segments_by_line["MOCK_TECH", 1] = technical_segments
     request = AnalyzeRequest("ses_extraction_quality", 1, BRIEF, selected)
     before_request = copy.deepcopy(request)
     # 원문의 11개 항목과 추가 조건 4개를 대조하는 기대 목록. SDK 입력에는 넣지 않는다.
@@ -4889,6 +4913,8 @@ def test_sdk_extraction_keeps_mock_products_conditions_and_all_original_referenc
         value = originals[sid][line_no - 1].split(": ", 1)[1]
         values = ["예시 제품 A", "예시 제품 B"] if key == "products_services" else [value]
         records.extend((key, text, sid, line_no) for text in values)
+    if include_technical_detail:
+        records.append(("technology", "가상 공정 X의 알루미늄 시험시편 내식성 240시간은 지정 시험시편에만 적용하며 양산 제품의 성능 보증이 아니다.", "MOCK_TECH", 1))
     def respond(**kwargs):
         payload = json.loads(kwargs["input"])
         assert kwargs["instructions"].startswith(legacy.load_extract_prompt() + "\n서버 source_origins")

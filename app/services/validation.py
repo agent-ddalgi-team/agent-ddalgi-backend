@@ -114,12 +114,16 @@ def _norm(text: str) -> str:
     return " ".join(text.split())
 
 
+# Original approval/issue date labels after standard numbers are not won amounts.
+_WON_UNIT = r"원(?!(?:승인일|발행일))"
+
+
 def quantity_tokens(text: str) -> set[tuple[str, str]]:
     """Literal number/unit pairs; semantic equivalence and unit conversions remain review work."""
     time_aliases = {"hr": "시간", "hrs": "시간", "hour": "시간", "hours": "시간"}
     return {(number.replace(",", ""), time_aliases.get(unit.lower(), unit.lower()))
             for number, unit in re.findall(
-        r"(?<![0-9.])(\d+(?:[.,]\d+)*)\s*(영업일|개월|시간|억원|만원|hours?|hrs?|kg|mm|cm|㎡|m²|%|톤|년|월|일|명|개|대|건|회|원|g|m)(?![A-Za-z])",
+        r"(?<![0-9.])(\d+(?:[.,]\d+)*)\s*(영업일|개월|시간|억원|만원|hours?|hrs?|kg|mm|cm|㎡|m²|%|톤|년|월|일|명|개|대|건|회|" + _WON_UNIT + r"|g|m)(?![A-Za-z])",
         text, re.IGNORECASE)}
 
 
@@ -152,10 +156,10 @@ _TABLE_UNIT = re.compile(
     r"(?P<label>[가-힣A-Za-z][가-힣A-Za-z \t]{0,40})[（(]\s*(?P<unit>원|%)\s*[)）]"
     r"\s*[:：]?\s*(?P<number>[+-]?" + _NUMBER_FORM + r")(?![\d.,])")
 _PARENTHESIZED_UNIT = re.compile(
-    r"[（(](?P<number>[+-]?" + _NUMBER_FORM + r")[)）]\s*(?P<unit>원|%)")
+    r"[（(](?P<number>[+-]?" + _NUMBER_FORM + r")[)）]\s*(?P<unit>" + _WON_UNIT + r"|%)")
 _WON_AMOUNT = re.compile(
     r"(?<![\w.,+-])(?P<sign>[+-]?)(?P<parts>(?:" + _NUMBER_FORM + r"\s*[조억만]\s*)*"
-    r"(?:" + _NUMBER_FORM + r"\s*)?)원(?![A-Za-z])")
+    r"(?:" + _NUMBER_FORM + r"\s*)?)" + _WON_UNIT + r"(?![A-Za-z])")
 _WON_PART = re.compile(r"(?P<number>" + _NUMBER_FORM + r")\s*(?P<scale>[조억만]?)")
 _WON_SCALES = {"조": 10**12, "억": 10**8, "만": 10**4, "": 1}
 
@@ -237,7 +241,7 @@ def numeric_evidence_tokens(text: str) -> set[tuple[str, str]]:
 
     text = organization_count.sub(approximate_organizations, text)
     # Monetary sign is part of the amount, including after exact scale conversion.
-    for amount in re.findall(r"(?<![\d.,A-Za-z])([+-]?" + _NUMBER_FORM + r")\s*원", text):
+    for amount in re.findall(r"(?<![\d.,A-Za-z])([+-]?" + _NUMBER_FORM + r")\s*" + _WON_UNIT, text):
         tokens.add(("currency", amount.replace(',', '').lstrip('+')))
     for amount in re.findall(r"(?<![\d.,A-Za-z])([+-]?" + _NUMBER_FORM + r")\s*%", text):
         tokens.add(("percent", amount.replace(',', '').lstrip('+')))
