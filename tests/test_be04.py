@@ -108,6 +108,13 @@ MULTISOURCE_TIME_CASES = {
     ],
 }
 
+NATURAL_EQUIPMENT_QUALITY_SOURCE = """예시절삭은 소개서 검수에 사용하는 가상 기업으로, 연구용 금속 시편을 가공하고 치수를 검사합니다.
+예시절삭은 2024년 6월 30일 당시 5축 머시닝센터 2대를 운영했습니다. 2026년 6월 30일 기준 같은 종류의 설비는 3대입니다. 설비 수는 해당 기준일의 보유 현황이며 생산량이나 가동률을 뜻하지 않습니다.
+가공에는 5축 동시제어 방식을 사용합니다. 시편의 대응 길이는 알루미늄 최대 120mm, 스테인리스 최대 80mm입니다. 이 범위는 연구용 시편에 한정되며 양산 제품의 가공 보증은 아닙니다.
+치수 검사는 광학 측정 방식으로 수행합니다. 한 연구용 시편의 치수 측정 오차는 0.02mm였으며 모든 제품의 공차를 보증하는 수치는 아닙니다.
+함께 소개된 예시파트너는 별도 회사입니다. 예시파트너의 소개 페이지에는 머시닝센터 12대가 기재되어 있습니다. 이는 예시절삭의 보유 설비가 아닙니다.
+"""
+
 
 def long_table_quality_source(fmt):
     if fmt == "txt":
@@ -1055,6 +1062,26 @@ def test_multisource_time_input_keeps_separate_dates_and_sources(client, monkeyp
         assert all(line in parsed for line in original_text.splitlines())
         assert source.source_version == 1
         assert all(segment.segment_id and segment.locator for segment in source.segments)
+
+
+def test_natural_equipment_input_preserves_company_scope_and_material_limits(client, monkeypatch):
+    captured = []
+    original = MockAgent.analyze
+
+    def observe(self, request):
+        captured.append(request)
+        return original(self, request)
+
+    monkeypatch.setattr(MockAgent, "analyze", observe)
+    brief = dict(BRIEF, target_company="예시절삭", required_fields=["capabilities", "technology"])
+    sid = client.post("/api/v1/sessions", json={"brief": brief}).json()["session_id"]
+    ids = _upload(client, sid, ("natural-equipment.txt", NATURAL_EQUIPMENT_QUALITY_SOURCE.encode()))
+    _preflight(client, sid, _select(client, sid, ids))
+    assert len(captured) == 1 and captured[0].brief.required_fields == brief["required_fields"]
+    source = captured[0].sources[0]
+    assert source.source_id == ids[0] and source.source_version == 1
+    assert [segment.text for segment in source.segments] == NATURAL_EQUIPMENT_QUALITY_SOURCE.splitlines()
+    assert all(segment.segment_id and segment.locator for segment in source.segments)
 
 
 def _layout_pptx(*, duplicate=False, rotated=False, offset=0):
