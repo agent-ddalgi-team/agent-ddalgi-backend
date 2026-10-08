@@ -961,3 +961,72 @@ def test_preflight_passes_pptx_layout_from_selected_version_without_rewriting_ev
             # A foreign session's selected IDs cannot bring their file context in.
             other = _session(api)
             assert preflights.build_sources(conn, other, ids, settings=settings) == []
+
+
+# Held-out layout cases: expected relationships are test data, never prompt input.
+def _pptx_layout_quality_case(case):
+    from pptx import Presentation
+    from pptx.util import Inches
+    prs = Presentation()
+    prs.slide_width, prs.slide_height = Inches(12), Inches(7)
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    company = "기업명: 예시배치기업. 사업: 산업용 표면처리 제품 제조."
+    body_a = "알루미늄 하우징용. 시험 조건: 22도, 48시간. 출하 성능 보증값 아님."
+    body_b = "스테인리스 부품용. 검사 조건: 35도, 12시간. 출하 성능 보증값 아님."
+    event = "가공설비 사진. 2018년에 제2공장 준공. 2022년 설비 교체."
+    if case in ("columns", "mirrored_reordered"):
+        ax, bx = (1, 6) if case == "columns" else (6, 1)
+        entries = [(bx, 2, body_b), (ax, 1, "막처리 A"), (ax, 2, body_a), (bx, 1, "세정 B"), (1, 4, event)]
+        if case == "mirrored_reordered":
+            entries.reverse()
+        expected = {"a": body_a, "b": body_b, "event": event}
+    elif case == "ambiguous":
+        # Overlapping titles alone cannot determine which process the note describes.
+        note = "공정 적용 소재는 알루미늄 또는 스테인리스 중 확인 필요. 검사시간은 12시간 또는 48시간으로 기록되었으나 공정별 대응은 미확정."
+        entries = [(1, 1, "막처리 A"), (1, 1, "세정 B"), (1, 2, note)]
+        expected = {"ambiguous": note}
+    elif case == "conflict":
+        one = "설비대장: 2024년 12월 31일 A공장 가공설비 4대."
+        two = "현장조사: 2024년 12월 31일 A공장 가공설비 6대."
+        entries = [(1, 1, one), (1, 3, two)]
+        expected = {"conflict": [one, two]}
+    else:
+        raise ValueError(case)
+    entries.append((1, .1, company))
+    for x, y, text in entries:
+        box = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(4), Inches(.7))
+        box.text = text
+    buf = io.BytesIO()
+    prs.save(buf)
+    return buf.getvalue(), expected
+
+
+@pytest.mark.parametrize("case", ["columns", "mirrored_reordered", "ambiguous", "conflict"])
+def test_pptx_layout_varied_cases_preserve_original_context_without_invented_relations(tmp_path, case):
+    import hashlib
+    from app.agent_bridge import SegmentIn
+    from app.parsers import parse
+    from app.services.preflights import _source_layout
+    data, expected = _pptx_layout_quality_case(case)
+    path = tmp_path / "fixture.pptx"
+    path.write_bytes(data)
+    settings = Settings(private_runs_dir=tmp_path, db_path=tmp_path / "unused.sqlite3")
+    parsed = parse(data, ".pptx")
+    assert parsed.status == "complete"
+    segments = [SegmentIn(f"s{i}", s.locator.copy(), s.text) for i, s in enumerate(parsed.segments)]
+    before = [(s.segment_id, s.locator.copy(), s.text) for s in segments]
+    layout = _source_layout(settings, path.name, hashlib.sha256(data).hexdigest(), segments)
+    assert set(layout) == {s.segment_id for s in segments}
+    by_text = {s.text: layout[s.segment_id] for s in segments}
+    if case in ("columns", "mirrored_reordered"):
+        assert by_text["막처리 A"]["box_mm"][0] == by_text[expected["a"]]["box_mm"][0]
+        assert by_text["세정 B"]["box_mm"][0] == by_text[expected["b"]]["box_mm"][0]
+        assert (by_text["막처리 A"]["box_mm"][0] < by_text["세정 B"]["box_mm"][0]) == (case == "columns")
+        assert expected["event"] in by_text
+    elif case == "ambiguous":
+        assert by_text["막처리 A"] == by_text["세정 B"]
+        assert expected["ambiguous"] in by_text  # no automatic label assignment
+    else:
+        assert all(text in by_text for text in expected["conflict"])
+    assert [(s.segment_id, s.locator, s.text) for s in segments] == before
+    assert all(set(v) == {"slide", "box_mm"} for v in layout.values())
