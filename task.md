@@ -7,6 +7,25 @@
 
 ## 1. Quick Status
 
+- **2026-10-08 [BE-01~10 / F-08] 전체 백엔드 회귀:** 현재 작업 브랜치2,116통과/10건너뜀/경고3/실패0·제품 추가 수정 없음. 회귀 완료/BE-10 일반품질 진행중 유지. [기록](task_backend.md#backend-full-regression-20261008).
+- **2026-10-08 [BE-10 / F-08] 최신 공유 기준 통합:** 최신test/develop 충돌 없이 반영·추가 평가 도구38건 통과·로컬 통합 완료/원격 공유 후속. [기록](task_backend.md#sharing-base-integration-20261008).
+
+- **2026-10-08 [BE-06·07·08·10 / F-08] 오류 복구 최종 검수:** 현재 브랜치 PDF36/DOCX39묶음·각4쪽 승인/다운로드·빌드 통과, 검사 도구 새로고침 대기 보완. 이번 복구 검수 단위 완료/BE-10 일반품질 진행중 유지. [기록](task_backend.md#final-recovery-ui-audit-20261008).
+
+- **2026-10-08 [BE-04·06·07·10 / F-08] 다른 회사 문장 자료 검수:** 설비 귀속/시점·소재 한계·시편 조건 보존·실제 내용passed/열린 문제0·PDF/DOCX1쪽 배치통과·회귀6건·진행중 유지. [기록](task_backend.md#natural-equipment-quality-20261008).
+
+- **2026-10-08 [BE-04·10 / F-08] 동일 입력 추출 비교:** 설비 현황 분류 지침 보완·필수 항목 보존3/5→5/5·기준일 부족/명시 보완 확인·관련49건·일반품질 진행중. [기록](task_backend.md#extraction-repeat-classification-20261008).
+
+- **2026-10-08 [BE-04·06·07·10 / F-08] 여러 자료의 날짜·충돌 복구:** 시험 조건 정정·날짜별 수치 보존/실제 충돌 유지·재선택 후 동일 문서 검증/양식별1쪽 배치통과·관련13건·일반품질 진행중. [기록](task_backend.md#multisource-date-conflict-recovery-20261008).
+
+- **2026-10-08 [BE-04·06·07·10 / F-08] 다른 회사·장문 표 품질:** 핵심 조건4묶음 보존·작성 지침 보완/명시 편집 후 실제 내용·양식별4쪽 배치통과·회귀1,462건·일반품질 진행중. [기록](task_backend.md#heldout-long-table-quality-20261008).
+
+- **2026-10-08 [BE-06·10 / F-08] 보완 적용 후 화면 복구:** 응답 유실·새로고침의 이전 점검 ID 잠금 수정·새 필수 사실 추가·PDF/DOCX4쪽 승인/다운로드 통과·진행중 유지. [기록](task_backend.md#supplement-required-ui-recovery-20261008).
+
+- **2026-10-08 [BE-04·06·07·10 / F-08] 시험 상태·근거 보완 복구:** 지침 보완/회귀1,460건·실제8호출·본문 보존 재검증/배치통과·일반품질 진행중. [기록](task_backend.md#test-state-and-evidence-recovery-20261008).
+
+- **2026-10-08 [BE-04·06·07·10 / F-08] 고객 목적3종 실제 비교:** 핵심7묶음 사실/초안/PDF 보존·양식별1쪽 배치통과·확인필요/해석 차이 유지·진행중. [기록](task_backend.md#customer-purpose-quality-baseline-20261008).
+
 - **2026-10-08 [BE-06·10 / F-08] 최신 브랜치 통합:** test/develop 병합·공개자료 요청 복구 보존·실제 제외 API 검사·98건/PDF36묶음 통과·진행중 유지. [기록](task_backend.md#recovery-branch-integration-20261008).
 
 - **2026-10-08 [BE-06·10 / F-08] 실제 시연 현황 확인:** 현재 문서v2 내용 통과·미해결0·PDF/DOCX7쪽 배치 통과·승인/출력 미실행 확인·BE-10 진행중. [기록](task_backend.md#live-session-recovery-audit-20261008).

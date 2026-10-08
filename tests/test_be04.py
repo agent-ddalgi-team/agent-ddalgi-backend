@@ -23,6 +23,126 @@ BRIEF = {"purpose": "테스트", "emphasis": [], "direction": "balanced", "targe
 SOURCE_A = "회사명: 예시 회사\n회사 개요: 예시용 기업입니다.\n사업 분야: 예시 사업 A\n공정 수: 2개\n납기 표현: 빠른 납기\n".encode()
 SOURCE_B = "회사명: 다른 예시 회사\n".encode()
 
+# Shared synthetic source; scoring requirements stay outside Agent input.
+# These fixtures do not evaluate MockAgent as semantic AI quality.
+CUSTOMER_QUALITY_SOURCE = """회사명: 예시정공
+회사 개요: 예시정공은 시험용 금속 부품을 가공하는 가상 제조업체입니다.
+사업 분야: 시험용 금속 부품 가공과 시편 검사 지원.
+제품 및 서비스: 시험용 브래킷과 커버를 가공합니다.
+공정: 절삭과 연마를 수행합니다. 공정 순서는 지정하지 않습니다.
+설비: 3축 CNC 가공기와 표면 거칠기 측정기를 사용합니다.
+가공 능력: 알루미늄 시편에 한해 최대 가공 길이 200mm입니다. 다른 소재의 가공 한계는 확인 필요입니다.
+인증: ISO 9001 인증의 적용 범위는 시험 부품 제조이며 유효기간은 2025년부터 2027년까지입니다.
+시험: 알루미늄 시험시편의 중성 염수분무 시험 시간은 168시간입니다. 시험시편 결과이며 양산 제품의 성능 보증이 아닙니다.
+적용 사례: 시험용 브래킷은 연구용 고정 지그에 적용했습니다. 고객명과 판매 수량은 공개하지 않습니다.
+연혁: 2024년 시범 생산을 시작했습니다.
+"""
+CUSTOMER_QUALITY_CASES = {
+    "quality": {
+        "purpose": "인증 적용 범위와 시험 근거 중심 회사 소개",
+        "audience": "품질 담당자", "emphasis": ["품질관리", "인증·특허"],
+        "required_fields": ["certifications", "technology"],
+        "probes": {"certification": ["ISO", "9001", "시험", "제조", "2025", "2027"],
+                   "test": ["알루미늄", "시편", "염수", "168", "양산", "보증"]},
+    },
+    "production": {
+        "purpose": "공정·설비·소재와 기술 검토사항 중심 회사 소개",
+        "audience": "생산기술 담당자", "emphasis": ["공정 역량", "기술"],
+        "required_fields": ["processes", "capabilities"],
+        "probes": {"process": ["절삭", "연마"], "equipment": ["CNC", "거칠기"],
+                   "capability": ["알루미늄", "시편", "200"]},
+    },
+    "customer": {
+        "purpose": "주요 서비스와 관련 적용 사례 중심 신규 고객 소개",
+        "audience": "신규 고객", "emphasis": ["제품·서비스", "적용 사례"],
+        "required_fields": ["products_services", "customers_markets"],
+        "probes": {"service": ["브래킷", "커버"], "application": ["브래킷", "연구", "지그"]},
+    },
+}
+
+# Live evaluation controls: explicit performance/completion must survive too.
+CUSTOMER_TEST_STATE_CONTROLS = {
+    "conditions": "알루미늄 시험시편의 중성 염수분무 시험 시간은168시간입니다. 시험시편 결과이며 양산 제품의 성능 보증이 아닙니다.",
+    "performed": "알루미늄 시험시편에 중성 염수분무 시험을168시간 실시했습니다. 시험시편 결과이며 양산 제품의 성능 보증이 아닙니다.",
+    "completed": "알루미늄 시험시편의 중성 염수분무 시험을168시간 실시하고 완료했습니다. 시험시편 결과이며 양산 제품의 성능 보증이 아닙니다.",
+}
+
+# Held-out company: identical core claims in short text and a longer DOCX table.
+LONG_TABLE_QUALITY_ROWS = [
+    ("회사명", "예시유체"),
+    ("회사 개요", "예시유체는 연구용 냉각 모듈을 조립하고 시험하는 가상 기업입니다."),
+    ("제품 및 서비스", "연구용 냉각 모듈 CM-20의 조립과 시험시편 검사를 제공합니다."),
+    ("공정", "부품 세척과 모듈 조립을 수행합니다. 공정 순서는 지정하지 않습니다."),
+    ("설비", "유량 시험대와 압력 센서를 사용합니다."),
+    ("가공 능력", "알루미늄 시험시편의 최대 가공 길이는 200mm입니다. 스테인리스 시험시편은 100mm입니다."),
+    ("시험 조건", "CM-20 시험시편의 유량은 35L/min, 최대 압력은 0.6MPa입니다. 물 온도 20±2°C와 회전수 1,450rpm 조건의 시험시편 수치이며 양산 제품의 성능 보증이 아닙니다."),
+    ("인증", "ISO 9001의 적용 범위는 연구용 냉각 모듈 조립입니다. 유효기간은 2025년 1월 1일부터 2027년 12월 31일까지입니다."),
+    ("납기", "표준 주문은 도면 승인 후 영업일 7일입니다. 시제품 주문은 사양 확정 후 영업일 20일입니다."),
+    ("연혁", "2009년 법인을 설립했고 2018년 연구용 냉각 모듈의 시범 생산을 시작했습니다."),
+]
+LONG_TABLE_QUALITY_BACKGROUND = [
+    "자료 배경: 예시유체의 연구용 모듈 작업 기록에는 도면 검토와 부품 상태 확인 내용을 함께 남깁니다.",
+    "자료 배경: 시험시편의 소재와 시험 조건은 작업 기록에 구분해 적으며 다른 제품의 성능으로 일반화하지 않습니다.",
+    "자료 배경: 고객과 협의할 때 표준 주문과 시제품 주문의 승인 조건을 구분하고 변경된 사양은 다시 확인합니다.",
+    "자료 배경: 이 자료는 가상 기업의 소개서 시험 자료이며 고객명이나 판매 실적을 제시하지 않습니다.",
+]
+LONG_TABLE_QUALITY_PROBES = {
+    "materials": ["알루미늄", "200", "스테인리스", "100"],
+    "test_scope": ["35", "0.6", "20", "2", "1,450", "시험시편", "양산", "보증"],
+    "certification": ["ISO", "9001", "조립", "2025", "2027"],
+    "delivery": ["도면", "승인", "영업일", "7", "사양", "확정", "20"],
+}
+
+MULTISOURCE_TIME_CASES = {
+    "different_dates": [
+        "자료 A\n회사명: 예시표면\n회사 개요: 예시표면은 시험용 금속 부품의 표면처리를 수행하는 가상 기업입니다.\n설비 현황: 2022년 10월 1일 기준 표면처리 라인은 3개입니다.\n",
+        "자료 B\n회사명: 예시표면\n회사 개요: 예시표면은 시험용 금속 부품의 표면처리를 수행하는 가상 기업입니다.\n설비 현황: 2026년 10월 1일 기준 표면처리 라인은 4개입니다.\n",
+    ],
+    "same_date_conflict": [
+        "자료 A\n회사명: 예시표면\n회사 개요: 예시표면은 시험용 금속 부품의 표면처리를 수행하는 가상 기업입니다.\n설비 현황: 2026년 10월 1일 기준 표면처리 라인은 3개입니다.\n",
+        "자료 B\n회사명: 예시표면\n회사 개요: 예시표면은 시험용 금속 부품의 표면처리를 수행하는 가상 기업입니다.\n설비 현황: 2026년 10월 1일 기준 표면처리 라인은 4개입니다.\n",
+    ],
+    "undated": [
+        "자료 A\n회사명: 예시표면\n회사 개요: 예시표면은 시험용 금속 부품의 표면처리를 수행하는 가상 기업입니다.\n설비 현황: 표면처리 라인은 3개입니다.\n",
+        "자료 B\n회사명: 예시표면\n회사 개요: 예시표면은 시험용 금속 부품의 표면처리를 수행하는 가상 기업입니다.\n설비 현황: 표면처리 라인은 4개입니다.\n",
+    ],
+}
+
+NATURAL_EQUIPMENT_QUALITY_SOURCE = """예시절삭은 소개서 검수에 사용하는 가상 기업으로, 연구용 금속 시편을 가공하고 치수를 검사합니다.
+예시절삭은 2024년 6월 30일 당시 5축 머시닝센터 2대를 운영했습니다. 2026년 6월 30일 기준 같은 종류의 설비는 3대입니다. 설비 수는 해당 기준일의 보유 현황이며 생산량이나 가동률을 뜻하지 않습니다.
+가공에는 5축 동시제어 방식을 사용합니다. 시편의 대응 길이는 알루미늄 최대 120mm, 스테인리스 최대 80mm입니다. 이 범위는 연구용 시편에 한정되며 양산 제품의 가공 보증은 아닙니다.
+치수 검사는 광학 측정 방식으로 수행합니다. 한 연구용 시편의 치수 측정 오차는 0.02mm였으며 모든 제품의 공차를 보증하는 수치는 아닙니다.
+함께 소개된 예시파트너는 별도 회사입니다. 예시파트너의 소개 페이지에는 머시닝센터 12대가 기재되어 있습니다. 이는 예시절삭의 보유 설비가 아닙니다.
+"""
+
+
+def long_table_quality_source(fmt):
+    if fmt == "txt":
+        return "\n".join(f"{key}: {value}" for key, value in LONG_TABLE_QUALITY_ROWS).encode()
+    from docx import Document
+    document = Document()
+    document.add_heading("예시유체 연구용 모듈 소개 자료", 0)
+    for index in range(36):
+        document.add_paragraph(LONG_TABLE_QUALITY_BACKGROUND[index % 4])
+    table = document.add_table(rows=1, cols=2)
+    table.rows[0].cells[0].text, table.rows[0].cells[1].text = "항목", "내용 및 적용 조건"
+    for key, value in LONG_TABLE_QUALITY_ROWS:
+        cells = table.add_row().cells
+        cells[0].text, cells[1].text = key, value
+    for index in range(36):
+        document.add_paragraph(LONG_TABLE_QUALITY_BACKGROUND[index % 4])
+    output = io.BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
+def customer_quality_brief(case_id):
+    case = CUSTOMER_QUALITY_CASES[case_id]
+    return {"purpose": case["purpose"], "audience": case["audience"],
+            "emphasis": list(case["emphasis"]), "required_fields": list(case["required_fields"]),
+            "direction": "balanced", "target_pages": 1, "photo_preference": "none",
+            "target_company": "예시정공"}
+
 
 @pytest.fixture
 def settings(tmp_path):
@@ -858,6 +978,110 @@ def test_customer_request_table_transfer_and_job_trace_without_llm_quality_claim
     for page in document["pages"]:
         for block in page["blocks"]:
             assert all(r["source_id"] == src[0] and r["source_version"] == 1 for r in block["evidence_refs"])
+
+
+@pytest.mark.parametrize("case_id", CUSTOMER_QUALITY_CASES)
+def test_customer_quality_fixture_preserves_conditions_without_sending_rubric(client, settings, monkeypatch, case_id):
+    from app.services import preflights
+    captured = []
+    original = MockAgent.analyze
+
+    def observe(self, request):
+        captured.append(request)
+        return original(self, request)
+
+    monkeypatch.setattr(MockAgent, "analyze", observe)
+    brief = customer_quality_brief(case_id)
+    sid = client.post("/api/v1/sessions", json={"brief": brief}).json()["session_id"]
+    ids = _upload(client, sid, ("synthetic-manufacturing.txt", CUSTOMER_QUALITY_SOURCE.encode()), kind="company")
+    revision = _select(client, sid, ids)
+    _preflight(client, sid, revision)
+    assert len(captured) == 1
+    request = captured[0]
+    assert request.brief.model_dump() == client.get(f"/api/v1/sessions/{sid}").json()["brief"]
+    assert request.brief.required_fields == brief["required_fields"]
+    with connect(settings.db_path) as conn:
+        source = preflights.build_sources(conn, sid, ids)[0]
+    assert request.sources == [source]
+    parsed = "\n".join(segment.text for segment in source.segments)
+    assert all(line in parsed for line in CUSTOMER_QUALITY_SOURCE.splitlines())
+    # Probe IDs/expected presence are evaluation metadata, not company evidence.
+    assert not any(key in source.metadata for key in ("probes", "expected", "rubric"))
+    assert source.source_version == 1
+    assert all(segment.segment_id and segment.locator for segment in source.segments)
+
+
+@pytest.mark.parametrize("fmt", ["txt", "docx"])
+def test_long_table_quality_input_keeps_core_conditions(client, monkeypatch, fmt):
+    captured = []
+    original = MockAgent.analyze
+
+    def observe(self, request):
+        captured.append(request)
+        return original(self, request)
+
+    monkeypatch.setattr(MockAgent, "analyze", observe)
+    brief = {**BRIEF, "target_company": "예시유체", "photo_preference": "none"}
+    sid = client.post("/api/v1/sessions", json={"brief": brief}).json()["session_id"]
+    ids = _upload(client, sid, ("held-out." + fmt, long_table_quality_source(fmt)), kind="company")
+    _preflight(client, sid, _select(client, sid, ids))
+    assert len(captured) == 1
+    source = captured[0].sources[0]
+    parsed = "\n".join(segment.text for segment in source.segments)
+    for key, value in LONG_TABLE_QUALITY_ROWS:
+        assert key in parsed and value in parsed
+    assert not any(key in source.metadata for key in ("probes", "expected", "rubric"))
+    assert all(segment.segment_id and segment.locator for segment in source.segments)
+    if fmt == "docx":
+        assert len(parsed) > 4000
+        assert parsed.count("자료 배경:") == 72
+
+
+@pytest.mark.parametrize("case", MULTISOURCE_TIME_CASES)
+def test_multisource_time_input_keeps_separate_dates_and_sources(client, monkeypatch, case):
+    captured = []
+    original = MockAgent.analyze
+
+    def observe(self, request):
+        captured.append(request)
+        return original(self, request)
+
+    monkeypatch.setattr(MockAgent, "analyze", observe)
+    brief = dict(BRIEF, target_company="예시표면", required_fields=["capabilities"])
+    sid = client.post("/api/v1/sessions", json={"brief": brief}).json()["session_id"]
+    originals = MULTISOURCE_TIME_CASES[case]
+    ids = _upload(client, sid, *((f"source-{index}.txt", text.encode()) for index, text in enumerate(originals)))
+    _preflight(client, sid, _select(client, sid, ids))
+    assert len(captured) == 1
+    assert captured[0].brief.required_fields == ["capabilities"]
+    assert {source.source_id for source in captured[0].sources} == set(ids)
+    expected = dict(zip(ids, originals))
+    for source in captured[0].sources:
+        original_text = expected[source.source_id]
+        parsed = "\n".join(segment.text for segment in source.segments)
+        assert all(line in parsed for line in original_text.splitlines())
+        assert source.source_version == 1
+        assert all(segment.segment_id and segment.locator for segment in source.segments)
+
+
+def test_natural_equipment_input_preserves_company_scope_and_material_limits(client, monkeypatch):
+    captured = []
+    original = MockAgent.analyze
+
+    def observe(self, request):
+        captured.append(request)
+        return original(self, request)
+
+    monkeypatch.setattr(MockAgent, "analyze", observe)
+    brief = dict(BRIEF, target_company="예시절삭", required_fields=["capabilities", "technology"])
+    sid = client.post("/api/v1/sessions", json={"brief": brief}).json()["session_id"]
+    ids = _upload(client, sid, ("natural-equipment.txt", NATURAL_EQUIPMENT_QUALITY_SOURCE.encode()))
+    _preflight(client, sid, _select(client, sid, ids))
+    assert len(captured) == 1 and captured[0].brief.required_fields == brief["required_fields"]
+    source = captured[0].sources[0]
+    assert source.source_id == ids[0] and source.source_version == 1
+    assert [segment.text for segment in source.segments] == NATURAL_EQUIPMENT_QUALITY_SOURCE.splitlines()
+    assert all(segment.segment_id and segment.locator for segment in source.segments)
 
 
 def _layout_pptx(*, duplicate=False, rotated=False, offset=0):
