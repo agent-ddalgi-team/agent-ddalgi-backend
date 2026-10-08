@@ -1651,3 +1651,23 @@
 - 회귀는 파서/입력 보존 선택5건 통과 후 test_agent_llm.py/test_be04.py/test_be06.py **1,462 passed/기존 경고1/170.59초**다. git diff --check 통과. 준비 중 지원되지 않는2쪽/SourceIn dataclass 저장 호출/배타적인 ledger 옵션이 거부됐으며 모두 유료0호출이었다. 기존 시험 클라이언트의 소유 쿠키 없이 조회한 요청도401로 거부됐고 소유 정책을 우회하지 않고 새 소유 세션에 재현했다.
 - 최초 결과는 Temp/ddalgi-long-table-quality-6if6n4_d, 재작성/명시 복구/최종 파일은 Temp/ddalgi-long-table-rewrite-6de2j2lv(report.json/warning-recovery.json)에 있다. 실행 도구3개는 Temp/ddalgi-long-table-quality-20261008.py, ddalgi-long-table-rewrite-20261008.py, ddalgi-long-table-warning-recovery-20261008.py다. 원문 생성 fixture와 평가 기준은 기존 테스트 파일에 남겼다.
 - BE-10/F-08 일반 품질·Agent 담당 상태는 유지한다. 다음은 자연스럽게 작성된 장문·여러 자료의 실제 상충/시점 부족 사례와 확인필요 보완 경로다. 회사 개요의 의미상 중복은 자동 작성에서 여전히 발생 가능한 경고이며, 이번에 명시 편집으로 해결됨을 확인한 것과 재발 방지 완료를 혼동하지 않는다.
+
+<a id="multisource-date-conflict-recovery-20261008"></a>
+
+### 2026-10-08 여러 자료의 날짜별 설비 현황과 실제 충돌 복구
+
+- BE-04·06·07·10/F-08 연결. eval/customer-purpose-quality-20261008에서 기존 tests/test_be04.py에 가상 회사 예시표면의 두 자료 fixture와 날짜/본문/출처/버전/구간 locator 전달 회귀2건을 추가했다. 자료 A/B의 기준일이 다른 경우(2022년3개/2026년4개), 같은 경우(2026년3개/4개)를 구분한다. 평가 항목은 capabilities이며 정답표를 모델 입력에 넣지 않는다. 새 저장소 파일·의존성·백엔드 실행 코드/프롬프트/API/DB/프론트/.env 변경 없음.
+- 최초 시험은 설비 라인 수를 process_count 필수로 잘못 지정했다. 모델은 capabilities로 분류했고 process_count는 missing이므로 초안 후 REQUIRED_MISSING이 발생했다. can_generate=true와 열린 VALUE_CONFLICT가 함께 나오는 것은 계약의 검토용 초안 허용 정책이며 최종 승인 통과를 뜻하지 않는다. 앞서 이 두 결과를 제품 오류로 단정한 설명을 정정한다. 설비 현황 제목/필수 capabilities로 시험 조건을 맞췄으며 제품의 필수·충돌 검사를 완화하지 않았다.
+- 두 번째 시험은 날짜별 본문/검증 통과, 같은 날짜의 capabilities 충돌과 초안 미해결 blocker 보존, 필수 충돌 제외422 RESOLUTION_NOT_ALLOWED까지 확인했다. 자료 B 재선택/재점검 후 다시 drafts를 POST하자409 DOCUMENT_EXISTS가 반환됐다. 이미 문서가 있는 경우 편집을 이어가라는 정상 보호이며 이 부분은 시험 경로 오류다. 세 번째 시험은 기존 C-05 반영 경로로 고쳤다. 준비 중 ledger max_calls9도 기존1~8 상한으로 거부됐고 유료0호출이었다. 최종 상한8을 유지했다.
+
+| 최종 실제 시험 | 결과 |
+|---|---|
+| 서로 다른 기준일 | 2022-10-01의3개/2026-10-01의4개를 각 원문 근거와 함께 초안에 보존. 실제 내용검증passed/열린 문제0, PDF·DOCX 각1쪽/layout_ok=true/not_checked0 |
+| 같은 기준일의 상충 | capabilities.status=conflict와3개/4개 원문 후보·VALUE_CONFLICT 유지. 초안에는 충돌 수치를 확정해서 쓰지 않고 문서 Issue(origin=preflight/blocker/open)에 보존. 필수 항목 제외422. 이 상태의 추가 유료 내용검증/승인/출력은 실행하지 않음 |
+| 명시적 자료 B 재선택 | 입력revision3의 새 점검은 충돌0. 최신 회사명/개요 근거와2026년4개 설비 fact를 직접 대조·명시 선택해 C-05 반영. 기존 문서ID/기존 모든 block.content 보존, 새 문단1개, revision1→2 한 번 증가. 실제 재검증passed/열린 문제0, 이전 충돌 Issue는resolved. PDF·DOCX 각1쪽/layout_ok=true/not_checked0 |
+
+- 최종 source/segment/fact 인용과 출력용 본문을 직접 읽었다. field_key가 같은 supported 후보가 유일한 경우만 시험에서 선택했고 기존 개요가 원문과 맞는지 확인했다. 제품의 자동 근거 교체/자동 수치 선택 기능을 추가한 것이 아니다. 실제 브라우저에서 이번 자료로 조작한 결과나 픽셀 디자인 검사로 보고하지 않는다. 최종 승인/다운로드는 실행하지 않았다.
+- 최종 결정적 회귀는 test_be04.py/test_be06.py 중 자료 전달2건·초안 진입 정책10건·미참조 충돌의 부분 검증/승인 차단1건 **13 passed/175 deselected/기존 경고1/9.54초**. 마지막 항목은 실제 LLM 호출 없는 API 회귀이며 위 유료 표본의 승인 검사를 대신 실행했다고 혼동하지 않는다. 앞선12건/2건과 중복 합산하지 않는다.
+- 실제 호출은 최초 조건 오류4회($0.004366250), 기존 문서 재생성 시험 오류까지6회($0.007150600), 최종 C-05 복구7회($0.005503330), 총17회/ledger 추정 합계 **$0.017020180/미확인 예약0**이다. 최종7회는 추출3/작성2/검증2이며 추가 자동 재시도0, gpt-6-luna/medium/timeout120초/입력40,000자/출력32,000토큰/검증400,000자를 유지했다. 외부 호출 상한은7/8/8, 묶음 예산은1/0.9/0.9달러였으며 다음 묶음 전 확정 비용을 확인해 누적1달러 이내로 제한했다. 최종 실행 승인 설명의0.80달러는 오기이고 실제 ledger 제한은0.90달러다. 비용은 청구서 실금액이 아니다.
+- 결과는 시스템 Temp/ddalgi-multisource-time-ga2enexx(조건 오류), ddalgi-multisource-time-krw8xc4s(중복 생성409), ddalgi-multisource-time-6hwknwlx(최종)의 report/preflight/draft/issues/recovered-document JSON·격리 ORMv11 DB·PDF/DOCX에 있다. 도구는 시스템 Temp/ddalgi-multisource-time-20261008.py이다. 원래 사용자 DB/자료/문서는 사용하거나 변경하지 않았다.
+- BE-10/F-08 일반 품질과 Agent 담당 상태는 진행중 그대로다. 이번 한 세트의 성공을 모든 수치/날짜 충돌 해결이나 통계적 반복 안정성으로 표시하지 않는다. 다음은 같은 입력의 제한된 반복 측정과 기준일이 빠진 자료의 확인필요/보완 경로다. 자신의 시험/문서4개 파일만 로컬 커밋하며 원격push는 하지 않는다.

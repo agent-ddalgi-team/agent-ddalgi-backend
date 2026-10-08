@@ -93,6 +93,17 @@ LONG_TABLE_QUALITY_PROBES = {
     "delivery": ["도면", "승인", "영업일", "7", "사양", "확정", "20"],
 }
 
+MULTISOURCE_TIME_CASES = {
+    "different_dates": [
+        "자료 A\n회사명: 예시표면\n회사 개요: 예시표면은 시험용 금속 부품의 표면처리를 수행하는 가상 기업입니다.\n설비 현황: 2022년 10월 1일 기준 표면처리 라인은 3개입니다.\n",
+        "자료 B\n회사명: 예시표면\n회사 개요: 예시표면은 시험용 금속 부품의 표면처리를 수행하는 가상 기업입니다.\n설비 현황: 2026년 10월 1일 기준 표면처리 라인은 4개입니다.\n",
+    ],
+    "same_date_conflict": [
+        "자료 A\n회사명: 예시표면\n회사 개요: 예시표면은 시험용 금속 부품의 표면처리를 수행하는 가상 기업입니다.\n설비 현황: 2026년 10월 1일 기준 표면처리 라인은 3개입니다.\n",
+        "자료 B\n회사명: 예시표면\n회사 개요: 예시표면은 시험용 금속 부품의 표면처리를 수행하는 가상 기업입니다.\n설비 현황: 2026년 10월 1일 기준 표면처리 라인은 4개입니다.\n",
+    ],
+}
+
 
 def long_table_quality_source(fmt):
     if fmt == "txt":
@@ -1013,6 +1024,33 @@ def test_long_table_quality_input_keeps_core_conditions(client, monkeypatch, fmt
     if fmt == "docx":
         assert len(parsed) > 4000
         assert parsed.count("자료 배경:") == 72
+
+
+@pytest.mark.parametrize("case", MULTISOURCE_TIME_CASES)
+def test_multisource_time_input_keeps_separate_dates_and_sources(client, monkeypatch, case):
+    captured = []
+    original = MockAgent.analyze
+
+    def observe(self, request):
+        captured.append(request)
+        return original(self, request)
+
+    monkeypatch.setattr(MockAgent, "analyze", observe)
+    brief = dict(BRIEF, target_company="예시표면", required_fields=["capabilities"])
+    sid = client.post("/api/v1/sessions", json={"brief": brief}).json()["session_id"]
+    originals = MULTISOURCE_TIME_CASES[case]
+    ids = _upload(client, sid, *((f"source-{index}.txt", text.encode()) for index, text in enumerate(originals)))
+    _preflight(client, sid, _select(client, sid, ids))
+    assert len(captured) == 1
+    assert captured[0].brief.required_fields == ["capabilities"]
+    assert {source.source_id for source in captured[0].sources} == set(ids)
+    expected = dict(zip(ids, originals))
+    for source in captured[0].sources:
+        original_text = expected[source.source_id]
+        parsed = "\n".join(segment.text for segment in source.segments)
+        assert all(line in parsed for line in original_text.splitlines())
+        assert source.source_version == 1
+        assert all(segment.segment_id and segment.locator for segment in source.segments)
 
 
 def _layout_pptx(*, duplicate=False, rotated=False, offset=0):
