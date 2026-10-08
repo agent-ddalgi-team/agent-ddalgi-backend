@@ -8411,6 +8411,86 @@ def test_review_notes_keep_duration_for_a_different_subject_in_the_same_sentence
     assert llm._editorial_review_notes({'f': independent}) == (set(), [])
 
 
+@pytest.mark.parametrize('claim', [
+    '내식성(168hr)', '내식성(72hr)', '내식성은 168hr', '168hr 내식성',
+    '내식성: 168hr', '내식성168hr', '내식성 시험 결과는 12.5시간',
+    '내식성은 96 HR', '내식성 지속 시간은 48 hours',
+    'ISO 9001 인증을 보유하며 내식성은 72hr입니다.',
+    '염수분무가 아닌 미확인 시험의 내식성은 72hr입니다.',
+    '내식성 72hr. 별도 시험 방법: ASTM B117.',
+    # The two missed saved sentences, with synthetic values and context.
+    '가상 시편을 처리합니다. 자료에 기재된 표면 내식성은 96hr입니다.',
+    '가상 시편을 처리하며, 48hr 내식성 표기가 포함되어 있다.',
+])
+def test_review_notes_hold_unqualified_corrosion_across_word_orders(claim):
+    import re
+    fact = Fact(fact_id='f', field_key='technology', status='supported', value=claim)
+    before = fact.model_dump()
+    held, notes = llm._editorial_review_notes({'f': fact})
+    assert notes and not held
+    assert not re.search(r'\d+(?:\.\d+)?\s*(?:hr|시간|hour)', notes[0]['body_value'], re.I)
+    assert notes[0]['removed_spans'] and notes[0]['value'] == claim
+    assert fact.model_dump() == before
+
+
+@pytest.mark.parametrize('claim', [
+    '염수분무 시험에서 내식성은 168hr입니다.',
+    '내식성(72hr), 시험 방법은 염수 분무입니다.',
+    '내식성은 KS D 9502에 따라 168hr입니다.',
+    'ASTM B117 시험에서 168hr 내식성을 확인했습니다.',
+    '내식성(72hr)은 ISO 9227 규격에 따른 결과입니다.',
+    '내식성 시험은 72시간이며 시험법 TEST-A, 온도 30도, 가상 시편에 적용합니다.',
+    '내식성 72시간이며 시험법 TEST-A, 온도 30도, 가상 시편에 적용합니다.',
+    '내식성은 72hr이며 시험 방법: METHOD-A로 측정했습니다.',
+])
+def test_review_notes_preserve_corrosion_with_explicit_test_method(claim):
+    fact = Fact(fact_id='f', field_key='technology', status='supported', value=claim)
+    assert llm._editorial_review_notes({'f': fact}) == (set(), [])
+    assert fact.value == claim
+
+
+@pytest.mark.parametrize('claim', [
+    '검사는 168hr 이내 완료합니다.',
+    '검사는 168hr 이내 완료하며 내식성을 확인합니다.',
+    '내식성을 확인하며 검사는 168hr 이내 완료합니다.',
+    '내식성을 확인합니다. 검사는 168hr 이내 완료합니다.',
+    '168hr 동안 검사합니다. 내식성을 확인합니다.',
+    '내식성 향상용이며 납기는 72hr입니다.',
+    '내식성을 확인하며 생산 기간은 72시간입니다.',
+    '검사는 168hr이며 내식성 향상용입니다.',
+    '검사 168hr. 내식성 향상용.',
+])
+def test_review_notes_preserve_durations_of_independent_subjects(claim):
+    fact = Fact(fact_id='f', field_key='technology', status='supported', value=claim)
+    assert llm._editorial_review_notes({'f': fact}) == (set(), [])
+
+
+def test_review_notes_handle_multiple_claims_without_cross_sentence_conditions():
+    claim = ('염수분무 시험에서 내식성은 48hr입니다. '
+             '가상 시편 A의 내식성(72hr), 시편 B의 내식성은 96hr입니다. '
+             '검사는 168hr 이내 완료합니다.')
+    fact = Fact(fact_id='f', field_key='technology', status='supported', value=claim)
+    held, notes = llm._editorial_review_notes({'f': fact})
+    assert not held
+    assert '48hr' in notes[0]['body_value'] and '168hr' in notes[0]['body_value']
+    assert '72hr' not in notes[0]['body_value'] and '96hr' not in notes[0]['body_value']
+    assert [span['text'] for span in notes[0]['removed_spans']] == ['(72hr)', '96hr']
+    assert fact.value == claim
+
+
+@pytest.mark.parametrize('claim', [
+    '내식성은 72hr이고 검사는 168hr입니다.',
+    '검사는 168hr이며 72hr 내식성을 확인합니다.',
+    '내식성은 염수분무 168hr이며, 다른 시편의 내식성은 72hr입니다.',
+])
+def test_review_notes_keep_only_the_duration_linked_to_a_method_or_other_subject(claim):
+    fact = Fact(fact_id='f', field_key='technology', status='supported', value=claim)
+    held, notes = llm._editorial_review_notes({'f': fact})
+    assert not held and '168hr' in notes[0]['body_value']
+    assert '72hr' not in notes[0]['body_value']
+    assert fact.value == claim
+
+
 def test_comparison_company_name_is_explicit_and_never_defaulted():
     from scripts.experiments.agent_quality_comparison import fixed_briefs
     with pytest.raises(TypeError):

@@ -1413,6 +1413,59 @@ _INTERNAL_NOTE = re.compile(
     r"현재.{0,12}(?:인증|승인).{0,15}(?:뜻하지|의미하지)|서로 다르게 기재")
 
 
+def _unqualified_corrosion_durations(text: str) -> list[tuple[int, int]]:
+    """Locate performance durations, leaving other subjects and test methods intact."""
+    method = re.compile(
+        r"염수\s*분무|salt\s*(?:spray|fog)|"
+        r"\b(?:KS|ASTM|ISO)\s*[-:]?\s*(?:[A-Z]+\s*)?\d[\w:.-]*|"
+        r"시험\s*(?:법|방법)\s*(?:은|는|:)?\s*[A-Z][A-Z0-9_-]+", re.I)
+    duration = re.compile(r"(?<![A-Za-z0-9_.])\d+(?:\.\d+)?\s*(?:hours?|hrs?|시간|h)(?![A-Za-z])", re.I)
+    other_subject = re.compile(r"(?:검사|검수|납기|납품|배송|운송|생산|작업|처리)\s*"
+                               r"(?:는|은|이|가|을|를|시간|기간|소요|일정|완료)")
+    spans = []
+    # A condition can follow a comma, but cannot qualify a separate sentence.
+    for sentence in re.finditer(r"(?:\.(?=\d)|[^;\n!?.])+", text):
+        scope = sentence.group()
+        all_subjects = list(re.finditer("내식성", scope))
+        qualified = set()
+        for test_method in method.finditer(scope):
+            tail = scope[test_method.end():]
+            if not all_subjects or re.match(r"\s*(?:인증|미적용|미확인|(?:은|는|이|가)?\s*아(?:니|닌))", tail):
+                continue
+            nearest = min(all_subjects, key=lambda s: min(
+                abs(s.end() - test_method.start()), abs(s.start() - test_method.end())))
+            qualified.add(nearest.start())
+        for clause in re.finditer(r"[^,]+", scope):
+            part = clause.group()
+            subjects = list(re.finditer("내식성", part))
+            if not subjects:
+                continue
+            for number in duration.finditer(part):
+                distance = lambda s: max(s.start() - number.end(), number.start() - s.end(), 0)
+                subject = min(subjects + list(other_subject.finditer(part)), key=distance)
+                if subject.group() != "내식성" or clause.start() + subject.start() in qualified:
+                    continue
+                if subject.end() <= number.start():
+                    bridge = part[subject.end():number.start()]
+                else:
+                    bridge = part[number.end():subject.start()]
+                if other_subject.search(bridge) or re.search(r"완료|진행|소요|납품|배송", bridge):
+                    continue
+                # A deadline preceding the corrosion claim is a different subject.
+                if re.match(r"\s*(?:이내|내에|동안)?\s*(?:완료|진행|소요)", part[number.end():]):
+                    continue
+                start, end = number.span()
+                # Remove balanced parentheses with the value, never punctuation
+                # belonging to another clause or only one half of parentheses.
+                left = re.search(r"\(\s*$", part[:start])
+                right = re.match(r"\s*\)", part[end:])
+                if left and right:
+                    start, end = left.start(), end + right.end()
+                offset = sentence.start() + clause.start()
+                spans.append((offset + start, offset + end))
+    return spans
+
+
 def _editorial_review_notes(facts: dict[str, Fact]) -> tuple[set[str], list[dict]]:
     """Remove only identified review spans; retain independent supported clauses.
 
@@ -1438,13 +1491,15 @@ def _editorial_review_notes(facts: dict[str, Fact]) -> tuple[set[str], list[dict
                 if not part:
                     continue
                 reason = None
-                duration = re.search(r"내식성\s*(\(?\s*\d+(?:\.\d+)?\s*(?:hr|시간)\)?)", part, re.I)
-                if duration:
+                durations = _unqualified_corrosion_durations(part)
+                if durations:
                     if re.match(r"내식성\s*\d", part) and absent.search(part):
                         removed.append({"text": part, "reason": "내식성 수치의 시험 조건·규격·적용 대상 확인이 필요합니다."})
                         continue
-                    removed.append({"text": duration[1], "reason": "시험 조건이 연결되지 않은 성능 수치입니다. 확인 전 본문에서 보류합니다."})
-                    part = part[:duration.start(1)] + part[duration.end(1):]
+                    for start, end in durations:
+                        removed.append({"text": part[start:end], "reason": "시험 조건이 연결되지 않은 성능 수치입니다. 확인 전 본문에서 보류합니다."})
+                    for start, end in reversed(durations):
+                        part = part[:start] + part[end:]
                 if "서로 다르게 기재" in part:
                     reason = "원문 간 최초 승인일이 달라 하나의 날짜로 확정할 수 없습니다."
                 elif internal.search(part):
