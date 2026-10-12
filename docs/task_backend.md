@@ -7,6 +7,19 @@
 
 ## 1. Quick Status
 
+- **2026-10-12 팀 pull 자동 보관:** 두 로컬 저장소 pull.autoStash=true, 임시 저장소14상황의 이동/팀원 수정 보존·실제 충돌 유지 확인. 팀원별1회 설정은 README 안내, test 병합 없음. [기록](#team-pull-automation-20261012).
+
+<a id="team-pull-automation-20261012"></a>
+
+### 구조 이동 후 팀원 pull 자동 처리 검수 (2026-10-12)
+
+- 사용자 요청은 팀원의 옛 경로 수정이 구조 변경과 충돌하지 않게 자동 처리하는 것이다. Git의 이동 감지와 autostash를 재사용하며 임의 덮어쓰기·ours/theirs 강제 선택·사용자 Git 훅 실행은 추가하지 않았다. 같은 내용의 실제 충돌을 없앨 수 있다고 보장하지 않는다.
+- 현재 백엔드/프론트의 .git/config에 pull.autoStash=true를 각각 설정하고 --show-origin으로 확인했다. 전역 설정·merge/rebase/ff 정책·upstream·브랜치·원격은 변경하지 않았다. 이 설정은 Git에 추적되지 않아 팀원에게 pull로 전파되지 않는다. 기존 README에 팀원별 각 저장소1회 설정·일회성 --autostash·자동 처리 범위·충돌/stash 확인법을 추가했다. 미추적 .claude/와 ignored .env/DB는 자동 보관 대상으로 오인하지 않는다.
+- Git2.55.0.windows.2, backend test d4b9725→작업본746d3dc, frontend develop e590f6f→작업본dc08291을 시스템 임시 bare 원격/복제본으로 재현했다. 실제 원격 접근·push·test/develop 병합은 없다. 양쪽 이동 파일은 각12개이며 모든 이동 파일의 공통 본문에 서로 다른 팀원 수정 표식을 넣었다.
+- 각 저장소7상황/총14상황 확인: 수정 없는 pull, 옛 경로의 커밋된 수정, 미커밋 수정의 기본 pull 중단/원본 바이트 보존, 명시 --autostash, pull.autoStash 설정 후 일반 pull, 같은 줄의 커밋 충돌 보존, 같은 줄의 autostash 복원 충돌/보관본 유지. 정상 사례에서는 옛 경로가 없어지고 새 경로에 팀원 수정 표식이 모두 남으며 unmerged 항목0이다. 실제 같은 줄 충돌은 markers/unmerged 항목을 남겼고 autostash 복원 충돌에서는 stash도 남았다. 성공 종료 코드만 검사하지 않았다.
+- 최초 임시 clone은 샌드박스 권한으로 실패해 승인 후 재실행했다. 첫 모의 설정은 clone 후 core.autocrlf를 바꿔 파일을 수정 상태로 만들었으므로 제거하고 실제 줄바꿈 설정을 유지해 위14상황을 완료했다. 사용자 저장소의 줄바꿈 설정은 변경하지 않았다.
+- 결과/모의 저장소는 Temp/team-pull-20261012-51_936_b/report.json 및 하위 디렉터리, 도구는 Temp/check_team_pull_20261012.py에 보존한다. 제품 코드/의존성/DB 변경 없이 Git 협업 시나리오만 검사했으므로 제품 회귀·유료 AI는 반복하지 않았다. 기존 README/백엔드·공통 작업 기록만 현재 codex/resume-quality-check-20261012에서 커밋하며 새 저장소 파일·원격 push는 없다. BE/AG 상태와 BE-10/F-08 일반품질은 유지한다. 실제 팀원에게 자동 적용됐다고 보고하지 않는다.
+
 - **2026-10-12 새 브랜치 작업 재개·거산 표본 검수:** codex/resume-quality-check-20261012에서 정리 내용을 이어받았다. 격리 화면 PDF26/DOCX29묶음·실자료4개/실제 AI3회·5쪽 내용 및 PDF/DOCX 배치 통과. 원본 .env/DB 보존, test 병합 없음. BE-10/F-08 일반품질 진행중 유지. [기록](#geosan-resume-quality-20261012).
 
 <a id="geosan-resume-quality-20261012"></a>
