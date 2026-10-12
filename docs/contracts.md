@@ -1,6 +1,41 @@
 # 공통 데이터·API 계약
 
-기준일: 2026-10-08 · 문서 v1.44 · contract_version: 1.9 · 데이터 schema_version: 1.0
+기준일: 2026-10-12 · 문서 v1.45 · contract_version: 1.10 · 데이터 schema_version: 1.0
+
+**2026-10-12 C-01 1차 추출문 조회:** 읽기 전용 API 2개와 프론트 근거 패널을 추가한다. 기존 Source/EvidenceRef·쓰기 API·DB v11은 유지한다. 원본 파일 다운로드/전체 배포 권한은 이번 계약에 포함하지 않는다.
+
+<a id="source-text-api"></a>
+
+### 추출문 조회 (C-01, 계약 1.10)
+
+접두사 `/api/v1/sessions/{sid}`. 두 GET 모두 소유자 쿠키와 현재 선택한 근거 자료가 필요하며 정상 조회는 입력·문서 revision, 점검 확인, 검증·승인, TTL을 바꾸지 않는다. AI 호출 없음. 성공·실패 응답은 `Cache-Control: private, no-store`다.
+
+| 경로 | 용도 |
+|---|---|
+| `GET /sources/{source_id}/segments` | 현재 선택에 고정된 버전의 추출 구간 목록. context=selection만 허용 |
+| `GET /sources/{source_id}/segments/{segment_id}` | 대상 근거와 주변 구간. source_version 필수; 저장된 점검/문서 근거와 대조 |
+
+공통 query: `expected_input_revision` 필수(현재 세션 입력 revision), `context=selection|preflight|document`(기본 selection), `limit` 기본20/1~50, `cursor` 선택(최대2048자). selection에는 문맥 ID를 넣지 않는다. preflight에는 `preflight_id`만, document에는 `document_id`와 `document_revision`을 모두 넣는다. 문맥 ID는 1~100자, 버전은 1~SQLite 정수 상한이다. 알 수 없는 query 필드와 잘못된 조합은 공통 400 INVALID_REQUEST다.
+
+단건에는 `source_version`이 필요하고, 선택 문맥에서도 해당 선택 스냅샷과 일치해야 한다. preflight 문맥은 현재 입력의 해당 점검 사실/충돌 후보/제외 사실에 실제 저장된 참조만 허용한다. document 문맥은 현재 저장 문서 revision의 블록 참조만 허용하며, 아직 옛 입력을 참조하는 문서는 그 입력에 고정된 run을 조회한다. 문맥 ID를 알고 있다는 이유로 접근 권한이 생기지 않는다. 현재 선택 밖·instruction·다른 세션·허용 취소 등록 자료·일반 세션의 demo 자료는 조회하지 못한다. 삭제/purge/만료가 우선하며 이력이 없으면 최신 run으로 대체하지 않는다.
+
+`focus_segment_id`는 단건의 주변 구간 이동용 선택 query다. URL의 segment_id는 최초 근거 anchor로 유지하고, focus는 같은 source/version/run에서 같은 문맥 그룹에 속해야 한다. PPTX는 같은 슬라이드, DOCX는 문단끼리 또는 같은 표, TXT/MD는 행, PDF는 쪽끼리 묶는다. PDF의 이전/다음은 읽어낸 쪽 사이 이동이며 비어 있거나 읽지 못한 쪽을 생성하지 않는다. DOCX 문단 뒤에 저장된 표를 원본 바로 다음 문장으로 표시하지 않는다. 목록에서는 focus를 허용하지 않는다.
+
+200 `SourceTextOut`:
+
+- `source_id`, `source_version`, `run_id`, `name`: 선택된 버전의 표시 정보. 서버 경로·원본 URL 미포함.
+- `context`, `input_revision`(조회 근거의 입력), `current_input_revision`, `document_revision`(문서 문맥 외 null).
+- `parse_status:complete|partial`, `warnings:SourceWarning[]`: 해당 run의 읽기 결과.
+- `items:SourceTextSegment[]`, `context_segments:SourceTextSegment[]`: 구간은 `segment_id`, `locator`, `text`, `offset`(0부터 Unicode 문자 위치), `total_chars`, `truncated`(뒤에 더 있음). 목록은 기본20/최대50구간, text 합계 최대50,000자, 구간당 최대10,000자다. 단건은 대상 조각1개와 이전/다음 문맥 최대2개다. 긴 구간은 목록의 한 응답을 여기서 끊는다.
+- `anchor_segment_id`, `target_segment_id`: 단건의 원래 근거/현재 표시 구간, 목록은 null. `excerpts`는 서버 저장 근거의 고유 인용문 최대5개/각2,000자이며 생략 여부를 `excerpts_truncated`로 알린다. 선택 문맥에는 인용문이 없다.
+- `previous_segment_id`, `next_segment_id`: 단건 문맥 그룹 내 이동 대상 또는 null. 주변 구간이 길면 focus로 열고 이어 읽는다.
+- `next_cursor`: 다음 목록/같은 긴 구간의 다음 조각 또는 null. 그대로 보내며 query·세션·현재 입력·문서 revision·source/version/run·anchor/focus가 바뀌면 재사용하지 않는다. cursor는 권한 증명이 아니며 매번 전체 접근 검사를 반복한다. 프론트는 다음 조각으로 교체하며 본문을 브라우저 영구 저장소에 누적하지 않는다.
+
+오류: 기존 401 UNAUTHORIZED, 범위 밖 404 RESOURCE_NOT_FOUND, 409 INPUT_REVISION_CONFLICT / DOCUMENT_REVISION_CONFLICT, 410 SESSION_EXPIRED를 유지한다. 새 409 SOURCE_NOT_READY는 읽기 중(재조회 가능), 422 SOURCE_TEXT_UNAVAILABLE은 실패/이미지만 있음/글자 없음, 410 SOURCE_VERSION_UNAVAILABLE은 허용된 자료의 버전·run 소실/만료다. 잘못된 cursor, 단건 source_version 누락, 목록에 근거 문맥/focus 지정은 422 INVALID_REQUEST다. 요청 모델 형식·상한 오류는 400이다. 일부 읽기는 200과 warnings를 반환한다. 오류 응답은 공통 봉투이며 권한 밖 자료의 상세 사유는 숨긴다.
+
+세션 첨부의 만료는 현재 세션 TTL이 기준이다. source/source_version의 업로드 당시 만료 스냅샷이 지났다는 이유로 편집 중인 활성 세션을 차단하지 않는다. 등록 자료에 별도 만료가 있으면 적용한다. 정상 GET은 TTL을 연장하지 않으며 세션 만료 감지 시 기존 정리·410 처리를 유지한다.
+
+프론트는 자료 카드와 S01 사실/후보·S02 저장 블록·S03 관련 사실/블록/자료에서 같은 추출문 패널을 연다. 출처 버전·한국어 locator·인용문과 추출문을 구분하고, 단일 정확 일치에만 강조를 표시한다. 조회 실패/이동 중에는 옛 본문을 숨기고, 닫기·문맥/세션 변경은 요청을 취소해 늦은 응답을 버린다. 미저장 편집은 유지한다. `원본 파일 열기` API·Office 원본 미리보기·OCR은 미구현이다.
 
 **2026-10-07 화면에서 사실 제외·복원:** 선택 항목의 사용 여부는 `POST /sessions/{sid}/preflights/{pid}/reviews`로 저장한다. 요청은 `expected_input_revision`, `action:exclude|restore`, 비어 있지 않은 고유 `fact_ids`(최대50개), `reason`(최대300자)다. 200 Preflight는 새로운 불변 점검 ID와 선택적 읽기 필드 `excluded_facts`/`reviewable_fact_ids`를 반환한다. 기존 점검·원문·사실의 진실 상태는 보존하고 제외 사실만 생성 입력에서 빠진다. 회사명·사용자가 지정한 필수 내용·마지막 supported 사업 설명·필수/시연 위반 항목은 제외할 수 없다(422 RESOLUTION_NOT_ALLOWED). 복원은 원래 상태/문제를 되살린다. 소유·만료·현재 입력·최신 점검·선택 근거·진행 작업을 검사하고 멱등 재전송은 같은 결과를 반환한다. AI를 추가 호출하지 않으며 사용자 확인은 초기화하고 새 LangGraph 확인 지점을 저장한다. 기존 문서는 자동 수정하지 않고 검증/승인을 무효화한다. 제외 사실이 본문에 남아 있으면 EVIDENCE_INVALID로 삭제 또는 복원을 안내하며 기존 C-05/최종 검사 조건은 유지한다. 입력 변경 또는 새로운 AI 점검은 별도 결과로 취급하며 이전 제외를 임의 이월하지 않는다. API1.9 호환 확장·DBv11·template_v11 유지.
 
@@ -179,7 +214,7 @@ GET /sessions/{sid}/public-data는 {status:ready|not_configured,providers:[dart,
 
 이미지 표시가 가능해도 `text_available=false`일 수 있다. 지원하는 이미지 파일 자체의 정상 처리는 complete가 가능하지만, 그 안의 글자를 읽었다는 의미는 아니다. 파일 제외는 선택 목록에서 해제하는 것이며 등록 자료 원본 삭제와 다르다.
 
-`warnings[]`의 항목은 `code`, `message`, nullable `locator`(위치 객체), nullable `action`(권장 조치 문자열)이다. 원문/추출문 조회 API와 이미지 조회 API는 다르며 원문/추출문 조회는 아직 구현되지 않았다. 목록 응답은 `{items: Source[]}`, 업로드 접수 응답은 `{job_id, items: Source[]}`다. 업로드만으로 선택 목록에 자동 추가하지 않는다.
+`warnings[]`의 항목은 `code`, `message`, nullable `locator`(위치 객체), nullable `action`(권장 조치 문자열)이다. [추출문 조회](#source-text-api)는 이미지 조회와 별도 API이며 원본 파일 조회는 미구현이다. 목록 응답은 `{items: Source[]}`, 업로드 접수 응답은 `{job_id, items: Source[]}`다. 업로드만으로 선택 목록에 자동 추가하지 않는다.
 
 ### Asset — 화면과 출력에 사용하는 이미지
 
@@ -544,7 +579,7 @@ HTTP 오류의 `request_id`는 필수 문자열이고 `X-Request-Id` 헤더와 �
 
 | ID | 우선순위 | 현행 코드에서 확인한 내용 | 합의·반영할 것 |
 |---|---|---|---|
-| C-01 | P0 | Source.asset_ids와 이미지 GET, EvidenceRef의 인용문 표시 | 기존 목록 형식은 계약 1.3 반영. 원본/추출문 조회 API는 미구현. 2026-10-12 [현황·후속 설계안](plan.md#source-evidence-viewer-design-20261012) 작성; 새 경로/오류/권한은 구현 전 합의·계약 반영 대상 |
+| C-01 | P0 | 이미지 GET·인용문 표시·추출문 목록/근거 GET·화면 패널 | 1차 추출문 조회는 2026-10-12 계약1.10 구현. [현재 규격](#source-text-api). 원본 파일 조회/배포 권한은 별도 후속 |
 | C-02 | P0 | Proposal의 rationale/candidates/applied_revision과 선택 적용 | 기존 후보·빈 값 형식은 계약 1.3 반영. 실제 AI 후보/프론트 비교 화면은 후속 |
 | C-03 | P0 | Job.progress와 7종 result_ref, Preflight/Proposal GET | 현행 필드·결과 조회 방식을 계약 1.3/OpenAPI에 반영. 백분율은 추가하지 않음 |
 | C-04 | P0 | SourceWarning와 Recommendations | 현행 위치·문자열 보완 목록을 계약 1.3에 반영. 새 고정 보완 분류는 별도 결정 |
@@ -606,7 +641,7 @@ C-05의 사용자 흐름은 [prd.md BR-05](prd.md)를 따른다. 현재 서버�
 
 **화면 표시에서 재사용할 정보**
 
-- 출처는 `EvidenceRef.source_id/source_version/segment_id/locator/excerpt`를 사용한다. 원자료 ID는 작성 결과의 `document_id`와 구분하고 PDF 쪽·PPTX 슬라이드·DOCX 문단/표·TXT 줄 등 실제 위치를 표시한다. 원문/추출문 조회 경로는 C-01에서 별도 합의한다.
+- 출처는 `EvidenceRef.source_id/source_version/segment_id/locator/excerpt`를 사용한다. 원자료 ID는 작성 결과의 `document_id`와 구분하고 PDF 쪽·PPTX 슬라이드·DOCX 문단/표·TXT 줄 등 실제 위치를 표시한다. 추출문 경로는 [C-01 계약1.10](#source-text-api), 원본 파일 조회/배포 권한은 별도 후속이다.
 - 근거 상태는 `Fact.status`와 관련 Issue로 보여준다. 현재 모델에는 수정안의 신뢰도 점수나 ‘신뢰도 높음’ 판정이 없다. 근거 있음이 외부 현실의 진위를 보증하지 않는다.
 - 페이지 카드는 기존 Document의 제목·본문 일부·사진 포함 여부로 구성할 수 있다. 수치 확인은 연결된 Fact·Issue·검사 결과를 사용하며 화면 보기 전환만으로 검증 완료 상태를 만들지 않는다.
 - A4 비율의 편집 화면과 선택 형식의 배치 검사·출력 미리보기(C-09)를 구분한다. PDF와 DOCX의 쪽수·배치 일치를 보장하지 않는다.

@@ -8,6 +8,7 @@
 - 작업 규칙: [AGENTS.md](AGENTS.md), [CLAUDE.md](CLAUDE.md)
 - 기획·설계: [개발 계획](docs/plan.md), [제품 요구사항](docs/prd.md), [Agent 설계](docs/agent.md)
 - API 계약 원본: [contracts.md](docs/contracts.md)
+- 원문·근거 확인: [1차 추출문 API·화면 규격](docs/contracts.md#source-text-api), [구현·검증 기록](docs/task_backend.md#source-text-implementation-20261012). 원본 파일 다운로드는 후속이다.
 - 진행 상태: [공통 작업표](docs/task.md), [백엔드 작업표](docs/task_backend.md), [Agent 작업표](docs/task_agent.md)
 - 참고 자료: [화면 설계](docs/screens/README.md), [아이디어](docs/idea.md)
 - 폴더·자료 관리: [폴더별 역할](#folder-roles), [자료 저장 위치와 보관](#data-storage), [직접 경로를 지정할 때](#path-selection), [찾고 싶은 것별 위치](#folder-lookup)

@@ -364,7 +364,11 @@ def test_openapi_describes_common_errors_export_statuses_and_binary_responses(ap
     schema = app.openapi()
     operations = [operation for path, item in schema["paths"].items() if path.startswith("/api/v1/")
                   for method, operation in item.items() if method in {"get", "post", "patch", "delete"}]
-    assert len(operations) == 34
+    assert len(operations) == 36  # C-01 extraction list and cited-segment GETs
+    for suffix in ("", "/{segment_id}"):
+        operation = schema["paths"]["/api/v1/sessions/{sid}/sources/{source_id}/segments" + suffix]["get"]
+        assert operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/SourceTextOut")
+        assert next(p for p in operation["parameters"] if p["name"] == "expected_input_revision")["required"]
     assert "post" in schema["paths"]["/api/v1/sessions/{sid}/preflights/{pid}/reviews"]
     assert "get" in schema["paths"]["/api/v1/companies"]
     assert "get" in schema["paths"]["/api/v1/sessions/{sid}/public-data"]
