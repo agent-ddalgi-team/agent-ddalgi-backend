@@ -7,6 +7,22 @@
 
 ## 1. Quick Status
 
+- **2026-10-12 새 브랜치 작업 재개·거산 표본 검수:** codex/resume-quality-check-20261012에서 정리 내용을 이어받았다. 격리 화면 PDF26/DOCX29묶음·실자료4개/실제 AI3회·5쪽 내용 및 PDF/DOCX 배치 통과. 원본 .env/DB 보존, test 병합 없음. BE-10/F-08 일반품질 진행중 유지. [기록](#geosan-resume-quality-20261012).
+
+<a id="geosan-resume-quality-20261012"></a>
+
+### 새 작업 브랜치와 기존 거산 자료의 품질 표본 (2026-10-12, BE-10/F-08)
+
+- 사용자 요청에 따라 백엔드4e224f4와 프론트dc08291의 codex/organize-markdown-docs에서 각각 codex/resume-quality-check-20261012를 만들었다. 따라서 새 브랜치에도 정리된 문서/실행 자원 구조가 포함된다. 부모 C:/final/.vscode의 숨김·파일 접기 설정은 두 저장소 밖의 로컬 설정으로 브랜치와 독립적이다. frontend의 기존 미추적 .claude/는 보존했다. test에서 새로 시작하거나 정리 내용을 test에 병합한 것이 아니다.
+- 정리 후 실제 연결 검수: AI_CHECK_BACKEND=C:/final/backend, AI_CHECK_LIVE=0에서 `node scripts/check-ai-workflow.mjs --publication`와 `--publication --docx` 각각 통과. PDF26/DOCX29 시나리오 묶음이며 공통 검사를 합산하지 않는다. 임시 DB/API/Vite/브라우저, 가상 AI와 실제 출력 엔진으로 편집·응답 유실/복원·내용/배치·명시 승인·동일 바이트 다운로드·편집 후 옛 승인 차단·종료 정리를 확인했다. 산출물은 각각4쪽/25,416바이트와4쪽/2,396,342바이트다. Temp/ddalgi-ai-ui-lRhWS9, Temp/ddalgi-ai-ui-4bpeBY에 보존하며 실제 회사 품질 결과와 구분한다.
+- 사용자가 기존 거산 자료 사용을 선택했다. 원본 SQLite는 mode=ro로 열고 실제 등록 소개서PPTX·AS9100·KSPC·SSQ4개의 sources/source_versions/extraction_runs/segments만 새 임시 ORM DB에 복사했다. 선택 자료의 파일도 임시 등록 폴더로 복사했다. 기존 사용자 세션·문서·자료를 새 세션으로 재사용하거나 변경하지 않았다. 추출문8,280자, 시연 가상 납기/주문 자료와 사진은 선택하지 않았다. 목적은 신규 고객 공정·기술·인증 소개, 최소4쪽, 사진 없음이다. 일반 PC .env의 실행 모드를 상속하지 않고 자식 프로세스에 trial 모델/상한을 명시했다.
+- gpt-6-luna로 점검1/초안1/내용검증1, 총3호출·SDK 재시도0. 제한은 요청180초/입력40,000자/출력32,000토큰/내용검증400,000자, 각 프로세스 trial 상한$1이다. 두 실행의 ledger 추정 합계$0.018544150/미확인 예약0이며 실제 카드 청구액이 아니다. 점검78사실(76supported/2missing), can_generate=true. 공정 총수와 납기는 원문에 없는 값으로 missing이며 임의 계산·보충하지 않았다.
+- 초안doc_0c0018be88e14203/revision1/input_revision2, 논리5쪽/58블록. 내용검증val_f5e8a118691349d9는 실제 모델 호출/58블록 대조로 passed, Issue0이다. 본문을 확인해 AS9100D/ISO9001 범위·2028-09-24 만료/유지 조건, KSPC 범위·2020-12-28 최초/2026-01-17 재발행/2027-02-15 만료, 2–3미크론 피막·5/13/25미크론·알루미늄 후처리168hr와1A/3종 문구가 담긴 것을 확인했다. 이것은 선택 원문 기준 표본이며 실제 회사의 현재 인증 유지·현장 성능을 독립적으로 확정한 것이 아니다.
+- 실제 배치: template_v11, Chrome155 PDF5쪽/passed·LibreOffice26.8.0.3 DOCX5쪽/passed. overflow/broken_image/placeholder_remaining 모두ok, findings0·publication_policy_ok=true다. 거산 초안의 최종 승인·외부 배포·다운로드는 실행하지 않았다. 앞의 가상 UI 승인/다운로드 통과와 구분하며 Word에서 동일 쪽 나눔을 보장하지 않는다.
+- 검사 도구 실패를 보존한다. 최초 임시 스크립트는 DocumentOut의 document.pages 대신 pages를 읽어 초안 성공 뒤 중단됐다. API/제품 오류로 보고하지 않으며 기존 임시 세션·초안을 복원해 내용검증만 이어갔다. 최초 DOCX 검사는 임시 Settings에 기존 설정의 soffice.com 대신 soffice.exe를 지정해 render_timeout으로 실패했다. .env나 제품 코드는 변경하지 않고 임시 설정만 기존 실행기로 맞춰 같은 문서/90초 제한에서 배치만 재검사해 성공했다. 점검/초안/내용검증의 추가 유료 재호출은 없다.
+- 실자료 산출물/JSON/격리 DB와 실패 기록은 시스템 Temp/geosan-resume-20261012-ndg_rmu3, 실행 도구는 Temp/geosan_resume_20261012.py·geosan_resume_finish_20261012.py·geosan_resume_layout_20261012.py에 있다. 저장소에 새 인계/임시 파일을 만들지 않았다. .env와 원본 SQLite/WAL/SHM5파일 SHA256은 전후 동일하다. test ref d4b9725801677c094d7e489dbd7ea2c02b9ad0c1, frontend develop e590f6f86275e263e71485786f4d500a88190dee는 유지했다.
+- 이번 표본과 정리 후 연결 검사 단위 완료. 제품/프롬프트/API/DB 스키마 변경 없으므로 기존 전체 회귀를 다시 반복하지 않았다. 자기 계획·공통/백엔드 작업 기록3파일만 새 브랜치에 로컬 커밋한다. 원격push/test 병합 없음. BE-10/F-08 일반품질과 Agent 상태는 유지하며 다음은 실제 새 입력에서 오류가 재현될 때 해당 부분 수정, 또는 사용자 요청에 따른 공유다. 4개 자료/사진 없는1회 통과를 모든 자료·사진·문체·반복 안정성의 완료로 확대하지 않는다.
+
 - **2026-10-12 로컬 .venv 옛 경로 복구:** 직접 실행기·PowerShell/CMD 활성화·관련295검사 통과, 87패키지 버전/.env/DB5파일 해시 동일. 이전 경로 검수의 환경 후속 해결. 복구 단위 완료, BE-10/F-08 일반품질과 Agent 상태 유지. [기록](#venv-path-repair-20261012).
 
 <a id="venv-path-repair-20261012"></a>

@@ -7,6 +7,8 @@
 
 ## 1. Quick Status
 
+- **2026-10-12 [BE-10/F-08] 새 브랜치 작업 재개:** 정리 내용 상속·격리 화면 PDF26/DOCX29묶음 및 거산 실자료4개/AI3회·5쪽 내용/양식 배치 통과. 표본 단위 완료/일반품질 진행중 유지·test 병합 없음. [task_backend.md 기록 참조](task_backend.md#geosan-resume-quality-20261012).
+
 - **2026-10-12 로컬 .venv 경로 복구:** 실행기/활성화·295검사 통과/87패키지 버전·.env/DB 해시 보존·복구 단위 완료/제품 상태 유지. [task_backend.md 기록 참조](task_backend.md#venv-path-repair-20261012).
 
 - **2026-10-12 README 저장 안내:** 폴더·자료 보관·경로 지정·찾기 기준 정리/링크 검수 완료·제품 상태 유지. [task_backend.md 기록 참조](task_backend.md#readme-folder-storage-guide-20261012).
