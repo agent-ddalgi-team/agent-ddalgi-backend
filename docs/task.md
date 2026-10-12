@@ -7,6 +7,8 @@
 
 ## 1. Quick Status
 
+- **2026-10-12 문서 정리:** 두 저장소 일반 MD 이동·링크 검수 완료/제품 작업 상태 유지. [task_backend.md 기록 참조](task_backend.md#markdown-docs-organization-20261012).
+
 - **2026-10-08 [BE-09·10 / F-08] 만료 후 화면 복귀:** 격리 브라우저16묶음 통과·실제410→초안/출력 참조 정리→시작 화면→다른 세션·자동AI0·일반품질 진행중. [기록](task_backend.md#expired-workflow-ui-recovery-20261008).
 
 - **2026-10-08 [BE-09·10 / F-08] 만료 안내 화면 검수:** 격리 실제 브라우저15묶음 통과·S01/S02/S03 표시/조회·기한/문서 불변·AI 추가 호출0·일반품질 진행중. [기록](task_backend.md#session-expiry-ui-check-20261008).

@@ -90,7 +90,7 @@ GET /sessions/{sid}/public-data는 {status:ready|not_configured,providers:[dart,
 
 **내부 추출 전송 형식(2026-09-29, 문서 v1.12):** 실제 `company_info` 호출에서 각 원문 구간에 요청 내 `unit_id`를 부여하고 모델의 evidence는 `{"unit_id": 1}`처럼 그 번호만 반환한다. 서버가 해당 구간의 원문 전체를 정확히 quote로 연결하고 기존 source_id·locator·버전을 복원한다. 번호는 이번 요청의 선택 자료 구간만 허용하며 bool/실수/문자열·범위 밖 ID·임의 quote 필드는 거부한다. fact의 text·상태·충돌 후보를 자동 보정하거나 삭제하지 않고 기존 원문·형식 검사와 후속 의미 검증을 유지한다. 이는 인용문 재작성 오류를 없애는 내부 전송 변경이다. 공개 Preflight/Fact/EvidenceRef JSON과 DB 스키마는 그대로이며 프론트는 같은 API를 사용한다. 인용 범위는 모델이 재작성한 짧은 발췌 대신 선택된 원문 구간 전체다.
 
-**계약 1.2(2026-09-28):** 사용자가 요청한 AG-04 연결 후속으로, 같은 입력의 재점검에서 충돌이 발견되면 기존 승인을 무효화하고 승인 요청 재전송도 현재 승인 상태를 확인한다. `invalidated_reason`의 `preflight_conflict`, 기존 `APPROVAL_NOT_ACTIVE`·`REVALIDATION_REQUIRED` 오류가 적용되는 경로를 아래에 반영했다. 모델 필드·상태값·API 경로·문서 schema_version은 그대로이며 승인 재전송의 응답 동작 변경에 맞춰 계약 버전을 올렸다. 기존 [API 예시](handoff/api_examples_v1.1.json)는 파일 경로를 유지하고 내부 contract_version과 관련 예시를 1.2로 갱신한다. 프론트 사본·오류 표시 갱신은 필요하며 아직 확인하지 않았다.
+**계약 1.2(2026-09-28):** 사용자가 요청한 AG-04 연결 후속으로, 같은 입력의 재점검에서 충돌이 발견되면 기존 승인을 무효화하고 승인 요청 재전송도 현재 승인 상태를 확인한다. `invalidated_reason`의 `preflight_conflict`, 기존 `APPROVAL_NOT_ACTIVE`·`REVALIDATION_REQUIRED` 오류가 적용되는 경로를 아래에 반영했다. 모델 필드·상태값·API 경로·문서 schema_version은 그대로이며 승인 재전송의 응답 동작 변경에 맞춰 계약 버전을 올렸다. 기존 [API 예시](../handoff/api_examples_v1.1.json)는 파일 경로를 유지하고 내부 contract_version과 관련 예시를 1.2로 갱신한다. 프론트 사본·오류 표시 갱신은 필요하며 아직 확인하지 않았다.
 
 이 문서는 프론트·백엔드·Agent의 데이터 교환 기준이다. 기존 API와 필드가 이미 있다면 백엔드 BE-01에서 연결표를 만들고 호환 어댑터를 우선한다. 아래 이름은 현재 코드에 구현되어 있다는 뜻이 아니다.
 

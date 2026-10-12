@@ -8,7 +8,7 @@
 
 ## 1. 시작 전 읽을 것
 
-[plan.md](plan.md), [prd.md](prd.md), [contracts.md](contracts.md)를 읽는다. 백엔드는 [task_backend.md](task_backend.md), Agent는 [task_agent.md](task_agent.md)와 [agent.md](agent.md)를 읽는다. 공통 [task.md](task.md)는 연결 지점과 선행 결과 위치를 확인하는 데 사용한다.
+[plan.md](docs/plan.md), [prd.md](docs/prd.md), [contracts.md](docs/contracts.md)를 읽는다. 백엔드는 [task_backend.md](docs/task_backend.md), Agent는 [task_agent.md](docs/task_agent.md)와 [agent.md](docs/agent.md)를 읽는다. 공통 [task.md](docs/task.md)는 연결 지점과 선행 결과 위치를 확인하는 데 사용한다.
 
 - 사용자가 지정한 역할과 BE-* 또는 AG-* 작업 ID를 확인한다.
 - 실제 브랜치·기존 미커밋 변경·파일 구조·실행 명령을 확인한다.

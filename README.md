@@ -1,6 +1,18 @@
 # agent-ddalgi-backend
 거산케미칼 회사소개서 초안 도우미 — 백엔드 + Agent (FastAPI, uv, Python 3.13)
 
+## 문서 찾아가기
+
+일반 프로젝트 문서는 `docs/`에 모아 둔다. 실행 명령은 문서 위치와 관계없이 저장소 루트에서 실행한다.
+
+- 작업 규칙: [AGENTS.md](AGENTS.md), [CLAUDE.md](CLAUDE.md)
+- 기획·설계: [개발 계획](docs/plan.md), [제품 요구사항](docs/prd.md), [Agent 설계](docs/agent.md)
+- API 계약 원본: [contracts.md](docs/contracts.md)
+- 진행 상태: [공통 작업표](docs/task.md), [백엔드 작업표](docs/task_backend.md), [Agent 작업표](docs/task_agent.md)
+- 참고 자료: [화면 설계](docs/screens/README.md), [아이디어](docs/idea.md)
+
+테스트 묶음 설명서와 글꼴 출처는 해당 자원 폴더에 유지한다. 문서 이동·검증 기록은 [백엔드 작업표](docs/task_backend.md#markdown-docs-organization-20261012)를 따른다.
+
 ## 시작
 
 Python 3.13과 uv가 준비된 환경에서 저장소 최상위 폴더에서 실행한다.
@@ -69,16 +81,16 @@ $env:OPENAI_EXECUTION_MODE = 'runtime'
 
 현재 시연 DB에는 고객 제안용 8쪽(revision 7)과 품질 심사용 9쪽(revision 3)의 PDF·LibreOffice DOCX 승인/출력 결과가 있다. 세션·출력 만료와 종료 정리 정책은 계속 적용되므로 DB 보존만으로 승인 파일을 영구 재다운로드할 수 있는 것은 아니다. DOCX 배치 검사는 LibreOffice 기준이며 Word에서는 글꼴·쪽 나눔이 달라질 수 있다.
 
-현재 API 계약은 1.9, 데이터 형식은 1.0, DB는 v11, 출력 템플릿은 `template_v10`이다. 서버 기능 및 두 시연 표본 검수는 완료했다. 전체 회귀 1,807 passed/10 skipped와 이후 사진 분할 관련 10 passed는 각각의 검사 기록이다. 다른 목적·업종의 AI 품질, 제외 ISO 자료의 회사 확인, 별도 프론트 작업 공유는 남아 있다. 완료 범위·제한·검사 근거는 [백엔드 인계 기록](task_backend.md#backend-handoff-20261006)을 따른다.
+현재 API 계약은 1.9, 데이터 형식은 1.0, DB는 v11, 출력 템플릿은 `template_v10`이다. 서버 기능 및 두 시연 표본 검수는 완료했다. 전체 회귀 1,807 passed/10 skipped와 이후 사진 분할 관련 10 passed는 각각의 검사 기록이다. 다른 목적·업종의 AI 품질, 제외 ISO 자료의 회사 확인, 별도 프론트 작업 공유는 남아 있다. 완료 범위·제한·검사 근거는 [백엔드 인계 기록](docs/task_backend.md#backend-handoff-20261006)을 따른다.
 
 ### 테스트
 ```bash
 uv run pytest
 ```
 
-백엔드 기본 통합 검사는 mock(가짜 응답)으로 저장·버전·접근·실패 복구를 확인한다. 실제 모델의 사실 누락·잘못된 수치·문장 품질은 별도 실제 LLM 시험으로 확인하며 mock 통과만으로 완료하지 않는다. 실제 LLM 분석·초안과 AG-07 원문 의미 검증의 구현/별도 시험 기록은 `task_agent.md`를 따른다. 기본 유료 호출 한도에는 content_review가 포함되지 않으므로 의미 검증 구현과 일반 서버의 호출 허용을 구분한다. 기본 통합 검사와 별도로 실제 AI·실자료 시연 검수를 수행했으며 범위와 결과는 [백엔드 작업표](task_backend.md)에 기록한다.
+백엔드 기본 통합 검사는 mock(가짜 응답)으로 저장·버전·접근·실패 복구를 확인한다. 실제 모델의 사실 누락·잘못된 수치·문장 품질은 별도 실제 LLM 시험으로 확인하며 mock 통과만으로 완료하지 않는다. 실제 LLM 분석·초안과 AG-07 원문 의미 검증의 구현/별도 시험 기록은 `task_agent.md`를 따른다. 기본 유료 호출 한도에는 content_review가 포함되지 않으므로 의미 검증 구현과 일반 서버의 호출 허용을 구분한다. 기본 통합 검사와 별도로 실제 AI·실자료 시연 검수를 수행했으며 범위와 결과는 [백엔드 작업표](docs/task_backend.md)에 기록한다.
 
-Job GET의 `progress.trace`에서 설정 모드/실제 실행기·모델, 자료 버전·구간 수·입력 글자 수·사진 수, 점검/문서 참조와 검증/렌더 결과를 확인한다. 오래된 Job은 trace가 null일 수 있고 세션 종료/만료 시 정리된다. Job 성공과 내용 검증 통과를 구분한다. 원문/프롬프트/키를 공통 진단 로그에 남기지 않는다. 최근 실제 LLM 검수 결과·미해결 범위는 [실행 추적 기록](task_backend.md#backend-task-tracing-20261008)을 따른다.
+Job GET의 `progress.trace`에서 설정 모드/실제 실행기·모델, 자료 버전·구간 수·입력 글자 수·사진 수, 점검/문서 참조와 검증/렌더 결과를 확인한다. 오래된 Job은 trace가 null일 수 있고 세션 종료/만료 시 정리된다. Job 성공과 내용 검증 통과를 구분한다. 원문/프롬프트/키를 공통 진단 로그에 남기지 않는다. 최근 실제 LLM 검수 결과·미해결 범위는 [실행 추적 기록](docs/task_backend.md#backend-task-tracing-20261008)을 따른다.
 
 ### API 요청·응답 형식 (Pydantic, 계약 1.9)
 
@@ -90,7 +102,7 @@ Pydantic 모델은 **화면이 보내는 값과 서버가 돌려주는 값의 �
 - `/docs`와 `/openapi.json`에 30개 API의 모델·오류·파일 응답을 표시한다. 구조가 있는 JSON 응답 28개와 이미지/출력 파일 응답 2개가 있다. Export는 새 작업 202와 준비된 결과 재사용 200을 구분한다.
 - 긴 작업은 접수 후 Job을 조회한다. `result_ref`는 작업 종류별 결과 ID이며 Preflight·Document·Proposal 등 결과를 별도 GET으로 읽는다. `succeeded`인 검사 Job도 검사 결과 자체는 failed일 수 있다.
 
-현재 형식과 예시는 [contracts.md](contracts.md), [API 예시](handoff/api_examples_v1.1.json)를 따른다. 예시 파일명은 기존 참조를 위해 유지하고 내부 계약 버전은 1.9이다. 기존 프론트 S01~S03 연결 기록은 [백엔드 작업표](task_backend.md)를 따른다. C-05 가상 화면 연결·실제 AI 보완 자료 복귀 및 DOCX 승인·출력 표본 검수는 완료했다. 별도 프론트 계약 사본 공유와 일반 품질 평가는 후속이다.
+현재 형식과 예시는 [contracts.md](docs/contracts.md), [API 예시](handoff/api_examples_v1.1.json)를 따른다. 예시 파일명은 기존 참조를 위해 유지하고 내부 계약 버전은 1.9이다. 기존 프론트 S01~S03 연결 기록은 [백엔드 작업표](docs/task_backend.md)를 따른다. C-05 가상 화면 연결·실제 AI 보완 자료 복귀 및 DOCX 승인·출력 표본 검수는 완료했다. 별도 프론트 계약 사본 공유와 일반 품질 평가는 후속이다.
 
 ### 자료 변경 후 기존 편집으로 복귀 (C-05)
 
@@ -101,7 +113,7 @@ Pydantic 모델은 **화면이 보내는 값과 서버가 돌려주는 값의 �
 3. 변경할 편집 연산 `operations`, 필요한 `reference_updates`, 필수 유지 사유 `keep_reason`을 `POST /documents/{did}/impact-reviews/{rid}/apply`로 보낸다. 정확히 같은 supported 사실·근거는 최신 Fact ID로 연결하고, 제외되거나 달라진 근거는 명시적으로 수정하거나 해당 블록을 삭제해야 한다.
 4. 응답의 `validation_job_id`로 전체 내용 검증 결과를 조회한 뒤 편집을 계속한다. 승인·PDF 배치는 새 문서 기준으로 다시 확인한다.
 
-DB v11의 기존 `impact_reviews`·`confirmations`를 사용한다. v9 DB는 자동 이전하지 않으며 C-05 요청에 `409 IMPACT_HISTORY_UNAVAILABLE`를 반환한다. 프론트 복귀 화면은 가상 자료로 연결 검사했고, 실제 AI로 보완 자료 추가 후 기존 편집 보존·근거 연결·재검증 표본을 확인했다. 수치 변경·자료 제외와 다른 업종의 일반 품질 평가는 별도다. 상세 규칙은 [공통 계약](contracts.md), 결과는 [C-05 작업 기록](task_backend.md#c05-edit-return-20260930)을 따른다.
+DB v11의 기존 `impact_reviews`·`confirmations`를 사용한다. v9 DB는 자동 이전하지 않으며 C-05 요청에 `409 IMPACT_HISTORY_UNAVAILABLE`를 반환한다. 프론트 복귀 화면은 가상 자료로 연결 검사했고, 실제 AI로 보완 자료 추가 후 기존 편집 보존·근거 연결·재검증 표본을 확인했다. 수치 변경·자료 제외와 다른 업종의 일반 품질 평가는 별도다. 상세 규칙은 [공통 계약](docs/contracts.md), 결과는 [C-05 작업 기록](docs/task_backend.md#c05-edit-return-20260930)을 따른다.
 
 실제 사용 DB에 자료를 넣지 않고, 임시 DB와 mock 자료로 형식·S01 흐름을 확인하려면 다음 검사를 실행한다.
 
@@ -207,7 +219,7 @@ DDL과 이력 기록은 하나의 명시적 트랜잭션으로 처리하고 실�
 
 성공 후 `.env`의 `PRIVATE_RUNS_DIR=private_runs/erd_v2`로 경로를 지정하고 서버를 다시 시작한다. `DB_PATH`를 별도로 설정했다면 그 경로도 새 DB와 일치시켜야 한다. 이전 `private_runs/app.sqlite3`와 등록 자료는 복구용으로 보관한다. 기존 DB 경로에서 서버를 실행하면 만료 정리가 동작할 수 있으므로 백업 확인에는 읽기 전용 도구를 사용한다. 개발 가상환경은 기존 `.venv` 그대로 사용한다.
 
-검증 결과와 이번 PC에서 적용한 경로는 [task_backend.md 6.22절](task_backend.md#622-erd-v2-orm과-새-db-재적재-2026-09-28)에 기록한다. 자동화 테스트는 임시 DB만 사용한다.
+검증 결과와 이번 PC에서 적용한 경로는 [task_backend.md 6.22절](docs/task_backend.md#622-erd-v2-orm과-새-db-재적재-2026-09-28)에 기록한다. 자동화 테스트는 임시 DB만 사용한다.
 
 **현재 로컬 상태(2026-09-29):** 사용자 요청으로 자료 적재는 보류했다. `.env`는 `private_runs/erd_v2`를 사용하며, 활성 DB는 **v11 / Alembic `20260929_01`, 업무 테이블 25개·업무 데이터 0건**이다. Alembic 관리 테이블/버전 행은 별도로 유지한다. 이전 `private_runs/app.sqlite3`와 연결 파일은 사용자 요청으로 삭제했다(6.28절). 원본 자료와 새 폴더의 준비용 복사본은 보관하며 이번 구조 변경에서 수정·삭제하지 않았다. 나중에 적재를 요청하면 준비된 `import_packages/real`·`import_packages/demo` 묶음을 기존 적재기로 넣을 수 있다. 기존 대상 폴더에 위 재생성 명령을 다시 실행하면 보호 검사로 중단한다. 다른 PC의 기존 v10 DB는 새 코드를 받은 뒤 서버를 중지하고 `uv run alembic upgrade head`로 갱신한다. 적용·검증 결과는 `task_backend.md` 6.31절을 따른다.
 
@@ -280,14 +292,14 @@ uv run python scripts/import_registered.py --source-dir private_runs/registered_
 |---|---|---|
 | 1 | [프로젝트 아이디어](docs/idea.md) | 무엇을 만들고 누가 사용하는지; 범위 축소안은 제안 |
 | 2 | [전체 구조 그림](docs/site_design.png) | 화면·서버·AI·저장소의 관계와 현재 상태 |
-| 3 | [개발 계획](plan.md) · [제품 요구사항](prd.md) | 확정 범위·미정 결정·사용자 흐름·완료 기준 |
-| 4 | [공통 계약](contracts.md) | 데이터·API 기준; 7절은 현행 코드와의 차이 및 합의 대기 목록 |
-| 5 | [백엔드 작업](task_backend.md) 또는 [Agent 작업](task_agent.md) · [Agent 설계](agent.md) | 내 담당 작업·코드 위치·남은 연결·검증할 내용 |
-| 6 | [공통 연결표](task.md) | 담당자 간 연결 지점과 결과 기록 위치 |
+| 3 | [개발 계획](docs/plan.md) · [제품 요구사항](docs/prd.md) | 확정 범위·미정 결정·사용자 흐름·완료 기준 |
+| 4 | [공통 계약](docs/contracts.md) | 데이터·API 기준; 7절은 현행 코드와의 차이 및 합의 대기 목록 |
+| 5 | [백엔드 작업](docs/task_backend.md) 또는 [Agent 작업](docs/task_agent.md) · [Agent 설계](docs/agent.md) | 내 담당 작업·코드 위치·남은 연결·검증할 내용 |
+| 6 | [공통 연결표](docs/task.md) | 담당자 간 연결 지점과 결과 기록 위치 |
 
-2026-09-27에는 개발 전 문서를 정리했다. 당시 기존 BE/AG 작업 상태와 테스트 기록을 유지했고 실행 코드·의존성·DB는 바꾸지 않았다. 현재 공통 계약은 1.6, 데이터 schema_version은 1.0이다. 2026-09-28의 계약 1.2는 재점검 충돌로 인한 기존 승인 무효화·승인 재전송 차단을 반영한다. 상세는 [contracts.md](contracts.md), 기존 경로를 유지한 예시는 [API 예시](handoff/api_examples_v1.1.json)를 따른다. 프론트 계약/예시 사본은 문서 v1.9까지의 동기화 기록이 있으며, 이번 계약 1.6의 사본·프론트 구현은 갱신하지 않았다. 검토 메모의 다른 제안과 미구현 항목은 별도로 유지한다.
+2026-09-27에는 개발 전 문서를 정리했다. 당시 기존 BE/AG 작업 상태와 테스트 기록을 유지했고 실행 코드·의존성·DB는 바꾸지 않았다. 현재 공통 계약은 1.6, 데이터 schema_version은 1.0이다. 2026-09-28의 계약 1.2는 재점검 충돌로 인한 기존 승인 무효화·승인 재전송 차단을 반영한다. 상세는 [contracts.md](docs/contracts.md), 기존 경로를 유지한 예시는 [API 예시](handoff/api_examples_v1.1.json)를 따른다. 프론트 계약/예시 사본은 문서 v1.9까지의 동기화 기록이 있으며, 이번 계약 1.6의 사본·프론트 구현은 갱신하지 않았다. 검토 메모의 다른 제안과 미구현 항목은 별도로 유지한다.
 
-Stitch 화면 설계와의 연결 기준은 [prd.md 3~5절](prd.md), 화면 상태별 데이터 연결은 [contracts.md 7.5절](contracts.md)을 따른다. 추가 기능의 채택 여부는 [plan.md 4.1절](plan.md)에서 관리한다. 화면 시연·예시 응답과 실제 기능 완료는 구분한다.
+Stitch 화면 설계와의 연결 기준은 [prd.md 3~5절](docs/prd.md), 화면 상태별 데이터 연결은 [contracts.md 7.5절](docs/contracts.md)을 따른다. 추가 기능의 채택 여부는 [plan.md 4.1절](docs/plan.md)에서 관리한다. 화면 시연·예시 응답과 실제 기능 완료는 구분한다.
 
 ### 로컬 시연: 문구 수정안·내용 검증 함께 켜기
 
