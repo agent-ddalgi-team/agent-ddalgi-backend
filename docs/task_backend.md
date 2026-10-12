@@ -7,6 +7,8 @@
 
 ## 1. Quick Status
 
+- **2026-10-12 구조·경로 정리 PR:** 사용자 요청으로 codex/resume-quality-check-20261012를 push하고 [백엔드 PR #46](https://github.com/agent-ddalgi-team/agent-ddalgi-backend/pull/46)을 test 대상으로 생성했다. 문서·실행 자원 이동, 코드/링크 수정, 공유 경로 지침과 실제 검증 결과를 포함한다. PR 생성 전 origin/test=d4b9725 기준 분기 없음/작업9커밋·diff 형식 확인. 이 기록을 같은 PR 브랜치에 후속 커밋한다. 병합하지 않았으며 프론트는 별도 저장소로 이번 PR에 포함하지 않는다. BE-10/F-08 및 다른 담당 상태 유지.
+
 - **2026-10-12 공유 MD 경로 기준:** 사용자 의도를 재확인해 AGENTS/양쪽 README에 저장소 상대경로·읽을 문서·옛 위치 사본 금지를 명시했다. 앞선 로컬 autostash 설정/팀원별 설정 안내는 철회한다. test 병합 없음. [기록](#shared-path-guidance-20261012).
 
 <a id="shared-path-guidance-20261012"></a>
