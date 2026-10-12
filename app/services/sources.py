@@ -365,7 +365,7 @@ def _resolve_text_source(conn: Connection, session: Row, source_id: str, query: 
     pinned = conn.execute(
         "SELECT sel.source_version, sel.run_id, v.original_name, v.purged_at AS version_purged, "
         "v.expires_at, v.stored_path, v.content_hash, v.size_bytes, v.mime_type, v.session_id, v.provenance, "
-        "r.status, r.warnings_json, r.purged_at AS run_purged "
+        "r.status, r.method, r.warnings_json, r.purged_at AS run_purged "
         "FROM session_source_selections sel JOIN source_versions v "
         "ON v.source_id=sel.source_id AND v.version=sel.source_version "
         "LEFT JOIN extraction_runs r ON r.run_id=sel.run_id AND r.source_id=sel.source_id "
@@ -454,6 +454,7 @@ def read_text(conn: Connection, session: Row, source_id: str, query: SourceTextQ
                    if index < len(rows) else None)
     excerpts = list(dict.fromkeys(r.get("excerpt", "") for r in matching))
     return SourceTextOut(source_id=source_id, source_version=pinned["source_version"], run_id=pinned["run_id"],
+                         text_origin={"registered_bundle": "registered_excerpt", "parser": "automatic_extraction"}.get(pinned["method"], "unknown"),
                          original_download_available=_original_eligible(conn, source, pinned["source_version"]),
                          name=pinned["original_name"], context=query.context, input_revision=input_revision,
                          current_input_revision=session["input_revision"], document_revision=query.document_revision,

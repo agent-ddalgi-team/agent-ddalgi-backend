@@ -7,8 +7,22 @@
 
 ## 1. Quick Status
 
+- **2026-10-12 C-01 생성 방식 표시:** 등록 발췌문/자동 추출문/미확인 표시 구현·검증 완료. [기록](#source-text-origin-20261012).
+
 - **2026-10-12 C-01 1차 구현:** 추출문 목록/근거 GET과 S01/S02/S03 패널 연결 완료. 계약1.10·DBv11 유지. 새 API25건·계약 포함70건·격리 브라우저30묶음 통과. 원본 파일 다운로드는 후속. [구현·검수 기록](#source-text-implementation-20261012).
 
+
+<a id="source-text-origin-20261012"></a>
+
+### 등록 발췌문·자동 추출문 구분 표시 (2026-10-12, F-01/C-01)
+
+- **변경:** 사용자 요청에 따라 app/models.py의 SourceTextOut에 text_origin(registered_excerpt/automatic_extraction/unknown, 기본 unknown)을 추가했다. app/services/sources.py는 현재 선택·점검·저장 문서가 고정한 run의 method를 읽어 registered_bundle→등록 발췌문, parser→자동 추출문, 나머지→미확인으로 반환한다. scope/최신 current_run_id/본문 추측을 사용하지 않는다. 저장된 근거·본문·위치·원본 다운로드 권한/동작은 유지하며 DB 마이그레이션·과거 이력 보충·AI 호출은 없다.
+- **화면:** 프론트 src/api/sources.ts의 타입/표시 helper와 AiWorkflowPanel.tsx 공통 패널을 수정했다. ‘저장된 내용 보기’/‘근거 내용 확인’으로 진입해 생성 방식과 설명을 표시한다. 등록 발췌문은 표 결합/이미지 전사 가능성과 재첨부 자동 추출과의 차이, 자동 추출문은 이미지 글자/서식 누락 가능성을 설명한다. 누락·unknown·미래 값은 ‘생성 방식 미확인’이며 로딩/오류에서 이전 분류를 남기지 않는다. 등록 표시가 모든 구간의 수동 작성이나 내용 검증 완료를 뜻하지 않는다.
+- **계약/문서:** 계약1.12·문서v1.47, 합성 JSON 응답/매핑 예시, 계획/요구사항/프론트 README를 함께 갱신했다. 계약 원본은 docs/contracts.md의 source-text-origin 절이며 프론트 타입/안내도 실제 갱신했다. 새 파일·계약 사본은 만들지 않았다.
+- **서버 검증:** tests/test_orm_workflow.py와 tests/test_api_contract.py에서 source_text/source_original/openapi 선택 실행 **51 passed, 123 deselected, 1 warning (18.94초)**. 신규8사례는 session/registered scope와 parser/registered_bundle/미래/빈 method 조합, 목록/이어읽기/단건 일관성을 검사한다. 기존 점검 고정 run 회귀를 확장해 registered_bundle 뒤 parser로 재추출되어도 이전 근거 응답 전체가 동일함을 확인했다. 문서 문맥의 분류도 확인했다. 계약/예시 갱신 후 test_api_contract.py 전체 **46 passed, 1 warning (8.59초)**로 enum/기본 unknown·예시 호환을 확인했다. 중복 검사를 합산하지 않는다.
+- **실자료 확인:** 앞선 Temp/geosan-evidence-audit-e1blzw3q 검수 DB에서 실제 응답을 조회했다. 등록4자료는 registered_excerpt, 재첨부 후 글자를 읽은3자료는 automatic_extraction이며 SSQ 재첨부1자료의422/글자 없음은 유지된다. 원본 실사용 DB/.env·실회사 파일에는 쓰지 않았고 유료 AI0회다.
+- **화면/빌드:** AI_CHECK_BACKEND=C:/final/backend, AI_CHECK_LIVE=0, node scripts/check-ai-workflow.mjs --publication --evidence의 **32개 시나리오 묶음 통과**. 실제 자동 추출 응답, 등록/unknown/필드 누락/미래 값의 CDP 표시 fixture, 본문 불변·GET만 사용·오류 시 분류 제거와 기존 근거/미저장 편집/원본 다운로드/승인 흐름을 검사했다. PDF4쪽/25,416바이트 출력도 유지. 결과 Temp/ddalgi-ai-ui-V4hfDh의 자동/등록 캡처를 직접 확인했다. 등록/미확인 브라우저 분류는 합성 응답이며 실제 서버 분류는 위 단위/실자료 API 확인으로 구분한다. TypeScript/Vite·변경 TS/TSX ESLint 통과, 기존 JS 청크522.11kB 경고 유지.
+- **상태/한계:** 생성 방식 표시 보완 구현·검증 완료, BE-10/F-08 일반품질 진행중 유지·Agent 상태 불변. 전체 pytest/실회사 유료 생성/DOCX 화면은 반복하지 않았다. `.env`/실사용 DB/원자료/프론트 미추적 .claude/ 보호. 현재 codex/resume-quality-check-20261012에서 변경 파일만 로컬 커밋하며 push·PR·test 병합 없음. 다음은 팀 사용 검토이며 OCR·등록 원본 배포는 기존 미정 범위를 유지한다.
 
 <a id="geosan-evidence-acceptance-20261012"></a>
 

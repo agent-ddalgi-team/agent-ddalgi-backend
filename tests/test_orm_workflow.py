@@ -156,6 +156,28 @@ def _text_view(client, content=SOURCE_A, name="evidence.txt"):
     return sid, source_id, revision, route, query
 
 
+@pytest.mark.parametrize("scope", ["session", "registered"])
+@pytest.mark.parametrize("method,origin", [("parser", "automatic_extraction"),
+    ("registered_bundle", "registered_excerpt"), ("future_method", "unknown"), ("", "unknown")])
+def test_source_text_origin_uses_pinned_method_not_scope(client, settings, scope, method, origin):
+    sid, source_id, _, route, query = _text_view(client, ("긴 문단" * 3000).encode())
+    with connect(settings.db_path) as conn:
+        conn.execute("UPDATE extraction_runs SET method=? WHERE source_id=?", (method, source_id))
+        if scope == "registered":
+            conn.execute("UPDATE sources SET scope='registered', session_id=NULL WHERE source_id=?", (source_id,))
+    first = client.get(route, params=query)
+    assert first.status_code == 200, first.text
+    data = first.json()
+    assert data["text_origin"] == origin
+    next_page = client.get(route, params={**query, "cursor": data["next_cursor"]})
+    assert next_page.status_code == 200
+    assert next_page.json()["text_origin"] == origin
+    single = client.get(route + '/' + data["items"][0]["segment_id"], params={**query, "source_version": 1})
+    assert single.status_code == 200
+    assert single.json()["text_origin"] == origin
+    assert "future_method" not in first.text  # Internal/future method names are not UI labels.
+
+
 def test_source_text_read_only_pagination_and_cursor_binding(client, settings):
     long_text = "가🙂" * 12501 + "\x00<script>저장된 텍스트</script>"
     sid, source_id, revision, route, query = _text_view(client, (long_text + "\n마지막 줄").encode())
@@ -232,18 +254,22 @@ def test_source_text_owner_expiry_and_revision(client, settings, app):
 def test_source_text_pinned_run_and_preflight_references(client, settings):
     from test_be04 import _preflight
     sid, source_id, revision, route, query = _text_view(client)
+    with connect(settings.db_path) as conn:
+        conn.execute("UPDATE extraction_runs SET method='registered_bundle' WHERE source_id=?", (source_id,))
     pf = _preflight(client, sid, revision)
     ref = next(f["evidence_refs"][0] for f in pf["facts"] if f["evidence_refs"])
     params = {**query, "context": "preflight", "preflight_id": pf["preflight_id"], "source_version": ref["source_version"]}
     target = route + "/" + ref["segment_id"]
     first = client.get(target, params=params)
     assert first.status_code == 200, first.text
+    assert first.json()["text_origin"] == "registered_excerpt"
     assert ref["excerpt"] in first.json()["excerpts"]
     with connect(settings.db_path) as conn:
         row = conn.execute("SELECT * FROM sources WHERE source_id=?", (source_id,)).fetchone()
         reading._apply_result(conn, row, ParseResult(status="complete", text_available=True,
             segments=[Segment({"line_start": 1, "line_end": 1}, "다시 추출한 내용")]))
         new_segment = conn.execute("SELECT segment_id FROM segments WHERE run_id=(SELECT current_run_id FROM sources WHERE source_id=?)", (source_id,)).fetchone()[0]
+        assert conn.execute("SELECT method FROM extraction_runs WHERE run_id=(SELECT current_run_id FROM sources WHERE source_id=?)", (source_id,)).fetchone()[0] == "parser"
     second = client.get(target, params=params)
     assert second.json() == first.json()
     assert client.get(route + "/" + new_segment, params=params).status_code == 404
@@ -273,6 +299,7 @@ def test_source_text_document_context_and_unlinked_reference(client, settings):
     out = client.get(target, params=params)
     assert out.status_code == 200, out.text
     assert out.json()["excerpts"] == [item["text"]]
+    assert out.json()["text_origin"] == "automatic_extraction"
     original_route = route.replace("/segments", "/original")
     original_params = {**params, "segment_id": item["segment_id"]}
     assert client.get(original_route, params=original_params).content == SOURCE_A

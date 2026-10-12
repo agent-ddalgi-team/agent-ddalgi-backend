@@ -362,6 +362,9 @@ def test_unhandled_error_has_matching_request_id_and_hides_exception_text(app, s
 
 def test_openapi_describes_common_errors_export_statuses_and_binary_responses(app):
     schema = app.openapi()
+    origin = schema["components"]["schemas"]["SourceTextOut"]["properties"]["text_origin"]
+    assert origin["enum"] == ["registered_excerpt", "automatic_extraction", "unknown"]
+    assert origin["default"] == "unknown"
     operations = [operation for path, item in schema["paths"].items() if path.startswith("/api/v1/")
                   for method, operation in item.items() if method in {"get", "post", "patch", "delete"}]
     assert len(operations) == 37  # C-01 extraction views and own-session original download

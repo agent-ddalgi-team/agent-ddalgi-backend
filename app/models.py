@@ -1,4 +1,4 @@
-"""API 요청·응답 모델. contracts.md 계약 1.11과 OpenAPI의 원본이다.
+"""API 요청·응답 모델. contracts.md 계약 1.12와 OpenAPI의 원본이다.
 
 DB 테이블은 orm_models.py에, 요청 값의 형식 검사는 여기에 둔다.
 소유권·현재 버전·근거의 유효성 같은 업무 검사는 서비스에서 수행한다.
@@ -230,6 +230,7 @@ class SourceTextSegment(BaseModel):
 
 
 class SourceTextOut(BaseModel):
+    text_origin: Literal["registered_excerpt", "automatic_extraction", "unknown"] = "unknown"
     original_download_available: bool = False
     source_id: str
     source_version: int
