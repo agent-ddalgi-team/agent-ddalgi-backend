@@ -7,12 +7,13 @@ from typing import Literal
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, Query, Request, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+from urllib.parse import quote
 
 from app.access import require_owner, settings_of
 from app.db import connect
 from app.errors import ApiError
-from app.models import MAX_SQLITE_INTEGER, SourceDeleteOut, SourceKind, SourceListOut, SourceTextQuery, SourceTextOut, UploadOut
+from app.models import MAX_SQLITE_INTEGER, SourceDeleteOut, SourceKind, SourceListOut, SourceTextQuery, SourceTextOut, SourceOriginalQuery, UploadOut
 from app.services import idempotency, jobs, reading, sessions, sources
 
 router = APIRouter(prefix="/sessions/{sid}/sources", tags=["sources"])
@@ -97,6 +98,23 @@ def delete_source(request: Request, sid: str, source_id: str,
 @router.get("/{source_id}/segments", response_model=SourceTextOut)
 def source_text(request: Request, sid: str, source_id: str, query: Annotated[SourceTextQuery, Query()]):
     return _read_source_text(request, sid, source_id, query)
+
+
+@router.get("/{source_id}/original", response_class=Response,
+            responses={200: {"content": {mime: {"schema": {"type": "string", "format": "binary"}} for mime in (
+                "text/plain", "text/markdown", "application/pdf", "image/png", "image/jpeg",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation")}}})
+def source_original(request: Request, sid: str, source_id: str, query: Annotated[SourceOriginalQuery, Query()]):
+    settings = settings_of(request)
+    owner = require_owner(request)
+    with connect(settings.db_path) as conn:
+        conn.execute("BEGIN")
+        session = sessions.load_active(conn, owner, sid, settings)
+        content, name, mime = sources.read_original(conn, settings, session, source_id, query)
+    return Response(content=content, media_type=mime, headers={
+        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(name, safe='')}",
+        "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
 
 
 @router.get("/{source_id}/segments/{segment_id}", response_model=SourceTextOut)

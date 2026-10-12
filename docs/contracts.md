@@ -1,8 +1,25 @@
 # 공통 데이터·API 계약
 
-기준일: 2026-10-12 · 문서 v1.45 · contract_version: 1.10 · 데이터 schema_version: 1.0
+기준일: 2026-10-12 · 문서 v1.46 · contract_version: 1.11 · 데이터 schema_version: 1.0
 
-**2026-10-12 C-01 1차 추출문 조회:** 읽기 전용 API 2개와 프론트 근거 패널을 추가한다. 기존 Source/EvidenceRef·쓰기 API·DB v11은 유지한다. 원본 파일 다운로드/전체 배포 권한은 이번 계약에 포함하지 않는다.
+**2026-10-12 C-01 현재 범위:** 추출문 조회와 현재 세션에 직접 올린 첨부파일의 원본 다운로드를 제공한다. 등록 자료·공개자료 가져오기의 원본 배포는 제외한다. EvidenceRef·쓰기 API·DB v11은 유지한다.
+
+<a id="source-original-api"></a>
+
+### 세션 첨부 원본 다운로드 (C-01, 계약 1.11)
+
+`GET /api/v1/sessions/{sid}/sources/{source_id}/original`. 소유자 쿠키, 활성 세션, 현재 선택한 evidence 자료, 해당 세션의 `provenance=upload` 버전만 허용한다. 과거 DART 가져오기에 upload가 기록된 경우도 현재·기존 추출 실행의 PUBLIC_OPEN_DATA 표시로 제외하며 신규 DART는 public_import로 기록한다. 등록 자료의 근거 사용 허가는 원본 전체 배포 허가가 아니다. 가져온 공개자료·instruction·미선택·타 세션·삭제 자료는 404다.
+
+- query: `expected_input_revision`, `source_version` 필수. `context` 기본 selection. preflight에는 `preflight_id`와 `segment_id`, document에는 `document_id`·`document_revision`·`segment_id` 필수. selection에는 segment_id와 문맥 ID를 넣지 않는다. 추출문과 같은 현재 선택·점검/문서 저장 근거·고정 버전/run 검사를 공유한다. cursor/limit/focus/클라이언트 경로·URL은 받지 않는다. 형식/조합/알 수 없는 필드는 400이다.
+- 읽기 중·추출 실패·이미지 자료도 selection 문맥에서 원본을 받을 수 있다. 참조 문맥에서는 해당 고정 run의 실제 segment와 저장 근거가 필요하다. 최신 파일/최신 run으로 임의 대체하지 않는다.
+- 200은 JSON이 아닌 파일 바이트. 형식별 MIME(TXT/MD/PDF/DOCX/PPTX/JPG/PNG), `Content-Disposition: attachment; filename*=UTF-8''...`, `X-Content-Type-Options: nosniff`, `Cache-Control: private, no-store`를 사용한다. CORS에 Content-Disposition을 노출한다. 파일명은 제어문자/경로 구분자 등을 제거하고 저장된 허용 확장자를 붙인다.
+- 서버 버전 경로를 해당 세션 저장 폴더 안으로 제한하고 절대경로·상위 이동·심볼릭 링크/Windows 재분석 지점을 거부한다. 업로드 크기 한도 안에서 한 번 읽은 바이트의 길이·SHA-256을 버전 기록과 비교하고 그 바이트만 응답한다. 파일을 응답 시 다시 열지 않는다.
+- 401/404/409 INPUT_REVISION_CONFLICT·DOCUMENT_REVISION_CONFLICT/410 SESSION_EXPIRED·SOURCE_VERSION_UNAVAILABLE은 기존 방식이다. 파일 부재·경로/형식/크기·해시 검사 실패는 **410 SOURCE_ORIGINAL_UNAVAILABLE**이며 내부 경로를 반환하지 않는다. 오류도 no-store다.
+- SourceOut와 SourceTextOut에 `original_download_available:boolean`(기본 false)을 추가한다. 업로드 provenance와 범위를 나타내는 UI 안내값이며 권한 토큰이나 파일 존재 보증이 아니다. GET마다 전체 검사를 다시 한다. 과거 예시는 필드 생략 시 false로 해석한다.
+- 정상 다운로드는 TTL·입력/문서 revision·확인/검증/승인을 바꾸지 않으며 AI를 호출하지 않는다. 세션 만료 시 기존 정리 정책을 적용한다. 명시적으로 내려받은 파일은 사용자 기기에 남으므로 세션 종료가 그 복사본까지 지우지는 않는다.
+
+화면은 자료 카드 및 추출문 패널에 원본 다운로드 버튼을 표시한다. 근거 패널에서는 원래 anchor/문맥/버전을 전달한다. 편집 중에도 다운로드로 저장·승인되지 않는다. 닫기/문맥 변경 시 취소하고 늦은 파일 응답은 버린다. 404/409/410이면 패널의 이전 본문을 비우고, 일시 오류는 사용자가 다시 누를 수 있다. 브라우저 내 원본 렌더링·Office 변환·OCR은 제공하지 않는다.
+
 
 <a id="source-text-api"></a>
 
@@ -35,7 +52,7 @@
 
 세션 첨부의 만료는 현재 세션 TTL이 기준이다. source/source_version의 업로드 당시 만료 스냅샷이 지났다는 이유로 편집 중인 활성 세션을 차단하지 않는다. 등록 자료에 별도 만료가 있으면 적용한다. 정상 GET은 TTL을 연장하지 않으며 세션 만료 감지 시 기존 정리·410 처리를 유지한다.
 
-프론트는 자료 카드와 S01 사실/후보·S02 저장 블록·S03 관련 사실/블록/자료에서 같은 추출문 패널을 연다. 출처 버전·한국어 locator·인용문과 추출문을 구분하고, 단일 정확 일치에만 강조를 표시한다. 조회 실패/이동 중에는 옛 본문을 숨기고, 닫기·문맥/세션 변경은 요청을 취소해 늦은 응답을 버린다. 미저장 편집은 유지한다. `원본 파일 열기` API·Office 원본 미리보기·OCR은 미구현이다.
+프론트는 자료 카드와 S01 사실/후보·S02 저장 블록·S03 관련 사실/블록/자료에서 같은 추출문 패널을 연다. 출처 버전·한국어 locator·인용문과 추출문을 구분하고, 단일 정확 일치에만 강조를 표시한다. 조회 실패/이동 중에는 옛 본문을 숨기고, 닫기·문맥/세션 변경은 요청을 취소해 늦은 응답을 버린다. 미저장 편집은 유지한다. 직접 첨부 원본 다운로드는 [계약1.11](#source-original-api)을 따른다. Office 원본 미리보기·OCR은 미구현이다.
 
 **2026-10-07 화면에서 사실 제외·복원:** 선택 항목의 사용 여부는 `POST /sessions/{sid}/preflights/{pid}/reviews`로 저장한다. 요청은 `expected_input_revision`, `action:exclude|restore`, 비어 있지 않은 고유 `fact_ids`(최대50개), `reason`(최대300자)다. 200 Preflight는 새로운 불변 점검 ID와 선택적 읽기 필드 `excluded_facts`/`reviewable_fact_ids`를 반환한다. 기존 점검·원문·사실의 진실 상태는 보존하고 제외 사실만 생성 입력에서 빠진다. 회사명·사용자가 지정한 필수 내용·마지막 supported 사업 설명·필수/시연 위반 항목은 제외할 수 없다(422 RESOLUTION_NOT_ALLOWED). 복원은 원래 상태/문제를 되살린다. 소유·만료·현재 입력·최신 점검·선택 근거·진행 작업을 검사하고 멱등 재전송은 같은 결과를 반환한다. AI를 추가 호출하지 않으며 사용자 확인은 초기화하고 새 LangGraph 확인 지점을 저장한다. 기존 문서는 자동 수정하지 않고 검증/승인을 무효화한다. 제외 사실이 본문에 남아 있으면 EVIDENCE_INVALID로 삭제 또는 복원을 안내하며 기존 C-05/최종 검사 조건은 유지한다. 입력 변경 또는 새로운 AI 점검은 별도 결과로 취급하며 이전 제외를 임의 이월하지 않는다. API1.9 호환 확장·DBv11·template_v11 유지.
 
@@ -579,7 +596,7 @@ HTTP 오류의 `request_id`는 필수 문자열이고 `X-Request-Id` 헤더와 �
 
 | ID | 우선순위 | 현행 코드에서 확인한 내용 | 합의·반영할 것 |
 |---|---|---|---|
-| C-01 | P0 | 이미지 GET·인용문 표시·추출문 목록/근거 GET·화면 패널 | 1차 추출문 조회는 2026-10-12 계약1.10 구현. [현재 규격](#source-text-api). 원본 파일 조회/배포 권한은 별도 후속 |
+| C-01 | P0 | 이미지 GET·인용문 표시·추출문/근거 패널·직접 첨부 원본 다운로드 | 2026-10-12 1·2차 구현. [추출문](#source-text-api)·[원본 계약1.11](#source-original-api). 등록/공개자료 원본 배포 권한은 별도 후속 |
 | C-02 | P0 | Proposal의 rationale/candidates/applied_revision과 선택 적용 | 기존 후보·빈 값 형식은 계약 1.3 반영. 실제 AI 후보/프론트 비교 화면은 후속 |
 | C-03 | P0 | Job.progress와 7종 result_ref, Preflight/Proposal GET | 현행 필드·결과 조회 방식을 계약 1.3/OpenAPI에 반영. 백분율은 추가하지 않음 |
 | C-04 | P0 | SourceWarning와 Recommendations | 현행 위치·문자열 보완 목록을 계약 1.3에 반영. 새 고정 보완 분류는 별도 결정 |

@@ -9,6 +9,21 @@
 
 - **2026-10-12 C-01 1차 구현:** 추출문 목록/근거 GET과 S01/S02/S03 패널 연결 완료. 계약1.10·DBv11 유지. 새 API25건·계약 포함70건·격리 브라우저30묶음 통과. 원본 파일 다운로드는 후속. [구현·검수 기록](#source-text-implementation-20261012).
 
+
+<a id="source-original-implementation-20261012"></a>
+
+### 직접 첨부 원본 다운로드 구현 (2026-10-12, F-01/C-01 2차)
+
+- **범위/결정:** 사용자의 ‘가장 이상적인 작업’ 위임에 따라 1차 추출문 후속으로 현재 세션에 직접 올린 선택 evidence 첨부만 원본 다운로드를 제공한다. 등록 자료와 DART 공개자료 가져오기는 제외한다. 현재 codex/resume-quality-check-20261012에서 기존 파일만 수정하며 .env·실사용 DB·실회사 원문·프론트 미추적 .claude/는 보존한다. DBv11·프롬프트·Agent 상태를 바꾸지 않는다.
+- **백엔드:** app/models.py 공통 조회 문맥/SourceOriginalQuery와 original_download_available 안내값, app/routers/sources.py의 GET sources/{source_id}/original, app/services/sources.py의 공통 선택/버전/저장 근거 검사와 파일 검증을 추가했다. 파일은 해당 세션 폴더 안인지, 링크/Windows 재분석 지점이 아닌지, 크기와 SHA-256이 버전과 일치하는지 확인하고 읽은 바이트 그대로 응답한다. 누락·변조·경로 이탈은 410이며 최신 파일로 대체하지 않는다. 안전한 파일명/형식별 MIME/attachment/nosniff/no-store, CORS Content-Disposition을 적용했다. 글자 추출 실패/이미지 자료도 selection 문맥에서는 원본 다운로드가 가능하다.
+- **DART 구분:** 기존 DART도 store를 공유해 provenance=upload로 기록되는 것을 확인했다. 앞으로 public_import로 저장하고, 과거 자료는 현재·기존 추출 실행의 PUBLIC_OPEN_DATA 기록으로 제외한다. 실제 DB를 일괄 수정하거나 원본 보관 정책을 바꾸지 않는다. 기존 DART 가져오기/중복 방지는 tests/test_be02.py의 legacy/ORM 두 방식에서 확인했다.
+- **프론트:** src/api/sources.ts에 Blob 다운로드와 JSON 오류 해석, AiWorkflowPanel.tsx에 취소 가능한 공통 원본 버튼과 근거 문맥/anchor/버전 연결, SourceSelectionView.tsx에 자료 카드 버튼을 추가했다. 패널의 404/409/410에서는 이전 본문을 비우며 다운로드는 문서 저장/검증/승인/TTL/AI를 바꾸지 않는다. 닫기·문맥/세션 변경 후 늦은 응답은 버리고 Blob URL을 해제한다. 내려받은 파일은 기기에 남는다고 안내한다.
+- **계약/문서:** 계약1.11·문서v1.46, 기존 JSON 예시와 README/plan/prd를 갱신했다. SourceOut/SourceTextOut의 original_download_available은 UI 안내이며 권한이나 파일 존재 보증은 아니다. 프론트 타입/README는 실제 갱신했으며 계약 사본 신규 생성은 없다.
+- **백엔드 검증:** PYTHON_DOTENV_DISABLED=1, 임시 DB·가상 자료·mock Agent 사용. tests/test_orm_workflow.py + tests/test_be03.py + tests/test_api_contract.py **184 passed, 1 warning (72.63초)**. 공통 조회 리팩터링·업로드/파서/문서 이력·계약 회귀 포함. DART 구분 보완 후 workflow + BE02에서 source_original/source_text/dart_import_real 선택 실행 **44 passed, 150 deselected, 1 warning (15.61초)**. 원본 바이트/한국어·제어문자 파일명, 소유/세션/선택/역할/등록/공개자료/만료/버전, 실제 TXT/MD/PDF/DOCX/PPTX, 실패·이미지·읽기 중 상태, 파일 누락·변조·크기·상위 이동·절대/타 세션 경로를 검사했다. 재분석 지점·읽기 직전 삭제는 monkeypatch로 재현했으며 실제 OS 링크 생성 시험이라고 주장하지 않는다.
+- **화면 검증:** AI_CHECK_BACKEND=C:/final/backend, AI_CHECK_LIVE=0, node scripts/check-ai-workflow.mjs --publication --evidence. 임시 ORM DB·실제 HTTP/Chrome **31개 시나리오 묶음 통과**, PDF4쪽/25,416바이트 출력·승인·다운로드도 유지. 서버 원본과 내려받은 파일 바이트 일치, 점검/저장 문서 근거의 원본 요청 문맥, 미저장 편집·승인 보존, Blob 오류 409/410/503와 닫기 취소 확인. 오류/대기 응답은 CDP 합성, 실제 권한 판정은 서버 테스트다. 최종 화면 산출물은 사용자 Temp/ddalgi-ai-ui-HYKsOM이며 근거 패널 캡처도 직접 확인했다. 후속 DART metadata 보완은 서버 선택 회귀로 재확인했다.
+- **빌드/한계:** TypeScript/Vite 및 변경 TS/TSX ESLint 통과. JS 청크520.91kB 경고는 남는다. 전체 pytest·실회사/유료 LLM 품질·DOCX 화면은 이번에 반복하지 않았다. 원본 Office/PDF 인라인 뷰어·등록 원본 배포·OCR은 미구현이다. 기능은 로컬 커밋하며 push/PR/test 병합은 하지 않는다.
+- **상태/다음:** F-01/C-01 직접 첨부 원본 다운로드 구현·검증 완료. BE-01/03 기존 완료, BE-10/F-08 일반 품질 진행중 유지. 다음은 실제 사용자 자료로 추출 위치/인용·원본을 대조하는 수용 검수다. 등록 원본 공개는 별도 권한 정책 결정 후 검토한다.
+
 <a id="source-text-implementation-20261012"></a>
 
 ### C-01 1차 추출문 조회 API·근거 확인 화면 (2026-10-12)

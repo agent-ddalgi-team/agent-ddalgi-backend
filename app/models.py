@@ -1,4 +1,4 @@
-"""API 요청·응답 모델. contracts.md 계약 1.10과 OpenAPI의 원본이다.
+"""API 요청·응답 모델. contracts.md 계약 1.11과 OpenAPI의 원본이다.
 
 DB 테이블은 orm_models.py에, 요청 값의 형식 검사는 여기에 둔다.
 소유권·현재 버전·근거의 유효성 같은 업무 검사는 서비스에서 수행한다.
@@ -151,6 +151,7 @@ class SourceWarning(BaseModel):
 
 
 class SourceOut(BaseModel):
+    original_download_available: bool = False
     role: Literal["evidence", "instruction"] = "evidence"
     origin_kind: Literal["real", "mock", "demo"] = "real"
     source_id: str
@@ -179,8 +180,8 @@ class SourceListOut(BaseModel):
     items: list[SourceOut]
 
 
-class SourceTextQuery(BaseModel):
-    """Read-only text view; context IDs never grant access by themselves."""
+class SourceContextQuery(BaseModel):
+    """Context IDs never grant access by themselves."""
     model_config = ConfigDict(extra="forbid")
     expected_input_revision: int = Field(ge=1, le=MAX_SQLITE_INTEGER)
     context: Literal["selection", "preflight", "document"] = "selection"
@@ -188,9 +189,6 @@ class SourceTextQuery(BaseModel):
     document_id: str | None = Field(default=None, min_length=1, max_length=100)
     document_revision: int | None = Field(default=None, ge=1, le=MAX_SQLITE_INTEGER)
     source_version: int | None = Field(default=None, ge=1, le=MAX_SQLITE_INTEGER)
-    cursor: str | None = Field(default=None, max_length=2048)
-    limit: int = Field(default=20, ge=1, le=50)
-    focus_segment_id: str | None = Field(default=None, min_length=1, max_length=100)
 
     @model_validator(mode="after")
     def check_context(self):
@@ -205,6 +203,23 @@ class SourceTextQuery(BaseModel):
         return self
 
 
+class SourceTextQuery(SourceContextQuery):
+    cursor: str | None = Field(default=None, max_length=2048)
+    limit: int = Field(default=20, ge=1, le=50)
+    focus_segment_id: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class SourceOriginalQuery(SourceContextQuery):
+    source_version: int = Field(ge=1, le=MAX_SQLITE_INTEGER)
+    segment_id: str | None = Field(default=None, min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def check_anchor(self):
+        if (self.context == "selection") != (self.segment_id is None):
+            raise ValueError("A cited context requires an anchor segment; selection has none")
+        return self
+
+
 class SourceTextSegment(BaseModel):
     segment_id: str
     locator: dict[str, Any]
@@ -215,6 +230,7 @@ class SourceTextSegment(BaseModel):
 
 
 class SourceTextOut(BaseModel):
+    original_download_available: bool = False
     source_id: str
     source_version: int
     run_id: str

@@ -25,6 +25,128 @@ from test_be06 import Ctx
 INGEST = Path(__file__).parent / "fixtures" / "ddalgi_mock_bundle_v1" / "ingest"
 
 
+def test_source_original_bytes_headers_and_read_only(client, settings):
+    from urllib.parse import unquote
+    sid, source_id, _, route, query = _text_view(client, b"original\x00bytes", "한국어 자료.txt")
+    with connect(settings.db_path) as conn:
+        tables = ("sessions", "sources", "jobs", "input_revisions", "confirmations")
+        before = {t: [tuple(r) for r in conn.execute(f"SELECT * FROM {t}")] for t in tables}
+    assert client.get(f"/api/v1/sessions/{sid}/sources").json()["items"][0]["original_download_available"]
+    assert client.get(route, params=query).json()["original_download_available"]
+    out = client.get(route.replace("/segments", "/original"), params={**query, "source_version": 1})
+    assert out.status_code == 200, out.text
+    assert out.content == b"original\x00bytes"
+    assert out.headers["content-type"].startswith("text/plain")
+    assert unquote(out.headers["content-disposition"]) == "attachment; filename*=UTF-8''한국어 자료.txt"
+    assert out.headers["x-content-type-options"] == "nosniff"
+    assert out.headers["cache-control"] == "private, no-store"
+    with connect(settings.db_path) as conn:
+        assert before == {t: [tuple(r) for r in conn.execute(f"SELECT * FROM {t}")] for t in tables}
+
+
+@pytest.mark.parametrize("mutation,status", [("unselected", 404), ("instruction", 404), ("foreign", 404),
+    ("registered", 404), ("public_import", 404), ("legacy_public_import", 404), ("deleted", 404), ("purged", 410), ("missing", 410),
+    ("tampered", 410), ("absolute", 410), ("traversal", 410), ("other_session_path", 410), ("oversize", 410)])
+def test_source_original_scope_and_integrity(client, settings, mutation, status):
+    sid, source_id, revision, route, query = _text_view(client)
+    query["source_version"] = 1
+    if mutation == "unselected":
+        query["expected_input_revision"] = _select(client, sid, [], expected=revision)
+    else:
+        with connect(settings.db_path) as conn:
+            version = conn.execute("SELECT * FROM source_versions WHERE source_id=?", (source_id,)).fetchone()
+            path = settings.private_runs_dir / version["stored_path"]
+            if mutation == "instruction":
+                conn.execute("UPDATE sources SET role='instruction' WHERE source_id=?", (source_id,))
+            elif mutation == "foreign":
+                other = _session(client)
+                conn.execute("UPDATE sources SET session_id=? WHERE source_id=?", (other, source_id))
+            elif mutation == "registered":
+                conn.execute("UPDATE sources SET scope='registered', session_id=NULL WHERE source_id=?", (source_id,))
+            elif mutation == "public_import":
+                conn.execute("UPDATE source_versions SET provenance='dart' WHERE source_id=?", (source_id,))
+            elif mutation == "legacy_public_import":
+                conn.execute("UPDATE extraction_runs SET warnings_json=? WHERE source_id=?",
+                             (json.dumps([{"code": "PUBLIC_OPEN_DATA", "message": "DART"}]), source_id))
+            elif mutation == "deleted":
+                conn.execute("UPDATE sources SET deleted_at='2026-01-01T00:00:00Z' WHERE source_id=?", (source_id,))
+            elif mutation == "purged":
+                conn.execute("UPDATE source_versions SET purged_at='2026-01-01T00:00:00Z' WHERE source_id=?", (source_id,))
+            elif mutation == "missing":
+                path.unlink()
+            elif mutation == "tampered":
+                path.write_bytes(b"x" * version["size_bytes"])
+            elif mutation == "oversize":
+                conn.execute("UPDATE source_versions SET size_bytes=? WHERE source_id=?", (settings.max_file_bytes + 1, source_id))
+            else:
+                if mutation == "other_session_path":
+                    other = settings.private_runs_dir / "another_session"
+                    other.mkdir()
+                    target = other / path.name
+                    target.write_bytes(path.read_bytes())
+                    stored = str(target.relative_to(settings.private_runs_dir))
+                else:
+                    stored = str(path) if mutation == "absolute" else "../outside.txt"
+                conn.execute("UPDATE source_versions SET stored_path=? WHERE source_id=?", (stored, source_id))
+    out = client.get(route.replace("/segments", "/original"), params=query)
+    assert out.status_code == status, out.text
+    assert out.headers["cache-control"] == "private, no-store"
+    assert "회사명:" not in out.text and str(settings.private_runs_dir) not in out.text
+
+
+def test_source_original_owner_expiry_query_and_safe_name(client, settings, app):
+    sid, source_id, _, route, query = _text_view(client)
+    route = route.replace("/segments", "/original")
+    assert client.get(route, params=query).status_code == 400
+    query["source_version"] = 1
+    with TestClient(app) as stranger:
+        assert stranger.get(route, params=query).status_code == 401
+        _session(stranger)
+        assert stranger.get(route, params=query).status_code == 404
+    for change, status in [({"expected_input_revision": 1}, 409), ({"source_version": 2}, 410),
+                           ({"stored_path": "file"}, 400), ({"cursor": "x"}, 400),
+                           ({"context": "preflight", "preflight_id": "fake"}, 400)]:
+        assert client.get(route, params={**query, **change}).status_code == status
+    with connect(settings.db_path) as conn:
+        conn.execute("UPDATE source_versions SET original_name=? WHERE source_id=?", ('../evil\r\nname.exe', source_id))
+    out = client.get(route, params=query)
+    assert out.status_code == 200
+    assert out.headers["content-disposition"].endswith("_evil__name.txt")
+    with connect(settings.db_path) as conn:
+        conn.execute("UPDATE sessions SET expires_at='2020-01-01T00:00:00Z' WHERE session_id=?", (sid,))
+    assert client.get(route, params=query).status_code == 410
+
+
+def test_source_original_reparse_and_delete_race(client, settings, monkeypatch):
+    from app.services import sources
+    sid, source_id, _, route, query = _text_view(client)
+    route = route.replace("/segments", "/original")
+    query["source_version"] = 1
+    real_lstat = Path.lstat
+    with monkeypatch.context() as patch:
+        def reparse(path):
+            result = real_lstat(path)
+            return SimpleNamespace(st_mode=result.st_mode, st_file_attributes=0x400) if path.name == sid else result
+        patch.setattr(Path, "lstat", reparse)
+        assert client.get(route, params=query).status_code == 410
+    real_open = Path.open
+    with monkeypatch.context() as patch:
+        def vanished(path, *args, **kwargs):
+            if path.parent.name == sid and args == ("rb",):
+                raise FileNotFoundError()
+            return real_open(path, *args, **kwargs)
+        patch.setattr(Path, "open", vanished)
+        assert client.get(route, params=query).status_code == 410
+    # Returned bytes stay pinned even if the pathname changes after read_original returns.
+    with connect(settings.db_path) as conn:
+        session = conn.execute("SELECT * FROM sessions WHERE session_id=?", (sid,)).fetchone()
+        from app.models import SourceOriginalQuery
+        body, _, _ = sources.read_original(conn, settings, session, source_id, SourceOriginalQuery(**query))
+        stored = conn.execute("SELECT stored_path FROM sources WHERE source_id=?", (source_id,)).fetchone()[0]
+    (settings.private_runs_dir / stored).write_bytes(b"changed after read")
+    assert body == SOURCE_A
+
+
 def _text_view(client, content=SOURCE_A, name="evidence.txt"):
     sid = _session(client)
     source_id = _upload(client, sid, (name, content))[0]
@@ -151,16 +273,22 @@ def test_source_text_document_context_and_unlinked_reference(client, settings):
     out = client.get(target, params=params)
     assert out.status_code == 200, out.text
     assert out.json()["excerpts"] == [item["text"]]
+    original_route = route.replace("/segments", "/original")
+    original_params = {**params, "segment_id": item["segment_id"]}
+    assert client.get(original_route, params=original_params).content == SOURCE_A
     other = client.get(route, params=query).json()["items"][1]["segment_id"]
     assert client.get(route + "/" + other, params=params).status_code == 404
     assert client.get(target, params={**params, "document_revision": 2}).status_code == 409
     assert client.get(target, params={**params, "document_id": "other"}).status_code == 404
+    assert client.get(original_route, params={**original_params, "segment_id": other}).status_code == 404
+    assert client.get(original_route, params={**original_params, "document_revision": 2}).status_code == 409
     extra = _upload(client, sid, ("extra.txt", b"extra"))[0]
     changed = _select(client, sid, [source_id, extra], expected=revision)
     historical = client.get(target, params={**params, "expected_input_revision": changed})
     assert historical.status_code == 200, historical.text
     assert historical.json()["input_revision"] == revision
     assert historical.json()["current_input_revision"] == changed
+    assert client.get(original_route, params={**original_params, "expected_input_revision": changed}).content == SOURCE_A
 
 
 @pytest.mark.parametrize("status", ["reading", "failed", "image", "partial"])
@@ -178,6 +306,10 @@ def test_source_text_reading_outcomes(client, settings, monkeypatch, status):
     rev = _select(client, sid, [source_id])
     out = client.get(f"/api/v1/sessions/{sid}/sources/{source_id}/segments", params={"expected_input_revision": rev})
     assert out.status_code == {"reading": 409, "failed": 422, "image": 422, "partial": 200}[status], out.text
+    original = client.get(f"/api/v1/sessions/{sid}/sources/{source_id}/original",
+                          params={"expected_input_revision": rev, "source_version": 1})
+    assert original.status_code == 200, original.text
+    assert original.content == SOURCE_A
     if status == "partial":
         assert out.json()["warnings"][0]["code"] == "IMAGE_ONLY"
 
@@ -222,6 +354,9 @@ def test_source_text_real_parser_locator_roundtrip(client, kind):
     one = client.get(route + "/" + target["segment_id"], params={**query, "source_version": 1})
     assert one.status_code == 200, one.text
     assert one.json()["items"][0] == target
+    original = client.get(route.replace("/segments", "/original"), params={**query, "source_version": 1})
+    assert original.status_code == 200, original.text
+    assert original.content == content
     if kind in ("docx", "pptx"):
         assert one.json()["context_segments"] == []
 
@@ -240,6 +375,13 @@ def test_source_text_conflict_alternatives_are_server_bound(client):
             params={"expected_input_revision": revision, "context": "preflight", "preflight_id": pf["preflight_id"], "source_version": ref["source_version"]})
         assert out.status_code == 200, out.text
         assert ref["excerpt"] in out.json()["excerpts"]
+        original_params = {"expected_input_revision": revision, "context": "preflight", "preflight_id": pf["preflight_id"],
+                           "source_version": ref["source_version"], "segment_id": ref["segment_id"]}
+        original_route = f"/api/v1/sessions/{sid}/sources/{ref['source_id']}/original"
+        original = client.get(original_route, params=original_params)
+        assert original.status_code == 200, original.text
+        assert original.content in (SOURCE_A, SOURCE_B)
+        assert client.get(original_route, params={**original_params, "segment_id": "fake"}).status_code == 404
 
 
 def test_source_text_arbitrary_content_is_not_a_document_reference(client, settings):
