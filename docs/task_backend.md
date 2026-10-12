@@ -7,6 +7,20 @@
 
 ## 1. Quick Status
 
+- **2026-10-12 로컬 .venv 옛 경로 복구:** 직접 실행기·PowerShell/CMD 활성화·관련295검사 통과, 87패키지 버전/.env/DB5파일 해시 동일. 이전 경로 검수의 환경 후속 해결. 복구 단위 완료, BE-10/F-08 일반품질과 Agent 상태 유지. [기록](#venv-path-repair-20261012).
+
+<a id="venv-path-repair-20261012"></a>
+
+### 로컬 가상환경의 옛 경로 복구 (2026-10-12)
+
+- 사용자 요청 범위: 현재 codex/organize-markdown-docs에서 .venv의 D:\backend\awesomeapp 잔여 경로를 복구한다. .env/DB는 수정하지 않고 test 병합은 하지 않는다. 환경 복구는 현재 PC의 ignored .venv에 적용하며 팀 공유는 README/기존 계획·작업 기록으로 남긴다.
+- 보호/준비: .env와 private_runs의 SQLite/관련 WAL·SHM 총5파일 SHA-256, 설치 패키지87개 이름·버전을 기록했다. 해당 환경을 직접 사용하는 Python 프로세스0을 확인하고 전체 .venv를 시스템 Temp/backend-venv-backup-*에 백업했다. 기존 실행 스크립트를 제공하는23개 패키지를 정확한 버전으로 고정해 먼저 Temp/backend-venv-stage-*에서 오프라인 준비를 확인했다. 저장소 안에 새 임시/인계 문서는 만들지 않았다.
+- 복구: 기존과 같은 CPython3.13.12로 `uv venv --allow-existing --relocatable --no-python-downloads --offline --prompt backend .venv`를 실행했다. 기존 site-packages를 보존하는 방식은 [uv 공식 설명](https://docs.astral.sh/uv/reference/cli/#uv-venv)을 확인했다. 이어 실행 스크립트 패키지23개만 현재 버전으로 no-deps/reinstall/offline/link-mode copy 재설치했다. 의존성/lock/.env/DB/API/Agent 지침 내용은 변경하지 않는다. 자동 생성에서 제외돼 남은 기존 activate.csh 한 파일은 현재 로컬 경로와 prompt로 직접 정정했다.
+- 실행 확인: uvicorn.exe0.53.0·pytest.exe9.1.1·alembic.exe1.20.0 버전 조회 및 `uv run --locked --no-sync uvicorn --version` 모두 종료0. uv pip check는87패키지 호환 통과. PowerShell/CMD의 VIRTUAL_ENV와 실제 Python sys.prefix가 C:\final\backend\.venv인 것을 확인했다. PowerShell 첫 검사는 Source의 슬래시 표기 차이를 오류로 판정했으며 실제 prefix 검사로 정정했다. csh/fish/nu/Bash 등은 파일 경로 정적 확인이고 해당 셸을 모두 실행한 것은 아니다.
+- 옛 경로 검사: ignore 영향을 제외한 `rg --no-ignore --hidden`으로 Scripts의 바이너리 포함 모든 파일과 환경 텍스트 파일에서 D:\backend\awesomeapp 및 slash 변형0건을 확인했다. 최초 일반 rg는 .venv의 내부 ignore 규칙 때문에 검사 범위가 제한돼 이후 플래그를 바꿨고, 남아 있던 csh를 이 검사에서 발견해 수정했다. 설치 패키지87개의 이름·버전은 전후 동일, 테스트 뒤에도 보호5파일 해시는 동일하다.
+- 실제 회귀: PYTHON_DOTENV_DISABLED=1/PYTHONDONTWRITEBYTECODE=1, 복구한 pytest.exe로 API 계약·BE-03 파일 읽기·마이그레이션/ORM·등록자료·시연·자원 CWD/해시·서식/글꼴·실제 PDF 페이지/폰트/텍스트 검사를 실행해 **295passed/경고3/실패0/107.07초**를 확인했다. 임시 DB·가상 자료/모델 응답이며 실제 회사 세션·유료 AI를 사용하지 않았다. 전체 회귀나 실제 모델 품질 평가로 확대하지 않는다.
+- README의 현재 PC 미해결 환경 안내를 복구 완료로 갱신했다. 로컬 백업·준비 파일은 위 시스템 임시 폴더에 남기며 Git에 포함하지 않는다. .venv/.env/private_runs ignored/추적0, test ref d4b9725 유지. 자기 기록만 로컬 커밋하고 원격 push/test 병합은 하지 않는다. 환경 후속은 완료이며 다음은 일반 제품 작업/사용자 요청에 따른 공유다.
+
 - **2026-10-12 README 폴더·자료 관리 안내:** 폴더 역할/저장 위치·수명/경로 지정 기준/찾기 표와 상단 바로 가기 추가, 파일 링크39개·내부 앵커5개/diff 검사 통과. 문서 정리 단위 완료·제품 상태 유지. [기록](#readme-folder-storage-guide-20261012).
 
 <a id="readme-folder-storage-guide-20261012"></a>

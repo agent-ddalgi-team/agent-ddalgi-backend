@@ -186,7 +186,7 @@ if (!(Test-Path .env)) { Copy-Item .env.example .env }
 uv run python -m uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
-이동·복사한 가상환경에는 옛 위치를 가리키는 실행기가 남을 수 있어 `python -m` 방식으로 실행한다. 현재 PC에서는 Uvicorn·pytest·Alembic의 모듈 실행을 확인했다. `.venv/Scripts/uvicorn.exe` 직접 실행과 CMD/Bash 계열 활성화 스크립트에는 이전 위치 문제가 남아 있어, 해당 방식을 사용하려면 로컬 가상환경을 새로 구성해야 한다. DB와 `.env`는 가상환경과 별개로 보존한다.
+실행 안내는 `python -m` 방식을 사용한다. **2026-10-12 현재 PC의 가상환경 복구 완료:** 같은 Python 3.13.12와 설치 패키지 87개의 이름·버전을 유지하며 활성화 스크립트와 패키지 실행기를 복구했다. Uvicorn·pytest·Alembic의 직접 실행기와 PowerShell/CMD 활성화를 확인했고 관련 테스트295개가 통과했다. `.env`와 DB 관련 파일은 변경 전후 해시가 동일하다. 다른 PC에서는 `.venv`를 복사하지 말고 그 PC에서 `uv sync --locked`로 구성한다. 로컬 `.venv`는 Git 공유 대상이 아니므로 이 복구가 다른 PC에 자동 적용되지는 않는다. [복구 기록](docs/task_backend.md#venv-path-repair-20261012).
 
 API 확인: http://127.0.0.1:8000/docs
 

@@ -106,6 +106,8 @@ MVP는 사용자가 핵심 흐름을 끝까지 이용할 수 있는 첫 버전�
 
 ## 4. 기술 스택
 
+**로컬 가상환경 경로 복구(2026-10-12, 사용자 요청):** 기존 환경을 시스템 임시 위치에 백업하고, 같은 Python으로 uv venv --allow-existing/--relocatable을 사용해 설치본을 유지하며 실행 기반을 재생성한다. 실행 스크립트 제공 패키지23개는 현재 버전으로 고정·의존성 재해석 없이 오프라인 재설치했다. 전체87개 버전·.env/DB 해시를 보존하며 생성 환경은 커밋하지 않는다. 이는 현재 PC의 환경 복구이며 의존성/모델/공통 계약 변경이 아니다. [실제 검증](task_backend.md#venv-path-repair-20261012).
+
 **경로 검수 후 검사 도구 연결 보완(2026-10-12):** 현재 PC 실행 안내는 C:\final 기준으로 정정한다. check_s01_http.py의 --frontend는 현재 프론트 check-ai-workflow.mjs를 우선 사용하고 현재 백엔드 경로·mock 모드·지정 브라우저를 전달한다. 없는 옛 검사 도구 경로로 실패하던 문제를 해소하며 legacy helper 호환·임시 데이터 격리·유료 모드 상속 차단을 유지한다. [검증 기록](task_backend.md#backend-path-audit-20261012).
 
 **실행 자료 위치 정리(2026-10-12, 사용자 승인):** 회사정보 스키마와 기본 섹션 자료는 `app/resources/`, 추출·초안 프롬프트는 `app/prompts/`, API 예시는 `docs/api_examples_v1.1.json`으로 모은다. 루트 contracts/fixtures/prompts/handoff 폴더를 없애고 로더·평가 해시·계약 검사·문서 참조를 새 경로에 맞춘다. 파일 내용·공통 계약 버전·DB·승인 조건은 유지하며 기존 평가 기록의 코드/자원 경로와 해시가 다르면 기존 재개 보호대로 별도 실행을 요구한다. [검증 기록](task_backend.md#runtime-resources-organization-20261012).
