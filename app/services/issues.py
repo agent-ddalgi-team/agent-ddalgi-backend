@@ -7,10 +7,12 @@ acknowledged warning만. blocker(MOCK_VALUE·UNSUPPORTED_CLAIM 포함)는 확인
 from __future__ import annotations
 
 import json
+import hashlib
+import uuid
 
 from app.db import Connection, Row
 from app.errors import ApiError
-from app.models import Document, IssueOut, IssueResolveBody, PreflightOut
+from app.models import Document, IssueOut, IssueResolveBody, PreflightOut, SourceCorrectionBody
 from app.services import db_history, preflights, validation
 from app.timeutil import now, to_iso
 
@@ -22,6 +24,76 @@ def _not_allowed(message: str, **details) -> ApiError:
 
 def _still_present(message: str, **details) -> ApiError:
     return ApiError(422, "ISSUE_STILL_PRESENT", message, details=details)
+
+
+def _correction_source(body: SourceCorrectionBody, document: Document, source_list):
+    block = next((b for p in document.pages for b in p.blocks if b.block_id == body.block_id), None)
+    ref = body.evidence_ref
+    source = next((s for s in source_list if s.source_id == ref.source_id and s.source_version == ref.source_version), None)
+    segment = next((s for s in source.segments if s.segment_id == ref.segment_id), None) if source else None
+    if (block is None or block.type not in {"heading", "paragraph", "list"}
+            or ref not in block.evidence_refs or segment is None
+            or ref.locator != segment.locator or ref.excerpt not in segment.text
+            or body.original_text not in ref.excerpt):
+        raise _not_allowed("현재 문서에 연결된 원문의 구절을 선택해 주세요.")
+    text = "\n".join(block.content.get("items", [])) if block.type == "list" else str(block.content.get("text", ""))
+    if body.corrected_text not in text:
+        raise _not_allowed("정정할 표기를 문서에 먼저 입력·저장한 뒤 정정 근거를 기록해 주세요.")
+    return block, segment
+
+
+def record_source_correction(conn: Connection, session_row: Row, owner: str, document: Document,
+                             issue: Row, body: SourceCorrectionBody, preflight: PreflightOut | None) -> dict:
+    if body.expected_revision != document.document_revision:
+        raise ApiError(409, "DOCUMENT_REVISION_CONFLICT", "문서가 바뀌었습니다. 최신 문서에서 정정해 주세요.")
+    if body.input_revision != session_row["input_revision"] or document.input_revision != body.input_revision:
+        raise ApiError(409, "INPUT_REVISION_CONFLICT", "자료가 바뀌었습니다. 변경 내용을 반영하고 다시 검증해 주세요.")
+    if (issue["status"] != "open" or issue["origin"] != "agent" or issue["scope"] != "content"
+            or issue["code"] != "VALUE_MISMATCH" or body.block_id not in json.loads(issue["block_ids_json"])):
+        raise _not_allowed("원문 오타 정정은 현재 내용 검증의 값 불일치 문제에만 기록할 수 있습니다.")
+    latest = validation.latest_validation(conn, document.document_id, document.document_revision, body.input_revision)
+    if (latest is None or latest["validation_id"] != body.validation_id
+            or issue["last_validation_id"] != body.validation_id or latest["status"] == "pending"
+            or preflight is None or preflight.input_revision != body.input_revision):
+        raise ApiError(422, "REVALIDATION_REQUIRED", "완료된 최신 내용 검증에서 정정해 주세요.")
+    if validation.validation_in_progress(conn, document.document_id, document.document_revision, body.input_revision):
+        raise ApiError(409, "INVALID_OPERATION", "진행 중인 내용 검증이 끝난 뒤 정정해 주세요.")
+    source_list = preflights.build_sources(conn, session_row["session_id"], json.loads(session_row["selected_source_ids"]))
+    block, segment = _correction_source(body, document, source_list)
+    history = json.loads(issue["resolution_history_json"])
+    if len([h for h in history if h.get("action") == "source_typo_correction"]) >= 20:
+        raise _not_allowed("한 문제의 정정 기록은 20개까지 지원합니다. 자료를 보완해 다시 점검해 주세요.")
+    record = {**body.model_dump(), "action": "source_typo_correction", "correction_id": f"cor_{uuid.uuid4().hex[:16]}",
+              "by": owner, "at": to_iso(now()), "issue_id": issue["issue_id"], "preflight_id": preflight.preflight_id,
+              "block_fingerprint": validation.fingerprint_block(block, {segment.segment_id: segment.text}),
+              "source_hash": hashlib.sha256(segment.text.encode()).hexdigest()}
+    history.append(record)
+    conn.execute("UPDATE issues SET resolution_history_json=?, updated_at=? WHERE issue_id=?",
+                 (json.dumps(history, ensure_ascii=False), record["at"], issue["issue_id"]))
+    return record
+
+
+def active_source_corrections(conn: Connection, document: Document, input_revision: int,
+                              preflight: PreflightOut | None, source_list) -> list[dict]:
+    """Only exact saved document/input/preflight/source snapshots may reuse a user correction."""
+    result = []
+    for row in conn.execute("SELECT resolution_history_json FROM issues WHERE document_id=?", (document.document_id,)):
+        records = [h for h in json.loads(row[0]) if h.get("action") == "source_typo_correction" and not h.get("purged")]
+        if not records:
+            continue
+        record = records[-1]
+        if (record["expected_revision"] != document.document_revision or record["input_revision"] != input_revision
+                or preflight is None or record["preflight_id"] != preflight.preflight_id):
+            continue
+        body = SourceCorrectionBody.model_validate({k: record[k] for k in SourceCorrectionBody.model_fields})
+        try:
+            block, segment = _correction_source(body, document, source_list)
+        except ApiError:
+            continue
+        if (record["source_hash"] == hashlib.sha256(segment.text.encode()).hexdigest()
+                and record["block_fingerprint"] == validation.fingerprint_block(block, {segment.segment_id: segment.text})):
+            result.append(record)
+    return result
 
 
 def acknowledgement_context(conn: Connection, session_row: Row, document: Document,

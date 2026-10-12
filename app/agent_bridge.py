@@ -126,6 +126,7 @@ class ValidateRequest:
     changed_block_ids: list[str]     # 마지막 유효 검증 이후 바뀐 블록. 전체 검사면 모든 블록 ID
     server_issues: list[Issue]       # 서버 일반 검사 결과(참고용). 삭제·완화 대상이 아니다
     images: list[ImageIn] = field(default_factory=list, repr=False)
+    source_corrections: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

@@ -975,6 +975,8 @@ def to_validation_out(row: Row) -> ValidationOut:
 
 def issue_to_out(row: Row) -> IssueOut:
     return IssueOut(issue_id=row["issue_id"], scope=row["scope"], code=row["code"], severity=row["severity"],
+                    source_corrections=[item for item in json.loads(row["resolution_history_json"])
+                                        if item.get("action") == "source_typo_correction" and not item.get("purged")],
                     status=row["status"], message=row["message"], source_ids=json.loads(row["source_ids_json"]),
                     fact_ids=json.loads(row["fact_ids_json"]), block_ids=json.loads(row["block_ids_json"]),
                     resolution=json.loads(row["resolution_json"]) if row["resolution_json"] else None,

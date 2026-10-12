@@ -16,7 +16,35 @@
     "approval": "이전 템플릿의 검사·승인은 재검사·재승인 필요. 승인 artifact 자동 교체 없음",
     "limits": "캔버스는 실제 PDF 페이지 검사 증거가 아니며 DOCX 승인 제한 유지. 아래 과거 예시는 당시 템플릿 실행 기록"
   },
-  "contract_version": "1.12",
+  "contract_version": "1.13",
+  "source_typo_correction_20261012": {
+    "note": "계약1.13 합성 예시. 원본·문서 불변, 기존 이력 JSON 사용, DBv11 유지. 정정은 자동 통과가 아니라 재검증 참고 자료다.",
+    "request": {
+      "method": "POST",
+      "path": "/api/v1/sessions/sess_example/issues/iss_example/source-corrections",
+      "headers": {"Idempotency-Key": "example-source-correction-1"},
+      "body": {
+        "expected_revision": 2,
+        "input_revision": 1,
+        "validation_id": "val_example",
+        "block_id": "block_example",
+        "evidence_ref": {
+          "source_id": "src_example", "source_version": 1, "segment_id": "seg_example",
+          "locator": {"kind": "line", "line_start": 1, "line_end": 1},
+          "excerpt": "소재지: 충정남도"
+        },
+        "original_text": "충정남도",
+        "corrected_text": "충청남도",
+        "reason": "도명 표기의 오타",
+        "basis": "담당자가 제공한 주소 확인 자료에서 동일 사업장 소재지를 충청남도로 확인함. 설명용 합성 근거."
+      }
+    },
+    "response": {
+      "job_id": "job_example", "status": "queued", "kind": "validate",
+      "session_id": "sess_example", "created_at": "2026-10-12T00:00:00Z"
+    },
+    "history": "IssueOut.source_corrections에 요청 필드와 correction_id/issue_id/action/by/at/preflight_id/block_fingerprint/source_hash가 추가된다. 재검증 뒤 해결된 Issue도 이력을 보존하며 세션 종료 시 정정 본문을 제거한다."
+  },
   "docx_layout_approval_20261006": {
     "_note": "계약 1.9 설명용 합성 예시. 실제 LLM 결과가 아니다. 최신 내용 검증·사진 공개 허가·명시 승인·버전/해시 조건도 충족해야 한다.",
     "layout_check_request": {

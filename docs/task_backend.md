@@ -7,6 +7,18 @@
 
 ## 1. Quick Status
 
+- **2026-10-12 F-05/BE-06 원문 오타 정정:** 입력·근거 기록·재검증 구현/격리 검증 완료. [결과와 제한](#source-typo-correction-20261012). 일반품질·Agent 상태 유지.
+
+<a id="source-typo-correction-20261012"></a>
+
+### 원문 오타 정정 기록·재검증 (2026-10-12)
+
+- **변경:** 새 브랜치 codex/source-typo-correction-20261012에서 BE-06/F-05 후속 구현. app/models.py·routers/issues.py·services/issues.py/ai_jobs.py/validation.py에 현재 VALUE_MISMATCH의 정정 전후 표기·사유·근거 기록과 검증 Job 연결을 추가했다. agent_bridge.py/agent_llm.py는 기록을 별도 참고 데이터로 전달하고 자동 승인·지침으로 취급하지 않는다. 프론트 publication.ts/usePublication.ts/DocumentWorkspace.tsx에 버튼·입력·기록·진행 상태를 연결했다. 기존 파일만 수정했다.
+- **보존/버전:** 원본·추출문·현재 문서 불변, 기존 issues 이력 JSON 사용·DBv11 유지. 문서/입력/점검/원문 지문이 바뀌면 재사용하지 않으며 정정 이력이 있는 문서는 전체 재검증한다. 기존 승인은 무효화하고 독립 blocker는 유지한다. 세션 종료/만료 시 사유·근거도 정리한다. 새 API/타입/예시는 계약1.13, 계획·PRD·프론트 README에 실제 범위를 반영했다.
+- **백엔드:** 임시 DB·가상 AI로 tests/test_be06.py tests/test_be09.py tests/test_orm_workflow.py 실행: **293 passed, 2 skipped, 1 warning (218.79초)**. 잘못된 원문/참조·다른 소유자·버전 충돌·중복 요청·검증 실패/재시도·자료/점검 변경·이력 삭제를 포함한다. 문서/예시 갱신 후 API 계약+LLM 정정 입력 선택 검사 **47 passed, 1314 deselected, 1 warning (11.37초)**. LLM 단위 검사는 캡처한 요청만 대조했고 유료 AI 판정을 시험하지 않았다. 건너뛴 환경/유료 실행은 성공으로 계산하지 않는다.
+- **프론트:** TypeScript/Vite build 통과(기존 큰 JS 청크 경고). 변경 코드 ESLint 오류0·기존 useEffect 의존성 경고1. 기존 scripts/check-ai-workflow.mjs에 --source-correction을 추가, 격리 임시 DB·실제 HTTP/Chrome에서 필수 입력→정정 저장→재검증→다른 blocker 유지→문서 불변→새로고침 후 기록을 확인했다. PASS·브라우저 오류0·유료 AI0. 캡처는 Temp/ddalgi-ai-ui-LmRYpT에서 확인했다. 최초 검수의 문서 상태 비교 시점과 캡처 스크롤을 보정했으며 최종 결과만 기록한다.
+- **완료/제한:** 이 기능 단위 구현·격리 검증 완료, BE-10/F-08 일반품질/AG-07 상태는 유지한다. 원하는 표기는 먼저 문서에 편집·저장해야 하며 현재는 직접 연결된 텍스트 블록의 값 불일치만 지원한다. 근거 URL 자동 수집과 실제 AI 판단 품질 평가는 미실행. 보호 대상 .env/DB/원자료 46파일의 기존 SHA-256과 대조해 변경0을 확인했다. 기존 사용자 서버는 재시작하지 않는다. 양쪽 저장소 로컬 커밋까지만 수행하며 push·test/develop 병합 없음. 다음은 새 백엔드 실행 후 사용자 사례 검수이며 원본 DB 변경을 수반하는 검수는 이번 범위에 포함하지 않는다.
+
 - **2026-10-12 거산 실자료 화면 검수:** 등록/자동 추출 표시·근거·편집 보존·PDF/DOCX5쪽 다운로드 확인, 화면 문제3건 수정·회귀 통과. [기록](#geosan-full-ui-20261012). BE-10/F-08 일반품질 진행중 유지.
 
 <a id="geosan-full-ui-20261012"></a>

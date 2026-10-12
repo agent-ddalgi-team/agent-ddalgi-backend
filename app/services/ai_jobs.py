@@ -394,6 +394,8 @@ def run_validate_job(settings: Settings, session_id: str, job_id: str, input_rev
 
     끝날 때 문서·입력 버전을 다시 본다. 바뀌었으면 오래된 결과를 저장하지 않고 failed로 끝낸다(계약 확인 ㉔).
     """
+    from app.services import issues as issue_service
+
     try:
         with connect(settings.db_path, immediate=True) as conn:
             if _policy_failure(conn, settings, session_id, job_id):
@@ -417,7 +419,12 @@ def run_validate_job(settings: Settings, session_id: str, job_id: str, input_rev
             _trace_input(conn, job_id, settings, sources, exclusions=exclusions, preflight=preflight, document=document)
             ctx = validation.load_context(conn, session_id, preflight)
             fps = validation.fingerprints(document, ctx.seg_texts)
+            source_corrections = issue_service.active_source_corrections(conn, document, input_revision, preflight, sources)
             base = validation.base_validation(conn, document_id, document_revision, input_revision)
+            if conn.execute("SELECT 1 FROM issues WHERE document_id=? AND resolution_history_json LIKE ? LIMIT 1",
+                            (document_id, '%source_typo_correction%')).fetchone():
+                # 기록 만료 뒤에도 이전의 정정 기반 통과를 재사용하지 않는다.
+                base = None
             origin = conn.execute("SELECT origin FROM document_revisions WHERE document_id=? AND revision=?",
                                   (document_id, document_revision)).fetchone()
             if origin and origin[0] == "impact_review":
@@ -447,7 +454,7 @@ def run_validate_job(settings: Settings, session_id: str, job_id: str, input_rev
                     session_id, input_revision, brief, sources, document, preflight, sorted(changed),
                     [Issue(issue_id=f"srv_{i}", scope=d.scope, code=d.code, severity=d.severity, message=d.message,
                            source_ids=d.source_ids, fact_ids=d.fact_ids, block_ids=d.block_ids)
-                     for i, d in enumerate(server_drafts)], images=images))
+                     for i, d in enumerate(server_drafts)], images=images, source_corrections=source_corrections))
                 agent_called = True
             except Exception as exc:
                 with connect(settings.db_path, immediate=True) as conn:
@@ -491,6 +498,10 @@ def run_validate_job(settings: Settings, session_id: str, job_id: str, input_rev
                 except AgentError as exc:
                     _fail_agent(conn, job_id, exc)
                     return
+            current_sources = preflights.build_sources(conn, session_id, json.loads(row["selected_source_ids"]))
+            if issue_service.active_source_corrections(conn, current, input_revision, preflight, current_sources) != source_corrections:
+                jobs.fail(conn, job_id, "SERVICE_TEMPORARY_FAILURE", "검증 중 정정 근거가 바뀌었습니다. 다시 검사해 주세요.", True)
+                return
             validation_id = f"val_{uuid.uuid4().hex[:16]}"
             drafts = list(server_drafts) + [
                 validation.IssueDraft(i.scope, i.code, i.severity, i.message, list(i.block_ids), list(i.fact_ids),

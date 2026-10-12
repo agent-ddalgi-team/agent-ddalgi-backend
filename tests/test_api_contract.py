@@ -367,7 +367,13 @@ def test_openapi_describes_common_errors_export_statuses_and_binary_responses(ap
     assert origin["default"] == "unknown"
     operations = [operation for path, item in schema["paths"].items() if path.startswith("/api/v1/")
                   for method, operation in item.items() if method in {"get", "post", "patch", "delete"}]
-    assert len(operations) == 37  # C-01 extraction views and own-session original download
+    assert len(operations) == 38  # Source typo correction records and revalidation
+    correction = schema["paths"]["/api/v1/sessions/{sid}/issues/{iid}/source-corrections"]["post"]
+    assert "202" in correction["responses"]
+    assert any(p["name"] == "Idempotency-Key" and p["required"] for p in correction["parameters"])
+    correction_body = schema["components"]["schemas"]["SourceCorrectionBody"]
+    assert {"validation_id", "evidence_ref", "original_text", "corrected_text", "reason", "basis"} <= set(correction_body["required"])
+    assert correction_body["properties"]["basis"]["maxLength"] == 2000
     for suffix in ("", "/{segment_id}"):
         operation = schema["paths"]["/api/v1/sessions/{sid}/sources/{source_id}/segments" + suffix]["get"]
         assert operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/SourceTextOut")
