@@ -7,7 +7,19 @@
 
 ## 1. Quick Status
 
-- **2026-10-12 팀 pull 자동 보관:** 두 로컬 저장소 pull.autoStash=true, 임시 저장소14상황의 이동/팀원 수정 보존·실제 충돌 유지 확인. 팀원별1회 설정은 README 안내, test 병합 없음. [기록](#team-pull-automation-20261012).
+- **2026-10-12 공유 MD 경로 기준:** 사용자 의도를 재확인해 AGENTS/양쪽 README에 저장소 상대경로·읽을 문서·옛 위치 사본 금지를 명시했다. 앞선 로컬 autostash 설정/팀원별 설정 안내는 철회한다. test 병합 없음. [기록](#shared-path-guidance-20261012).
+
+<a id="shared-path-guidance-20261012"></a>
+
+### pull로 함께 받는 MD 경로 기준 (2026-10-12)
+
+- 사용자는 Git의 충돌 자동 해결이 아니라 공유 MD에 실제 경로를 명시해 팀원이 pull로 같은 기준을 받기를 원한다고 정정했다. 앞선 모의 Git 검사 기록은 과거 수행 사실로 보존하되 autostash 설치를 현재 사용 절차로 유지하지 않는다. 우리가 직전 턴에 추가한 두 저장소 로컬 pull.autoStash=true를 해제하고 전역/기존 merge·rebase·upstream 설정은 변경하지 않는다.
+- backend AGENTS.md 1절에 공통 경로 표와 저장소 루트/MD 상대경로의 차이, 작업 전 README 확인, 옛 루트 문서/자원 사본 생성 금지를 추가했다. 기존 역할별 필독 문서·새 파일 확인·책임·검증 규칙은 보존하고 CLAUDE/Copilot 포인터는 그대로 유지했다. README의 팀원별 Git 설정 안내는 경로 기준 공유 방식으로 교체했다.
+- frontend README의 기존 문서 찾아가기 아래에 docs/src/public/scripts/fixtures의 기준 위치·옛 AI AGENT 사본 금지·별도 백엔드 저장소를 각각 갱신해야 함을 명시했다. 기존 .agents/rules/work_history.md의 docs 위치와 일치하며 .claude/ 등 미추적 파일은 변경하지 않았다. 새 저장소 파일이나 새 작업일지를 만들지 않았다.
+- 경로 안내는 PC별 C:/final 같은 절대 경로를 요구하지 않는다. 실제 파일 이동·코드 경로 수정은 기존 정리 커밋에 있고 이번은 안내 보완이다. MD가 런타임 설정/파일 이동/충돌 해결을 실행하거나 모든 AI가 모든 문서를 자동 읽는다고 주장하지 않는다. .env/DB의 개인 경로는 기존 설정을 유지한다.
+- 백엔드 AGENTS/README/공통task와 프론트 README의 상대 파일 링크375개, 새 경로 기준 앵커·Claude/Copilot의 AGENTS 연결·프론트 기준 폴더 존재·양쪽 Git diff 형식이 통과했다. 두 로컬 pull.autoStash 항목 제거도 확인했다. 실행 코드 변경이 없어 제품 회귀·실제 AI·Git 모의 검사는 반복하지 않는다. 현재 codex/resume-quality-check-20261012에서 자기 변경만 저장소별 로컬 커밋하며 원격 push/test 병합 없음. BE-10/F-08 및 다른 담당 상태는 유지한다.
+
+- **이전 해석의 팀 pull 자동 보관 기록(현재 설정 철회):** 임시 저장소14상황 검수 기록은 아래에 보존한다. 현재 사용 절차는 위 공유 MD 경로 기준을 따른다.
 
 <a id="team-pull-automation-20261012"></a>
 

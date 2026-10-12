@@ -17,6 +17,24 @@
 
 사용자의 최신 요청을 우선한다. 문서와 요청이 다르면 관련 문서도 갱신하되 미정 사항과 확정 사항을 구분한다.
 
+### 공통 경로 기준
+
+경로의 기준은 이 AGENTS.md가 있는 **백엔드 저장소 루트**다. 개인 PC의 `C:/final` 같은 위치는 공통 경로로 가정하지 않는다. pull로 받은 현재 브랜치의 이 지침과 [README 문서 찾아가기](README.md#문서-찾아가기)를 작업 시작 시 확인한다.
+
+| 용도 | 저장소 루트 기준 경로 |
+|---|---|
+| 기획·요구사항·계약 | [docs/plan.md](docs/plan.md), [docs/prd.md](docs/prd.md), [docs/contracts.md](docs/contracts.md) |
+| 백엔드 작업·공통 연결표 | [docs/task_backend.md](docs/task_backend.md), [docs/task.md](docs/task.md) |
+| Agent 작업·설계 | [docs/task_agent.md](docs/task_agent.md), [docs/agent.md](docs/agent.md) |
+| API 예시 | [docs/api_examples_v1.1.json](docs/api_examples_v1.1.json) |
+| 추출·작성 프롬프트 | [app/prompts/extract.txt](app/prompts/extract.txt), [app/prompts/draft.txt](app/prompts/draft.txt) |
+| 고정 스키마·섹션 자료 | [app/resources/profile.schema.json](app/resources/profile.schema.json), [app/resources/mock_profile.json](app/resources/mock_profile.json) |
+
+- 표의 실제 파일을 읽고 수정한다. 과거 기록의 `plan.md`, `task_backend.md`, `prompts/`, `contracts/`, `fixtures/mock_profile.json`, `handoff/` 표기 때문에 옛 루트 위치에 같은 파일을 다시 만들지 않는다. 실제 테스트용 `tests/fixtures/`는 유지한다.
+- 실행·테스트 명령은 저장소 루트에서 실행한다. MD 링크는 해당 MD 파일이 있는 폴더를 기준으로 작성한다. 예를 들어 이 파일에서는 `docs/plan.md`, docs/task_backend.md에서는 `plan.md`가 같은 파일을 가리킨다.
+- 파일이 없으면 현재 브랜치와 실제 구조를 먼저 확인한다. MD 지침이 런타임 설정·파일 이동을 실행하는 것은 아니므로 코드에서 쓰는 경로도 별도로 일치해야 한다.
+- 새 파일 생성은 아래 3절의 기존 확인 절차를 그대로 따른다. 공통 경로 안내를 이유로 작업 영역이나 파일 수를 임의로 늘리지 않는다.
+
 ## 2. 책임 경계
 
 | 현재 역할 | 주 작업 | 임의로 확장하지 않을 영역 |

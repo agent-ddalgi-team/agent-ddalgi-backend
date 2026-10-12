@@ -7,7 +7,7 @@
 
 ## 1. Quick Status
 
-- **2026-10-12 팀 pull 자동 보관:** 로컬 두 저장소 설정·임시 Git14상황 검수 완료, 팀원별 설정/충돌 보존 안내. 제품 상태 유지·test 병합 없음. [task_backend.md 기록 참조](task_backend.md#team-pull-automation-20261012).
+- **2026-10-12 공유 MD 경로 기준:** AGENTS/양쪽 README에 상대경로·문서 위치 명시, 앞선 autostash 설정 안내 철회. 제품 상태 유지·test 병합 없음. [task_backend.md 기록 참조](task_backend.md#shared-path-guidance-20261012).
 
 - **2026-10-12 [BE-10/F-08] 새 브랜치 작업 재개:** 정리 내용 상속·격리 화면 PDF26/DOCX29묶음 및 거산 실자료4개/AI3회·5쪽 내용/양식 배치 통과. 표본 단위 완료/일반품질 진행중 유지·test 병합 없음. [task_backend.md 기록 참조](task_backend.md#geosan-resume-quality-20261012).
 
