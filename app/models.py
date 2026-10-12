@@ -1,4 +1,4 @@
-"""API 요청·응답 모델. contracts.md 계약 1.12와 OpenAPI의 원본이다.
+"""API 요청·응답 모델. contracts.md 계약 1.13와 OpenAPI의 원본이다.
 
 DB 테이블은 orm_models.py에, 요청 값의 형식 검사는 여기에 둔다.
 소유권·현재 버전·근거의 유효성 같은 업무 검사는 서비스에서 수행한다.
@@ -556,6 +556,7 @@ class ValidationOut(BaseModel):
 
 
 class IssueOut(Issue):
+    source_corrections: list[dict[str, Any]] = Field(default_factory=list)
     origin: Literal["server", "agent", "preflight", "layout"]   # layout = 배치 검사(BE-08, 계약 확인 ㊳)
     layout_format: Literal["pdf", "docx"] | None = None          # scope=layout Issue의 형식. 공개 허가 Issue는 None(형식 무관)
     created_at: str
@@ -579,6 +580,25 @@ class Resolution(BaseModel):
     model_config = ConfigDict(extra="forbid")
     action: Literal["resolved", "excluded", "acknowledged"]
     reason: NonBlankText
+
+
+class SourceCorrectionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: RequestRevision
+    input_revision: RequestRevision
+    validation_id: NonBlankText
+    block_id: NonBlankText
+    evidence_ref: EvidenceRef
+    original_text: Annotated[str, Field(min_length=1, max_length=200, pattern=r"\S")]
+    corrected_text: Annotated[str, Field(min_length=1, max_length=200, pattern=r"\S")]
+    reason: Annotated[str, Field(min_length=1, max_length=1000, pattern=r"\S")]
+    basis: Annotated[str, Field(min_length=1, max_length=2000, pattern=r"\S")]
+
+    @model_validator(mode="after")
+    def changed_text(self):
+        if self.original_text.strip() == self.corrected_text.strip():
+            raise ValueError("원문과 정정 내용이 같습니다.")
+        return self
 
 
 class IssueResolveBody(BaseModel):
