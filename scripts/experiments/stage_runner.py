@@ -90,7 +90,7 @@ def load_manifest(path):
 def code_identity(root):
     """Actual file hashes, including uncommitted edits; HEAD alone is insufficient."""
     names = subprocess.check_output(
-        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "app", "prompts", "tests", "scripts/experiments",
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "app", "tests", "scripts/experiments",
          "pyproject.toml", "uv.lock"], cwd=root).decode().split("\0")
     files = {name: digest(root / name) for name in names if name and (root / name).is_file()}
     return {"head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),

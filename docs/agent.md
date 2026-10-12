@@ -165,9 +165,9 @@ AG-01은 **기존 AI 작업물을 이해하고 현재 서버에 연결할 준비
 - 저장소: [agent-ddalgi](https://github.com/agent-ddalgi-team/agent-ddalgi), `develop` · `e8fc52ad84157ab9da752fc905da4228db6a06c1`.
 - 현재 PC의 별도 클론: `../previous-agent-ddalgi/`. 필요한 파일은 승인 후 현재 저장소에 이관했으며 실행 코드는 이전 클론을 직접 불러오지 않는다.
 - `backend/agent.py`: `extract_company_info()` 정보 추출, `draft_profile()` 본문 생성, 형식·인용 근거 검사.
-- `prompts/extract.txt`, `prompts/draft.txt`: 추출·작성 지시문. 추출 프롬프트는 코드가 fact_id를 부여하는 규칙에 맞췄다. 초안의 작성 목적·강조·방향은 참고 정보로만 전달하며 회사 사실의 근거로 쓰지 않도록 명시했다.
-- `contracts/profile.schema.json`: 14개 항목·4개 상태·근거 형식의 원본.
-- `fixtures/mock_profile.json`: 실행 중 읽는 13개 본문 항목의 순서·제목. 가짜 회사 값을 생성 결과로 복사하지 않는다.
+- `app/prompts/extract.txt`, `app/prompts/draft.txt`: 추출·작성 지시문. 추출 프롬프트는 코드가 fact_id를 부여하는 규칙에 맞췄다. 초안의 작성 목적·강조·방향은 참고 정보로만 전달하며 회사 사실의 근거로 쓰지 않도록 명시했다.
+- `app/resources/profile.schema.json`: 14개 항목·4개 상태·근거 형식의 원본.
+- `app/resources/mock_profile.json`: 실행 중 읽는 13개 본문 항목의 순서·제목. 가짜 회사 값을 생성 결과로 복사하지 않는다.
 - `backend/validators.py`와 검사 스크립트: 잘못된 인용·없는 사실 ID 등을 거부하는 사례 참고. 옛 API·서버·출력 모듈의 전체 이관은 이번 범위에 포함하지 않는다.
 
 **보존할 14개 항목**
@@ -231,10 +231,10 @@ AG-01은 **기존 AI 작업물을 이해하고 현재 서버에 연결할 준비
 |---|---|
 | `app/agent_llm.py` | 서버가 찾는 실제 AI 진입점. 4.3절 데이터 변환과 analyze/draft 연결, 미구현 호출의 명시적 실패 처리 |
 | `app/agent_legacy.py` | 이전 agent.py의 추출·작성·검사 로직을 이관. 서버 형식 변환과 분리해 원본과 대조하기 쉽게 유지 |
-| `prompts/extract.txt` | 이전 추출 지시문 이관. 코드의 ID 발급 규칙과 불일치하는 지시 수정 |
-| `prompts/draft.txt` | 이전 작성 지시문 이관. 근거 있는 사실만 작성하는 기준 유지 |
-| `contracts/profile.schema.json` | 원본 14개 항목 스키마 보존. 현재 API contracts.md와 별개인 이전 AI 결과의 내부 형식 |
-| `fixtures/mock_profile.json` | 원본 코드가 읽는 순서·제목 정의 보존. 예시 회사 사실은 실제 결과에 사용하지 않음 |
+| `app/prompts/extract.txt` | 이전 추출 지시문 이관. 코드의 ID 발급 규칙과 불일치하는 지시 수정 |
+| `app/prompts/draft.txt` | 이전 작성 지시문 이관. 근거 있는 사실만 작성하는 기준 유지 |
+| `app/resources/profile.schema.json` | 원본 14개 항목 스키마 보존. 현재 API contracts.md와 별개인 이전 AI 결과의 내부 형식 |
+| `app/resources/mock_profile.json` | 원본 코드가 읽는 순서·제목 정의 보존. 예시 회사 사실은 실제 결과에 사용하지 않음 |
 | `tests/test_agent_llm.py` | 변환·출처·오류·사전 확인 후 생성 연결을 외부 AI 호출 없는 대역으로 검증 |
 
 `pyproject.toml`·`uv.lock`에는 이전 저장소와 같은 `openai==3.14.0`을 추가했고, `.env.example`에는 비밀값 없는 AI 설정 안내를 넣었다. `.env`는 읽거나 수정하지 않았다. 공통 모델·서버 라우트·DB·승인 정책을 유지하고 프롬프트·스키마·fixture 읽기 경로를 현재 저장소에 맞췄다. 기존 검사 규칙과 스키마·fixture를 보존하며, fixture의 예시 회사 내용을 실제 결과로 복사하지 않는다.

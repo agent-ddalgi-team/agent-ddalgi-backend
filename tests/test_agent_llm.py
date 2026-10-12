@@ -47,6 +47,30 @@ def baseline_agent(*args, **kwargs):
     return llm.LlmAgent(*args, legacy_draft=True, **kwargs)
 
 
+def test_packaged_agent_resources_load_outside_repository(tmp_path, monkeypatch):
+    """Runtime resources and prompts must not depend on the shell working directory."""
+    monkeypatch.chdir(tmp_path)
+    schema = json.loads(legacy.PROFILE_SCHEMA_PATH.read_text(encoding="utf-8"))
+    profile = json.loads(legacy.MOCK_PROFILE_PATH.read_text(encoding="utf-8"))
+    assert tuple(schema["properties"]["company_info"]["required"]) == legacy.COMPANY_INFO_KEYS
+    assert len(legacy.COMPANY_INFO_KEYS) == 14
+    assert tuple(section["key"] for section in profile["draft_sections"]) == legacy.SECTION_ORDER
+    assert len(legacy.SECTION_ORDER) == 13
+    assert all(key in legacy.load_extract_prompt() for key in legacy.COMPANY_INFO_KEYS)
+    assert legacy.load_draft_prompt() and legacy.load_draft_prompt(editorial=True)
+
+
+def test_stage_runner_identity_covers_packaged_resources_and_prompts():
+    """Moving resources must not omit them from evaluation resume protection."""
+    from scripts.experiments.stage_runner import code_identity
+    root = Path(__file__).resolve().parents[1]
+    identity = code_identity(root)
+    for name in ("app/resources/profile.schema.json", "app/resources/mock_profile.json",
+                 "app/prompts/extract.txt", "app/prompts/draft.txt"):
+        assert identity["files"][name] == hashlib.sha256((root / name).read_bytes()).hexdigest()
+    assert not any(name.startswith(("contracts/", "fixtures/", "prompts/")) for name in identity["files"])
+
+
 def legacy_contract_view(value):
     """Project new optional defaults out of frozen pre-1.7 evaluation fingerprints only."""
     if hasattr(value, "model_dump"):

@@ -7,6 +7,22 @@
 
 ## 1. Quick Status
 
+- **2026-10-12 구조·경로 정리 공유:** [백엔드 PR #46](https://github.com/agent-ddalgi-team/agent-ddalgi-backend/pull/46) → test 생성·미병합. [백엔드 작업표](task_backend.md) Quick Status 참조. 제품 상태 유지.
+
+- **2026-10-12 공유 MD 경로 기준:** AGENTS/양쪽 README에 상대경로·문서 위치 명시, 앞선 autostash 설정 안내 철회. 제품 상태 유지·test 병합 없음. [task_backend.md 기록 참조](task_backend.md#shared-path-guidance-20261012).
+
+- **2026-10-12 [BE-10/F-08] 새 브랜치 작업 재개:** 정리 내용 상속·격리 화면 PDF26/DOCX29묶음 및 거산 실자료4개/AI3회·5쪽 내용/양식 배치 통과. 표본 단위 완료/일반품질 진행중 유지·test 병합 없음. [task_backend.md 기록 참조](task_backend.md#geosan-resume-quality-20261012).
+
+- **2026-10-12 로컬 .venv 경로 복구:** 실행기/활성화·295검사 통과/87패키지 버전·.env/DB 해시 보존·복구 단위 완료/제품 상태 유지. [task_backend.md 기록 참조](task_backend.md#venv-path-repair-20261012).
+
+- **2026-10-12 README 저장 안내:** 폴더·자료 보관·경로 지정·찾기 기준 정리/링크 검수 완료·제품 상태 유지. [task_backend.md 기록 참조](task_backend.md#readme-folder-storage-guide-20261012).
+
+- **2026-10-12 현재 경로 검수:** 실행 자료/DB/도구·링크 확인, 안내/검사 도구 보완·단위 완료/복사 .venv 실행기 문제 후속·제품 상태 유지. [task_backend.md 기록 참조](task_backend.md#backend-path-audit-20261012).
+
+- **2026-10-12 실행 자료 정리:** 루트 4폴더 통합·관련1,493검사/파일링크627개/프론트build 통과·정리 단위 완료/제품 작업 상태 유지. [task_backend.md 기록 참조](task_backend.md#runtime-resources-organization-20261012).
+
+- **2026-10-12 문서 정리:** 두 저장소 일반 MD 이동·링크 검수 완료/제품 작업 상태 유지. [task_backend.md 기록 참조](task_backend.md#markdown-docs-organization-20261012).
+
 - **2026-10-08 [BE-09·10 / F-08] 만료 후 화면 복귀:** 격리 브라우저16묶음 통과·실제410→초안/출력 참조 정리→시작 화면→다른 세션·자동AI0·일반품질 진행중. [기록](task_backend.md#expired-workflow-ui-recovery-20261008).
 
 - **2026-10-08 [BE-09·10 / F-08] 만료 안내 화면 검수:** 격리 실제 브라우저15묶음 통과·S01/S02/S03 표시/조회·기한/문서 불변·AI 추가 호출0·일반품질 진행중. [기록](task_backend.md#session-expiry-ui-check-20261008).
