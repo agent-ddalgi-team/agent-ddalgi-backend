@@ -48,7 +48,7 @@ GET /sessions/{sid}/public-data는 {status:ready|not_configured,providers:[dart,
 | 편집·승인 | Page.design·set_page_design 및 level 2 heading 유지. 버전/내용 변경에 따른 검사·승인 무효화 | 디자인/소제목 표시, 재검사 안내, 최신 검사·개별 경고 확인 후 명시 승인 |
 | DOCX | 명시 설정한 LibreOffice로 검사 대상 DOCX를 PDF로 변환해 실제 쪽수·쪽별 본문 순서/사진 수·인쇄 영역 검사. 필수 검사 통과 후 같은 DOCX를 승인·다운로드 | format=docx의 최신 검사·승인 연결. warnings 표시. 엔진 미설정/미측정은 계속 차단 |
 
-인계 예시는 기존 `handoff/api_examples_v1.1.json`을 유지하며 최상위 `contract_version=1.9`를 따른다. 예시의 가짜 값과 실제 HTTP·실제 모델 검증은 구분한다.
+인계 예시는 기존 `docs/api_examples_v1.1.json`을 유지하며 최상위 `contract_version=1.9`를 따른다. 예시의 가짜 값과 실제 HTTP·실제 모델 검증은 구분한다.
 
 **계약 1.9 — DOCX 실제 검사·승인·출력(2026-10-06):** 현재 템플릿은 `template_v11`, 데이터 1.0·DB v11·공개 API 필드는 유지한다. 서버의 `EXPORT_LIBREOFFICE_PATH`가 절대 실행 파일 경로로 설정되면 DOCX 자체를 변환한 PDF에서 `actual_pages`를 측정하고 필수 검사 3종을 수행한다. `preview_basis=pdf`의 PNG는 이 변환본 기준이며 경고에 LibreOffice 검사 기준을 명시한다. 엔진 미설정/경로 오류는 `overflow=not_checked`, 변환/측정 실패는 실패 Job으로 남아 승인할 수 없다. 엔진 없는 경우의 별도 HTML/PDF 미리보기는 DOCX 검사 증거가 아니다. 실제 검사 통과·최신 내용 검증·명시 확인·사진 공개 허가·버전/해시 일치가 모두 충족되면 검사 때 만든 편집 가능한 DOCX를 그대로 내려준다. Word 등 다른 프로그램이나 글꼴에서 같은 쪽 나눔을 보장하지 않는다. DOCX는 기존 단일 열 배치이며 PDF 브로슈어 디자인과 동일 배치를 보장하지 않는다. 이전 템플릿의 PDF/DOCX 검사·승인은 재검사·재승인이 필요하고 과거 산출물을 자동 교체하지 않는다. 프론트 사본·DOCX 화면 연결은 별도 후속이다.
 
@@ -90,7 +90,7 @@ GET /sessions/{sid}/public-data는 {status:ready|not_configured,providers:[dart,
 
 **내부 추출 전송 형식(2026-09-29, 문서 v1.12):** 실제 `company_info` 호출에서 각 원문 구간에 요청 내 `unit_id`를 부여하고 모델의 evidence는 `{"unit_id": 1}`처럼 그 번호만 반환한다. 서버가 해당 구간의 원문 전체를 정확히 quote로 연결하고 기존 source_id·locator·버전을 복원한다. 번호는 이번 요청의 선택 자료 구간만 허용하며 bool/실수/문자열·범위 밖 ID·임의 quote 필드는 거부한다. fact의 text·상태·충돌 후보를 자동 보정하거나 삭제하지 않고 기존 원문·형식 검사와 후속 의미 검증을 유지한다. 이는 인용문 재작성 오류를 없애는 내부 전송 변경이다. 공개 Preflight/Fact/EvidenceRef JSON과 DB 스키마는 그대로이며 프론트는 같은 API를 사용한다. 인용 범위는 모델이 재작성한 짧은 발췌 대신 선택된 원문 구간 전체다.
 
-**계약 1.2(2026-09-28):** 사용자가 요청한 AG-04 연결 후속으로, 같은 입력의 재점검에서 충돌이 발견되면 기존 승인을 무효화하고 승인 요청 재전송도 현재 승인 상태를 확인한다. `invalidated_reason`의 `preflight_conflict`, 기존 `APPROVAL_NOT_ACTIVE`·`REVALIDATION_REQUIRED` 오류가 적용되는 경로를 아래에 반영했다. 모델 필드·상태값·API 경로·문서 schema_version은 그대로이며 승인 재전송의 응답 동작 변경에 맞춰 계약 버전을 올렸다. 기존 [API 예시](../handoff/api_examples_v1.1.json)는 파일 경로를 유지하고 내부 contract_version과 관련 예시를 1.2로 갱신한다. 프론트 사본·오류 표시 갱신은 필요하며 아직 확인하지 않았다.
+**계약 1.2(2026-09-28):** 사용자가 요청한 AG-04 연결 후속으로, 같은 입력의 재점검에서 충돌이 발견되면 기존 승인을 무효화하고 승인 요청 재전송도 현재 승인 상태를 확인한다. `invalidated_reason`의 `preflight_conflict`, 기존 `APPROVAL_NOT_ACTIVE`·`REVALIDATION_REQUIRED` 오류가 적용되는 경로를 아래에 반영했다. 모델 필드·상태값·API 경로·문서 schema_version은 그대로이며 승인 재전송의 응답 동작 변경에 맞춰 계약 버전을 올렸다. 기존 [API 예시](api_examples_v1.1.json)는 파일 경로를 유지하고 내부 contract_version과 관련 예시를 1.2로 갱신한다. 프론트 사본·오류 표시 갱신은 필요하며 아직 확인하지 않았다.
 
 이 문서는 프론트·백엔드·Agent의 데이터 교환 기준이다. 기존 API와 필드가 이미 있다면 백엔드 BE-01에서 연결표를 만들고 호환 어댑터를 우선한다. 아래 이름은 현재 코드에 구현되어 있다는 뜻이 아니다.
 
@@ -575,7 +575,7 @@ C-05의 사용자 흐름은 [prd.md BR-05](prd.md)를 따른다. 현재 서버�
 - 파일 개수 초과도 현재 `413 FILE_TOO_LARGE`를 사용한다. 안내 문구는 개수 제한을 설명하므로 코드 구분 필요성을 확인한다. 추출 글자 제한은 `partial + TEXT_LIMIT` 경고이며 업로드 크기 초과와 다르다.
 - `INVALID_REQUEST`, `IDEMPOTENCY_KEY_CONFLICT`, `AGENT_OUTPUT_INVALID`, `INVALID_OPERATION`, `DOCUMENT_EXISTS`, `RESTORE_REFERENCE_INVALID`, `CANDIDATE_REQUIRED`, `UNSUPPORTED_PROPOSAL`, `NO_IMAGE_CANDIDATES` 등 현행 코드를 C-07에서 정리한다.
 - 적용/거절/오래된 수정안의 재적용은 현재 `PROPOSAL_STALE + details.status`로 구분한다. 같은 멱등 키·같은 본문의 재전송은 기존 성공 결과를 반환한다. 코드 통합 여부와 사용자 안내를 함께 결정한다.
-- `handoff/api_examples_v1.1.json`에는 계약용 가상 예시와 가짜 자료로 받은 실서버 응답이 함께 있다. 각 `_note`의 작성·검증 범위를 따른다. DB v9의 기존 예시는 형식 참고이며 전체를 재실행한 응답은 아니다. 등록 자료·검증·PDF 출력은 구현된 기능이지만 실제 회사 자료의 품질 검증을 뜻하지 않는다. 이동된 작업일지 절 번호만 이번에 정정하며 응답값·필드·상태는 바꾸지 않는다.
+- `docs/api_examples_v1.1.json`에는 계약용 가상 예시와 가짜 자료로 받은 실서버 응답이 함께 있다. 각 `_note`의 작성·검증 범위를 따른다. DB v9의 기존 예시는 형식 참고이며 전체를 재실행한 응답은 아니다. 등록 자료·검증·PDF 출력은 구현된 기능이지만 실제 회사 자료의 품질 검증을 뜻하지 않는다. 이동된 작업일지 절 번호만 이번에 정정하며 응답값·필드·상태는 바꾸지 않는다.
 - 프론트가 현재 적용 중인 파일 제한·만료 설정을 어느 응답에서 읽을지도 정한다. 제한값 자체는 plan.md D-01/D-02에서 관리한다.
 
 ### 7.4 반영 순서와 담당

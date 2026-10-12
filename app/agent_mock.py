@@ -14,7 +14,7 @@ from app.agent_bridge import (AgentError, AnalyzeRequest, AnalyzeResult, DraftRe
 from app.models import (Block, Candidate, EvidenceRef, Fact, Issue, OpDeleteBlock, OpInsertBlock,
                         OpReplaceBlockContent, Page, Recommendations)
 
-# 옛 상세 회사정보 14개 키(contracts/profile.schema.json). D-05 변환표를 만들 때 이름을 그대로 쓴다.
+# 옛 상세 회사정보 14개 키(app/resources/profile.schema.json). D-05 변환표를 만들 때 이름을 그대로 쓴다.
 FIELD_KEYS = ("company_name", "company_summary", "business_areas", "products_services", "technology",
               "strengths", "customers_markets", "certifications", "history", "processes", "process_count",
               "capabilities", "lead_time", "other_info")

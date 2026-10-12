@@ -387,7 +387,7 @@ def test_openapi_describes_common_errors_export_statuses_and_binary_responses(ap
 
 
 def test_handoff_json_response_examples_match_route_models(app):
-    examples = json.loads((Path(__file__).parents[1] / "handoff" / "api_examples_v1.1.json").read_text(encoding="utf-8-sig"))
+    examples = json.loads((Path(__file__).parents[1] / "docs" / "api_examples_v1.1.json").read_text(encoding="utf-8-sig"))
     paths = app.openapi()["paths"]
 
     def abbreviated(value):

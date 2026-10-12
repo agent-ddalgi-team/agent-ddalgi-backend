@@ -13,8 +13,9 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-PROFILE_SCHEMA_PATH = ROOT / 'contracts' / 'profile.schema.json'
-EXTRACT_PROMPT_PATH = ROOT / 'prompts' / 'extract.txt'
+APP_DIR = Path(__file__).resolve().parent
+PROFILE_SCHEMA_PATH = APP_DIR / 'resources' / 'profile.schema.json'
+EXTRACT_PROMPT_PATH = APP_DIR / 'prompts' / 'extract.txt'
 
 SCHEMA_VERSION = '1.0'
 RequestJson = Callable[[str, dict[str, Any], dict[str, Any], str], dict[str, Any]]
@@ -90,12 +91,12 @@ def check_agent_input(agent_input: Any) -> None:
 
 
 def load_extract_prompt() -> str:
-    """prompts/extract.txt를 앞뒤 공백만 정리해 읽는다. 14개 항목 이름이 빠져 있으면 멈춘다."""
+    """app/prompts/extract.txt를 앞뒤 공백만 정리해 읽는다. 14개 항목 이름이 빠져 있으면 멈춘다."""
     if not EXTRACT_PROMPT_PATH.is_file():
-        raise FileNotFoundError('추출 프롬프트 파일이 없습니다: prompts/extract.txt')
+        raise FileNotFoundError('추출 프롬프트 파일이 없습니다: app/prompts/extract.txt')
     prompt = EXTRACT_PROMPT_PATH.read_text(encoding='utf-8').strip()
     if not prompt:
-        raise ValueError('추출 프롬프트 파일이 비어 있습니다: prompts/extract.txt')
+        raise ValueError('추출 프롬프트 파일이 비어 있습니다: app/prompts/extract.txt')
     missing = [key for key in COMPANY_INFO_KEYS if key not in prompt]
     if missing:
         raise ValueError(f'추출 프롬프트에 company_info 항목 이름이 빠져 있습니다: {", ".join(missing)}')
@@ -348,14 +349,14 @@ def extract_company_info(agent_input: dict[str, Any], *, request_json: RequestJs
 # 본문 섹션의 key·제목은 직접 나열하지 않고 공통 Mock에서 가져온다.
 # 이전 profile_builder와 같은 출처에서 순서·제목·안내 문구만 읽는다.
 # fixture의 가짜 회사 사실을 생성 결과에 복사하지 않는다.
-MOCK_PROFILE_PATH = ROOT / 'fixtures' / 'mock_profile.json'
+MOCK_PROFILE_PATH = APP_DIR / 'resources' / 'mock_profile.json'
 _MOCK_SECTIONS: list[dict[str, Any]] = json.loads(
     MOCK_PROFILE_PATH.read_text(encoding='utf-8'))['draft_sections']
 # 본문 섹션은 13개다. company_info의 14개 키 중 company_name만 단독 섹션이 없다.
 SECTION_ORDER: tuple[str, ...] = tuple(s['key'] for s in _MOCK_SECTIONS)
 SECTION_TITLES: dict[str, str] = {s['key']: s['title'] for s in _MOCK_SECTIONS}
 
-DRAFT_PROMPT_PATH = ROOT / 'prompts' / 'draft.txt'
+DRAFT_PROMPT_PATH = APP_DIR / 'prompts' / 'draft.txt'
 DRAFT_SCHEMA_NAME = 'draft_sections'
 SUPPORTED_FACT_KEYS = ('field', 'fact_id', 'text')
 PARAGRAPH_KEYS = ('text', 'fact_ids')
@@ -371,14 +372,14 @@ PLACEHOLDER_TEXTS: frozenset[str] = frozenset(
 
 
 def load_draft_prompt(*, editorial: bool = False) -> str:
-    """prompts/draft.txt를 앞뒤 공백만 정리해 읽는다."""
+    """app/prompts/draft.txt를 앞뒤 공백만 정리해 읽는다."""
     if not DRAFT_PROMPT_PATH.is_file():
-        raise FileNotFoundError('본문 프롬프트 파일이 없습니다: prompts/draft.txt')
+        raise FileNotFoundError('본문 프롬프트 파일이 없습니다: app/prompts/draft.txt')
     prompt = DRAFT_PROMPT_PATH.read_text(encoding='utf-8').strip()
     parts = prompt.split('[editorial_v2]', 1)
     prompt = parts[1].strip() if editorial and len(parts) == 2 else parts[0].strip()
     if not prompt:
-        raise ValueError('본문 프롬프트 파일이 비어 있습니다: prompts/draft.txt')
+        raise ValueError('본문 프롬프트 파일이 비어 있습니다: app/prompts/draft.txt')
     return prompt
 
 

@@ -13,6 +13,20 @@
 
 테스트 묶음 설명서와 글꼴 출처는 해당 자원 폴더에 유지한다. 문서 이동·검증 기록은 [백엔드 작업표](docs/task_backend.md#markdown-docs-organization-20261012)를 따른다.
 
+## 주요 폴더
+
+```text
+app/                  서비스 코드·출력 서식
+  prompts/            추출·초안 프롬프트
+  resources/          회사정보 스키마·기본 섹션 구성 자료
+docs/                 기획·계약·작업 기록·API 예시
+tests/                자동 테스트·테스트 자료
+scripts/              실행·검증 도구
+migrations/           DB 변경 이력
+```
+
+스키마·기본 자료·프롬프트는 `app/agent_legacy.py` 위치를 기준으로 읽으므로 현재 작업 디렉터리에 의존하지 않는다. API 예시는 [docs/api_examples_v1.1.json](docs/api_examples_v1.1.json)에 있다. 루트 `.venv/`, `private_runs/`, 캐시와 도구 설정 폴더는 기존 위치를 사용한다.
+
 ## 시작
 
 Python 3.13과 uv가 준비된 환경에서 저장소 최상위 폴더에서 실행한다.
@@ -102,7 +116,7 @@ Pydantic 모델은 **화면이 보내는 값과 서버가 돌려주는 값의 �
 - `/docs`와 `/openapi.json`에 30개 API의 모델·오류·파일 응답을 표시한다. 구조가 있는 JSON 응답 28개와 이미지/출력 파일 응답 2개가 있다. Export는 새 작업 202와 준비된 결과 재사용 200을 구분한다.
 - 긴 작업은 접수 후 Job을 조회한다. `result_ref`는 작업 종류별 결과 ID이며 Preflight·Document·Proposal 등 결과를 별도 GET으로 읽는다. `succeeded`인 검사 Job도 검사 결과 자체는 failed일 수 있다.
 
-현재 형식과 예시는 [contracts.md](docs/contracts.md), [API 예시](handoff/api_examples_v1.1.json)를 따른다. 예시 파일명은 기존 참조를 위해 유지하고 내부 계약 버전은 1.9이다. 기존 프론트 S01~S03 연결 기록은 [백엔드 작업표](docs/task_backend.md)를 따른다. C-05 가상 화면 연결·실제 AI 보완 자료 복귀 및 DOCX 승인·출력 표본 검수는 완료했다. 별도 프론트 계약 사본 공유와 일반 품질 평가는 후속이다.
+현재 형식과 예시는 [contracts.md](docs/contracts.md), [API 예시](docs/api_examples_v1.1.json)를 따른다. 예시 파일명은 기존 참조를 위해 유지하고 내부 계약 버전은 1.9이다. 기존 프론트 S01~S03 연결 기록은 [백엔드 작업표](docs/task_backend.md)를 따른다. C-05 가상 화면 연결·실제 AI 보완 자료 복귀 및 DOCX 승인·출력 표본 검수는 완료했다. 별도 프론트 계약 사본 공유와 일반 품질 평가는 후속이다.
 
 ### 자료 변경 후 기존 편집으로 복귀 (C-05)
 
@@ -297,7 +311,7 @@ uv run python scripts/import_registered.py --source-dir private_runs/registered_
 | 5 | [백엔드 작업](docs/task_backend.md) 또는 [Agent 작업](docs/task_agent.md) · [Agent 설계](docs/agent.md) | 내 담당 작업·코드 위치·남은 연결·검증할 내용 |
 | 6 | [공통 연결표](docs/task.md) | 담당자 간 연결 지점과 결과 기록 위치 |
 
-2026-09-27에는 개발 전 문서를 정리했다. 당시 기존 BE/AG 작업 상태와 테스트 기록을 유지했고 실행 코드·의존성·DB는 바꾸지 않았다. 현재 공통 계약은 1.6, 데이터 schema_version은 1.0이다. 2026-09-28의 계약 1.2는 재점검 충돌로 인한 기존 승인 무효화·승인 재전송 차단을 반영한다. 상세는 [contracts.md](docs/contracts.md), 기존 경로를 유지한 예시는 [API 예시](handoff/api_examples_v1.1.json)를 따른다. 프론트 계약/예시 사본은 문서 v1.9까지의 동기화 기록이 있으며, 이번 계약 1.6의 사본·프론트 구현은 갱신하지 않았다. 검토 메모의 다른 제안과 미구현 항목은 별도로 유지한다.
+2026-09-27에는 개발 전 문서를 정리했다. 당시 기존 BE/AG 작업 상태와 테스트 기록을 유지했고 실행 코드·의존성·DB는 바꾸지 않았다. 현재 공통 계약은 1.6, 데이터 schema_version은 1.0이다. 2026-09-28의 계약 1.2는 재점검 충돌로 인한 기존 승인 무효화·승인 재전송 차단을 반영한다. 상세는 [contracts.md](docs/contracts.md), 기존 경로를 유지한 예시는 [API 예시](docs/api_examples_v1.1.json)를 따른다. 프론트 계약/예시 사본은 문서 v1.9까지의 동기화 기록이 있으며, 이번 계약 1.6의 사본·프론트 구현은 갱신하지 않았다. 검토 메모의 다른 제안과 미구현 항목은 별도로 유지한다.
 
 Stitch 화면 설계와의 연결 기준은 [prd.md 3~5절](docs/prd.md), 화면 상태별 데이터 연결은 [contracts.md 7.5절](docs/contracts.md)을 따른다. 추가 기능의 채택 여부는 [plan.md 4.1절](docs/plan.md)에서 관리한다. 화면 시연·예시 응답과 실제 기능 완료는 구분한다.
 

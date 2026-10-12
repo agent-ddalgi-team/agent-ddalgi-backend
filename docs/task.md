@@ -7,6 +7,8 @@
 
 ## 1. Quick Status
 
+- **2026-10-12 실행 자료 정리:** 루트 4폴더 통합·관련1,493검사/파일링크627개/프론트build 통과·정리 단위 완료/제품 작업 상태 유지. [task_backend.md 기록 참조](task_backend.md#runtime-resources-organization-20261012).
+
 - **2026-10-12 문서 정리:** 두 저장소 일반 MD 이동·링크 검수 완료/제품 작업 상태 유지. [task_backend.md 기록 참조](task_backend.md#markdown-docs-organization-20261012).
 
 - **2026-10-08 [BE-09·10 / F-08] 만료 후 화면 복귀:** 격리 브라우저16묶음 통과·실제410→초안/출력 참조 정리→시작 화면→다른 세션·자동AI0·일반품질 진행중. [기록](task_backend.md#expired-workflow-ui-recovery-20261008).
