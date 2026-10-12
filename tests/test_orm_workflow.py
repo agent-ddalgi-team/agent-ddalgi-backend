@@ -25,6 +25,434 @@ from test_be06 import Ctx
 INGEST = Path(__file__).parent / "fixtures" / "ddalgi_mock_bundle_v1" / "ingest"
 
 
+def test_source_original_bytes_headers_and_read_only(client, settings):
+    from urllib.parse import unquote
+    sid, source_id, _, route, query = _text_view(client, b"original\x00bytes", "한국어 자료.txt")
+    with connect(settings.db_path) as conn:
+        tables = ("sessions", "sources", "jobs", "input_revisions", "confirmations")
+        before = {t: [tuple(r) for r in conn.execute(f"SELECT * FROM {t}")] for t in tables}
+    assert client.get(f"/api/v1/sessions/{sid}/sources").json()["items"][0]["original_download_available"]
+    assert client.get(route, params=query).json()["original_download_available"]
+    out = client.get(route.replace("/segments", "/original"), params={**query, "source_version": 1})
+    assert out.status_code == 200, out.text
+    assert out.content == b"original\x00bytes"
+    assert out.headers["content-type"].startswith("text/plain")
+    assert unquote(out.headers["content-disposition"]) == "attachment; filename*=UTF-8''한국어 자료.txt"
+    assert out.headers["x-content-type-options"] == "nosniff"
+    assert out.headers["cache-control"] == "private, no-store"
+    with connect(settings.db_path) as conn:
+        assert before == {t: [tuple(r) for r in conn.execute(f"SELECT * FROM {t}")] for t in tables}
+
+
+@pytest.mark.parametrize("mutation,status", [("unselected", 404), ("instruction", 404), ("foreign", 404),
+    ("registered", 404), ("public_import", 404), ("legacy_public_import", 404), ("deleted", 404), ("purged", 410), ("missing", 410),
+    ("tampered", 410), ("absolute", 410), ("traversal", 410), ("other_session_path", 410), ("oversize", 410)])
+def test_source_original_scope_and_integrity(client, settings, mutation, status):
+    sid, source_id, revision, route, query = _text_view(client)
+    query["source_version"] = 1
+    if mutation == "unselected":
+        query["expected_input_revision"] = _select(client, sid, [], expected=revision)
+    else:
+        with connect(settings.db_path) as conn:
+            version = conn.execute("SELECT * FROM source_versions WHERE source_id=?", (source_id,)).fetchone()
+            path = settings.private_runs_dir / version["stored_path"]
+            if mutation == "instruction":
+                conn.execute("UPDATE sources SET role='instruction' WHERE source_id=?", (source_id,))
+            elif mutation == "foreign":
+                other = _session(client)
+                conn.execute("UPDATE sources SET session_id=? WHERE source_id=?", (other, source_id))
+            elif mutation == "registered":
+                conn.execute("UPDATE sources SET scope='registered', session_id=NULL WHERE source_id=?", (source_id,))
+            elif mutation == "public_import":
+                conn.execute("UPDATE source_versions SET provenance='dart' WHERE source_id=?", (source_id,))
+            elif mutation == "legacy_public_import":
+                conn.execute("UPDATE extraction_runs SET warnings_json=? WHERE source_id=?",
+                             (json.dumps([{"code": "PUBLIC_OPEN_DATA", "message": "DART"}]), source_id))
+            elif mutation == "deleted":
+                conn.execute("UPDATE sources SET deleted_at='2026-01-01T00:00:00Z' WHERE source_id=?", (source_id,))
+            elif mutation == "purged":
+                conn.execute("UPDATE source_versions SET purged_at='2026-01-01T00:00:00Z' WHERE source_id=?", (source_id,))
+            elif mutation == "missing":
+                path.unlink()
+            elif mutation == "tampered":
+                path.write_bytes(b"x" * version["size_bytes"])
+            elif mutation == "oversize":
+                conn.execute("UPDATE source_versions SET size_bytes=? WHERE source_id=?", (settings.max_file_bytes + 1, source_id))
+            else:
+                if mutation == "other_session_path":
+                    other = settings.private_runs_dir / "another_session"
+                    other.mkdir()
+                    target = other / path.name
+                    target.write_bytes(path.read_bytes())
+                    stored = str(target.relative_to(settings.private_runs_dir))
+                else:
+                    stored = str(path) if mutation == "absolute" else "../outside.txt"
+                conn.execute("UPDATE source_versions SET stored_path=? WHERE source_id=?", (stored, source_id))
+    out = client.get(route.replace("/segments", "/original"), params=query)
+    assert out.status_code == status, out.text
+    assert out.headers["cache-control"] == "private, no-store"
+    assert "회사명:" not in out.text and str(settings.private_runs_dir) not in out.text
+
+
+def test_source_original_owner_expiry_query_and_safe_name(client, settings, app):
+    sid, source_id, _, route, query = _text_view(client)
+    route = route.replace("/segments", "/original")
+    assert client.get(route, params=query).status_code == 400
+    query["source_version"] = 1
+    with TestClient(app) as stranger:
+        assert stranger.get(route, params=query).status_code == 401
+        _session(stranger)
+        assert stranger.get(route, params=query).status_code == 404
+    for change, status in [({"expected_input_revision": 1}, 409), ({"source_version": 2}, 410),
+                           ({"stored_path": "file"}, 400), ({"cursor": "x"}, 400),
+                           ({"context": "preflight", "preflight_id": "fake"}, 400)]:
+        assert client.get(route, params={**query, **change}).status_code == status
+    with connect(settings.db_path) as conn:
+        conn.execute("UPDATE source_versions SET original_name=? WHERE source_id=?", ('../evil\r\nname.exe', source_id))
+    out = client.get(route, params=query)
+    assert out.status_code == 200
+    assert out.headers["content-disposition"].endswith("_evil__name.txt")
+    with connect(settings.db_path) as conn:
+        conn.execute("UPDATE sessions SET expires_at='2020-01-01T00:00:00Z' WHERE session_id=?", (sid,))
+    assert client.get(route, params=query).status_code == 410
+
+
+def test_source_original_reparse_and_delete_race(client, settings, monkeypatch):
+    from app.services import sources
+    sid, source_id, _, route, query = _text_view(client)
+    route = route.replace("/segments", "/original")
+    query["source_version"] = 1
+    real_lstat = Path.lstat
+    with monkeypatch.context() as patch:
+        def reparse(path):
+            result = real_lstat(path)
+            return SimpleNamespace(st_mode=result.st_mode, st_file_attributes=0x400) if path.name == sid else result
+        patch.setattr(Path, "lstat", reparse)
+        assert client.get(route, params=query).status_code == 410
+    real_open = Path.open
+    with monkeypatch.context() as patch:
+        def vanished(path, *args, **kwargs):
+            if path.parent.name == sid and args == ("rb",):
+                raise FileNotFoundError()
+            return real_open(path, *args, **kwargs)
+        patch.setattr(Path, "open", vanished)
+        assert client.get(route, params=query).status_code == 410
+    # Returned bytes stay pinned even if the pathname changes after read_original returns.
+    with connect(settings.db_path) as conn:
+        session = conn.execute("SELECT * FROM sessions WHERE session_id=?", (sid,)).fetchone()
+        from app.models import SourceOriginalQuery
+        body, _, _ = sources.read_original(conn, settings, session, source_id, SourceOriginalQuery(**query))
+        stored = conn.execute("SELECT stored_path FROM sources WHERE source_id=?", (source_id,)).fetchone()[0]
+    (settings.private_runs_dir / stored).write_bytes(b"changed after read")
+    assert body == SOURCE_A
+
+
+def _text_view(client, content=SOURCE_A, name="evidence.txt"):
+    sid = _session(client)
+    source_id = _upload(client, sid, (name, content))[0]
+    revision = _select(client, sid, [source_id])
+    route = f"/api/v1/sessions/{sid}/sources/{source_id}/segments"
+    query = {"expected_input_revision": revision}
+    return sid, source_id, revision, route, query
+
+
+@pytest.mark.parametrize("scope", ["session", "registered"])
+@pytest.mark.parametrize("method,origin", [("parser", "automatic_extraction"),
+    ("registered_bundle", "registered_excerpt"), ("future_method", "unknown"), ("", "unknown")])
+def test_source_text_origin_uses_pinned_method_not_scope(client, settings, scope, method, origin):
+    sid, source_id, _, route, query = _text_view(client, ("긴 문단" * 3000).encode())
+    with connect(settings.db_path) as conn:
+        conn.execute("UPDATE extraction_runs SET method=? WHERE source_id=?", (method, source_id))
+        if scope == "registered":
+            conn.execute("UPDATE sources SET scope='registered', session_id=NULL WHERE source_id=?", (source_id,))
+    first = client.get(route, params=query)
+    assert first.status_code == 200, first.text
+    data = first.json()
+    assert data["text_origin"] == origin
+    next_page = client.get(route, params={**query, "cursor": data["next_cursor"]})
+    assert next_page.status_code == 200
+    assert next_page.json()["text_origin"] == origin
+    single = client.get(route + '/' + data["items"][0]["segment_id"], params={**query, "source_version": 1})
+    assert single.status_code == 200
+    assert single.json()["text_origin"] == origin
+    assert "future_method" not in first.text  # Internal/future method names are not UI labels.
+
+
+def test_source_text_read_only_pagination_and_cursor_binding(client, settings):
+    long_text = "가🙂" * 12501 + "\x00<script>저장된 텍스트</script>"
+    sid, source_id, revision, route, query = _text_view(client, (long_text + "\n마지막 줄").encode())
+    with connect(settings.db_path) as conn:
+        before = {table: [tuple(r) for r in conn.execute(f"SELECT * FROM {table}")]
+                  for table in ("sessions", "jobs", "sources", "input_revisions", "confirmations")}
+    response = client.get(route, params={**query, "limit": 1})
+    assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "private, no-store"
+    first = response.json()
+    assert first["items"][0]["locator"] == {"line_start": 1, "line_end": 1}
+    texts, cursor, count = [], None, 0
+    while True:
+        params = {**query, "limit": 1, **({"cursor": cursor} if cursor else {})}
+        out = client.get(route, params=params).json()
+        texts.extend(item["text"] for item in out["items"])
+        assert sum(len(i["text"]) for i in out["items"]) <= 50000
+        assert all(len(i["text"]) <= 10000 for i in out["items"])
+        cursor, count = out["next_cursor"], count + 1
+        if not cursor:
+            break
+        assert count < 10
+    assert "".join(texts) == long_text + "마지막 줄"
+    assert "stored_path" not in response.text and "private_runs" not in response.text
+    for cursor in ("!bad", "W10=", first["next_cursor"]):
+        # Last cursor was issued for limit=1, not the default page size.
+        bad = client.get(route, params={**query, "cursor": cursor})
+        assert bad.status_code == 422, bad.text
+    with connect(settings.db_path) as conn:
+        after = {table: [tuple(r) for r in conn.execute(f"SELECT * FROM {table}")] for table in before}
+    assert before == after
+
+
+@pytest.mark.parametrize("mutation", ["unselected", "instruction", "foreign", "revoked", "demo", "purged", "deleted"])
+def test_source_text_access_scope(client, settings, mutation):
+    sid, source_id, revision, route, query = _text_view(client)
+    if mutation == "unselected":
+        query["expected_input_revision"] = _select(client, sid, [], expected=revision)
+    else:
+        with connect(settings.db_path) as conn:
+            if mutation == "instruction":
+                conn.execute("UPDATE sources SET role='instruction' WHERE source_id=?", (source_id,))
+            elif mutation == "foreign":
+                other = _session(client)
+                conn.execute("UPDATE sources SET session_id=? WHERE source_id=?", (other, source_id))
+            elif mutation == "revoked":
+                conn.execute("UPDATE sources SET scope='registered', session_id=NULL, use_as_company_evidence=0 WHERE source_id=?", (source_id,))
+            elif mutation == "demo":
+                conn.execute("UPDATE sources SET origin_kind='demo' WHERE source_id=?", (source_id,))
+            elif mutation == "purged":
+                conn.execute("UPDATE extraction_runs SET purged_at='2026-01-01T00:00:00Z' WHERE source_id=?", (source_id,))
+            else:
+                conn.execute("UPDATE sources SET deleted_at='2026-01-01T00:00:00Z' WHERE source_id=?", (source_id,))
+    out = client.get(route, params=query)
+    assert out.status_code == (410 if mutation == "purged" else 404), out.text
+    assert out.headers["cache-control"] == "private, no-store"
+    assert "회사명:" not in out.text
+
+
+def test_source_text_owner_expiry_and_revision(client, settings, app):
+    sid, source_id, revision, route, query = _text_view(client)
+    with TestClient(app) as stranger:
+        assert stranger.get(route, params=query).status_code == 401
+        _session(stranger)
+        assert stranger.get(route, params=query).status_code == 404
+    assert client.get(route, params={**query, "expected_input_revision": 1}).status_code == 409
+    assert client.get(route, params={**query, "context": "document"}).status_code == 400
+    assert client.get(route, params={**query, "preflight_id": "fake"}).status_code == 400
+    with connect(settings.db_path) as conn:
+        conn.execute("UPDATE sessions SET expires_at='2020-01-01T00:00:00Z' WHERE session_id=?", (sid,))
+    assert client.get(route, params=query).status_code == 410
+
+
+def test_source_text_pinned_run_and_preflight_references(client, settings):
+    from test_be04 import _preflight
+    sid, source_id, revision, route, query = _text_view(client)
+    with connect(settings.db_path) as conn:
+        conn.execute("UPDATE extraction_runs SET method='registered_bundle' WHERE source_id=?", (source_id,))
+    pf = _preflight(client, sid, revision)
+    ref = next(f["evidence_refs"][0] for f in pf["facts"] if f["evidence_refs"])
+    params = {**query, "context": "preflight", "preflight_id": pf["preflight_id"], "source_version": ref["source_version"]}
+    target = route + "/" + ref["segment_id"]
+    first = client.get(target, params=params)
+    assert first.status_code == 200, first.text
+    assert first.json()["text_origin"] == "registered_excerpt"
+    assert ref["excerpt"] in first.json()["excerpts"]
+    with connect(settings.db_path) as conn:
+        row = conn.execute("SELECT * FROM sources WHERE source_id=?", (source_id,)).fetchone()
+        reading._apply_result(conn, row, ParseResult(status="complete", text_available=True,
+            segments=[Segment({"line_start": 1, "line_end": 1}, "다시 추출한 내용")]))
+        new_segment = conn.execute("SELECT segment_id FROM segments WHERE run_id=(SELECT current_run_id FROM sources WHERE source_id=?)", (source_id,)).fetchone()[0]
+        assert conn.execute("SELECT method FROM extraction_runs WHERE run_id=(SELECT current_run_id FROM sources WHERE source_id=?)", (source_id,)).fetchone()[0] == "parser"
+    second = client.get(target, params=params)
+    assert second.json() == first.json()
+    assert client.get(route + "/" + new_segment, params=params).status_code == 404
+    assert client.get(target, params={**params, "source_version": 999}).status_code == 404
+    assert client.get(target, params={**query, "source_version": 999}).status_code == 410
+    assert client.get(route, params=params).status_code == 422
+    # Changing input invalidates the preflight context even if the source remains selected.
+    next_revision = _select(client, sid, [source_id], expected=revision)
+    if next_revision == revision:
+        extra = _upload(client, sid, ("extra.txt", b"extra"))[0]
+        next_revision = _select(client, sid, [source_id, extra], expected=revision)
+    assert client.get(target, params={**params, "expected_input_revision": next_revision}).status_code == 409
+
+
+def test_source_text_document_context_and_unlinked_reference(client, settings):
+    from app.models import Page, Block, EvidenceRef
+    from app.services import documents
+    sid, source_id, revision, route, query = _text_view(client)
+    item = client.get(route, params=query).json()["items"][0]
+    ref = EvidenceRef(source_id=source_id, source_version=1, segment_id=item["segment_id"], locator=item["locator"], excerpt=item["text"])
+    with connect(settings.db_path) as conn:
+        did = documents.create_initial(conn, sid, revision, "근거 문서", 4,
+            [Page(page_id="p", title="개요", layout_key="text", blocks=[Block(block_id="b", type="paragraph",
+                 content={"text": "편집한 문구"}, evidence_refs=[ref])])], "draft")
+    params = {**query, "context": "document", "document_id": did, "document_revision": 1, "source_version": 1}
+    target = route + "/" + item["segment_id"]
+    out = client.get(target, params=params)
+    assert out.status_code == 200, out.text
+    assert out.json()["excerpts"] == [item["text"]]
+    assert out.json()["text_origin"] == "automatic_extraction"
+    original_route = route.replace("/segments", "/original")
+    original_params = {**params, "segment_id": item["segment_id"]}
+    assert client.get(original_route, params=original_params).content == SOURCE_A
+    other = client.get(route, params=query).json()["items"][1]["segment_id"]
+    assert client.get(route + "/" + other, params=params).status_code == 404
+    assert client.get(target, params={**params, "document_revision": 2}).status_code == 409
+    assert client.get(target, params={**params, "document_id": "other"}).status_code == 404
+    assert client.get(original_route, params={**original_params, "segment_id": other}).status_code == 404
+    assert client.get(original_route, params={**original_params, "document_revision": 2}).status_code == 409
+    extra = _upload(client, sid, ("extra.txt", b"extra"))[0]
+    changed = _select(client, sid, [source_id, extra], expected=revision)
+    historical = client.get(target, params={**params, "expected_input_revision": changed})
+    assert historical.status_code == 200, historical.text
+    assert historical.json()["input_revision"] == revision
+    assert historical.json()["current_input_revision"] == changed
+    assert client.get(original_route, params={**original_params, "expected_input_revision": changed}).content == SOURCE_A
+
+
+@pytest.mark.parametrize("status", ["reading", "failed", "image", "partial"])
+def test_source_text_reading_outcomes(client, settings, monkeypatch, status):
+    sid = _session(client)
+    with monkeypatch.context() as patch:
+        if status == "reading":
+            patch.setattr(reading, "run_read_job", lambda *args: None)
+        else:
+            patch.setattr(reading, "parse", lambda *_: ParseResult(
+                status="partial" if status in ("image", "partial") else "failed",
+                text_available=status == "partial", segments=[Segment({"page": 2}, "일부 글자")] if status == "partial" else [],
+                warnings=[{"code": "IMAGE_ONLY", "message": "이미지만 있음", "locator": {"page": 1}, "action": "텍스트 보완"}]))
+        source_id = _upload(client, sid, ("read.txt", SOURCE_A))[0]
+    rev = _select(client, sid, [source_id])
+    out = client.get(f"/api/v1/sessions/{sid}/sources/{source_id}/segments", params={"expected_input_revision": rev})
+    assert out.status_code == {"reading": 409, "failed": 422, "image": 422, "partial": 200}[status], out.text
+    original = client.get(f"/api/v1/sessions/{sid}/sources/{source_id}/original",
+                          params={"expected_input_revision": rev, "source_version": 1})
+    assert original.status_code == 200, original.text
+    assert original.content == SOURCE_A
+    if status == "partial":
+        assert out.json()["warnings"][0]["code"] == "IMAGE_ONLY"
+
+
+def test_source_text_docx_context_and_long_neighbour(client, settings, monkeypatch):
+    segments = [Segment({"paragraph": 1}, "첫 문단"), Segment({"paragraph": 2}, "긴" * 10001),
+                Segment({"table": 1, "row": 1, "col": 1}, "표의 별도 위치")]
+    with monkeypatch.context() as patch:
+        patch.setattr(reading, "parse", lambda *_: ParseResult(status="complete", text_available=True, segments=segments))
+        sid, source_id, revision, route, query = _text_view(client)
+    items = client.get(route, params=query).json()["items"]
+    target = route + "/" + items[0]["segment_id"]
+    params = {**query, "source_version": 1}
+    out = client.get(target, params=params).json()
+    assert len(out["context_segments"]) == 1
+    neighbour = out["context_segments"][0]
+    assert neighbour["truncated"] is True
+    focus = {**params, "focus_segment_id": neighbour["segment_id"]}
+    first = client.get(target, params=focus).json()
+    second = client.get(target, params={**focus, "cursor": first["next_cursor"]}).json()
+    assert first["items"][0]["text"] + second["items"][0]["text"] == "긴" * 10001
+    with connect(settings.db_path) as conn:
+        table_id = conn.execute("SELECT segment_id FROM segments WHERE source_id=? AND ordinal=(SELECT MAX(ordinal) FROM segments WHERE source_id=?)", (source_id, source_id)).fetchone()[0]
+    assert client.get(target, params={**params, "focus_segment_id": table_id}).status_code == 404
+
+
+@pytest.mark.parametrize("kind", ["txt", "md", "pdf", "docx", "pptx"])
+def test_source_text_real_parser_locator_roundtrip(client, kind):
+    from test_be03 import make_pdf, make_docx, make_pptx
+    files = {
+        "txt": (b"first\n\nthird", {"line_start": 3, "line_end": 3}),
+        "md": (b"# title\n\n**bold**", {"line_start": 3, "line_end": 3}),
+        "pdf": (make_pdf(["first page", "second page"]), {"page": 2}),
+        "docx": (make_docx(["paragraph"], [["table cell"]]), {"table": 1, "row": 1, "col": 1}),
+        "pptx": (make_pptx([["shape one"], ["shape two"]]), {"slide": 2, "shape": 1}),
+    }
+    content, expected = files[kind]
+    sid, source_id, revision, route, query = _text_view(client, content, f"sample.{kind}")
+    result = client.get(route, params=query)
+    assert result.status_code == 200, result.text
+    target = next(item for item in result.json()["items"] if item["locator"] == expected)
+    one = client.get(route + "/" + target["segment_id"], params={**query, "source_version": 1})
+    assert one.status_code == 200, one.text
+    assert one.json()["items"][0] == target
+    original = client.get(route.replace("/segments", "/original"), params={**query, "source_version": 1})
+    assert original.status_code == 200, original.text
+    assert original.content == content
+    if kind in ("docx", "pptx"):
+        assert one.json()["context_segments"] == []
+
+
+def test_source_text_conflict_alternatives_are_server_bound(client):
+    from test_be04 import _preflight, SOURCE_B
+    sid, source_id, revision, route, query = _text_view(client)
+    other = _upload(client, sid, ("other.txt", SOURCE_B))[0]
+    revision = _select(client, sid, [source_id, other], expected=revision)
+    pf = _preflight(client, sid, revision)
+    fact = next(f for f in pf["facts"] if f["field_key"] == "company_name")
+    assert fact["status"] == "conflict"
+    for candidate in fact["alternatives"]:
+        ref = candidate["evidence_refs"][0]
+        out = client.get(f"/api/v1/sessions/{sid}/sources/{ref['source_id']}/segments/{ref['segment_id']}",
+            params={"expected_input_revision": revision, "context": "preflight", "preflight_id": pf["preflight_id"], "source_version": ref["source_version"]})
+        assert out.status_code == 200, out.text
+        assert ref["excerpt"] in out.json()["excerpts"]
+        original_params = {"expected_input_revision": revision, "context": "preflight", "preflight_id": pf["preflight_id"],
+                           "source_version": ref["source_version"], "segment_id": ref["segment_id"]}
+        original_route = f"/api/v1/sessions/{sid}/sources/{ref['source_id']}/original"
+        original = client.get(original_route, params=original_params)
+        assert original.status_code == 200, original.text
+        assert original.content in (SOURCE_A, SOURCE_B)
+        assert client.get(original_route, params={**original_params, "segment_id": "fake"}).status_code == 404
+
+
+def test_source_text_arbitrary_content_is_not_a_document_reference(client, settings):
+    from app.models import Page, Block
+    from app.services import documents
+    sid, source_id, revision, route, query = _text_view(client)
+    item = client.get(route, params=query).json()["items"][0]
+    forged = {"source_id": source_id, "source_version": 1, "segment_id": item["segment_id"],
+              "locator": item["locator"], "excerpt": item["text"]}
+    with connect(settings.db_path) as conn:
+        did = documents.create_initial(conn, sid, revision, "본문 중첩 참조", 4,
+            [Page(page_id="p", title="개요", layout_key="text", blocks=[Block(block_id="b", type="paragraph",
+                 content={"text": "사용자 본문", "evidence_refs": [forged]})])], "draft")
+    out = client.get(route + "/" + item["segment_id"], params={**query, "context": "document",
+        "document_id": did, "document_revision": 1, "source_version": 1})
+    assert out.status_code == 404
+
+
+def test_source_text_total_budget_and_missing_history(client, settings):
+    sid, source_id, revision, route, query = _text_view(client, ("\n".join(str(n) * 10000 for n in range(6))).encode())
+    out = client.get(route, params=query)
+    assert out.status_code == 200, out.text
+    assert sum(len(item["text"]) for item in out.json()["items"]) == 50000
+    after = client.get(route, params={**query, "cursor": out.json()["next_cursor"]}).json()
+    assert after["items"][0]["text"] == "5" * 10000 and after["next_cursor"] is None
+    with connect(settings.db_path) as conn:
+        conn.execute("DELETE FROM session_source_selections WHERE session_id=?", (sid,))
+    gone = client.get(route, params=query)
+    assert gone.status_code == 410
+    assert gone.json()["error"]["code"] == "SOURCE_VERSION_UNAVAILABLE"
+
+
+def test_source_text_attachment_uses_live_session_expiry(client, settings):
+    sid, source_id, revision, route, query = _text_view(client)
+    # Editing extends the session, not historical upload/version timestamps.
+    with connect(settings.db_path) as conn:
+        conn.execute("UPDATE sources SET expires_at='2020-01-01T00:00:00Z' WHERE source_id=?", (source_id,))
+        conn.execute("UPDATE source_versions SET expires_at='2020-01-01T00:00:00Z' WHERE source_id=?", (source_id,))
+    assert client.get(route, params=query).status_code == 200
+    with connect(settings.db_path) as conn:
+        conn.execute("UPDATE sessions SET expires_at='2020-01-01T00:00:00Z' WHERE session_id=?", (sid,))
+    assert client.get(route, params=query).status_code == 410
+
+
 @pytest.fixture
 def settings(tmp_path):
     value = Settings(

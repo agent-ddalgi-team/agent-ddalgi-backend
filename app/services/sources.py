@@ -9,10 +9,12 @@
 from __future__ import annotations
 
 import hashlib
+import base64
 import json
 import logging
 import mimetypes
 import re
+import stat
 import threading
 import uuid
 from contextlib import contextmanager
@@ -23,7 +25,7 @@ from fastapi import UploadFile
 from app.db import Connection, Row
 from app.config import Settings
 from app.errors import ApiError
-from app.models import SourceOut
+from app.models import SourceOut, SourceTextOut, SourceTextQuery, SourceTextSegment, SourceOriginalQuery
 from app.services.sessions import session_dir
 from app.services import db_history, sessions
 from app.timeutil import from_iso, now, to_iso
@@ -64,6 +66,7 @@ def _asset_ids(conn: Connection, source_id: str) -> list[str]:
 
 def _row_to_out(conn: Connection, row: Row) -> SourceOut:
     return SourceOut(
+        original_download_available=_original_eligible(conn, row, row["source_version"]),
         source_id=row["source_id"],
         source_version=row["source_version"],
         scope=row["scope"],
@@ -171,7 +174,7 @@ def effective_kind(kind: str | None, suffix: str) -> str:
 
 def store(conn: Connection, settings: Settings, session_id: str, expires_at: str, kind: str | None,
           uploads: list[tuple[str, str, str, bytes]], *, role: str = "evidence",
-          written_paths: list[Path] | None = None) -> list[SourceOut]:
+          written_paths: list[Path] | None = None, provenance: str = "upload") -> list[SourceOut]:
     """검사를 통과한 파일을 세션 폴더에 쓰고 레코드를 만든다(parse_status=queued). 쓰기 실패 시 이번 파일만 지운다.
 
     BE-09: 파일을 쓰기 전에 BEGIN IMMEDIATE로 세션 확정(종료·만료)과 직렬화하고 세션이 살아 있는지 다시 본다.
@@ -207,7 +210,7 @@ def store(conn: Connection, settings: Settings, session_id: str, expires_at: str
                     (source_id, session_id, display_name, mime, len(content), effective_kind(kind, suffix), relative,
                       hashlib.sha256(content).hexdigest(), to_iso(now()), expires_at, role),
                 )
-                db_history.source_version(conn, source_id, provenance="upload")
+                db_history.source_version(conn, source_id, provenance=provenance)
                 created.append(source_id)
             rows = conn.execute(
                 f"SELECT * FROM sources WHERE source_id IN ({','.join('?' * len(created))}) ORDER BY rowid", created
@@ -276,6 +279,258 @@ def segments_for_source(conn: Connection, source_id: str) -> list[dict]:
          "locator": json.loads(r["locator_json"]), "text": r["text"]}
         for r in conn.execute("SELECT * FROM segments WHERE source_id=?" + run_sql + " ORDER BY ordinal", (source_id, *run_params))
     ]
+
+
+def _text_missing():
+    return ApiError(404, "RESOURCE_NOT_FOUND", "요청한 자료 또는 근거를 찾을 수 없습니다. 자료 선택 상태를 확인해 주세요.")
+
+
+def _text_unavailable():
+    return ApiError(410, "SOURCE_VERSION_UNAVAILABLE", "이 근거의 자료 버전·추출 기록을 조회할 수 없습니다. 자료를 다시 선택하고 점검해 주세요.")
+
+
+def _evidence_refs(value):
+    """Only fact/block reference fields, never arbitrary content dictionaries."""
+    if isinstance(value, dict):
+        yield from (ref for ref in value.get("evidence_refs", []) if isinstance(ref, dict))
+        yield from _evidence_refs(value.get("alternatives", []))
+    elif isinstance(value, list):
+        for item in value:
+            yield from _evidence_refs(item)
+
+
+def _text_group(locator: dict) -> tuple:
+    # DOCX stores paragraphs before tables: ordinal alone is not reading order.
+    if "slide" in locator:
+        return ("slide", locator["slide"])
+    if "table" in locator:
+        return ("table", locator["table"])
+    if "paragraph" in locator:
+        return ("paragraph",)
+    if "page" in locator:
+        return ("page",)
+    if "line_start" in locator:
+        return ("line",)
+    return ("unknown", json.dumps(locator, sort_keys=True))
+
+
+def _resolve_text_source(conn: Connection, session: Row, source_id: str, query: SourceTextQuery,
+                         segment_id: str | None = None):
+    """Shared selection/context/version authorization for text and originals."""
+    sid = session["session_id"]
+    scope, params = evidence_scope(conn, sid)
+    source = conn.execute(f"SELECT src.* FROM sources src WHERE src.source_id=? AND {scope}",
+                          (source_id, *params)).fetchone()
+    if source is None or source_id not in json.loads(session["selected_source_ids"]):
+        raise _text_missing()
+    # Session attachment timestamps are upload-time snapshots; active-session TTL
+    # is authoritative and can be extended by editing (sessions.touch).
+    if source["scope"] == "registered" and source["expires_at"] and from_iso(source["expires_at"]) <= now():
+        raise _text_unavailable()
+    if query.expected_input_revision != session["input_revision"]:
+        raise ApiError(409, "INPUT_REVISION_CONFLICT", "자료가 변경되었습니다. 최신 상태를 확인해 주세요.")
+    if segment_id is None and (query.context != "selection" or query.focus_segment_id):
+        raise ApiError(422, "INVALID_REQUEST", "구간 목록은 현재 선택 문맥으로 조회해 주세요.")
+    if segment_id is not None and query.source_version is None:
+        raise ApiError(422, "INVALID_REQUEST", "근거 조회에는 자료 버전이 필요합니다.")
+
+    input_revision = session["input_revision"]
+    refs = []
+    if query.context == "preflight":
+        pf = conn.execute("SELECT * FROM preflights WHERE session_id=? AND preflight_id=?",
+                          (sid, query.preflight_id)).fetchone()
+        if pf is None:
+            raise _text_missing()
+        if pf["input_revision"] != input_revision:
+            raise ApiError(409, "INPUT_REVISION_CONFLICT", "이 점검은 이전 입력의 결과입니다. 최신 점검을 확인해 주세요.")
+        refs = list(_evidence_refs(json.loads(pf["facts_json"])))
+    elif query.context == "document":
+        doc = conn.execute("SELECT d.current_revision, r.* FROM documents d JOIN document_revisions r "
+                           "ON r.document_id=d.document_id AND r.revision=d.current_revision "
+                           "WHERE d.session_id=? AND d.document_id=?", (sid, query.document_id)).fetchone()
+        if doc is None:
+            raise _text_missing()
+        if query.document_revision != doc["current_revision"]:
+            raise ApiError(409, "DOCUMENT_REVISION_CONFLICT", "문서가 변경되었습니다. 최신 저장본에서 근거를 확인해 주세요.")
+        input_revision = doc["input_revision"]
+        refs = list(_evidence_refs([block for page in json.loads(doc["content_json"]).get("pages", [])
+                                   for block in page.get("blocks", [])]))
+
+    matching = [r for r in refs if r.get("source_id") == source_id and
+                r.get("source_version") == query.source_version and r.get("segment_id") == segment_id]
+    if query.context != "selection" and not matching:
+        raise _text_missing()
+    if not db_history.enabled(conn):
+        raise _text_unavailable()
+    pinned = conn.execute(
+        "SELECT sel.source_version, sel.run_id, v.original_name, v.purged_at AS version_purged, "
+        "v.expires_at, v.stored_path, v.content_hash, v.size_bytes, v.mime_type, v.session_id, v.provenance, "
+        "r.status, r.method, r.warnings_json, r.purged_at AS run_purged "
+        "FROM session_source_selections sel JOIN source_versions v "
+        "ON v.source_id=sel.source_id AND v.version=sel.source_version "
+        "LEFT JOIN extraction_runs r ON r.run_id=sel.run_id AND r.source_id=sel.source_id "
+        "AND r.source_version=sel.source_version "
+        "WHERE sel.session_id=? AND sel.input_revision=? AND sel.source_id=?",
+        (sid, input_revision, source_id)).fetchone()
+    if pinned is None or pinned["version_purged"] or pinned["run_purged"]:
+        raise _text_unavailable()
+    if source["scope"] == "registered" and pinned["expires_at"] and from_iso(pinned["expires_at"]) <= now():
+        raise _text_unavailable()
+    if query.source_version is not None and query.source_version != pinned["source_version"]:
+        raise _text_unavailable()
+    return source, pinned, input_revision, matching
+
+
+def read_text(conn: Connection, session: Row, source_id: str, query: SourceTextQuery,
+              segment_id: str | None = None) -> SourceTextOut:
+    """C-01: authorized, pinned extraction text. No file/AI/TTL/approval mutation."""
+    source, pinned, input_revision, matching = _resolve_text_source(conn, session, source_id, query, segment_id)
+    sid = session["session_id"]
+    if pinned["run_id"] is None or pinned["status"] in ("queued", "reading"):
+        if source["parse_status"] == "failed":
+            raise ApiError(422, "SOURCE_TEXT_UNAVAILABLE", "자료에서 읽어낸 글자가 없습니다. 텍스트 자료를 보완해 주세요.")
+        raise ApiError(409, "SOURCE_NOT_READY", "자료를 읽고 있습니다. 잠시 후 다시 확인해 주세요.", retryable=True)
+    if pinned["status"] not in ("complete", "partial"):
+        raise ApiError(422, "SOURCE_TEXT_UNAVAILABLE", "자료에서 읽어낸 글자가 없습니다. 텍스트 자료를 보완해 주세요.")
+    rows = conn.execute("SELECT segment_id, ordinal, locator_json, length(replace(text, char(0), char(1))) AS chars FROM segments "
+                        "WHERE source_id=? AND source_version=? AND run_id=? ORDER BY ordinal, segment_id",
+                        (source_id, pinned["source_version"], pinned["run_id"])).fetchall()
+    by_id = {r["segment_id"]: r for r in rows}
+    if not rows:
+        raise ApiError(422, "SOURCE_TEXT_UNAVAILABLE", "읽어낸 글자가 없습니다. 이미지 자료는 텍스트본으로 보완해 주세요.")
+    if segment_id is not None and segment_id not in by_id:
+        raise _text_missing()
+    focus = query.focus_segment_id or segment_id
+    neighbours = []
+    previous = following = None
+    if segment_id:
+        group = _text_group(json.loads(by_id[segment_id]["locator_json"]))
+        group_rows = [r for r in rows if _text_group(json.loads(r["locator_json"])) == group]
+        if focus not in {r["segment_id"] for r in group_rows}:
+            raise _text_missing()
+        index = next(i for i, r in enumerate(group_rows) if r["segment_id"] == focus)
+        previous = group_rows[index - 1]["segment_id"] if index else None
+        following = group_rows[index + 1]["segment_id"] if index + 1 < len(group_rows) else None
+        neighbours = [by_id[x] for x in (previous, following) if x]
+        rows = [by_id[focus]]
+
+    binding = hashlib.sha256(json.dumps([sid, source_id, pinned["source_version"], pinned["run_id"],
+        input_revision, query.model_dump(exclude={"cursor"}), segment_id], sort_keys=True).encode()).hexdigest()
+    index = offset = 0
+    if query.cursor:
+        try:
+            cursor = json.loads(base64.urlsafe_b64decode(query.cursor.encode()))
+            if not isinstance(cursor, list) or len(cursor) != 3 or cursor[0] != binding:
+                raise ValueError("cursor binding")
+            index, offset = cursor[1:]
+            if type(index) is not int or type(offset) is not int:
+                raise ValueError("cursor types")
+            if not (0 <= index < len(rows) and 0 <= offset < max(1, rows[index]["chars"])):
+                raise ValueError("cursor position")
+        except (ValueError, TypeError, UnicodeError):
+            raise ApiError(422, "INVALID_REQUEST", "이어보기 위치가 유효하지 않습니다. 처음부터 다시 확인해 주세요.") from None
+
+    def piece(row, start=0, budget=10000):
+        # Python slicing preserves embedded NUL, which SQLite text substr truncates.
+        stored = conn.execute("SELECT text FROM segments WHERE segment_id=? AND run_id=?",
+                              (row["segment_id"], pinned["run_id"])).fetchone()[0]
+        body = stored[start:start + min(budget, 10000)]
+        return SourceTextSegment(segment_id=row["segment_id"], locator=json.loads(row["locator_json"]),
+                                 text=body, offset=start, total_chars=row["chars"],
+                                 truncated=start + len(body) < row["chars"])
+
+    items = []
+    budget = 30000 if segment_id else 50000
+    while index < len(rows) and len(items) < query.limit and budget > 0:
+        part = piece(rows[index], offset, budget)
+        items.append(part)
+        budget -= len(part.text)
+        if part.truncated:
+            offset += len(part.text)
+            break
+        index += 1
+        offset = 0
+    next_cursor = (base64.urlsafe_b64encode(json.dumps([binding, index, offset]).encode()).decode()
+                   if index < len(rows) else None)
+    excerpts = list(dict.fromkeys(r.get("excerpt", "") for r in matching))
+    return SourceTextOut(source_id=source_id, source_version=pinned["source_version"], run_id=pinned["run_id"],
+                         text_origin={"registered_bundle": "registered_excerpt", "parser": "automatic_extraction"}.get(pinned["method"], "unknown"),
+                         original_download_available=_original_eligible(conn, source, pinned["source_version"]),
+                         name=pinned["original_name"], context=query.context, input_revision=input_revision,
+                         current_input_revision=session["input_revision"], document_revision=query.document_revision,
+                         parse_status=pinned["status"], warnings=json.loads(pinned["warnings_json"]), items=items,
+                         context_segments=[piece(r) for r in neighbours], anchor_segment_id=segment_id,
+                         target_segment_id=focus, excerpts=[e[:2000] for e in excerpts[:5]],
+                         excerpts_truncated=len(excerpts) > 5 or any(len(e) > 2000 for e in excerpts),
+                         previous_segment_id=previous, next_segment_id=following, next_cursor=next_cursor)
+
+
+def _original_eligible(conn: Connection, source: Row, version: int) -> bool:
+    # Only user uploads, not registered company files or imported public data.
+    if not (source["scope"] == "session" and source["role"] == "evidence" and db_history.enabled(conn)
+            and conn.execute("SELECT 1 FROM source_versions WHERE source_id=? AND version=? "
+                             "AND session_id=? AND provenance='upload' AND purged_at IS NULL",
+                             (source["source_id"], version, source["session_id"])).fetchone()):
+        return False
+    # Older DART imports also used provenance=upload. Keep their recorded warning
+    # as an exclusion even after a later re-extraction changes current warnings.
+    warnings = [source["warnings_json"], *(r[0] for r in conn.execute(
+        "SELECT warnings_json FROM extraction_runs WHERE source_id=? AND source_version=?",
+        (source["source_id"], version)))]
+    return not any(w.get("code") == "PUBLIC_OPEN_DATA" for value in warnings for w in json.loads(value))
+
+
+def read_original(conn: Connection, settings: Settings, session: Row, source_id: str,
+                  query: SourceOriginalQuery) -> tuple[bytes, str, str]:
+    source = conn.execute("SELECT * FROM sources WHERE source_id=? AND session_id=? AND deleted_at IS NULL",
+                          (source_id, session["session_id"])).fetchone()
+    if source is None or source["scope"] != "session" or source["role"] != "evidence":
+        raise _text_missing()
+    text_query = SourceTextQuery(**query.model_dump(exclude={"segment_id"}))
+    source, version, _, _ = _resolve_text_source(conn, session, source_id, text_query, query.segment_id)
+    if not _original_eligible(conn, source, version["source_version"]):
+        raise _text_missing()
+    if query.segment_id is not None and not conn.execute(
+        "SELECT 1 FROM segments WHERE source_id=? AND source_version=? AND run_id=? AND segment_id=?",
+        (source_id, version["source_version"], version["run_id"], query.segment_id)).fetchone():
+        raise _text_missing()
+    try:
+        root = settings.private_runs_dir.resolve(strict=True)
+        relative = Path(version["stored_path"])
+        if relative.is_absolute() or relative.drive or ".." in relative.parts:
+            raise ValueError("path")
+        path = root / relative
+        # Check every component before resolving: Windows junctions are reparse points too.
+        for component in (path, *path.parents):
+            info = component.lstat()
+            if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                raise ValueError("link")
+            if component == root:
+                break
+        resolved = path.resolve(strict=True)
+        if not resolved.is_relative_to(root / session["session_id"]) or not resolved.is_file():
+            raise ValueError("scope")
+        size = version["size_bytes"]
+        if not 0 < size <= settings.max_file_bytes:
+            raise ValueError("size")
+        # Read once and return these exact verified bytes, never reopen a FileResponse path.
+        with resolved.open("rb") as stream:
+            content = stream.read(size + 1)
+        if len(content) != size or hashlib.sha256(content).hexdigest() != version["content_hash"]:
+            raise ValueError("hash")
+    except (OSError, ValueError, TypeError):
+        raise ApiError(410, "SOURCE_ORIGINAL_UNAVAILABLE", "이 버전의 원본 파일을 확인할 수 없습니다. 자료를 다시 첨부해 주세요.") from None
+    suffix = path.suffix.lower()
+    mime = {".txt": "text/plain", ".md": "text/markdown", ".pdf": "application/pdf",
+            ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}.get(suffix)
+    if mime is None:
+        raise ApiError(410, "SOURCE_ORIGINAL_UNAVAILABLE", "지원하는 형식의 원본 파일이 없습니다.")
+    name = re.sub(r'[\x00-\x1f\x7f<>:"/\\|?*\u202a-\u202e\u2066-\u2069]', '_', version["original_name"])
+    # Preserve a known extension even if stored display metadata is malformed.
+    name = Path(name).stem[:160].strip(" .") or "source"
+    return content, name + suffix, mime
 
 
 # DART adapter reuses session file storage, extraction history and the read Job contract.
@@ -562,7 +817,8 @@ def run_dart_import(settings: Settings, session_id: str, job_id: str, revision: 
                 check_capacity(settings, count_for_session(conn, session_id), 1)
                 if len(data) > settings.max_file_bytes:
                     raise ApiError(413, "FILE_TOO_LARGE", "DART 변환 자료가 파일 크기 한도를 넘었습니다.")
-                item = store(conn, settings, session_id, row["expires_at"], "company", [(".txt", doc["name"], "text/plain", data)], written_paths=written)[0]
+                item = store(conn, settings, session_id, row["expires_at"], "company", [(".txt", doc["name"], "text/plain", data)],
+                             written_paths=written, provenance="public_import")[0]
                 source_ids.append(item.source_id)
                 path = settings.private_runs_dir / f"{session_id}/{item.source_id}.dart{doc['raw_suffix']}"
                 with path.open("xb") as stream:

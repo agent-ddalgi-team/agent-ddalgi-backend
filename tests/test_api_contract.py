@@ -362,9 +362,16 @@ def test_unhandled_error_has_matching_request_id_and_hides_exception_text(app, s
 
 def test_openapi_describes_common_errors_export_statuses_and_binary_responses(app):
     schema = app.openapi()
+    origin = schema["components"]["schemas"]["SourceTextOut"]["properties"]["text_origin"]
+    assert origin["enum"] == ["registered_excerpt", "automatic_extraction", "unknown"]
+    assert origin["default"] == "unknown"
     operations = [operation for path, item in schema["paths"].items() if path.startswith("/api/v1/")
                   for method, operation in item.items() if method in {"get", "post", "patch", "delete"}]
-    assert len(operations) == 34
+    assert len(operations) == 37  # C-01 extraction views and own-session original download
+    for suffix in ("", "/{segment_id}"):
+        operation = schema["paths"]["/api/v1/sessions/{sid}/sources/{source_id}/segments" + suffix]["get"]
+        assert operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/SourceTextOut")
+        assert next(p for p in operation["parameters"] if p["name"] == "expected_input_revision")["required"]
     assert "post" in schema["paths"]["/api/v1/sessions/{sid}/preflights/{pid}/reviews"]
     assert "get" in schema["paths"]["/api/v1/companies"]
     assert "get" in schema["paths"]["/api/v1/sessions/{sid}/public-data"]
@@ -381,7 +388,12 @@ def test_openapi_describes_common_errors_export_statuses_and_binary_responses(ap
     assert {"application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"} <= download.keys()
     image = schema["paths"]["/api/v1/sessions/{sid}/assets/{asset_id}"]["get"]["responses"]["200"]["content"]
     assert {"image/png", "image/jpeg"} <= image.keys()
-    for media in (download, image):
+    original = schema["paths"]["/api/v1/sessions/{sid}/sources/{source_id}/original"]["get"]
+    for name in ("expected_input_revision", "source_version"):
+        assert next(p for p in original["parameters"] if p["name"] == name)["required"]
+    original_media = original["responses"]["200"]["content"]
+    assert {"text/plain", "text/markdown", "application/pdf", "image/png", "image/jpeg"} <= original_media.keys()
+    for media in (download, image, original_media):
         assert "application/json" not in media
         assert all(value["schema"] == {"type": "string", "format": "binary"} for value in media.values())
 

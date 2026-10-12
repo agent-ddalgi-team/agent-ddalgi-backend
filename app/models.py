@@ -1,4 +1,4 @@
-"""API 요청·응답 모델. contracts.md 계약 1.7과 OpenAPI의 원본이다.
+"""API 요청·응답 모델. contracts.md 계약 1.12와 OpenAPI의 원본이다.
 
 DB 테이블은 orm_models.py에, 요청 값의 형식 검사는 여기에 둔다.
 소유권·현재 버전·근거의 유효성 같은 업무 검사는 서비스에서 수행한다.
@@ -151,6 +151,7 @@ class SourceWarning(BaseModel):
 
 
 class SourceOut(BaseModel):
+    original_download_available: bool = False
     role: Literal["evidence", "instruction"] = "evidence"
     origin_kind: Literal["real", "mock", "demo"] = "real"
     source_id: str
@@ -177,6 +178,79 @@ class SourceOut(BaseModel):
 
 class SourceListOut(BaseModel):
     items: list[SourceOut]
+
+
+class SourceContextQuery(BaseModel):
+    """Context IDs never grant access by themselves."""
+    model_config = ConfigDict(extra="forbid")
+    expected_input_revision: int = Field(ge=1, le=MAX_SQLITE_INTEGER)
+    context: Literal["selection", "preflight", "document"] = "selection"
+    preflight_id: str | None = Field(default=None, min_length=1, max_length=100)
+    document_id: str | None = Field(default=None, min_length=1, max_length=100)
+    document_revision: int | None = Field(default=None, ge=1, le=MAX_SQLITE_INTEGER)
+    source_version: int | None = Field(default=None, ge=1, le=MAX_SQLITE_INTEGER)
+
+    @model_validator(mode="after")
+    def check_context(self):
+        if self.context == "selection":
+            valid = self.preflight_id is None and self.document_id is None and self.document_revision is None
+        elif self.context == "preflight":
+            valid = self.preflight_id is not None and self.document_id is None and self.document_revision is None
+        else:
+            valid = self.preflight_id is None and self.document_id is not None and self.document_revision is not None
+        if not valid:
+            raise ValueError("context and its identifiers must match")
+        return self
+
+
+class SourceTextQuery(SourceContextQuery):
+    cursor: str | None = Field(default=None, max_length=2048)
+    limit: int = Field(default=20, ge=1, le=50)
+    focus_segment_id: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class SourceOriginalQuery(SourceContextQuery):
+    source_version: int = Field(ge=1, le=MAX_SQLITE_INTEGER)
+    segment_id: str | None = Field(default=None, min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def check_anchor(self):
+        if (self.context == "selection") != (self.segment_id is None):
+            raise ValueError("A cited context requires an anchor segment; selection has none")
+        return self
+
+
+class SourceTextSegment(BaseModel):
+    segment_id: str
+    locator: dict[str, Any]
+    text: str
+    offset: int
+    total_chars: int
+    truncated: bool
+
+
+class SourceTextOut(BaseModel):
+    text_origin: Literal["registered_excerpt", "automatic_extraction", "unknown"] = "unknown"
+    original_download_available: bool = False
+    source_id: str
+    source_version: int
+    run_id: str
+    name: str
+    context: Literal["selection", "preflight", "document"]
+    input_revision: int
+    current_input_revision: int
+    document_revision: int | None = None
+    parse_status: Literal["complete", "partial"]
+    warnings: list[SourceWarning]
+    items: list[SourceTextSegment]
+    context_segments: list[SourceTextSegment] = Field(default_factory=list)
+    anchor_segment_id: str | None = None
+    target_segment_id: str | None = None
+    excerpts: list[str] = Field(default_factory=list)
+    excerpts_truncated: bool = False
+    previous_segment_id: str | None = None
+    next_segment_id: str | None = None
+    next_cursor: str | None = None
 
 
 class UploadOut(BaseModel):

@@ -608,6 +608,7 @@ def test_dart_import_real_source_history_replay_and_dedup(dart_client):
     items = client.get(root + "/sources").json()["items"]
     assert len(items) == 2 and all(item["scope"] == "session" and item["origin_kind"] == "real" for item in items)
     assert all(item["text_available"] and item["warnings"][0]["code"] == "PUBLIC_OPEN_DATA" for item in items)
+    assert not any(item["original_download_available"] for item in items)
     assert all("test-dart-key" not in str(item) for item in items)
     assert client.get(root).json()["input_revision"] == 1
     assert client.get(root).json()["selected_source_ids"] == []
@@ -626,6 +627,7 @@ def test_dart_import_real_source_history_replay_and_dedup(dart_client):
                    for m in filing.metadata["segments"].values())
         from app.services import db_history
         if db_history.enabled(conn):
+            assert {r[0] for r in conn.execute("SELECT provenance FROM source_versions WHERE session_id=?", (session["session_id"],))} == {"public_import"}
             assert conn.execute("SELECT count(*) FROM extraction_runs WHERE session_id=?", (session["session_id"],)).fetchone()[0] == 2
             assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     assert len(list(settings.private_runs_dir.glob(session["session_id"] + "/*.dart.*"))) == 2

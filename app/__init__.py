@@ -62,6 +62,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["Content-Disposition"],
     )
 
     @app.middleware("http")
@@ -69,6 +70,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request.state.request_id = f"req_{uuid.uuid4().hex[:12]}"
         response = await call_next(request)
         response.headers["X-Request-Id"] = request.state.request_id
+        if (request.url.path.startswith(f"{API_PREFIX}/sessions/") and "/sources/" in request.url.path
+                and ("/segments" in request.url.path or request.url.path.endswith("/original"))):
+            response.headers["Cache-Control"] = "private, no-store"
         return response
 
     install_error_handlers(app)
