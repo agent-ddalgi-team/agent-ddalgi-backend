@@ -1346,6 +1346,76 @@ PPT 배치 전달의 후속은 프롬프트에 없는 합성 자료로 정상 �
 AG-03/04 진행중·AG-08 대기는 유지한다. 도구 준비 완료가 제품의 일반 품질/화면 연결 완료를 뜻하지 않는다. 실행과 검증 기록은 [Agent 작업 기록](task_agent.md#agent-eval-tools-20261008)에만 둔다.
 
 
+<a id="source-evidence-viewer-design-20261012"></a>
+
+### 4.100 C-01 원문·근거 확인 현황과 후속 설계 (2026-10-12)
+
+**상태: 현행 코드 대조와 설계안 작성. 아래 새 API·화면은 미구현이며 계약 1.9의 확정 규격이 아니다.** 사용자 요청은 부족한 부분의 설계까지다. 기존 BE-01/03 완료와 BE-10/F-08 진행중 상태를 유지한다. 공개 API·DB 스키마·프롬프트·원자료 적재 정책은 이번에 변경하지 않는다.
+
+#### 현재 되는 것과 빠진 것
+
+| 구분 | 실제 구현 | 부족한 부분 |
+|---|---|---|
+| 자료 읽기 | TXT/MD 행, PDF 쪽, PPTX 슬라이드/도형/표 셀, DOCX 문단/표 셀을 `segments`에 저장. 일부 읽기·이미지만 있음 경고 제공 | 저장된 추출문을 사람이 조회하는 API 없음. 추출문은 원본의 서식·배치 전체를 재현하지 않음 |
+| 근거 연결 | `EvidenceRef`의 source_id/source_version/segment_id/locator/excerpt가 사실·충돌 후보·문서 블록에 연결됨 | excerpt는 인용문이며 주변 문맥이나 원본 파일 자체가 아님 |
+| 실제 화면 | `AiWorkflowPanel.Evidence`가 출처명(없으면 ID)·위치 키/값·인용문을 표시. S01 사실/후보, S02 선택 블록, S03 문제 관련 사실에서 재사용 | 원문 열기·주변 추출문·버전 표시·자료의 읽기 경고 연결 없음. 위치는 현재 `page: 3` 같은 기술 키로 표시 |
+| 문제에서 확인 | `DocumentWorkspace` → `SourceSelectionView`의 자료 점검 패널 열기와 관련 사실 강조 연결 있음 | fact_ids가 없거나 자료가 제외된 경우의 원문 확인 대안 필요 |
+| 조회·보호 기반 | 세션 소유/만료 검사, 이미지 GET, 입력별 자료 선택과 source_versions/extraction_runs 이력 있음 | 이미지 GET은 PDF/DOCX/PPTX 원본 조회 API가 아님. 새 조회에는 별도의 선택·버전·삭제 검사 필요 |
+
+현황 근거: [SourceOut/EvidenceRef](../app/models.py), [자료 라우터](../app/routers/sources.py), [자료 서비스](../app/services/sources.py), [선택 버전 입력 조립](../app/services/preflights.py), [이력 서비스](../app/services/db_history.py), [파서](../app/parsers/office.py). 프론트는 별도 저장소의 `src/components/session/AiWorkflowPanel.tsx`, `DocumentWorkspace.tsx`, `SourceSelectionView.tsx`, `src/api/sources.ts`를 대조했다. 과거 시안 `AiSidecar`의 문구 비교나 출력 PDF 미리보기를 업로드 원본 확인 기능으로 세지 않는다.
+
+#### 권장 구현 순서와 사용자 흐름
+
+1. **1차: 인용문 + 저장된 추출문 확인.** 기존 근거 펼치기에 `인용문`, 출처명·버전·읽기 쉬운 위치, `추출문에서 확인`을 추가한다. 클릭하면 현재 화면의 옆 패널에 해당 구간과 제한된 앞뒤 문맥을 표시한다. 화면 이동·문서 저장·AI 호출 없이 닫고 편집을 계속한다.
+2. **S01 자료 카드에서도 확인.** 자료를 선택한 뒤 `읽어낸 내용 보기`로 구간 목록을 열 수 있게 한다. AI 점검 전에도 이용한다. 미선택 자료는 선택 필요를 안내하며 조회 때문에 자동 선택하거나 input_revision을 변경하지 않는다. 작성 조건 첨부(role=instruction)는 이 근거 조회 범위에 포함하지 않는다.
+3. **S01 사실/상충 후보, S02 선택 블록, S03 문제에서 같은 조회 패널 사용.** 상충 후보는 각각의 근거를 유지한다. 문제에 fact_ids가 없으면 block_ids의 연결 근거, 그마저 없으면 허용된 source_ids의 추출문 목록을 안내한다. 없는 연결을 추정해 생성하지 않는다. 미저장 편집·선택 블록·스크롤을 보존한다.
+4. **2차: 원본 파일 내려받기, 이후 필요할 때 원본 화면 미리보기.** 원본 전체 공개 권한과 파일 형식별 제공 범위를 별도로 확정한 후 구현한다. 1차에 빈 원본 버튼이나 가짜 미리보기를 넣지 않는다. 인용문/추출문/원본 파일을 모두 ‘원문’ 하나로 표시하지 않는다.
+
+권장 패널 구성: `자료명 · 버전 / PDF 3쪽` → `인용문` → `저장된 추출문` → `읽기 경고·이전/다음 구간`. 정확히 일치하는 인용 위치가 있을 때만 강조한다. 중복 문구는 복수 일치임을 표시하고, 공백 정규화 등으로 정확한 위치를 찾지 못하면 인용문과 구간을 나란히 표시한다. 임의로 첫 문장을 정답 위치로 강조하지 않는다.
+
+#### 1차 API 설계안 — 구현 전 계약 반영 대상
+
+공통 접두사는 `/api/v1/sessions/{sid}`이며 **다음 경로는 현재 존재하지 않는다.** 기존 Source/EvidenceRef를 바꾸지 않고 조회 응답을 추가하는 방향이다.
+
+| 제안 GET | 목적 | 요청·응답 요지 |
+|---|---|---|
+| `/sources/{source_id}/segments` | 선택 자료의 추출 구간 목록 | `expected_input_revision`, 선택 문맥, 선택적 cursor. 출처 이름/버전/run_id, 읽기 상태·경고, 구간 ID/locator/text, next_cursor 반환 |
+| `/sources/{source_id}/segments/{segment_id}` | 특정 근거 구간과 주변 문맥 | 위 공통 값 + 예상 source_version, 근거 문맥. 대상 구간·제한된 문맥·동일 run의 이전/다음 구간 정보 반환 |
+
+- **문맥을 명시한다:** `context=selection`은 현재 입력의 선택 스냅샷, `context=preflight&preflight_id=…`는 현재 입력에 대응하는 점검, `context=document&document_id=…&document_revision=…`는 현재 저장 문서 revision의 연결 점검/입력을 사용한다. 타입별 필수 값·금지 조합을 검증한다. 문서 저장 후 과거 revision 요청은 409로 처리한다. 클라이언트의 ID·excerpt·locator·run_id만으로 접근을 허용하지 않는다.
+- **근거 조회는 저장된 참조와 대조한다:** preflight 문맥은 해당 사실/충돌 후보의 EvidenceRef, document 문맥은 해당 문서 revision 블록의 EvidenceRef에 실제 연결된 source/version/segment인지 서버가 확인한다. 인용문은 저장된 참조에서 얻는다. 구간 목록의 선택 문맥은 AI 결과 없이도 허용한다.
+- **현재 접근 허용 범위와 과거 근거 버전은 별개다:** 먼저 현재 선택에 포함되고 `evidence_scope`에 허용된 source인지 확인한다. 다음으로 문맥의 input_revision에 고정된 source_version/run_id를 사용한다. 아직 현재 문서가 옛 입력을 참조한다면 그 사실을 표시하고 해당 옛 구간만 조회한다. 현재 선택에서 빠진 자료는 인용문 표시를 남기되 추가 추출문 조회를 막고 자료 변경 안내를 한다. 삭제·만료·권한 회수는 과거 문맥보다 우선한다.
+- **역사 없는 데이터:** source_versions/selection/run 연결이 없거나 purged이면 최신 run으로 대체하지 않는다. 조회 불가 상태와 재선택·재점검 안내를 준다. `sources.segments_for_source()`는 내부용 최신 run 조회이므로 이를 그대로 공개하지 않는다. `preflights.build_sources()`의 선택 스냅샷 검사 방식을 참고하되 전체 Agent 입력을 생성하는 함수로 화면 응답을 만들지 않는다.
+- **응답 상한 제안:** 목록 기본 20개/최대 50개, 전체 text 50,000자, 구간별 text 조각 최대 10,000자로 제한한다. 긴 PDF 한 쪽도 잘린 사실과 같은 구간의 continuation을 제공한다. cursor는 source/version/run/context와 구간 ordinal·문자 offset에 묶고 다음 요청마다 권한/버전을 재검사한다. 짧은 excerpt로 조용히 대체하거나 원문 전체를 한 번에 전송하지 않는다. 최종 상한·필드명은 구현 계약에서 확정한다.
+- **문맥의 정확성:** TXT/MD는 실제 행 번호, PDF는 쪽, PPTX는 같은 슬라이드의 도형·표, DOCX는 문단끼리 또는 같은 표의 셀끼리 묶는다. 현행 DOCX 파서는 문단을 먼저, 표를 나중에 저장하므로 전체 ordinal 인접 항목을 ‘원본 바로 앞/뒤’라고 부르지 않는다. 원본 페이지 번호나 화면 좌표가 없는 형식에 이를 만들어 붙이지 않는다.
+- **표시용 응답:** source_id/source_version/run_id/name, context의 입력/문서 revision, parse_status/warnings, target와 context_segments의 segment_id/locator/text, 잘림·이어보기 정보를 명시한다. stored_path, 서버 절대 경로, 임의 원본 URL은 반환하지 않는다. SourceOut의 usable_segment_ids는 프론트 WorkSource에 현재 없으므로 새 목록 응답을 조회 기준으로 사용한다.
+
+#### 접근·실패·보관 정책
+
+- 세션 소유·활성 확인 → 현재 선택/role/origin/use_as_company_evidence 범위 → 문맥과 source_version/run/segment 결합 → 삭제·purge 상태 순으로 검사한다. 타 세션/허용 밖 ID에는 기존 404 방식으로 존재를 숨긴다. 기존 이미지 GET의 등록 자료 허용 범위를 원문 전체 공개 허가로 해석하지 않는다.
+- 기존 오류 형태를 유지한다. 인증 없음은 기존 401, 소유 불일치/범위 밖은 404, 입력·문서 변경은 기존 409 충돌 코드, 세션 만료는 기존 410을 사용한다. 추가 제안 코드는 `SOURCE_NOT_READY`(409, 읽기 중), `SOURCE_TEXT_UNAVAILABLE`(422, 추출 실패/이미지만 있음), `SOURCE_VERSION_UNAVAILABLE`(410, 허용된 자료의 참조 버전 소실)이며 **아직 계약에 추가된 코드가 아니다.** 일부 읽기는 200과 경고를 함께 반환한다. 권한 검사 전에는 상세 사유를 노출하지 않는다.
+- 정상 GET은 입력/문서/검증/승인/점검 확인/세션 TTL을 갱신하지 않는다. 1차는 기존 DB 조회를 사용하며 테이블·영구 복사·새 AI 작업·OCR을 추가하지 않는다. 만료 감지 시 기존 load_active의 정리와 410 처리는 그대로 적용하며, 이 정리까지 읽기 전용으로 막지는 않는다.
+- JSON과 향후 파일 응답은 `Cache-Control: private, no-store`. 추출문은 React 텍스트 노드로 표시하고 HTML/Markdown 스크립트를 실행하지 않는다. 본문·인용문을 localStorage/sessionStorage·URL·로그에 저장하지 않는다. 닫기/세션 종료 시 패널 메모리를 비운다.
+- 프론트 요청에는 세션·source·version·context·segment 키를 사용한다. 자료 변경/패널 전환/종료 때 요청을 취소하고 늦은 응답을 버린다. 409는 최신 상태 확인, 410은 내용을 지우고 만료 안내, 네트워크 오류는 GET 재시도만 제공한다. 오류를 해결하려고 AI 재생성·자동 승인·자동 자료 선택을 실행하지 않는다.
+
+#### 2차 원본 파일 범위 — 별도 결정 필요
+
+제안 경로는 `GET /sources/{source_id}/original`이며 1차의 소유·선택·문맥·버전 검사를 그대로 적용한다. 원본 다운로드는 인용 구간 외 내용도 공개하므로 **등록 자료의 근거 사용 허용과 원본 전체 배포 허용을 같은 권한으로 취급할지는 아직 미정**이다. 권한 표현/등록 절차가 정해지기 전 등록 원본 다운로드는 제공하지 않는다. 자기 세션 첨부부터 시작하는 방안을 권장한다.
+
+서버가 선택한 버전의 stored_path만 사용하고 resolve 후 저장 루트 이탈·심볼릭 링크/재분석 지점·파일 부재를 검사한다. 전달 전에 버전의 content_hash와 일치하는지 확인하고 바뀐 파일을 같은 버전으로 내보내지 않는다. 클라이언트 경로·외부 URL은 받지 않는다. 안전한 파일명, 허용 MIME, attachment, `X-Content-Type-Options: nosniff`를 사용한다. PDF 화면 보기가 필요하면 별도 inline 정책과 접근 검사를 정한다. PPTX/DOCX는 초기에는 다운로드만 제공하고 새 변환 엔진·외부 문서 뷰어 전송·OCR은 이번 범위에 넣지 않는다. 이미 제공 중인 최종 출력 PDF/DOCX와는 별도 자원이다.
+
+#### 구현 단위와 완료 기준
+
+| 순서 | 작업 범위 | 완료 판단 |
+|---|---|---|
+| 1 | 백엔드 계약에 요청/응답/오류 확정 → 기존 sources 라우터·서비스·모델 확장 | 선택·근거 문맥·버전·응답 상한을 검사하는 GET 구현. 기존 BE-03/04 및 ORM 테스트에 회귀 추가 |
+| 2 | 프론트 sources API 타입/조회 + Evidence 공통 패널·위치 라벨 | S01 카드/사실/상충 후보, S02 블록, S03 문제 진입이 같은 버전·구간을 표시. 미저장 편집 보존 |
+| 3 | 격리 DB의 실제 HTTP/화면 검수 | TXT/MD/PDF/DOCX/PPTX 위치, 긴 구간 이어보기, 읽기 중/일부/실패/이미지 자료, 빈 근거·없는 fact_ids 확인 |
+| 4 | 접근/경합 회귀 | 타 소유자·미선택·instruction·등록 허가 회수·demo 제한·위조 segment/version/run·재추출·오래된 입력/문서·삭제/만료·늦은 응답 차단. GET 전후 revision/승인/TTL 동일, AI 호출 0 |
+| 후속 | 원본 배포 권한 합의 → 원본 다운로드 구현 | 파일 경로 이탈/해시 불일치/형식·헤더/삭제 경합, 추출문과 원본의 차이를 실제 화면에서 검수 |
+
+현재는 위 검수의 **설계**까지이며 새 API나 화면 통과를 주장하지 않는다. 기존 기능의 실제 재확인 결과는 [백엔드 작업 기록](task_backend.md#source-evidence-audit-20261012)에 둔다. 프론트 설계 전달은 별도 저장소 기존 README에 기록하며 커밋까지만 한다.
+
 ## 5. 데이터 모델
 
 이전 문서가 ‘plan.md 5절의 진행 순서’를 가리키면 [8절](#8-구현-순서)을 읽는다. 아래는 기존 객체를 이해하기 위한 요약이며 새 테이블을 추가하는 설계가 아니다.

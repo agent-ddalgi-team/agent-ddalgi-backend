@@ -544,7 +544,7 @@ HTTP 오류의 `request_id`는 필수 문자열이고 `X-Request-Id` 헤더와 �
 
 | ID | 우선순위 | 현행 코드에서 확인한 내용 | 합의·반영할 것 |
 |---|---|---|---|
-| C-01 | P0 | Source.asset_ids와 이미지 GET | 기존 목록 형식은 계약 1.3 반영. 원본/추출문 미리보기 API는 미구현·별도 후속 |
+| C-01 | P0 | Source.asset_ids와 이미지 GET, EvidenceRef의 인용문 표시 | 기존 목록 형식은 계약 1.3 반영. 원본/추출문 조회 API는 미구현. 2026-10-12 [현황·후속 설계안](plan.md#source-evidence-viewer-design-20261012) 작성; 새 경로/오류/권한은 구현 전 합의·계약 반영 대상 |
 | C-02 | P0 | Proposal의 rationale/candidates/applied_revision과 선택 적용 | 기존 후보·빈 값 형식은 계약 1.3 반영. 실제 AI 후보/프론트 비교 화면은 후속 |
 | C-03 | P0 | Job.progress와 7종 result_ref, Preflight/Proposal GET | 현행 필드·결과 조회 방식을 계약 1.3/OpenAPI에 반영. 백분율은 추가하지 않음 |
 | C-04 | P0 | SourceWarning와 Recommendations | 현행 위치·문자열 보완 목록을 계약 1.3에 반영. 새 고정 보완 분류는 별도 결정 |
