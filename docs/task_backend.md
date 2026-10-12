@@ -13,6 +13,8 @@
 
 ### 원문 오타 정정 기록·재검증 (2026-10-12)
 
+- **후속 PR/병합 요청:** 사용자가 백엔드 test·프론트 develop 대상 PR 생성과 병합을 명시적으로 요청했다. [백엔드 PR #48](https://github.com/agent-ddalgi-team/agent-ddalgi-backend/pull/48), [프론트 PR #29](https://github.com/agent-ddalgi-team/agent-ddalgi-frontend/pull/29)을 생성했다. 최신 프론트 develop(b5ccf53)의 화면 효과/다운로드 변경을 작업 브랜치에 충돌 없이 반영한 뒤 build·변경 파일 ESLint(오류0, 기존 경고1)·격리 원문 정정 브라우저 검사를 다시 통과했다(Temp/ddalgi-ai-ui-9mWIhd). 기능 상태는 유지하며 아래 로컬 커밋 한정 기록은 최초 구현 시점의 기록이다. 최종 병합 여부는 각 PR의 상태를 따른다. 기존 서버/.env/원본 DB는 변경하지 않는다.
+
 - **변경:** 새 브랜치 codex/source-typo-correction-20261012에서 BE-06/F-05 후속 구현. app/models.py·routers/issues.py·services/issues.py/ai_jobs.py/validation.py에 현재 VALUE_MISMATCH의 정정 전후 표기·사유·근거 기록과 검증 Job 연결을 추가했다. agent_bridge.py/agent_llm.py는 기록을 별도 참고 데이터로 전달하고 자동 승인·지침으로 취급하지 않는다. 프론트 publication.ts/usePublication.ts/DocumentWorkspace.tsx에 버튼·입력·기록·진행 상태를 연결했다. 기존 파일만 수정했다.
 - **보존/버전:** 원본·추출문·현재 문서 불변, 기존 issues 이력 JSON 사용·DBv11 유지. 문서/입력/점검/원문 지문이 바뀌면 재사용하지 않으며 정정 이력이 있는 문서는 전체 재검증한다. 기존 승인은 무효화하고 독립 blocker는 유지한다. 세션 종료/만료 시 사유·근거도 정리한다. 새 API/타입/예시는 계약1.13, 계획·PRD·프론트 README에 실제 범위를 반영했다.
 - **백엔드:** 임시 DB·가상 AI로 tests/test_be06.py tests/test_be09.py tests/test_orm_workflow.py 실행: **293 passed, 2 skipped, 1 warning (218.79초)**. 잘못된 원문/참조·다른 소유자·버전 충돌·중복 요청·검증 실패/재시도·자료/점검 변경·이력 삭제를 포함한다. 문서/예시 갱신 후 API 계약+LLM 정정 입력 선택 검사 **47 passed, 1314 deselected, 1 warning (11.37초)**. LLM 단위 검사는 캡처한 요청만 대조했고 유료 AI 판정을 시험하지 않았다. 건너뛴 환경/유료 실행은 성공으로 계산하지 않는다.
