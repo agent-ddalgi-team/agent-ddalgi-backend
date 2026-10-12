@@ -58,8 +58,10 @@ if (!(Test-Path .env)) { Copy-Item .env.example .env }
 
 ### 서버 실행
 ```bash
-uv run uvicorn main:app --host 127.0.0.1 --port 8000
+uv run python -m uvicorn main:app --host 127.0.0.1 --port 8000
 ```
+
+이동·복사한 가상환경에는 옛 위치를 가리키는 실행기가 남을 수 있어 `python -m` 방식으로 실행한다. 현재 PC에서는 Uvicorn·pytest·Alembic의 모듈 실행을 확인했다. `.venv/Scripts/uvicorn.exe` 직접 실행과 CMD/Bash 계열 활성화 스크립트에는 이전 위치 문제가 남아 있어, 해당 방식을 사용하려면 로컬 가상환경을 새로 구성해야 한다. DB와 `.env`는 가상환경과 별개로 보존한다.
 
 API 확인: http://127.0.0.1:8000/docs
 
@@ -73,13 +75,13 @@ $env:OPENAI_EXECUTION_MODE = 'interactive'
 
 `-CheckOnly`는 API 호출·DB 초기화·서버 시작 없이 유효 설정을 확인한다. 실행 스크립트는 요청 옵션과 `OPENAI_TRIAL_*` 내부 상한을 함께 맞춘다. `trial`/`interactive`는 기존 모델·재시도 0·모드별 범위·예산 검사를 유지하며, 범위를 벗어나면 시작을 거부한다. 일반 `runtime`의 확대 범위는 유지한다. 직접 uvicorn으로 실행할 때는 `.env.example`의 대응 설정을 함께 지정해야 한다.
 
-### 현재 PC의 시연 실행·인계 (2026-10-06)
+### 현재 PC의 시연 실행·인계 (2026-10-06 기록, 경로 2026-10-12 갱신)
 
-백엔드 작업본은 `C:\backend`의 `test` 브랜치다. 기존 시연 자료를 이어서 사용하려면 아래 폴더와 DB를 지정한다. 서버 재시작은 DB를 재생성하지 않는다. 경로의 DB가 없으면 실행을 멈추고 복원 여부를 확인한다.
+현재 백엔드 작업본은 `C:\final\backend`의 `codex/organize-markdown-docs` 브랜치다. 아래 시연 결과는 2026-10-06 당시 기록이며 현재 세션·출력 파일의 유효성을 보장하지 않는다. 기존 시연 자료를 이어서 사용하려면 아래 폴더와 DB를 지정한다. 서버 재시작은 DB를 재생성하지 않는다. 경로의 DB가 없으면 실행을 멈추고 복원 여부를 확인한다.
 
 ```powershell
-Set-Location C:\backend
-$env:PRIVATE_RUNS_DIR = 'C:\backend\private_runs\demo_preview_20260929_131826'
+Set-Location C:\final\backend
+$env:PRIVATE_RUNS_DIR = (Resolve-Path -LiteralPath '.\private_runs\demo_preview_20260929_131826').Path
 $env:DB_PATH = Join-Path $env:PRIVATE_RUNS_DIR 'app.sqlite3'
 if (-not (Test-Path -LiteralPath $env:DB_PATH -PathType Leaf)) { throw '기존 시연 DB가 없습니다.' }
 $env:EXPORT_LIBREOFFICE_PATH = 'C:\Program Files\LibreOffice\program\soffice.com'
@@ -91,7 +93,7 @@ $env:OPENAI_EXECUTION_MODE = 'runtime'
 
 스크립트 기본값은 입력 200,000자·내용 검증 **400,000자**·출력 64,000토큰·요청 제한 180초·재시도 2회다. 검증 한도를 별도 옵션으로 낮출 필요가 없다. 이 실행은 실제 AI 호출을 허용하며 `.env`의 모델·키를 그대로 사용한다. `-CheckOnly` 자체는 AI 호출이나 서버 시작을 하지 않는다.
 
-프론트 작업본은 `C:\frontend`다. 해당 폴더에서 `npm run dev -- --host 127.0.0.1`로 실행한 뒤 [백엔드 연동 화면](http://localhost:5173/)을 연다. `?preview=1`은 가상 자료 미리보기다. 백엔드 API 문서는 [8000/docs](http://127.0.0.1:8000/docs)에서 확인한다. 이미 서버가 켜져 있으면 중복 실행하지 않는다.
+프론트 작업본은 `C:\final\frontend`다. 해당 폴더에서 `npm run dev -- --host 127.0.0.1`로 실행한 뒤 [백엔드 연동 화면](http://localhost:5173/)을 연다. `?preview=1`은 가상 자료 미리보기다. 백엔드 API 문서는 [8000/docs](http://127.0.0.1:8000/docs)에서 확인한다. 이미 서버가 켜져 있으면 중복 실행하지 않는다.
 
 현재 시연 DB에는 고객 제안용 8쪽(revision 7)과 품질 심사용 9쪽(revision 3)의 PDF·LibreOffice DOCX 승인/출력 결과가 있다. 세션·출력 만료와 종료 정리 정책은 계속 적용되므로 DB 보존만으로 승인 파일을 영구 재다운로드할 수 있는 것은 아니다. DOCX 배치 검사는 LibreOffice 기준이며 Word에서는 글꼴·쪽 나눔이 달라질 수 있다.
 
@@ -99,7 +101,7 @@ $env:OPENAI_EXECUTION_MODE = 'runtime'
 
 ### 테스트
 ```bash
-uv run pytest
+uv run python -m pytest
 ```
 
 백엔드 기본 통합 검사는 mock(가짜 응답)으로 저장·버전·접근·실패 복구를 확인한다. 실제 모델의 사실 누락·잘못된 수치·문장 품질은 별도 실제 LLM 시험으로 확인하며 mock 통과만으로 완료하지 않는다. 실제 LLM 분석·초안과 AG-07 원문 의미 검증의 구현/별도 시험 기록은 `task_agent.md`를 따른다. 기본 유료 호출 한도에는 content_review가 포함되지 않으므로 의미 검증 구현과 일반 서버의 호출 허용을 구분한다. 기본 통합 검사와 별도로 실제 AI·실자료 시연 검수를 수행했으며 범위와 결과는 [백엔드 작업표](docs/task_backend.md)에 기록한다.
@@ -132,7 +134,7 @@ DB v11의 기존 `impact_reviews`·`confirmations`를 사용한다. v9 DB는 자
 실제 사용 DB에 자료를 넣지 않고, 임시 DB와 mock 자료로 형식·S01 흐름을 확인하려면 다음 검사를 실행한다.
 
 ```powershell
-uv run pytest -q tests/test_api_contract.py
+uv run python -m pytest -q tests/test_api_contract.py
 ```
 
 ### 자료 첨부부터 초안까지 요청하는 순서
@@ -148,7 +150,7 @@ uv run pytest -q tests/test_api_contract.py
 위 흐름은 임시 DB·가짜 자료로 검사할 수 있어 실제 DB 적재를 먼저 할 필요가 없다.
 
 ```powershell
-uv run pytest -q tests/test_orm_workflow.py tests/test_be04.py
+uv run python -m pytest -q tests/test_orm_workflow.py tests/test_be04.py
 ```
 
 ### 실제 HTTP와 화면 연결 검사 (자료 적재 불필요)
@@ -159,16 +161,16 @@ uv run pytest -q tests/test_orm_workflow.py tests/test_be04.py
 .\.venv\Scripts\python.exe -X utf8 -B scripts/check_s01_http.py
 
 # 프론트 의존성 설치/빌드 후: 실제 Chrome/Edge 버튼·Vite 프록시까지 확인
-.\.venv\Scripts\python.exe -X utf8 -B scripts/check_s01_http.py --frontend C:\frontend
+.\.venv\Scripts\python.exe -X utf8 -B scripts/check_s01_http.py --frontend ..\frontend
 ```
 
-화면 검사는 Node 24와 설치된 Chrome/Edge를 사용한다. 다른 브라우저 실행 파일은 `S01_BROWSER_PATH`로 지정한다. 기존 브라우저 프로필 대신 임시 프로필을 사용하고, 예시 화면은 프론트의 무시되는 `dist/s01-check.png`에 저장한다. 응답 유실 뒤 업로드 재시도·새로고침 복원·동의 전 생성 차단·입력 충돌·이미지만 선택한 경우·첨부 삭제·만료 복구를 포함한다. 기본 명령은 S01까지만 검사한다. 편집·승인·실제 PDF 다운로드까지 검사하려면 아래처럼 실행한다.
+화면 검사는 Node 24와 설치된 Chrome/Edge를 사용한다. 현재 프론트의 `scripts/check-ai-workflow.mjs`가 별도 임시 DB·API 서버·Vite·브라우저 프로필을 관리한다. 백엔드 검사 도구는 `AI_CHECK_BACKEND`를 현재 저장소 경로로 지정하고 `AI_CHECK_LIVE=0`을 강제하여 유료 모드를 상속하지 않는다. 화면·출력 기록은 검사 도구가 보고한 시스템 임시 폴더에 저장한다. 예전 `check-s01-browser.mjs`만 제공하는 프론트와의 연결도 유지한다. 편집·승인·실제 PDF 다운로드까지 검사하려면 아래처럼 실행한다.
 
 ```powershell
-.\.venv\Scripts\python.exe -X utf8 -B scripts/check_s01_http.py --publication --frontend C:\frontend --timeout 120
+.\.venv\Scripts\python.exe -X utf8 -B scripts/check_s01_http.py --publication --frontend ..\frontend --timeout 120
 ```
 
-`--publication`은 설치된 Chrome/Edge를 PDF 렌더러로 사용한다. macOS의 `/Applications` Chrome·Edge도 자동 탐색하며 별도 위치는 `--browser-path`로 지정한다. 실제 HTTP로 PDF 바이트·반복 다운로드·수정 후 승인 무효화를 확인한다. `--frontend`를 함께 쓰면 편집/AI 제안 비교·적용·거절을 화면에서 확인하고, 미리보기는 `dist/publication-check.png`, 편집 화면은 `dist/s02-publication-check.png`에 저장한다. AI는 계속 mock이며 실제 AI 품질이나 DOCX 승인·출력 확인을 뜻하지 않는다.
+`--publication`은 설치된 Chrome/Edge를 PDF 렌더러로 사용한다. macOS의 `/Applications` Chrome·Edge도 자동 탐색하며 별도 위치는 `--browser-path`로 지정한다. 실제 HTTP로 PDF 바이트·반복 다운로드·수정 후 승인 무효화를 확인한다. `--frontend`를 함께 쓰면 현재 프론트 검사 도구의 편집·검증·PDF 승인/다운로드 흐름도 실행한다. 추가 사진·변경 영향·수정안 사례는 프론트 검사 도구의 명시 옵션으로 따로 선택한다. AI는 계속 mock이며 실제 AI 품질이나 DOCX 승인·출력 확인을 뜻하지 않는다.
 
 사진 포함 HTTP 검사는 다음처럼 실행한다(Mac/Linux; Windows에서는 위 Python 실행 경로 사용).
 
@@ -198,12 +200,12 @@ uv run pytest -q tests/test_orm_workflow.py tests/test_be04.py
 
 ```powershell
 # .env의 DB_PATH 또는 PRIVATE_RUNS_DIR가 가리키는 DB에 적용
-uv run alembic upgrade head
-uv run alembic current
-uv run alembic check
+uv run python -m alembic upgrade head
+uv run python -m alembic current
+uv run python -m alembic check
 
 # 다른 빈 테스트 DB를 명시적으로 만들 때
-uv run alembic -x db_path=private_runs/schema_test/app.sqlite3 upgrade head
+uv run python -m alembic -x db_path=private_runs/schema_test/app.sqlite3 upgrade head
 ```
 
 `upgrade head`는 변경을 최신 버전까지 적용하고, `current`는 적용된 버전을 출력한다. `check`는 ORM과 DB 사이에 Alembic이 감지하는 차이가 있는지 확인한다. 업무용 테이블 25개와 별도로 `alembic_version`이라는 관리 테이블 1개가 생긴다. 여기에 있는 버전 번호는 회사 자료가 아니다. 예전 v9 DB 경로를 지정하면 쓰기 전에 거부하므로 새로운 경로를 설정해야 한다.
@@ -215,7 +217,7 @@ v11은 ERD에 FK로 표시되었지만 DB 제약이 없던 16개 관계를 추�
 이후 구조를 바꾸는 순서:
 
 1. 개발용 DB를 `upgrade head`로 맞추고 `app/orm_models.py`를 수정한다.
-2. `uv run alembic revision --autogenerate -m "describe_change"`로 변경 초안을 만든다.
+2. `uv run python -m alembic revision --autogenerate -m "describe_change"`로 변경 초안을 만든다.
 3. `migrations/versions/`의 새 파일을 검토한다. 이름 변경이 삭제·추가로 생성되지 않았는지, SQLite 테이블 재생성에서 기존 CHECK·UNIQUE·FK·인덱스가 유지되는지 확인한다. 기존 열 제거나 필수 열 추가에는 데이터 보존·변환 규칙도 작성한다.
 4. 임시 DB에서 적용과 필요한 되돌리기를 시험한다. SQLite batch 재생성 시 이름 없는 CHECK는 수동으로 포함해야 한다. [Alembic 자동 생성의 한계](https://alembic.sqlalchemy.org/en/latest/autogenerate.html)와 [SQLite batch 제약 보존](https://alembic.sqlalchemy.org/en/latest/batch.html)을 참고한다.
 5. 실행 중인 서버를 멈추고 DB와 필요한 파일을 백업한 뒤, 대상 경로를 확인하고 `upgrade head` → `current` → `check`를 실행한다.
@@ -235,7 +237,7 @@ DDL과 이력 기록은 하나의 명시적 트랜잭션으로 처리하고 실�
 
 검증 결과와 이번 PC에서 적용한 경로는 [task_backend.md 6.22절](docs/task_backend.md#622-erd-v2-orm과-새-db-재적재-2026-09-28)에 기록한다. 자동화 테스트는 임시 DB만 사용한다.
 
-**현재 로컬 상태(2026-09-29):** 사용자 요청으로 자료 적재는 보류했다. `.env`는 `private_runs/erd_v2`를 사용하며, 활성 DB는 **v11 / Alembic `20260929_01`, 업무 테이블 25개·업무 데이터 0건**이다. Alembic 관리 테이블/버전 행은 별도로 유지한다. 이전 `private_runs/app.sqlite3`와 연결 파일은 사용자 요청으로 삭제했다(6.28절). 원본 자료와 새 폴더의 준비용 복사본은 보관하며 이번 구조 변경에서 수정·삭제하지 않았다. 나중에 적재를 요청하면 준비된 `import_packages/real`·`import_packages/demo` 묶음을 기존 적재기로 넣을 수 있다. 기존 대상 폴더에 위 재생성 명령을 다시 실행하면 보호 검사로 중단한다. 다른 PC의 기존 v10 DB는 새 코드를 받은 뒤 서버를 중지하고 `uv run alembic upgrade head`로 갱신한다. 적용·검증 결과는 `task_backend.md` 6.31절을 따른다.
+**현재 로컬 상태(2026-09-29):** 사용자 요청으로 자료 적재는 보류했다. `.env`는 `private_runs/erd_v2`를 사용하며, 활성 DB는 **v11 / Alembic `20260929_01`, 업무 테이블 25개·업무 데이터 0건**이다. Alembic 관리 테이블/버전 행은 별도로 유지한다. 이전 `private_runs/app.sqlite3`와 연결 파일은 사용자 요청으로 삭제했다(6.28절). 원본 자료와 새 폴더의 준비용 복사본은 보관하며 이번 구조 변경에서 수정·삭제하지 않았다. 나중에 적재를 요청하면 준비된 `import_packages/real`·`import_packages/demo` 묶음을 기존 적재기로 넣을 수 있다. 기존 대상 폴더에 위 재생성 명령을 다시 실행하면 보호 검사로 중단한다. 다른 PC의 기존 v10 DB는 새 코드를 받은 뒤 서버를 중지하고 `uv run python -m alembic upgrade head`로 갱신한다. 적용·검증 결과는 `task_backend.md` 6.31절을 따른다.
 
 ### PDF/DOCX 출력 준비 (BE-07, D-03)
 - **DOCX**는 python-docx로 만든다. 실제 배치 검사·승인·다운로드를 사용하려면 서버에 LibreOffice를 설치하고 `EXPORT_LIBREOFFICE_PATH`에 절대 실행 파일 경로를 지정한다(Windows 예: `C:\Program Files\LibreOffice\program\soffice.com`, Linux 예: `/usr/bin/libreoffice`). 자동 활성화하지 않으며 엔진 미설정/없는 경로는 `overflow=not_checked`로 승인을 차단한다. 변환 실패·시간 초과·측정 실패도 통과 처리하지 않는다.
@@ -290,7 +292,7 @@ uv run python scripts/import_registered.py --source-dir private_runs/registered_
 ```
 검사 후 적재하려면 동일 명령에서 `--dry-run`만 뺀다. 시연 자료는 `status=demo`, `demo=true`, 표시명·본문의 `[시연]`, 근거 상태 `시연용 임시 문장`을 사용한다. 기존 source_id의 real/mock/demo 변경은 거부한다. 후보 사진은 `photo_candidates.json.path`의 실제 바이트를 적재하며 CSV 원본과 다른 이름·형식도 가능하다. CSV 연결은 같은 경로 또는 명시적 `original_ref: {"폴더": "…", "파일명": "…"}`만 사용한다. 사진 공개 허가 null/false 차단은 그대로다.
 
-`verify_bundle.py`는 기존 fixture 전용이다. 실제 구조 호환성은 `tests/test_registered_import.py`의 가짜 묶음으로 검증한다. 실제 시연 묶음 작성·실자료 로컬 적재·실제 AI 생성 품질은 아직 완료하지 않았다. 회귀 테스트는 `uv run pytest tests/test_demo.py tests/test_registered_import.py`로 실행한다.
+`verify_bundle.py`는 기존 fixture 전용이다. 실제 구조 호환성은 `tests/test_registered_import.py`의 가짜 묶음으로 검증한다. 실제 시연 묶음 작성·실자료 로컬 적재·실제 AI 생성 품질은 아직 완료하지 않았다. 회귀 테스트는 `uv run python -m pytest tests/test_demo.py tests/test_registered_import.py`로 실행한다.
 
 ## 브로슈어형 문서 배치
 
@@ -320,8 +322,8 @@ Stitch 화면 설계와의 연결 기준은 [prd.md 3~5절](docs/prd.md), 화면
 현재 시연의 interactive 모드는 아래 명령으로 실행한다. 내용 검증 한도는 400,000자이며 작성 입력 40,000자·출력 32,000토큰·요청 대기 120초·자동 재시도 0·기존 실행 예산 가드를 유지한다. 수정 요청 문장은 화면/서버 모두 10,000자까지이며 한 번에 블록 하나를 수정한다.
 
 ```powershell
-$env:PRIVATE_RUNS_DIR='C:\backend\private_runs\demo_preview_20260929_131826'
-$env:DB_PATH='C:\backend\private_runs\demo_preview_20260929_131826\app.sqlite3'
+$env:PRIVATE_RUNS_DIR=(Resolve-Path -LiteralPath '.\private_runs\demo_preview_20260929_131826').Path
+$env:DB_PATH=Join-Path $env:PRIVATE_RUNS_DIR 'app.sqlite3'
 $env:EXPORT_LIBREOFFICE_PATH='C:\Program Files\LibreOffice\program\soffice.com'
 .\scripts\run_llm.ps1 -Demo -ContentReview -TextProposals -RequestTimeoutSeconds 120 -MaxInputChars 40000 -MaxReviewInputChars 400000 -MaxOutputTokens 32000 -MaxRetries 0
 ```

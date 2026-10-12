@@ -7,6 +7,21 @@
 
 ## 1. Quick Status
 
+- **2026-10-12 현재 경로 검수:** 실행 자료/설정 경로·88개 Python·파일 링크 확인, README 옛 경로와 --frontend 검사 도구 연결 보완. 로컬 복사 .venv의 옛 실행기 경로는 남으며 Python 모듈 실행은 정상이다. 경로 검수 단위 완료/환경 재구성 후속, BE-10/F-08 일반품질과 Agent 상태 유지. [기록](#backend-path-audit-20261012).
+
+<a id="backend-path-audit-20261012"></a>
+
+### 현재 경로 검수·실행 안내 보완 (2026-10-12)
+
+- 현재 `codex/organize-markdown-docs`에서 실행 코드·도구·루트 지침·문서의 옛 경로와 상대 링크를 확인했다. README에 현재 없는 C:\backend/C:\frontend 실행 경로가 남아 있어 C:\final 기준과 상대 frontend/시연 자료 경로로 고쳤다. 시연 내용은 2026-10-06 당시 기록이며 현재 만료/출력 유효성을 보장하지 않음을 명시했다. 과거 작업일지의 당시 PC/원본 저장소 경로는 역사 기록으로 보존한다.
+- 실제 읽기 전용 검사: 저장소 밖 C:\final에서 스키마·섹션 자료·추출/초안/editorial 프롬프트·PDF 서식·Regular/Bold 글꼴·API 예시·Alembic 폴더·현재 설정 DB/자료 폴더·Chrome/LibreOffice 경로 모두 존재/읽기 성공. Python88개 AST와 내부 app 모듈 import 경로 오류0, 백엔드 상대 파일 링크620개·깨진 경로0. 기록 추가 뒤 최종622개·깨진 경로0을 재확인했다. 검사는 DB 초기화·내용 조회·AI 요청 없이 수행하며 .env의 파일 경로 항목만 확인하고 키는 출력하지 않는다.
+- 검사 도구 결함: --frontend가 현재 프론트에 없는 check-s01-browser.mjs만 찾고 있었다. 현재 check-ai-workflow.mjs를 우선 사용해 자체 임시 서버/DB/Vite로 검사하도록 연결했다. AI_CHECK_BACKEND를 현재 루트로, AI_CHECK_LIVE를0으로 지정해 상속된 유료 모드를 차단하고, 지정한 출력 브라우저 경로도 전달한다. 옛 검사 도구만 있는 저장소와의 호환 분기는 유지한다. docs/API/DB/Agent 동작 정책은 바꾸지 않는다.
+- 테스트: PYTHON_DOTENV_DISABLED=1/출력 브라우저 비활성 설정으로 API 계약·DB 마이그레이션/ORM·등록자료·자원 CWD/해시·출력 서식/글꼴 관련 pytest **230passed/경고3/실패0,78.31초**. 도구 연결 보완 후 tests/test_api_contract.py **46passed/경고1/실패0,8.39초**, 지정 브라우저 경로 전달까지 추가한 최종 재검사도 **46passed/경고1/실패0,8.43초**다. 중복 검사로 합산하지 않는다.
+- 실제 통합: `python -X utf8 -B scripts/check_s01_http.py --frontend ..\frontend --timeout 30` 통과. 임시 DB·mock AI·별도 HTTP/Vite/Chrome의 HTTP13개·화면12개 검사 항목, 요청 유실/재조회·초안 저장/복원·세션 정리 확인. 화면 출력은 시스템 Temp/ddalgi-ai-ui-mteNnV에 있다. 이 기본 명령은 publication 승인/다운로드나 실제 AI 품질 시험으로 확대하지 않는다. 유료 호출0·사용자 시연 DB/세션/환경 파일 변경0이다.
+- 초기 정적 검색은 rg lookaround 옵션 오류로 다시 실행했고, 읽기 전용 보조 검사는 샌드박스 부모 CWD 접근 차단·검사 코드의 템플릿 상수명 오류를 바로잡아 재실행했다. 이 실패들을 제품 경로 검수 성공으로 숨기지 않는다. 제품 테스트 자체에는 실패가 없었다.
+- 추가 환경 확인: .venv/Scripts의 CMD/Bash/csh/fish/nu 활성화에 D:\backend\awesomeapp의 옛 위치가 남았다. uvicorn.exe 버전 조회는 샌드박스 밖에서도 `uv trampoline failed to canonicalize script path`/종료1이다. `.venv/Scripts/python.exe -m uvicorn`과 `uv run --locked --no-sync python -m uvicorn`은 Uvicorn0.53.0/CPython3.13.12로 정상, 같은 방식의 pytest9.1.1/Alembic1.20.0 버전 조회도 종료0이다. README 실행 예시는 python -m으로 갱신했다. 생성된 가상환경·실행기의 교체/재설치는 수행하지 않았고 직접 실행기/CMD·Bash 활성화 문제는 남는다. 이 문제를 소스 경로 정상 결과에 섞어 완료 처리하지 않는다.
+- 자기 변경만 로컬 커밋하며 원격 push/test 병합은 하지 않는다. BE-10/F-08 일반품질·다른 담당 상태는 유지한다. 다음은 로컬 가상환경 재구성과 검토 후 사용자 요청에 따른 공유다.
+
 - **2026-10-12 실행 자료 위치 정리:** 루트 contracts/fixtures/prompts/handoff의 5개 파일을 app/resources·app/prompts·docs로 통합했다. 관련 pytest 1,493개·프론트 build·파일 링크627개 통과. 경로 정리 단위 완료, BE-10/F-08 일반품질과 Agent 상태 유지. [기록](#runtime-resources-organization-20261012).
 
 <a id="runtime-resources-organization-20261012"></a>

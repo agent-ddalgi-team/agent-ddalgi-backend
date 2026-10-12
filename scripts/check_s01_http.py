@@ -484,19 +484,35 @@ def main() -> int:
                            impact=args.impact, export_browser_path=browser_path)
         if args.frontend:
             frontend = args.frontend.resolve()
+            workflow = frontend / "scripts" / "check-ai-workflow.mjs"
             script = frontend / "scripts" / "check-s01-browser.mjs"
             node = shutil.which("node")
-            _check(script.is_file() and node is not None, "Frontend browser script and Node are required")
-            with temporary_server(timeout_s=args.timeout, export_browser_path=browser_path) as (address, _settings):
-                browser_arguments = [node, str(script), "--backend", address]
+            _check((workflow.is_file() or script.is_file()) and node is not None,
+                   "Frontend check-ai-workflow.mjs (or legacy check-s01-browser.mjs) and Node are required")
+            if workflow.is_file():
+                # The current frontend runner owns its isolated server/DB/Vite.
+                # Never inherit a paid evaluation mode from the caller's shell.
+                browser_arguments = [node, str(workflow)]
                 if args.publication:
                     browser_arguments.append("--publication")
+                environment = dict(os.environ, AI_CHECK_BACKEND=str(ROOT), AI_CHECK_LIVE="0")
+                if browser_path is not None:
+                    environment["SOURCES_BROWSER_PATH"] = str(browser_path)
                 browser_result = subprocess.run(browser_arguments, cwd=frontend,
-                                                capture_output=True, text=True, encoding="utf-8", timeout=420 if args.publication else 180,
+                                                env=environment, capture_output=True, text=True, encoding="utf-8",
+                                                timeout=420 if args.publication else 180,
                                                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
-                if browser_result.stdout:
-                    print(browser_result.stdout)
-                _check(browser_result.returncode == 0, f"Frontend browser check failed: {browser_result.stderr}")
+            else:
+                with temporary_server(timeout_s=args.timeout, export_browser_path=browser_path) as (address, _settings):
+                    browser_arguments = [node, str(script), "--backend", address]
+                    if args.publication:
+                        browser_arguments.append("--publication")
+                    browser_result = subprocess.run(browser_arguments, cwd=frontend,
+                                                    capture_output=True, text=True, encoding="utf-8", timeout=420 if args.publication else 180,
+                                                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+            if browser_result.stdout:
+                print(browser_result.stdout)
+            _check(browser_result.returncode == 0, f"Frontend browser check failed: {browser_result.stderr}")
             result["browser_check"] = "passed"
     except Exception as exc:
         print(json.dumps({"status": "failed", "error": str(exc)}, ensure_ascii=False), file=sys.stderr)

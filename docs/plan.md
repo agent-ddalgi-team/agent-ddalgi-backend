@@ -106,6 +106,8 @@ MVP는 사용자가 핵심 흐름을 끝까지 이용할 수 있는 첫 버전�
 
 ## 4. 기술 스택
 
+**경로 검수 후 검사 도구 연결 보완(2026-10-12):** 현재 PC 실행 안내는 C:\final 기준으로 정정한다. check_s01_http.py의 --frontend는 현재 프론트 check-ai-workflow.mjs를 우선 사용하고 현재 백엔드 경로·mock 모드·지정 브라우저를 전달한다. 없는 옛 검사 도구 경로로 실패하던 문제를 해소하며 legacy helper 호환·임시 데이터 격리·유료 모드 상속 차단을 유지한다. [검증 기록](task_backend.md#backend-path-audit-20261012).
+
 **실행 자료 위치 정리(2026-10-12, 사용자 승인):** 회사정보 스키마와 기본 섹션 자료는 `app/resources/`, 추출·초안 프롬프트는 `app/prompts/`, API 예시는 `docs/api_examples_v1.1.json`으로 모은다. 루트 contracts/fixtures/prompts/handoff 폴더를 없애고 로더·평가 해시·계약 검사·문서 참조를 새 경로에 맞춘다. 파일 내용·공통 계약 버전·DB·승인 조건은 유지하며 기존 평가 기록의 코드/자원 경로와 해시가 다르면 기존 재개 보호대로 별도 실행을 요구한다. [검증 기록](task_backend.md#runtime-resources-organization-20261012).
 
 **문서 위치 정리(2026-10-12, 사용자 요청):** 루트의 일반 문서 7개를 기존 `docs/`로 이동한다. 루트 `README.md`, `AGENTS.md`, `CLAUDE.md`는 안내·지침 입구로 유지하고 링크와 읽을 경로를 함께 갱신한다. 프론트 일반 문서도 별도 저장소의 정리 브랜치에서 이동하며 계약 내용·버전·실행 경로는 변경하지 않는다. 테스트 묶음 설명서·글꼴 출처·도구 지침은 자원과 함께 유지한다. 두 저장소의 `codex/organize-markdown-docs`에서 로컬 작업하고 `test`에 병합하지 않는다. [실제 확인 기록](task_backend.md#markdown-docs-organization-20261012).
