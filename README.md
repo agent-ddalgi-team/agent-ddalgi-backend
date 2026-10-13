@@ -2,42 +2,40 @@
 
 회사 자료로 소개서 초안을 만들고 저장·편집·검증·승인·PDF/DOCX 출력을 제공하는 Python/FastAPI 백엔드와 Agent다. 프론트는 별도 저장소다.
 
-## 평소 실행
+## 주요 기능
 
-아래 명령은 **백엔드 저장소 루트**에서 실행한다. 자신의 기존 `.env`·자료·DB 설정을 사용한다. 의존성 변경을 받은 경우 먼저 `uv sync --locked --group dev`로 설치본을 맞춘다.
+자료 첨부·선택·파싱, 근거 기반 초안과 수정안, 문서 버전 관리, 내용·배치 검증, 승인 출력과 세션 정리를 제공한다. API 구현·프론트 연결·실제 AI 품질의 완료 범위는 [담당별 현황](docs/task.md)에서 구분한다.
+
+## 준비·환경설정
+
+- **Python 3.13 이상·uv**를 준비한다. 다른 PC의 `.venv`를 복사하지 않는다.
+- **PDF:** Chrome/Edge 등 Chromium 브라우저가 필요하다. **DOCX 검사·승인·출력:** LibreOffice와 `EXPORT_LIBREOFFICE_PATH` 설정이 필요하다. [출력 도구 설정](docs/plan.md#backend-output-tools)
+- `.env`가 없을 때만 [.env.example](.env.example)을 복사한다. 실제 키·모델·저장 경로·출력 도구는 개인 환경에 맞추고 기존 파일을 덮어쓰지 않는다.
+
+## 설치·실행
+
+아래 명령은 **백엔드 저장소 루트**에서 실행한다. 처음 설치하거나 의존성이 바뀌면 첫 명령으로 설치본을 맞춘다.
 
 ```powershell
+uv sync --locked --group dev
 uv run python -m uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
-API 문서: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs). 기본 모드는 `mock`이며 실제 AI는 `AGENT_MODE=llm`과 키/모델 설정이 필요하다. `.env`에 llm이 지정돼 있으면 위 명령도 실제 호출을 허용한다. Windows 실제 AI 실행은 기존 도구를 사용할 수 있다.
-
-```powershell
-.\scripts\run_llm.ps1 -ContentReview -TextProposals -CheckOnly
-# 설정 확인 후 같은 명령에서 -CheckOnly를 빼면 서버를 시작한다.
-```
-
-`-CheckOnly`는 AI 호출·DB 초기화·서버 시작 없이 설정만 확인한다. 시연 자료를 사용할 때만 `-Demo`를 추가한다. 기본 `runtime`과 예산 제한 `interactive`는 다르며, [상세 실행 안내](docs/plan.md#backend-ai-run)의 옵션을 따른다.
-
-- **PDF:** 서버에 Chrome/Edge 등 Chromium 브라우저가 필요하다. 다른 설치 위치는 `EXPORT_BROWSER_PATH`로 지정한다.
-- **DOCX 실제 검사·승인·출력:** LibreOffice와 `EXPORT_LIBREOFFICE_PATH` 설정이 필요하다. 엔진이 없거나 검사에 실패하면 승인이 차단된다.
-- 프론트는 해당 저장소에서 따로 실행한다. 백엔드 기본 주소는 `http://127.0.0.1:8000`이다. [출력 도구 상세](docs/plan.md#backend-output-tools)
+API 문서는 [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)다. 프론트는 별도로 실행한다. 기본 AI 모드는 `mock`이지만 기존 `.env`가 `AGENT_MODE=llm`이면 실제 호출을 허용한다. Windows 실제 AI 도구와 시연·예산 옵션은 [상세 실행 안내](docs/plan.md#backend-ai-run)를 따른다.
 
 ## 테스트
 
 ```powershell
 $env:PYTHON_DOTENV_DISABLED = '1'
 uv run --group dev python -B -m pytest -q -p no:cacheprovider
-# 이 셸에서 다시 평소 실행할 때는 아래 값을 해제한다.
+# 이 셸에서 평소 실행으로 돌아가기 전에 해제한다.
 Remove-Item Env:PYTHON_DOTENV_DISABLED
 ```
 
-기본 검사는 임시 DB·가상 AI로 동작·버전·접근·실패 복구를 확인한다. 실제 AI 품질 시험과 구분한다. [HTTP·브라우저·출력 검사](docs/plan.md#backend-http-checks), [실제 검증 결과](docs/task_backend.md)를 참고한다.
+기본 검사는 임시 DB·가상 AI를 사용하며 실제 AI 품질 평가와 구분한다. [HTTP·브라우저·출력 검사](docs/plan.md#backend-http-checks)와 [실제 검증 기록](docs/task_backend.md)을 참고한다. 프론트와 같은 별도 앱 빌드 명령은 없다.
 
 <a id="folder-roles"></a>
 ## 현재 폴더 구조
-
-일반 문서·프롬프트·고정 자료의 이동이 반영된 **현재 저장소 구조**다. 같은 커밋을 받으면 Git 추적 파일의 위치도 같다. 개인 PC의 캐시·DB·설정과 VS Code의 숨김/접기 표시는 다를 수 있다.
 
 ```text
 backend/
@@ -65,19 +63,22 @@ backend/
 └─ main.py, pyproject.toml, uv.lock, alembic.ini, .env 등 실행·설정 파일
 ```
 
-옛 루트 `prompts/`·`contracts/`·`fixtures/`·`handoff/`에 사본을 다시 만들지 않는다. 실제 테스트용 `tests/fixtures/`는 유지한다. [공통 경로 기준](AGENTS.md#공통-경로-기준), [폴더별 상세 역할](docs/plan.md#backend-folders-storage)
+같은 커밋의 Git 추적 위치는 같지만 개인 DB·캐시·설정과 VS Code 숨김/접기는 다를 수 있다. 옛 루트 prompts/contracts/fixtures/handoff에 사본을 만들지 않는다. [공통 경로](AGENTS.md#공통-경로-기준), [폴더별 상세 역할](docs/plan.md#backend-folders-storage)
 
 <a id="data-storage"></a>
+<a id="path-selection"></a>
 ## 자료 저장·보관
 
-- 저장 루트는 `PRIVATE_RUNS_DIR`, DB는 `DB_PATH`로 정한다. 기본은 `private_runs/app.sqlite3`이며 상대 경로는 저장소 루트 기준이다. 개인 설정·시연 실행 옵션이 있으면 그 값을 사용한다.
-- DB에는 세션·추출문/사실·문서/버전·검증/승인 상태와 파일 참조 등이 저장된다. 실제 첨부·사진·출력 파일은 저장 루트의 파일 폴더에 저장된다.
-- `<PRIVATE_RUNS_DIR>/registered/`는 명시적으로 적재한 등록 자료, `sess_…/`는 세션 첨부·사진·체크포인트와 `artifacts/` 출력·미리보기다. 세션 데이터는 종료/만료 시 정리되고 등록 자료는 세션 종료만으로 삭제되지 않는다.
-- 최종 PDF/DOCX를 오래 보관하려면 다운로드해 팀 보관 위치에 둔다. `.env`·DB·회사 원문·가상환경은 Git으로 공유하지 않는다. DB·등록 자료·평가 기록의 백업은 별도 절차가 필요하다.
-- `data/mock/`, `data/real/`, `data/private_runs/` 재구성은 **아직 적용하지 않았다.** 현재 `registered/`에는 실제·시연 자료가 함께 있을 수 있다.
+- 기본 DB는 `private_runs/app.sqlite3`다. `PRIVATE_RUNS_DIR`·`DB_PATH`로 바꾸며 상대 경로는 저장소 루트 기준이다. DB는 기록·파일 참조, 실행 저장 영역은 첨부·사진·출력 파일을 보관한다.
+- `registered/`는 명시 적재한 등록 자료, `sess_…/`와 내부 `artifacts/`는 작업별 자료·출력이다. 세션 종료·만료 정리와 등록 자료 보관은 다르다. 최종 파일은 다운로드해 별도 보관한다.
+- 화면 작업에서는 폴더를 직접 정하지 않는다. 저장 루트 변경·적재·평가·백업 때 지정하며 기존 DB/자료가 자동 이동되지는 않는다. [저장 위치·백업·경로 변경](docs/plan.md#backend-folders-storage)
 
-<a id="path-selection"></a>
-화면에서 작업할 때 세션 폴더를 직접 지정할 필요는 없다. 저장 루트 변경·등록 적재·평가·백업 때만 경로를 지정한다. 설정 변경이 기존 자료를 자동 이동하지 않으며 DB가 참조하는 파일·SQLite WAL/SHM을 임의로 이동/삭제하면 안 된다. [상세 저장·경로 안내](docs/plan.md#backend-folders-storage)
+## 중요한 주의사항
+
+- `.env`·DB·회사 원문·가상환경은 Git으로 공유하지 않는다. 실행 중인 SQLite와 WAL/SHM, DB가 참조하는 자료를 임의 이동·삭제하지 않는다.
+- `data/mock/`·`data/real/`·`data/private_runs/` 재구성은 미적용이며 등록 영역에는 실제·시연 자료가 섞여 있을 수 있다.
+- 출력 도구가 없거나 검사에 실패하면 출력·승인이 제한된다. DART는 서버의 `DART_API_KEY`가 필요하며 키를 프론트에 넣지 않는다. 특허청·나라장터는 미연결이다.
+- API·DB 버전의 원본은 계약과 코드다. 표본 검수를 일반 AI 품질 완료로 간주하지 않는다.
 
 <a id="folder-lookup"></a>
 ## 문서 찾아가기
@@ -92,21 +93,4 @@ backend/
 | 상세 실행·폴더/저장·검사·DB 관리·적재 | [plan 9절](docs/plan.md#backend-operations-guide) |
 | 화면 설계·참고 아이디어 | [화면](docs/screens/README.md), [idea](docs/idea.md) |
 
-API의 현재 계약은1.13, DB는v11이다. 최신 모델/버전의 원본은 계약·코드를 따른다. 백엔드 API 구현과 별도 프론트 화면 연결, 표본 검수와 일반 품질 완료를 구분한다. 이 README가 담당별 완료 상태를 대신하지 않는다.
-
-<details>
-<summary>처음 설치하거나 재설치할 때</summary>
-
-Python 3.13 이상과 uv를 준비하고 저장소 루트에서 의존성을 설치한다. 다른 PC의 `.venv`를 복사하지 않는다.
-
-```powershell
-uv sync --locked --group dev
-# .env가 없을 때만 예시를 복사한다.
-if (!(Test-Path -LiteralPath '.env')) { Copy-Item -LiteralPath '.env.example' -Destination '.env' }
-```
-
-macOS/Linux에서는 `.env`가 없을 때 `cp -n .env.example .env`로 준비한다. 실제 키·모델·저장 경로·출력 도구는 개인 환경에 맞추고 `.env`는 커밋하지 않는다. 등록 회사 자료·시연 DB는 별도 전달/적재가 필요하며 Git pull로 생기지 않는다.
-
-DART 기업 검색/공개자료는 서버의 `DART_API_KEY` 설정이 필요하며 프론트에 키를 넣지 않는다. 특허청·나라장터는 현재 미연결이다. [등록·시연·적재](docs/plan.md#backend-registered-demo), [DB 관리](docs/plan.md#backend-db-maintenance)
-
-</details>
+처음 `.env`를 준비하는 방법은 [설치·환경설정 상세](docs/plan.md#backend-initial-setup), 등록 회사 자료·시연 DB 준비는 [적재 안내](docs/plan.md#backend-registered-demo), DB 변경은 [DB 관리](docs/plan.md#backend-db-maintenance)를 따른다.

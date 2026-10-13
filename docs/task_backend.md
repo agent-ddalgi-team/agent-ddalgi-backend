@@ -7,7 +7,7 @@
 
 ## 1. Quick Status
 
-- **2026-10-13 폴더·README 관리 규칙:** 지침 반영/README 본문 정리안 승인 대기 · 제품 상태 유지 · [기록](#backend-docs-rules-20261013).
+- **2026-10-13 폴더·README 관리 규칙:** 지침 반영·승인한 README 개편 반영 · 제품 상태 유지 · [기록](#backend-docs-rules-20261013).
 
 - **2026-10-13 README 축약:** 문서 정리 단위 완료/제품 상태 유지 · [상세·검증](#backend-readme-shortening-20261013).
 
@@ -2033,6 +2033,15 @@
 - 코드 대조: `main.py`의 `main:app`, `pyproject.toml`의 Python 3.13/dev 의존성, `scripts/run_llm.ps1`의 옵션, `app/config.py`의 저장 경로와 `.gitignore`를 읽어 README의 안내 기준을 확인했다. 서버·AI·pytest는 실행하지 않았다.
 - 검증: README의 모든 상대 링크 26개, AGENTS의 상대 링크 22개, 작업 기록에 추가한 링크 2개의 경로·앵커를 확인했다(누락 0). 기존 지침 1~10절 보존, README 규칙 링크 1행 외 변경 없음, 변경 파일 4개와 `git diff --check` 통과를 확인했다. 문서 규칙만 변경하여 앱 기능 테스트는 실행하지 않았다.
 - 다음: README 항목별 유지/축약/이동 계획을 사용자에게 제시하고 승인 후 본문을 정리한다. 주요 폴더 구조·역할 설명은 유지한다. 이번 단계는 로컬 커밋까지만 수행하며 push·PR·병합하지 않는다.
+
+<a id="backend-readme-entry-20261013"></a>
+### 2026-10-13 승인한 README 입구 문서 개편
+
+- 사용자 승인 후 현재 문서 작업 브랜치에서 README를 목적·기능·준비/환경설정·실행·검사·폴더·자료 보관·주의·문서 링크로 정리했다. 기존 폴더 트리와 자료 저장 역할은 유지했다.
+- Windows 실제 AI 기본 확인과 최초 환경설정 상세는 기존 plan 9절로 옮겼다. 상세 API·DB 변경·검증·과거 시연은 기존 원본 링크로 찾도록 유지했다. 기존 README의 고유 정보는 README 또는 plan 9절에서 보존한다.
+- pyproject.toml·main.py·app/config.py·run_llm.ps1을 읽어 명령·버전·저장 설정을 대조했다. API·제품 상태·Agent 과제는 유지하며 .env·DB·원본 자료를 열거나 변경하지 않았다.
+- 검증: README 112→96줄, 기존 폴더 트리 보존, README 상대 링크 29개와 새 작업 기록 링크 3개의 경로·앵커 누락 0, README PowerShell 명령 블록 2개의 구문 검사, git diff --check 통과. 축약한 환경설정·Windows 실행·자료 보관 내용의 기존 plan 목적지를 대조했다. 문서 4개만 변경했고 기능 테스트·서버·유료 AI는 실행하지 않았다. 로컬 커밋까지만 수행한다.
+- 규칙 추가 단계의 본문 승인 대기는 사용자 승인으로 해소됐다. 다음은 사용자가 요청할 때 원격 공유하며 임의 push·PR·병합하지 않는다.
 
 <a id="backend-readme-shortening-20261013"></a>
 ### 2026-10-13 README 축약·상세 안내 연결 (백엔드 문서 정리)

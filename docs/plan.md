@@ -1532,6 +1532,17 @@ README를 일상 실행·폴더 안내로 줄이면서 상세 절차를 이 기�
 
 이 절의 링크는 docs/plan.md 위치 기준, 명령의 파일 경로는 저장소 루트 기준이다. [README](../README.md)에서 일상 실행법과 현재 폴더 구조를 확인하고, API는 [contracts.md](contracts.md), 작업 결과는 [task_backend.md](task_backend.md)를 따른다. 과거 결정·검증 기록을 현재 설정으로 실행하지 않는다.
 
+<a id="backend-initial-setup"></a>
+### 최초 설치·환경설정
+
+Python 3.13 이상·uv를 준비하고 저장소 루트에서 `uv sync --locked --group dev`를 실행한다. 다른 PC의 `.venv`를 복사하지 않는다. 기존 `.env`를 보호하며 새 환경에서만 예시를 복사한다.
+
+```powershell
+if (!(Test-Path -LiteralPath '.env')) { Copy-Item -LiteralPath '.env.example' -Destination '.env' }
+```
+
+macOS/Linux에서도 `.env`가 없을 때만 `cp -n .env.example .env`로 준비한다. 실제 키·모델·저장 경로·출력 도구는 개인 환경에 맞추고 `.env`는 커밋하지 않는다. 등록 회사 자료·시연 DB는 별도 전달/적재가 필요하며 Git pull로 생기지 않는다. 현재 계약은 1.13, DB는 v11이며 최신 값은 계약·코드가 원본이다.
+
 <a id="backend-folders-storage"></a>
 ### 9.1 폴더별 역할·자료 보관·경로 변경
 
@@ -1622,6 +1633,14 @@ README를 일상 실행·폴더 안내로 줄이면서 상세 절차를 이 기�
 
 <a id="backend-ai-run"></a>
 ### 9.2 실제 AI·시연 실행
+
+기존 `.env`·자료·DB 설정을 사용하는 Windows 기본 확인 명령은 다음과 같다.
+
+```powershell
+.\scripts\run_llm.ps1 -ContentReview -TextProposals -CheckOnly
+```
+
+`-CheckOnly`는 AI 호출·DB 초기화·서버 시작 없이 설정만 확인한다. 확인 후 같은 명령에서 `-CheckOnly`를 빼면 서버를 시작한다. 시연 자료를 사용할 때만 `-Demo`를 추가하며 기본 `runtime`과 예산 제한 `interactive`를 구분한다.
 
 일반 서버 실행은 README를 따른다. AGENT_MODE=mock은 실제 AI 호출이 없고 llm은 호출이 발생한다. DEMO_MODE는 사용할 출처의 정책이며 AI 실행 모드와 독립이다. Windows에서는 기존 scripts/run_llm.ps1로 llm을 명시하고 필요한 기능을 활성화할 수 있다.
 

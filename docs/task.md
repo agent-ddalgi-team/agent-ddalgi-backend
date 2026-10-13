@@ -7,7 +7,9 @@
 
 ## 1. Quick Status
 
-- **2026-10-13 백엔드 폴더·README 관리 규칙:** 지침 반영/본문 정리안 승인 대기 · 제품/Agent 상태 유지 · [task_backend.md 기록](task_backend.md#backend-docs-rules-20261013).
+- **2026-10-13 README 입구 문서 개편:** 승인한 이동안 반영 · 제품/Agent 상태 유지 · [백엔드 기록](task_backend.md#backend-readme-entry-20261013).
+
+- **2026-10-13 백엔드 폴더·README 관리 규칙:** 지침 반영·승인한 README 개편 반영 · 제품/Agent 상태 유지 · [task_backend.md 기록](task_backend.md#backend-docs-rules-20261013).
 
 - **2026-10-13 백엔드 README 축약:** 문서 정리 단위 완료 · 제품/Agent 상태 유지 · [task_backend.md 기록](task_backend.md#backend-readme-shortening-20261013).
 
