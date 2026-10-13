@@ -1,5 +1,7 @@
 # 회사소개서 도우미 개발 계획
 
+백엔드 상세 실행·저장·검증·DB 관리 안내는 [9절](#backend-operations-guide), 일상 실행·현재 폴더 구조는 [README](../README.md)를 따른다.
+
 기준일: 2026-10-08 · v1.119 · 교육용 2개월 프로젝트 · 담당: 백엔드 + Agent
 
 **2026-10-12 거산 실제 화면 수용 검수:** 격리한 실자료/기존 실제 AI 결과로 근거·편집 보존·PDF/DOCX5쪽 승인/다운로드를 확인했다. 미점검 충족률 추측·텍스트 없는 첨부의 원본 진입·다운로드 후 카드 배치3건을 프론트에서 수정했다. 근거 충족도는 최신 점검에만 근거하며 원본 다운로드용 선택과 AI에 사용할 수 있는 텍스트 판정은 구분한다. API/DB/승인 정책은 유지한다. [실제 검수·회귀·한계](task_backend.md#geosan-full-ui-20261012).
@@ -1521,3 +1523,318 @@ API는 화면과 서버가 주고받는 요청이다. 기본 경로는 `/api/v1`
 **2026-10-08 오류 복구 작업의 최종 통합 검수:** 현재 두 작업 브랜치의 격리 브라우저 검사는 PDF36/DOCX39묶음·각4쪽 승인/동일 파일 다운로드까지 통과했다. 새로고침 중 검사 도구의 읽기 컨텍스트 소멸만 제한 시간 안에서 대기하며 제품 요청/승인 조건은 바꾸지 않는다. 이번에 확인한 오류 수정·복구 검수 단위는 마무리하고 새 재현 오류나 요구 없이 합성 품질 시험을 계속 늘리지 않는다. BE-10 전체/Agent 일반 의미 품질 완료와는 구분한다. [기록](task_backend.md#final-recovery-ui-audit-20261008).
 
 **2026-10-08 전체 백엔드 회귀 기준 갱신:** 현재 작업 브랜치의 전체2,126건 중2,116통과/10건너뜀/실패0이다. 가상 AI/임시DB와 실제 Chrome·LibreOffice 출력·승인·정리 검사를 포함한다. macOS 전용8건과 명시적으로 끈 유료 AI2건은 통과로 계산하지 않는다. 새 결함이 없어 제품 코드를 추가 변경하지 않으며 실제 모델 의미 품질 완료와 구분한다. [기록](task_backend.md#backend-full-regression-20261008).
+
+
+<a id="backend-operations-guide"></a>
+## 9. 백엔드 실행·개발 참고 (2026-10-13)
+
+README를 일상 실행·폴더 안내로 줄이면서 상세 절차를 이 기존 문서로 옮겼다. 코드 대조 기준은 백엔드 test `839a59b`, 프론트 develop `9be1b04`다. 아래 명령은 설명이며 이번 정리에서 서버·DB·유료 AI를 실행하지 않았다. 모든 명령은 **백엔드 저장소 루트**에서 실행한다. 개인 .env·설치 도구·실자료는 Git pull로 공유되지 않는다.
+
+이 절의 링크는 docs/plan.md 위치 기준, 명령의 파일 경로는 저장소 루트 기준이다. [README](../README.md)에서 일상 실행법과 현재 폴더 구조를 확인하고, API는 [contracts.md](contracts.md), 작업 결과는 [task_backend.md](task_backend.md)를 따른다. 과거 결정·검증 기록을 현재 설정으로 실행하지 않는다.
+
+<a id="backend-initial-setup"></a>
+### 최초 설치·환경설정
+
+Python 3.13 이상·uv를 준비하고 저장소 루트에서 `uv sync --locked --group dev`를 실행한다. 다른 PC의 `.venv`를 복사하지 않는다. 기존 `.env`를 보호하며 새 환경에서만 예시를 복사한다.
+
+```powershell
+if (!(Test-Path -LiteralPath '.env')) { Copy-Item -LiteralPath '.env.example' -Destination '.env' }
+```
+
+macOS/Linux에서도 `.env`가 없을 때만 `cp -n .env.example .env`로 준비한다. 실제 키·모델·저장 경로·출력 도구는 개인 환경에 맞추고 `.env`는 커밋하지 않는다. 등록 회사 자료·시연 DB는 별도 전달/적재가 필요하며 Git pull로 생기지 않는다. 현재 계약은 1.13, DB는 v11이며 최신 값은 계약·코드가 원본이다.
+
+<a id="backend-folders-storage"></a>
+### 9.1 폴더별 역할·자료 보관·경로 변경
+
+| 폴더 | 역할 | 작업 후 늘어나는 것 | 관리 주체 |
+|---|---|---|---|
+| `app/` | 실제 서비스 코드·AI 연결·출력 서식 | 새 기능 코드·고정 자원 | 개발자/AI |
+| `docs/` | 프로젝트 기준·현재 작업·검증 기록 | 기존 담당별 task 문서의 기록, 필요한 설계 문서 | 담당 개발자/AI |
+| `tests/` | 변경 후 기능 회귀 확인 | 테스트 코드·가상 입력/예시 | 개발자/AI |
+| `scripts/` | 직접 실행하는 관리·검사 도구 | 필요한 실행/평가 도구 | 개발자/AI |
+| `migrations/` | DB 구조를 버전별로 변경 | DB 변경이 필요할 때 생성한 migration | 개발자/AI |
+| `private_runs/` | 기본 로컬 데이터 영역·별도 평가 기록 | DB·등록 원문·첨부·출력·명시적 평가 결과 | 서버/적재·평가 도구 |
+| `.venv/` | Python 실행 환경·의존성 설치본 | 설치/갱신된 라이브러리 | uv 등 패키지 관리 도구 |
+| 모든 `__pycache__/` | Python 처리 결과 캐시 | 실행 시 자동 생성 | Python |
+| `.pytest_cache/` | 이전 테스트 실패 등 실행 캐시 | 검사 시 자동 생성 | pytest |
+| `.github/` | Copilot이 공통 지침을 읽도록 안내 | 필요한 도구 지침 | 개발자/AI |
+| `.git/` | 커밋·브랜치·변경 기록 | 커밋/브랜치 이력 | Git |
+
+회사 원문·업로드·생성 결과는 `app/`, `docs/`, `tests/`에 자동 저장하지 않는다. 실제 자료는 실행 저장 영역에 두며, `tests/fixtures/`에는 가상 테스트 자료를 둔다. 진행 기록은 기존 [백엔드 task](task_backend.md)·[Agent task](task_agent.md)를 사용하고 실행마다 새 작업일지를 만들지 않는다.
+
+`app/` 내부에서 찾을 위치는 다음과 같다.
+
+| 하위 폴더 | 담당 내용 |
+|---|---|
+| `routers/` | 프론트가 호출하는 API 입구 |
+| `services/` | 저장·편집·검증·승인·출력·정리 처리 |
+| `parsers/` | PDF·DOCX·PPTX·텍스트·이미지 읽기 |
+| `prompts/` | AI 추출·초안 작성 지침 |
+| `resources/` | 회사정보 스키마·기본 섹션 순서/제목 |
+| `templates/` | PDF/DOCX 출력 자원·서식·글꼴 |
+
+스키마·기본 자료·프롬프트는 `app/agent_legacy.py` 위치를 기준으로 읽으므로 현재 작업 디렉터리에 의존하지 않는다. API 예시는 [docs/api_examples_v1.1.json](api_examples_v1.1.json)에 있다. VS Code에서 숨기거나 접어 묶은 항목도 실제 파일 위치와 역할은 같다.
+
+#### 실행 데이터 위치와 보관
+
+서버의 실제 저장 기준은 `app/config.py`의 `PRIVATE_RUNS_DIR`·`DB_PATH` 설정이다. 기본값은 저장소의 `private_runs/`, DB는 그 아래 `app.sqlite3`다. 상대 경로는 백엔드 저장소 루트를 기준으로 해석한다. `DB_PATH`를 따로 지정하면 그 경로를 사용한다.
+
+아래는 **실행 저장 루트 아래에서 생성될 수 있는 구조 예시**다. 모든 세션·산출물이 현재 존재한다는 뜻은 아니다.
+
+```text
+<PRIVATE_RUNS_DIR>/
+├─ app.sqlite3                    서비스 DB (DB_PATH 미지정 시)
+├─ registered/                    명시적으로 적재한 등록 자료
+│  ├─ 원문 파일
+│  └─ images/                     등록 사진
+└─ sess_자동생성ID/                사용자 작업별 임시 자료
+   ├─ src_자동생성ID.pdf           첨부 원문 예시
+   ├─ 사진·공개 수집 자료
+   ├─ agent_checkpoints.sqlite3   AI 작업 대기·재개 기록
+   └─ artifacts/
+      ├─ art_자동생성ID.pdf        검사된 출력 파일
+      ├─ art_자동생성ID.docx
+      ├─ previews/                출력 미리보기 이미지
+      └─ tmp_작업ID/              출력 작업 중 임시 파일
+```
+
+| 자료 | 저장 위치 | 정리·보관 방식 |
+|---|---|---|
+| 사용자 첨부·세션 사진·공개 수집 원문 | 해당 `sess_…/` | 작업 종료·만료 시 정리 대상 |
+| 추출 사실·문서·버전·점검·검증 정보 | 서비스 SQLite DB | 세션 정책에 따라 내용 제거, 일부 관리 이력은 유지 |
+| AI 작업 재개 기록 | 세션의 `agent_checkpoints.sqlite3` | 세션 폴더와 함께 정리 |
+| PDF/DOCX·미리보기 | 세션의 `artifacts/` | 세션 종료·만료 정리 대상, 영구 보관함 아님 |
+| 출력 중간 파일 | `artifacts/tmp_…/` 등 | 작업 완료/실패·시작 시 복구·정리 절차로 처리 |
+| 등록 원문·등록 사진 | 실행 저장 루트의 `registered/` | 세션 종료만으로 삭제되지 않음 |
+| 기록을 활성화한 품질 평가 | 저장소의 `private_runs/quality_runs/` | 명시적 평가 기록만 저장, 세션 정리와 별도로 보관/삭제 관리 |
+| 별도 비교·단계 평가 출력 | 도구의 `--saved-output`, `--run-dir`, `--out` 등 | 실행 시 목적에 맞게 위치 지정, 도구별 정리 정책 적용 |
+| HTTP/화면 검사 임시 DB·화면 이미지 | 시스템 임시 폴더 | 테스트 서버/DB는 도구가 정리, 일부 검수 산출물은 남을 수 있음 |
+
+등록 전 원본 묶음은 기존 적재 안내처럼 `private_runs/registered_src/<자료묶음>/`에 준비할 수 있다. 이곳은 운영 세션의 자동 저장 위치가 아니라 자료 준비용 보관 위치이며, 자료 적재 명령의 `--source-dir`로 선택한다. 품질 평가 기록의 기본 위치 `private_runs/quality_runs/`는 저장소 기준이므로 `PRIVATE_RUNS_DIR` 변경만으로 함께 이동하지 않는다. 기록을 켠 평가 도구는 원문·응답을 담을 수 있으므로 별도 보관 계획이 필요하다.
+
+**오래 보관할 최종 PDF/DOCX는 승인 후 다운로드해서 팀 보관 위치에 둔다.** 세션 만료 뒤 DB가 남아 있어도 문서 내용·출력 파일을 계속 사용할 수 있다는 뜻은 아니다. DB·등록 자료·평가 기록의 별도 백업은 자동 기능으로 제공하지 않으므로 보관 위치와 절차를 따로 정한다.
+
+#### 직접 경로를 지정할 때
+
+| 상황 | 직접 지정 여부 | 지정할 것 |
+|---|---|---|
+| 화면에서 자료 첨부·점검·초안·편집 | 필요 없음 | 서버가 현재 저장 설정과 세션 ID로 관리 |
+| 세션별 폴더 이름 만들기 | 필요 없음 | 서버가 `sess_…` ID 생성 |
+| 서버 전체 저장 위치 변경 | 필요 | `PRIVATE_RUNS_DIR`, 별도 DB를 쓸 때 `DB_PATH` |
+| 등록 자료 가져오기 | 필요 | 원본 묶음의 `--source-dir`, 필요 시 `--ingest-dir` |
+| 별도 품질 평가·비교 실행 | 도구에 따라 필요 | 기록 여부·실행 이름·입력/출력 위치 |
+| 완성 파일 장기 보관 | 필요 | 브라우저 다운로드 위치·팀 보관 위치 |
+| DB·원자료·평가 결과 백업 | 필요 | 백업 대상·저장 위치·보관/복구 절차 |
+| 새 기능 개발 | 저장 결과 폴더 지정은 보통 불필요 | 코드/테스트는 해당 역할 폴더, 새 파일은 AGENTS.md 절차 준수 |
+
+저장 위치 변경은 기존 DB/자료를 자동 이동하는 기능이 아니다. 기존 데이터가 필요하면 서버 사용 여부·DB 경로·자료 복사/복구 절차를 먼저 확인한다. 서버가 관리하는 `sess_…`, `registered/`, 산출물 파일을 직접 이름 변경하거나 이동하면 DB 참조·해시 확인이 깨질 수 있으므로 서비스/관리 도구를 통해 처리한다. SQLite의 WAL/SHM 파일도 사용 중 임의로 옮기거나 삭제하지 않는다.
+
+실행 데이터·DB·비밀 설정은 `.gitignore`로 제외한다. `.venv/`와 캐시는 개발 환경/자동 생성물이며 Git에 올리지 않는다. 캐시는 재생성되지만, DB·등록 자료·평가 원본을 캐시로 취급하지 않는다.
+
+<a id="backend-ai-run"></a>
+### 9.2 실제 AI·시연 실행
+
+기존 `.env`·자료·DB 설정을 사용하는 Windows 기본 확인 명령은 다음과 같다.
+
+```powershell
+.\scripts\run_llm.ps1 -ContentReview -TextProposals -CheckOnly
+```
+
+`-CheckOnly`는 AI 호출·DB 초기화·서버 시작 없이 설정만 확인한다. 확인 후 같은 명령에서 `-CheckOnly`를 빼면 서버를 시작한다. 시연 자료를 사용할 때만 `-Demo`를 추가하며 기본 `runtime`과 예산 제한 `interactive`를 구분한다.
+
+일반 서버 실행은 README를 따른다. AGENT_MODE=mock은 실제 AI 호출이 없고 llm은 호출이 발생한다. DEMO_MODE는 사용할 출처의 정책이며 AI 실행 모드와 독립이다. Windows에서는 기존 scripts/run_llm.ps1로 llm을 명시하고 필요한 기능을 활성화할 수 있다.
+
+```powershell
+# 자신의 설치 경로로 지정한다. 기존 DB가 있어야 하는 환경에서만 실행한다.
+$env:PRIVATE_RUNS_DIR = 'private_runs/demo_preview_20260929_131826'
+$env:DB_PATH = Join-Path $env:PRIVATE_RUNS_DIR 'app.sqlite3'
+if (-not (Test-Path -LiteralPath $env:DB_PATH -PathType Leaf)) { throw '지정한 기존 DB가 없습니다.' }
+# DOCX가 필요한 경우 실제 LibreOffice 경로를 지정한다.
+$env:EXPORT_LIBREOFFICE_PATH = 'C:\Program Files\LibreOffice\program\soffice.com'
+$env:OPENAI_EXECUTION_MODE = 'runtime'
+.\scripts\run_llm.ps1 -Demo -ContentReview -TextProposals -CheckOnly
+# 설정 확인 후 같은 명령에서 -CheckOnly를 빼면 서버를 시작한다.
+```
+
+runtime의 스크립트 기본값은 입력200,000자·내용 검증400,000자·출력64,000토큰·요청 제한180초·재시도2회다. 요청한 모델/공급자 한도도 적용된다. 내용 검증과 수정안은 -ContentReview/-TextProposals로 명시 활성화한다. 기본값은 코드 및 [.env.example](../.env.example)에서 확인한다. 환경변수는 이 셸에서 적용되며 기존 .env 파일을 수정하지 않는다.
+
+예산을 제한한 interactive 실행은 **모드와 그 범위의 옵션을 모두 명시**한다. 위 runtime 설정과 아래 옵션을 섞어 설명하지 않는다.
+
+```powershell
+$env:OPENAI_EXECUTION_MODE = 'interactive'
+# 운영자가 정한 허용 예산(USD); 프로세스 재시작 시 누적 기록이 초기화됨
+$env:OPENAI_RUN_BUDGET_USD = '5'
+.\scripts\run_llm.ps1 -Demo -ContentReview -TextProposals -RequestTimeoutSeconds 180 -MaxInputChars 40000 -MaxReviewInputChars 400000 -MaxOutputTokens 32000 -MaxRetries 0 -CheckOnly
+```
+
+-CheckOnly는 AI 호출·DB 초기화·서버 시작 없이 유효 설정을 확인한다. 스크립트는 요청 옵션과 OPENAI_TRIAL_* 입력/토큰/대기 상한을 함께 맞춘다. 직접 uvicorn을 실행하면 같은 설정을 스스로 맞춰야 한다. trial/interactive의 한도 검사와 기본 runtime의 관측을 구분한다.
+
+일반 서버는 총 8회/$1·기능별 횟수·동시 AI 작업 1개 제한을 적용하지 않는다. 사용량은 측정만 하며 한 요청의 오류가 다음 요청을 막지 않는다. `-TextProposals`와 `-ContentReview`의 명시 활성화, 수동 중단, 외부 API의 한도, 근거/권한/버전/승인 검사는 유지한다. 과거 `TrialLedger`와 `OPENAI_TRIAL_*`는 명시적으로 사용하는 제한된 평가용이다. 런타임 측정값은 프로세스 메모리 총계와 최근 100회 메타이며 영구 청구 장부가 아니다. 알 수 없는 비용은 미확인으로 표시한다.
+
+미리보기는 첫 heading 블록이 있으면 별도의 페이지 제목을 추가하지 않는다. 저장된 문제도 화면에서 한국어 항목명·권장 조치로 표시하지만 문제 코드와 승인 차단 여부는 바꾸지 않는다. 사진 캡션과 대체 텍스트는 각각 검사하고, 선택·허가된 사진의 등록 설명은 AI 의미 검사에 출처 정보로 전달한다. 등록 설명은 인증·성능·회사 소유의 증빙이 아니다.
+
+
+초안의 대상 회사명 비교는 공백·대소문자·전각 문자와 앞/뒤의 ㈜/(주)/주식회사 표기 차이를 허용합니다. 영문 번역/약칭을 자동 추정하지는 않습니다. 동일 회사명 표기 확인이 필요한 로컬 운영자는 `.env`의 `COMPANY_NAME_ALIASES`에 확인한 이름 그룹을 JSON으로 설정할 수 있습니다(예: `[["가상 회사", "EXAMPLE COMPANY"]]`). 기본값은 `[]`입니다. 이름에 대한 확인만 적용하며 근거·출처·다른 사실 검증을 생략하지 않습니다. 실제 회사명 설정은 커밋하지 않습니다. 변경 후 서버 재시작 및 자료 재점검이 필요합니다.
+
+브로슈어 생성은 긴 항목에 최대 160자를 배분하고 쪽 전체 분량을 별도로 검사합니다. 알려진 미완결 문장이나 분량 초과를 감지하면 저장 전에 최대 한 번 재작성합니다(추가 API 호출 비용·시간 발생). 실패한 초안을 잘라 저장하지 않습니다.
+
+
+초안 생성 전에는 최신 점검의 생성 가능 여부와 보완 사유를 확인합니다. 회사명 근거/필수·제외 충돌 등은 점검 화면에서 안내하고, 같은 입력의 새 점검이 있으면 GET으로 최신 결과를 복구합니다. 입력이 바뀌면 자료 상태를 새로고침하고 점검해야 합니다. 초안 결과 오류·일시 오류는 완료한 점검을 유지하고 명시 재확인 후 초안만 재시도하며, 내용 부족/충돌의 최종 승인 제한은 유지합니다.
+
+<a id="backend-http-checks"></a>
+### 9.3 임시 DB·HTTP·화면 검사
+
+아래 명령은 별도 임시 DB와 가짜 AI 응답으로 서버를 띄워 검사하고, 끝나면 서버·테스트 자료를 정리한다. `.env`와 현재 DB를 사용하지 않으며 API 키가 필요 없다. 첫 명령은 실제 HTTP 요청으로 쿠키·전체 S01 흐름·중복 요청·접근 차단·종료를 확인한다.
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 -B scripts/check_s01_http.py
+
+# 프론트 의존성 설치/빌드 후: 실제 Chrome/Edge 버튼·Vite 프록시까지 확인
+.\.venv\Scripts\python.exe -X utf8 -B scripts/check_s01_http.py --frontend ..\frontend
+```
+
+화면 검사는 Node 24와 설치된 Chrome/Edge를 사용한다. 현재 프론트의 `scripts/check-ai-workflow.mjs`가 별도 임시 DB·API 서버·Vite·브라우저 프로필을 관리한다. 백엔드 검사 도구는 `AI_CHECK_BACKEND`를 현재 저장소 경로로 지정하고 `AI_CHECK_LIVE=0`을 강제하여 유료 모드를 상속하지 않는다. 화면·출력 기록은 검사 도구가 보고한 시스템 임시 폴더에 저장한다. 예전 `check-s01-browser.mjs`만 제공하는 프론트와의 연결도 유지한다. 편집·승인·실제 PDF 다운로드까지 검사하려면 아래처럼 실행한다.
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 -B scripts/check_s01_http.py --publication --frontend ..\frontend --timeout 120
+```
+
+`--publication`은 설치된 Chrome/Edge를 PDF 렌더러로 사용한다. macOS의 `/Applications` Chrome·Edge도 자동 탐색하며 별도 위치는 `--browser-path`로 지정한다. 실제 HTTP로 PDF 바이트·반복 다운로드·수정 후 승인 무효화를 확인한다. `--frontend`를 함께 쓰면 현재 프론트 검사 도구의 편집·검증·PDF 승인/다운로드 흐름도 실행한다. 추가 사진·변경 영향·수정안 사례는 프론트 검사 도구의 명시 옵션으로 따로 선택한다. AI는 계속 mock이며 실제 AI 품질이나 DOCX 승인·출력 확인을 뜻하지 않는다.
+
+사진 포함 HTTP 검사는 다음처럼 실행한다(Mac/Linux; Windows에서는 위 Python 실행 경로 사용).
+
+```bash
+.venv/bin/python -B scripts/check_s01_http.py --publication --photos --timeout 120
+```
+
+`--photos`는 가상 PNG 1장을 텍스트와 함께 업로드해 사진 원본 바이트·소유자별 접근 차단·편집 후 사진 보존·실제 PDF 이미지의 픽셀 일치·각 쪽 PNG 미리보기를 확인한다. 검사·승인·출력의 파일 ID와 저장 해시, 동일 바이트 재다운로드, 세션 종료 후 사진 접근 차단과 임시 자료 정리도 검사한다. 이 옵션은 HTTP 검사에 적용되며 프론트의 사진 UI를 검증했다는 뜻은 아니다. `--publication`과 함께 사용한다.
+
+실제 연결 화면의 기본 흐름은 저장 → 내용 검증 → 선택 형식 배치 검사 → 경고 확인/동의 → 승인 → 파일 준비/다운로드다. 프론트는 별도 저장소이므로 실행할 브랜치의 README와 코드를 함께 확인한다. 2026-10-13 확인한 프론트 develop의 제품 코드는 usePublication에서 edits/removed를 sessionStorage JSON으로 보관하고 경고 카드의 개별 사유 확인을 제공한다. 암호화·무손실 복구는 보장하지 않으며 서버는 현재 버전과 미해결 blocker를 검사한다. 옛 “경고 없는 passed만 승인/개별 확인 UI 후속/미저장 편집 복원 안 됨” 설명은 현재 공통 안내에서 제외했다.
+
+
+<a id="backend-db-maintenance"></a>
+### 9.4 DB 개발·마이그레이션·재적재
+
+- 기존 가상환경을 사용한다. 의존성/개발용 테스트 도구는 `uv sync --locked --group dev`로 맞춘다.
+- 기본 DB는 프로젝트의 `private_runs/app.sqlite3`다. `.venv`와 분리되어 있으며 `DB_PATH` 또는 `PRIVATE_RUNS_DIR` 설정을 바꾸면 사용하는 파일이 달라질 수 있다.
+- `app/db.py`의 `connect(settings.db_path)`가 SQLAlchemy Engine/Core로 쿼리를 실행한다. 정상 종료 시 commit, 예외 시 rollback하며 사용을 끝낸 DB 연결은 닫는다. 함께 성공해야 하는 저장 작업은 같은 `with connect(...)` 안에 둔다.
+- 기존 `?` 자리표시자 SQL과 행 접근을 지원한다. SQLAlchemy의 `text()`·`select()`·`insert()` 등 Core 표현식도 같은 연결의 `execute()`로 사용할 수 있다. 사용자 값을 SQL 문자열에 직접 끼워 넣지 않고 매개변수로 전달한다.
+- 쓰기 순서 보호가 필요한 기존 경로는 `immediate=True`/`BEGIN IMMEDIATE`를 유지한다. `conn.in_transaction`은 SQLAlchemy의 자동 시작 표시가 아닌 실제 SQLite 트랜잭션 상태다.
+- `app/orm_models.py`는 ERD v2의 **25개 테이블을 Python 클래스로 표현한 ORM 모델**이다. `app/models.py`는 화면과 주고받는 API 형식을 검사하는 Pydantic 모델이다. 역할이 달라 두 파일을 구분한다.
+- `app/db.py`의 `init_orm_db()`는 Alembic으로 빈 DB를 생성하고 변경 이력을 적용한다. 현재 구조는 v11 / `20260929_01`이며 v10 기준 이력 `20260928_01`은 변경하지 않는다. 미관리 v10은 고정 기준 구조와 일치할 때만 이력 관리에 연결하고 기존 v9는 덮어쓰지 않는다. 서버의 `init_db()`는 v11 구조를 검사하며, v10이면 `alembic upgrade head`를 먼저 실행하도록 안내한다. 기존 v1~9 호환 초기화는 유지한다.
+- 새 쿼리는 `with orm_session(settings.db_path) as db:` 안에서 `db.add(...)`, `db.scalars(select(Source))` 같은 ORM 방식으로 작성할 수 있다. 여러 행이 함께 저장되어야 하면 같은 세션을 사용한다. 기존 서비스 SQL은 Core 호환 연결을 계속 사용한다. LangGraph 체크포인트 연결도 유지한다.
+- 새 DB는 원본 버전·읽기 실행·입력 변경·선택 자료·최종 동의를 기록한다. 이미 선택한 읽기 실행은 재읽기로 덮어쓰지 않으며, 세션 종료/만료 시 이력의 비공개 내용도 함께 비운다. 개별 경고 확인 API는 계약 1.5, 자료 변경 영향 검토·편집 복귀 API는 계약 1.6에서 기존 테이블에 연결했다. C-05 서버 복귀 API는 구현돼 있다. 프론트의 현재 연결과 실제 검수 범위는 별도 저장소 및 담당 기록을 확인한다.
+
+#### DB 구조 생성과 변경 이력 (자료 적재와 별개)
+
+마이그레이션은 ‘테이블에 열을 추가했다’ 같은 **DB 구조 변경의 기록**이다. ORM 파일만 수정해도 기존 DB 파일이 자동으로 바뀌지는 않으므로, Alembic 변경 파일을 만들어 적용한다. 첫 버전 `20260928_01`은 25개 테이블의 당시 SQL을 고정해 두며 이후 ORM 수정에 따라 과거 이력이 바뀌지 않는다.
+
+```powershell
+# .env의 DB_PATH 또는 PRIVATE_RUNS_DIR가 가리키는 DB에 적용
+uv run python -m alembic upgrade head
+uv run python -m alembic current
+uv run python -m alembic check
+
+# 다른 빈 테스트 DB를 명시적으로 만들 때
+uv run python -m alembic -x db_path=private_runs/schema_test/app.sqlite3 upgrade head
+```
+
+`upgrade head`는 변경을 최신 버전까지 적용하고, `current`는 적용된 버전을 출력한다. `check`는 ORM과 DB 사이에 Alembic이 감지하는 차이가 있는지 확인한다. 업무용 테이블 25개와 별도로 `alembic_version`이라는 관리 테이블 1개가 생긴다. 여기에 있는 버전 번호는 회사 자료가 아니다. 예전 v9 DB 경로를 지정하면 쓰기 전에 거부하므로 새로운 경로를 설정해야 한다.
+
+자료·원본 버전·읽기 실행은 서로 연결되어 있어 `check`/자동 생성 시 순환 외래 키의 정렬 경고가 발생할 수 있다. 이 검사는 모든 제약의 보존을 보장하지 않으므로 새 변경 파일에서 아래 검토·시험 절차를 따른다.
+
+v11은 ERD에 FK로 표시되었지만 DB 제약이 없던 16개 관계를 추가한다. 입력/문서 버전은 세션·문서 식별자를 묶어 확인하고, 검증/승인/산출물/다운로드와 운영 기록은 대상의 존재를 확인한다. 미리보기는 배치 결과보다 먼저 저장되므로 해당 FK만 트랜잭션 종료 시 검사한다. 승인 대상의 문서·입력·형식 일치와 JSON 내부 근거는 계속 서버에서도 검사한다. 기존 자료는 자동 보정하거나 지우지 않으며 새 관계에 맞지 않는 데이터가 있으면 업그레이드가 실패하고 원래 상태로 돌아간다. 자료 적재는 별도 작업이다. D-07 경고 확인과 C-05 영향 검토는 기존 v11 테이블을 사용하며 이번 C-05에 DB 구조 변경은 없다.
+
+이후 구조를 바꾸는 순서:
+
+1. 개발용 DB를 `upgrade head`로 맞추고 `app/orm_models.py`를 수정한다.
+2. `uv run python -m alembic revision --autogenerate -m "describe_change"`로 변경 초안을 만든다.
+3. `migrations/versions/`의 새 파일을 검토한다. 이름 변경이 삭제·추가로 생성되지 않았는지, SQLite 테이블 재생성에서 기존 CHECK·UNIQUE·FK·인덱스가 유지되는지 확인한다. 기존 열 제거나 필수 열 추가에는 데이터 보존·변환 규칙도 작성한다.
+4. 임시 DB에서 적용과 필요한 되돌리기를 시험한다. SQLite batch 재생성 시 이름 없는 CHECK는 수동으로 포함해야 한다. [Alembic 자동 생성의 한계](https://alembic.sqlalchemy.org/en/latest/autogenerate.html)와 [SQLite batch 제약 보존](https://alembic.sqlalchemy.org/en/latest/batch.html)을 참고한다.
+5. 실행 중인 서버를 멈추고 DB와 필요한 파일을 백업한 뒤, 대상 경로를 확인하고 `upgrade head` → `current` → `check`를 실행한다.
+
+DDL과 이력 기록은 하나의 명시적 트랜잭션으로 처리하고 실패 시 함께 취소한다. 마지막에 외래 키 연결을 검사한다. 기준 버전 자체를 지우는 `downgrade base`는 업무 데이터가 하나라도 있으면 거부한다. 변경 파일은 Git에 보관하며 DB 파일과 `.env`는 커밋하지 않는다. 실제 자료 적재 여부는 대상 DB마다 다르며 실행 전 확인한다. 이 안내 자체는 자료 적재를 수행하지 않는다.
+
+#### 기존 자료를 새 DB에 다시 넣기
+
+```powershell
+# 아직 존재하지 않는 새 폴더를 지정한다. 기존 DB/자료/.env는 바꾸지 않는다.
+.\.venv\Scripts\python.exe -X utf8 scripts/rebuild_database.py --target-dir private_runs/new_rebuild_example
+```
+
+이 프로젝트의 real/demo 묶음 메타데이터와 보관 파일을 검증해 다시 적재하는 명령이다. 기존 mock·세션·작성 문서·승인 기록은 옮기지 않는다. 대상 폴더가 이미 있으면 중단하며, 실패해도 자동 삭제하지 않는다. 자료나 사진 허가를 추측해서 만들지 않는다. 최적화한 카탈로그는 검증된 서비스용 사본을 유지한다. 기존 사진 묶음에 새 사진을 추가하는 증분 적재는 실행 이력 보존 때문에 v10에서 제한하며, 같은 묶음 재실행과 공개 허가 갱신은 지원한다.
+
+성공 후 `.env`의 `PRIVATE_RUNS_DIR=private_runs/new_rebuild_example`로 경로를 지정하고 서버를 다시 시작한다. `DB_PATH`를 별도로 설정했다면 그 경로도 새 DB와 일치시켜야 한다. 이전 `private_runs/app.sqlite3`와 등록 자료는 복구용으로 보관한다. 기존 DB 경로에서 서버를 실행하면 만료 정리가 동작할 수 있으므로 백업 확인에는 읽기 전용 도구를 사용한다. 개발 가상환경은 기존 `.venv` 그대로 사용한다.
+
+검증 결과와 이번 PC에서 적용한 경로는 [task_backend.md 6.22절](task_backend.md#622-erd-v2-orm과-새-db-재적재-2026-09-28)에 기록한다. 자동화 테스트는 임시 DB만 사용한다.
+
+<a id="backend-output-tools"></a>
+### 9.5 PDF/DOCX 출력 도구 상세
+
+- **DOCX**는 python-docx로 만든다. 실제 배치 검사·승인·다운로드를 사용하려면 서버에 LibreOffice를 설치하고 `EXPORT_LIBREOFFICE_PATH`에 절대 실행 파일 경로를 지정한다(Windows 예: `C:\Program Files\LibreOffice\program\soffice.com`, Linux 예: `/usr/bin/libreoffice`). 자동 활성화하지 않으며 엔진 미설정/없는 경로는 `overflow=not_checked`로 승인을 차단한다. 변환 실패·시간 초과·측정 실패도 통과 처리하지 않는다.
+  - 각 검사에 독립 headless 프로필을 사용하고 같은 DOCX의 변환 PDF에서 실제 쪽수·쪽별 본문/사진·인쇄 영역을 검사한다. PNG 미리보기도 이 변환본에서 만든다. 검사 뒤 승인된 원래 DOCX를 그대로 발행하며 AI/렌더를 다시 호출하지 않는다.
+  - `EXPORT_RENDER_TIMEOUT_S`는 DOCX 변환·측정에도 적용한다. Windows의 긴 프로필 경로는 짧은 경로 이름과 긴 경로 삭제 지원으로 처리한다.
+- **PDF**는 서버에 설치된 Chromium 계열 브라우저(Google Chrome 또는 Microsoft Edge)의 headless 인쇄로 만든다.
+  필요한 Python 패키지는 `uv sync`에 포함된다. 브라우저가 없으면 PDF 생성은 `browser_not_found`로 실패한다.
+  - **실행 조건**: 서버 프로세스를 root로 실행하지 않는다. Chromium은 root에서 샌드박스 때문에 시작을 거부하며, 어댑터는 `--no-sandbox`를 넣지 않는다(컨테이너도 비root 사용자로).
+  - 자동 탐색: Windows는 Chrome(Program Files·LOCALAPPDATA) → Edge, Linux/Mac은 `google-chrome`·`chromium`·`microsoft-edge` 및 macOS의 `/Applications` Chrome·Edge 실행 파일.
+  - 다른 위치면 `.env`에 `EXPORT_BROWSER_PATH=<실행 파일 경로>`를 지정한다. 시간 제한은 `EXPORT_RENDER_TIMEOUT_S`(기본 90초).
+  - macOS에서는 PDF 쓰기 완료·DOM 출력 완료 후 이번 임시 Chrome에 CDP `Browser.close`를 보내 실제 종료 코드까지 확인한다. 연결은 임시 프로필의 `127.0.0.1` 포트만 사용하며 `websockets`는 직접 의존성으로 포함한다. 출력 파일만 생기고 종료가 지연되는 환경을 위한 처리이며, 시간 초과·비정상 종료와 기존 배치 검사 실패는 그대로 실패로 남는다.
+- 한글 서체는 레포에 동봉한 OFL 폰트(Pretendard v1.3.9, `app/templates/fonts/`)를 PDF에 임베드한다.
+  DOCX에도 같은 Regular/Bold 글꼴 파일 전체를 포함한다(template_v11). 서버/수신자 PC의 설치 여부에 따른 글꼴 대체를 줄이며, 기존 문서는 배치 재검사·재승인 후 새 DOCX를 내려받는다.
+- 렌더 어댑터는 `app/services/export_render.py`이며 배치 검사·Export·다운로드 API는 BE-08에서 연결했다(아래).
+- 도구 비교 실험은 `uv run python scripts/experiments/be07_render_candidates.py`로 재현할 수 있다(출력은 `private_runs/be07/`).
+  reportlab·playwright 후보는 설치돼 있을 때만 실행되고 없으면 "미실행/설치 제약"으로 기록된다.
+- 배치 검사 미리보기(쪽 PNG)는 pypdfium2로 만든다(런타임 의존성, `uv sync`에 포함).
+
+현재 템플릿 식별값은 app/services/layout_checks.py의 **template_v11**이다. 레이아웃 키·검사·승인·파일 다운로드 규칙은 [계약](contracts.md)을 원본으로 사용한다. 옛 README의 template_v1/v3/v7 설명을 현행 값으로 사용하지 않는다. 배치 검사에서 만든 승인 대상 바이트를 Export가 재사용하며 변경/누락 시 재검사·재승인이 필요하다. 새 사진 공개 허가는 기존 등록 도구의 --update-publication 절차를 따르며 관련 승인을 무효화한다.
+
+<a id="backend-session-cleanup"></a>
+### 9.6 세션 종료·만료·정리 운영
+
+- 세션은 `DELETE /sessions/{sid}` 또는 만료(무활동 `SESSION_IDLE_MINUTES` / 생성 후 `SESSION_MAX_HOURS` 중 빠른 때)로 끝난다. 끝나면 한 트랜잭션에서
+  접근 차단(소유자의 만료된 세션 요청은 410 `SESSION_EXPIRED`; 다른 소유자 등 접근 정책은 계약에 따름)·내용 제거(brief·원문 구간·사실·초안 본문·편집안·문제 문구·저장된 멱등 응답)·진행 중 Job `cancelled`·활성 Export failed를
+  확정하고 `private_runs/<sid>/` 삭제를 정리 큐(`cleanup_queue`)에 넣는다. 검증·배치 검사·승인·Export·artifact 행(ID·시각·해시)과 등록 자료(`private_runs/registered/`)는 남는다.
+- 만료는 두 곳에서 잡는다. 요청이 들어오면 그 자리에서 확정하고 410을 내며, 요청이 없어도 배경 sweep 스레드가 `CLEANUP_SWEEP_INTERVAL_S`(기본 60초, 0이면 없음)마다
+  만료 확정·큐 처리·폴더 점검을 한다.
+- 폴더 삭제가 실패하면 지수 백오프(2^n분, 최대 60분)로 재시도하고 `CLEANUP_MAX_ATTEMPTS`(기본 10) 뒤 failed로 남는다(자동 재등록 없음).
+  DELETE 응답과 410 `details.cleanup`은 done(내용 제거 + 폴더 없음 + 미완료 작업 없음) 또는 pending이다.
+- 운영 도구: `uv run python scripts/cleanup_sessions.py --once [--dry-run]` · `--list-failed` · `--retry-failed`(ID·건수만 출력). 서버가 떠 있으면 배경 sweep이 같은 일을 한다.
+- 서버 시작 시 이전 프로세스의 정리 점유를 되찾고, 내용 제거가 안 된 closed/expired 세션(v8 이전 DB)을 한 번 정리한다. sweep 요약 로그는 INFO 수준(ID·건수만)이다.
+
+<a id="backend-registered-demo"></a>
+### 9.7 등록 자료·시연 정책·적재
+
+- `AGENT_MODE=mock|llm`은 AI 실행 방식이다. `DEMO_MODE=false|true`는 시연 출처를 사용할 수 있는 서버 정책이며 기본은 false다. 현재 LLM 모드는 구현돼 있으며 별도 키/실행 설정이 필요하다. 작성 조건 첨부의 자동 해석·Brief 반영 여부는 별도 범위다.
+- 테스트 mock(`origin_kind=mock`, `[MOCK]`)은 여전히 `MOCK_VALUE` blocker다. 시연 자료(`origin_kind=demo`)는 별도이며 실제 자료(`real`: 입수했다는 뜻, 회사 확인 완료 뜻 아님)와 함께 선택할 수 있다.
+- 시연 세션은 `POST /sessions`에 `demo: true`로 생성한다. 이후 변경할 수 없다. `GET /sources?include_demo=true`는 서버 시연 모드가 켜졌을 때만 시연 자료를 보여준다. 일반 목록은 숨기며 일반 세션에서는 선택·근거·이미지 사용이 차단된다.
+- 업로드 multipart `role=instruction`은 작성 조건 첨부다. 읽기·조회는 가능하지만 회사 근거 선택·Agent 사실 입력·근거 검사·본문 이미지 렌더링에서는 제외한다. **조건의 자동 해석·Brief 반영은 아직 없다.** role 생략 또는 evidence는 기존 근거 업로드 동작을 유지한다. 새 화면은 작성 조건 첨부에 role을 명시해야 한다.
+- 계약 1.5부터 허용 warning은 개별 확인 후 승인할 수 있다. `issues/{iid}/resolve`에 `expected_revision`, `input_revision`, `validation_id`, `resolution: {action: "acknowledged", reason: "확인 사유"}`를 보낸다. 현재 검증·내용에 유효한 확인이 없으면 승인/출력은 `WARNING_ACKNOWLEDGEMENT_REQUIRED`다. 명시적 시연 세션의 `DEMO_VALUE`에도 적용하며 근거 오류·필수 내용·수치 충돌·사진 공개 허가·MOCK blocker는 유지한다. 확인 기록은 관련 변경 후 다시 받아야 한다. 프론트의 현재 경고 사유 선택/입력 UI와 서버 확인 규칙을 함께 사용한다. 상세는 task_backend.md 6.32절을 따른다.
+- 현재 출력 식별값은 `template_v11`이며, 시연 출력은 하단 문구 `시연용 · 일부 내용은 임시 데이터입니다`를 사용한다. PDF 인쇄 margin box에 footer를 배치하고 검사 공간에 포함하며 DOCX도 footer를 넣는다. PDF 어느 페이지든 시연 문구가 빠지면 LAYOUT_RENDER_FAILED(reason=demo_footer_missing)로 거부하므로 해당 인쇄 기능을 지원하는 브라우저가 필요하다. 문서→배치 검사→artifact→승인→Export의 demo 식별값을 비교하고 승인된 바이트를 그대로 제공한다. DOCX도 LibreOffice로 실제 검사한 통과본은 승인·출력할 수 있다. 검사 엔진 미설정/실패는 승인 차단이다.
+- 서버 설정 변경은 재시작으로 적용한다(동일 DB를 사용하는 프로세스는 같은 설정을 사용). 시연 모드를 끄면 유효한 시연 세션의 조회·캐시·Job 결과·출력은 403 `DEMO_MODE_DISABLED`다. 수명 연장·내용 삭제는 하지 않는다. 소유자 DELETE는 허용하고 종료·만료는 기존 410·정리 규칙이 우선한다. 재활성화 시 실패 Job/Export는 자동 재시도하지 않는다.
+
+등록 자료는 로컬의 gitignore 경로에서만 읽는다. 실제 묶음은 파일 이동·CSV 수정 없이 루트와 JSON 폴더를 구분한다.
+```bash
+uv run python scripts/import_registered.py --source-dir private_runs/registered_src/real/묶음루트 --ingest-dir private_runs/registered_src/real/묶음루트/06_개발전달 --dry-run
+uv run python scripts/import_registered.py --source-dir private_runs/registered_src/demo/묶음루트 --with-demo --dry-run
+```
+**주의:** 현재 import_registered.py는 --dry-run에서도 init_db를 호출한다. 읽기 전용 검사라고 가정하지 말고 별도 복제/임시 DB를 대상으로 준비한다. 검사 후 적재하려면 대상 DB/등록 경로를 확인하고 동일 명령에서 `--dry-run`만 뺀다. 시연 자료는 `status=demo`, `demo=true`, 표시명·본문의 `[시연]`, 근거 상태 `시연용 임시 문장`을 사용한다. 기존 source_id의 real/mock/demo 변경은 거부한다. 후보 사진은 `photo_candidates.json.path`의 실제 바이트를 적재하며 CSV 원본과 다른 이름·형식도 가능하다. CSV 연결은 같은 경로 또는 명시적 `original_ref: {"폴더": "…", "파일명": "…"}`만 사용한다. 사진 공개 허가 null/false 차단은 그대로다.
+
+`verify_bundle.py`는 기존 fixture 전용이다. 실제 구조 호환성은 `tests/test_registered_import.py`의 가짜 묶음으로 검증한다. 실제 시연·실자료의 표본 검수 기록은 task_backend.md에 있다. 표본 완료와 BE-10 일반 품질 완료를 구분하며, 새 환경의 적재/자료 전달을 자동 완료로 취급하지 않는다. 회귀 테스트는 `uv run python -m pytest tests/test_demo.py tests/test_registered_import.py`로 실행한다.
+
+
+
+#### DART 기업 검색·공개자료
+
+서버의 DART_API_KEY를 설정하고 서버를 재시작한다. 키는 프론트 환경변수에 넣지 않는다. 프론트 회사 변경에서 이름을 두 글자 이상 입력하면 실제 회사 목록을 조회하고 정식 이름/고유번호를 저장하는 경로가 있다. 회사 저장 → 공개 데이터 가져오기 → 공개 연동 자료 선택 → 점검 순서다. 기업개황/최근 공시 원문은 세션 자료로 저장하며 수집만으로 AI를 호출하지 않는다. DART 미등록 기업은 직접 회사명과 자료를 사용할 수 있다. 특허청·나라장터는 미연결이다. 실제 API 키·설정·외부 서비스 상태가 필요한 기능이며 이번 문서 정리에서 외부 호출을 검증하지 않았다.
+
+<a id="backend-api-reference"></a>
+### 9.8 API·편집 복귀를 찾는 위치
+
+API의 현재 contract_version은 **1.13**, 데이터 schema_version은1.0, DB 스키마는 v11이다. 계약/모델/예시는 [contracts.md](contracts.md), [app/models.py](../app/models.py), [api_examples_v1.1.json](api_examples_v1.1.json)을 따른다. 예시 파일명은 기존 참조를 위해 유지하며 내부 버전이 원본이다. API 개수를 README에 고정해 따로 관리하지 않는다.
+
+- 첨부와 자료 선택은 별개이고 자료/문서의 최신 버전을 요청에 전달한다. 쓰기 요청의 동일 재전송은 같은 Idempotency-Key를 유지하고, 내용이 달라진 요청은 새 키를 사용한다. Job 성공과 검증 결과 passed는 별개다.
+- 자료 변경 후 기존 문서 복귀(C-05)는 최신 점검·명시 확인·변경 영향 선택·적용·전체 재검증 순서를 따른다. 상세 요청/응답과 버전 조건은 계약 원본을 확인한다.
+- 추출문/직접 첨부 원본 조회와 원문 오타 정정은 계약의 [추출문](contracts.md#source-text-api), [원본 다운로드](contracts.md#source-original-api), [정정 기록](contracts.md#source-typo-correction)을 따른다. 백엔드 API 존재만으로 별도 프론트 브랜치의 화면 연결을 완료로 선언하지 않는다.
+- progress.trace는 실행기/모드·자료 메타·결과 참조를 확인하는 진단이다. 옛 Job에서는 null일 수 있고 종료/만료 시 정리된다. 원문·프롬프트·키를 공통 로그에 추가하지 않는다.
+- 현재 프론트 develop은 발췌문 표시·경고 확인·정정 기록을 제공하지만 segments/original 호출 연결은 확인되지 않는다. 편집 edits/removed의 sessionStorage JSON 보관도 현재 프론트 동작이다. 이 README 정리는 프론트 기능을 수정하지 않는다.
