@@ -7,6 +7,8 @@
 
 ## 1. Quick Status
 
+- **2026-10-13 백엔드 폴더·README 관리 규칙:** 지침 반영/본문 정리안 승인 대기 · 제품/Agent 상태 유지 · [task_backend.md 기록](task_backend.md#backend-docs-rules-20261013).
+
 - **2026-10-13 백엔드 README 축약:** 문서 정리 단위 완료 · 제품/Agent 상태 유지 · [task_backend.md 기록](task_backend.md#backend-readme-shortening-20261013).
 
 - **F-05/BE-06 원문 오타 정정:** 구현·격리 검증 완료, 사용자 요청 PR 생성·통합 검수 완료 · 2026-10-12 · [백엔드 기록](task_backend.md#source-typo-correction-20261012). 일반품질·Agent 상태 유지.

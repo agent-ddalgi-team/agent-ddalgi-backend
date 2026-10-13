@@ -84,7 +84,7 @@ backend/
 
 | 찾는 내용 | 원본 문서 |
 |---|---|
-| 작업 시작 규칙·공통 경로 | [AGENTS.md](AGENTS.md) |
+| 작업 시작 규칙·공통 경로 | [AGENTS.md](AGENTS.md), [폴더 관리](AGENTS.md#folder-management), [README 관리](AGENTS.md#readme-management) |
 | 기획·제품 요구사항·Agent 설계 | [plan](docs/plan.md), [prd](docs/prd.md), [agent](docs/agent.md) |
 | API·자료 첨부/선택·C-05 편집 복귀·검증/승인 | [contracts](docs/contracts.md), [API 예시](docs/api_examples_v1.1.json) |
 | 추출문·직접 첨부 원본·오타 정정 | [추출문](docs/contracts.md#source-text-api), [원본](docs/contracts.md#source-original-api), [정정](docs/contracts.md#source-typo-correction) |
