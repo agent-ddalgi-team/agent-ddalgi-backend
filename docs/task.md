@@ -7,6 +7,8 @@
 
 ## 1. Quick Status
 
+- **2026-10-13 백엔드 README 축약:** 문서 정리 단위 완료 · 제품/Agent 상태 유지 · [task_backend.md 기록](task_backend.md#backend-readme-shortening-20261013).
+
 - **F-05/BE-06 원문 오타 정정:** 구현·격리 검증 완료, 사용자 요청 PR 생성·통합 검수 완료 · 2026-10-12 · [백엔드 기록](task_backend.md#source-typo-correction-20261012). 일반품질·Agent 상태 유지.
 
 - **F-01/C-01·BE-10/F-08 거산 실자료 화면 검수:** 표본 검수·3건 수정/회귀 완료 · 2026-10-12 · [기록](task_backend.md#geosan-full-ui-20261012). 일반품질 진행중 유지.

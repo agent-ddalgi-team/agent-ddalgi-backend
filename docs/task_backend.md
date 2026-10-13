@@ -7,6 +7,8 @@
 
 ## 1. Quick Status
 
+- **2026-10-13 README 축약:** 문서 정리 단위 완료/제품 상태 유지 · [상세·검증](#backend-readme-shortening-20261013).
+
 - **2026-10-12 F-05/BE-06 원문 오타 정정:** 입력·근거 기록·재검증 구현/격리 검증 완료. [결과와 제한](#source-typo-correction-20261012). 일반품질·Agent 상태 유지.
 
 <a id="source-typo-correction-20261012"></a>
@@ -2019,3 +2021,47 @@
 - 새 테스트 세션 종료와 AI 참조 정리도 통과했다. 임시 위치는 Temp/ddalgi-ai-ui-7CCFld, session-expired-start.png를 시각 확인해 만료 문구·사용 가능한 새 작업 버튼·비활성 편집/승인 단계·빈 자료 상태를 확인했다. 이 옵션은 기존 문서에서 최종 승인까지 수행하지 않으므로 실제 승인된 산출물의 만료 검수로 확대하지 않는다. 해당 서버 승인/다운로드 만료 검사는 앞선12건 결과로 구분한다.
 - 검사 도구ESLint/Node 구문/git diff --check 통과. 프론트 제품 변경 없이 기존 검사/README2파일을 로컬 커밋292fe2d에 저장하고 미추적.claude/는 제외했다. 백엔드는 자기 기록3파일만 기존qa브랜치에 로컬커밋한다. 전체 회귀·빌드·유료 AI 시험은 새로 반복하지 않았고 원격push/PR도 하지 않는다.
 - 만료 안내/복귀의 구현·실화면 검수 단위는 완료이며 새로운 제품 결함은 발견하지 못했다. 다른 담당 상태와 BE-10/F-08 일반품질은 유지한다. 새 재현 오류나 요구 없이 동일 검사를 늘리지 않으며 다음 공유 대상은 프론트develop과 백엔드test다.
+
+
+<a id="backend-readme-shortening-20261013"></a>
+### 2026-10-13 README 축약·상세 안내 연결 (백엔드 문서 정리)
+
+- 요청: 팀원의 평소 실행/검사/폴더 안내만 README에 유지하고 상세 내용을 기존 문서로 이동. 최신 폴더 구조·실행 데이터 안내는 유지한다. 새 codex/backend-readme-guide-20261013은 origin/test 839a59b에서 시작했다.
+- 변경: README에 일상 실행·기본 테스트·현재 폴더 역할·저장/보관·경로 지정 요약·문서 링크와 접힌 초기 설치 안내를 남겼다. plan.md 9절에 상세 저장/실행/HTTP검사/DB관리/출력/정리/등록 안내를 옮겼고 API 중복은 contracts.md 원본 링크로 대체했다. 기존 문서만 수정한다.
+- 현재 대조: 계약1.13·schema1.0·DBv11·template_v11, 기본 runtime/명시 interactive와 run_llm 옵션, config의 상대 경로·세션 보관 규칙을 대조했다. 옛 미병합/계약1.6·1.9/템플릿v1·v3·v7/경고 확인 UI 후속/DB 적재 대기 표현을 현재 안내에서 제외한다. 과거 개인 PC 기록은 아래에 한정한다.
+- 경계: data/mock·real·private_runs 재구성은 아직 미구현이며 이번에는 폴더 이동/코드/환경/DB/프론트 변경이 없다. BE-10/F-08 일반 품질·Agent 상태는 유지한다. 해당 구현·품질 전체 완료로 기록하지 않는다.
+- 검증: README 481→112행, 새/이동 문서의 로컬 링크·앵커47건 누락0, 구조 경로15곳 존재, Markdown 코드 블록 짝·git diff --check 통과. .env 및 private_runs 원문/DB/WAL/SHM 등49파일의 시작/종료 SHA-256 동일·파일 누락0. 공통 task 2절 이후와 Agent 담당 상태 변경0. 변경은 기존 문서4개뿐이다. 서버/마이그레이션/유료 AI/기능 테스트는 문서 변경이므로 미실행이며 과거 결과를 새 통과로 계산하지 않는다. 로컬 커밋까지만 수행하고 push·PR·test 병합은 하지 않는다. 다음은 사용자 요청 시 문서 공유이며 제품 품질 상태는 유지한다.
+
+#### 이전 README에서 이동한 개인 PC·시연 기록
+
+아래는 README(test 839a59b)에 있던 당시 기록이다. 개인 경로/브랜치/DB 내용/한도/서버 상태는 현재 팀 공통 설정이 아니다. 기존 실행 명령은 읽기 참고용이며 같은 폴더/설정이 지금 존재한다고 가정하지 않는다. 현재 실행은 [README](../README.md), 상세 설정은 [plan 9절](plan.md#backend-ai-run)을 사용한다. 이 작업에서 .env나 DB 내부는 열지 않았다.
+
+**2026-10-12 가상환경 복구 당시 기록:**  같은 Python 3.13.12와 설치 패키지 87개의 이름·버전을 유지하며 활성화 스크립트와 패키지 실행기를 복구했다. Uvicorn·pytest·Alembic의 직접 실행기와 PowerShell/CMD 활성화를 확인했고 관련 테스트295개가 통과했다. `.env`와 DB 관련 파일은 변경 전후 해시가 동일하다. 다른 PC에서는 `.venv`를 복사하지 말고 그 PC에서 `uv sync --locked`로 구성한다. 로컬 `.venv`는 Git 공유 대상이 아니므로 이 복구가 다른 PC에 자동 적용되지는 않는다. [복구 기록](task_backend.md#venv-path-repair-20261012).
+
+**2026-10-06 시연·인계(10-12 경로 갱신) 당시 기록:**
+
+현재 백엔드 작업본은 `C:\final\backend`의 `codex/organize-markdown-docs` 브랜치다. 아래 시연 결과는 2026-10-06 당시 기록이며 현재 세션·출력 파일의 유효성을 보장하지 않는다. 기존 시연 자료를 이어서 사용하려면 아래 폴더와 DB를 지정한다. 서버 재시작은 DB를 재생성하지 않는다. 경로의 DB가 없으면 실행을 멈추고 복원 여부를 확인한다.
+
+```powershell
+Set-Location C:\final\backend
+$env:PRIVATE_RUNS_DIR = (Resolve-Path -LiteralPath '.\private_runs\demo_preview_20260929_131826').Path
+$env:DB_PATH = Join-Path $env:PRIVATE_RUNS_DIR 'app.sqlite3'
+if (-not (Test-Path -LiteralPath $env:DB_PATH -PathType Leaf)) { throw '기존 시연 DB가 없습니다.' }
+$env:EXPORT_LIBREOFFICE_PATH = 'C:\Program Files\LibreOffice\program\soffice.com'
+$env:OPENAI_EXECUTION_MODE = 'runtime'
+.\scripts\run_llm.ps1 -Demo -ContentReview -TextProposals -CheckOnly
+# 설정 확인 후 서버 시작 (8000 포트의 기존 서버가 종료된 상태에서 실행)
+.\scripts\run_llm.ps1 -Demo -ContentReview -TextProposals
+```
+
+스크립트 기본값은 입력 200,000자·내용 검증 **400,000자**·출력 64,000토큰·요청 제한 180초·재시도 2회다. 검증 한도를 별도 옵션으로 낮출 필요가 없다. 이 실행은 실제 AI 호출을 허용하며 `.env`의 모델·키를 그대로 사용한다. `-CheckOnly` 자체는 AI 호출이나 서버 시작을 하지 않는다.
+
+프론트 작업본은 `C:\final\frontend`다. 해당 폴더에서 `npm run dev -- --host 127.0.0.1`로 실행한 뒤 [백엔드 연동 화면](http://localhost:5173/)을 연다. `?preview=1`은 가상 자료 미리보기다. 백엔드 API 문서는 [8000/docs](http://127.0.0.1:8000/docs)에서 확인한다. 이미 서버가 켜져 있으면 중복 실행하지 않는다.
+
+현재 시연 DB에는 고객 제안용 8쪽(revision 7)과 품질 심사용 9쪽(revision 3)의 PDF·LibreOffice DOCX 승인/출력 결과가 있다. 세션·출력 만료와 종료 정리 정책은 계속 적용되므로 DB 보존만으로 승인 파일을 영구 재다운로드할 수 있는 것은 아니다. DOCX 배치 검사는 LibreOffice 기준이며 Word에서는 글꼴·쪽 나눔이 달라질 수 있다.
+
+현재 API 계약은 1.9, 데이터 형식은 1.0, DB는 v11, 출력 템플릿은 `template_v10`이다. 서버 기능 및 두 시연 표본 검수는 완료했다. 전체 회귀 1,807 passed/10 skipped와 이후 사진 분할 관련 10 passed는 각각의 검사 기록이다. 다른 목적·업종의 AI 품질, 제외 ISO 자료의 회사 확인, 별도 프론트 작업 공유는 남아 있다. 완료 범위·제한·검사 근거는 [백엔드 인계 기록](task_backend.md#backend-handoff-20261006)을 따른다.
+
+**2026-09-29 DB 전환 당시 기록:**
+
+사용자 요청으로 자료 적재는 보류했다. `.env`는 `private_runs/erd_v2`를 사용하며, 활성 DB는 **v11 / Alembic `20260929_01`, 업무 테이블 25개·업무 데이터 0건**이다. Alembic 관리 테이블/버전 행은 별도로 유지한다. 이전 `private_runs/app.sqlite3`와 연결 파일은 사용자 요청으로 삭제했다(6.28절). 원본 자료와 새 폴더의 준비용 복사본은 보관하며 이번 구조 변경에서 수정·삭제하지 않았다. 나중에 적재를 요청하면 준비된 `import_packages/real`·`import_packages/demo` 묶음을 기존 적재기로 넣을 수 있다. 기존 대상 폴더에 위 재생성 명령을 다시 실행하면 보호 검사로 중단한다. 다른 PC의 기존 v10 DB는 새 코드를 받은 뒤 서버를 중지하고 `uv run python -m alembic upgrade head`로 갱신한다. 적용·검증 결과는 `task_backend.md` 6.31절을 따른다.
