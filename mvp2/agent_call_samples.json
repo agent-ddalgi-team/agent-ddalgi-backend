@@ -1,0 +1,840 @@
+{
+  "_about": "거산케미칼 AI 영업지원 · 백엔드↔에이전트 호출 샘플 (2026-10-14, 2차 기획서 v0.15 기준, 가상 데이터). 필드명은 기획서 4.4.5의 테이블 필드를 우선 사용했고, 없는 것은 제안입니다.",
+  "_rules": {
+    "호출 A 추출": "LLM. 허용된 원문(external_ai_allowed=허용/공개)만 보냄. 출력은 후보(suggested_*)이며 사람이 확인해야 평가 입력이 됨.",
+    "호출 B 평가": "규칙 엔진(결정적). 같은 요청이면 같은 응답. 점수·분류·정렬을 계산하고 질문·다음 행동 초안을 붙임.",
+    "미확보": "score=null. 0점(불일치·가점 없음·신호 없음)과 구분.",
+    "필터 우선": "filter_state가 미확인/제외이면 metrics와 무관하게 classification이 2/1.",
+    "오류": "run_status=오류이면 classification=null, ranked=false. 순위에 넣지 않음."
+  },
+  "call_A_extract": {
+    "request": {
+      "opp_id": "OPP-002",
+      "customer_id": "CUS-002",
+      "profile": "B",
+      "base_date": "2026-10-14",
+      "data_kind": "virtual",
+      "sources": [
+        {
+          "evidence_id": "EVD-00201",
+          "source_grade": "A",
+          "source_ref": "고객 담당자 메일 2026-10-08 (사용 허용 기록 CONS-011)",
+          "external_ai_allowed": "허용",
+          "event_date": "2026-10-08",
+          "text": "(허용된 요약) 체결용 볼트 신규 품목 문의. 소재 탄소강, 아연도금 후 유색 크로메이트. 두께 8㎛ 이상. 월 20만 개 수준 언급. 기존 결제·납품 방식 유지 희망."
+        },
+        {
+          "evidence_id": "EVD-00206",
+          "source_grade": "C",
+          "source_ref": "산업 언론 2026-09-30",
+          "external_ai_allowed": "공개",
+          "event_date": "2026-09-30",
+          "text": "(공개) 모회사 전장 사업 확대 보도."
+        }
+      ],
+      "targets": [
+        "B1",
+        "B2",
+        "B3",
+        "B4",
+        "B5",
+        "B6",
+        "B7",
+        "B8",
+        "REQUIREMENTS",
+        "SIGNALS"
+      ]
+    },
+    "response": {
+      "extract_id": "EXT-002-1",
+      "opp_id": "OPP-002",
+      "model": "(사용 모델·버전 기록)",
+      "prompt_version": "extract-v0.1",
+      "needs_confirmation": true,
+      "candidates": [
+        {
+          "item_code": "B1",
+          "fact": "체결용 볼트 신규 품목 생산·조달",
+          "evidence_id": "EVD-00201",
+          "relation": "직접",
+          "suggested_state": "확인",
+          "suggested_match": 1
+        },
+        {
+          "item_code": "B2",
+          "fact": "탄소강 · 아연도금 + 유색 크로메이트 (거산 보유 공정과 대조 필요)",
+          "evidence_id": "EVD-00201",
+          "relation": "직접",
+          "suggested_state": "확인",
+          "suggested_match": 1
+        },
+        {
+          "item_code": "B3",
+          "fact": null,
+          "suggested_state": "미확보",
+          "note": "거산 실적 DB와 대조해야 함 (고객 자료에서는 판단 불가)"
+        },
+        {
+          "item_code": "B4",
+          "fact": null,
+          "suggested_state": "미확보",
+          "note": "성능 목적(내식 시간 등) 언급 없음"
+        },
+        {
+          "item_code": "B6",
+          "fact": "모회사 전장 사업 확대",
+          "evidence_id": "EVD-00206",
+          "relation": "간접",
+          "suggested_state": "확인",
+          "suggested_match": 0.5,
+          "event_date": "2026-09-30"
+        }
+      ],
+      "requirement_candidates": [
+        {
+          "text": "아연도금 두께 8㎛ 이상",
+          "req_level_hint": "필수",
+          "scope_hint": "process_link",
+          "process_hint": "아연도금",
+          "evidence_id": "EVD-00201"
+        },
+        {
+          "text": "아연도금 후 3가 크로메이트(유색) 처리",
+          "req_level_hint": "필수",
+          "scope_hint": "process_link",
+          "process_hint": "크로메이트",
+          "evidence_id": "EVD-00201"
+        },
+        {
+          "text": "월 20만 개 처리",
+          "req_level_hint": "미확인",
+          "scope_hint": "opportunity",
+          "evidence_id": "EVD-00201",
+          "note": "필수인지 희망인지 문장만으로 판단 불가"
+        },
+        {
+          "text": "기존 결제·납품 방식 유지",
+          "req_level_hint": "우대",
+          "scope_hint": "opportunity",
+          "evidence_id": "EVD-00201"
+        }
+      ],
+      "question_hints": [
+        "월 20만 개가 필수 조건인지",
+        "요구 성능(염수분무 시간 등)이 정해져 있는지"
+      ],
+      "not_sent": []
+    }
+  },
+  "call_B_evaluate": {
+    "request": {
+      "opp_id": "OPP-002",
+      "customer_id": "CUS-002",
+      "batch_id": "B20261014-01",
+      "profile": "B",
+      "profile_reason": "기존 고객의 새 품목·프로젝트 → 신규 기회 프로필. 커넥터 건 이력은 가점에 쓰지 않음 (S04)",
+      "relation_status": "기존 관계 확인",
+      "base_date": "2026-10-14",
+      "rule_version": "rules-v0.15",
+      "capdb_version": "cap-2026-10-12 (가상)",
+      "data_kind": "virtual",
+      "ops_ready": true,
+      "process_links": [
+        {
+          "link_id": "LNK-002-ZN",
+          "process": "아연도금",
+          "material": "탄소강"
+        },
+        {
+          "link_id": "LNK-002-CRM",
+          "process": "크로메이트",
+          "material": "아연도금 후"
+        }
+      ],
+      "items": [
+        {
+          "item_code": "B1",
+          "state": "확인",
+          "evidence_ids": [
+            "EVD-00201"
+          ],
+          "note": "체결용 볼트 신규 품목 문의",
+          "match_rate": 1
+        },
+        {
+          "item_code": "B2",
+          "state": "확인",
+          "evidence_ids": [
+            "EVD-00202"
+          ],
+          "note": "탄소강 · 아연도금+유색 크로메이트 ↔ 거산 보유(검수 완료)",
+          "match_rate": 1
+        },
+        {
+          "item_code": "B3",
+          "state": "확인",
+          "evidence_ids": [
+            "EVD-00203"
+          ],
+          "note": "동일 품목(볼트) 아연도금 실적",
+          "match_rate": 1
+        },
+        {
+          "item_code": "B4",
+          "state": "미확보",
+          "evidence_ids": [],
+          "note": "요구 성능(염수분무 등) 미확보"
+        },
+        {
+          "item_code": "B5",
+          "state": "신호 없음",
+          "evidence_ids": [
+            "EVD-00205"
+          ],
+          "note": "증설 신호 없음 확인",
+          "match_rate": 1
+        },
+        {
+          "item_code": "B6",
+          "state": "확인",
+          "evidence_ids": [
+            "EVD-00206"
+          ],
+          "note": "모회사 전장 사업 확대 (간접) → 일치도 0.5",
+          "match_rate": 0.5,
+          "event_date": "2026-09-30"
+        },
+        {
+          "item_code": "B7",
+          "state": "미확보",
+          "evidence_ids": [],
+          "note": "공고 소스 미조회"
+        },
+        {
+          "item_code": "B8",
+          "state": "신호 없음",
+          "evidence_ids": [
+            "EVD-00208"
+          ],
+          "note": "관련 공고 없음 확인",
+          "match_rate": 1
+        }
+      ],
+      "requirements": [
+        {
+          "req_id": "R1",
+          "text": "기존 거래 조건(결제·납품 방식) 유지 희망",
+          "req_level": "우대",
+          "scope_kind": "opportunity",
+          "link_id": null,
+          "stage_required": "현재 단계",
+          "customer_evidence_state": "확인",
+          "capability_check": {
+            "status": "검수 완료",
+            "match": "일치",
+            "note": "고객 메일(A등급)에서 확인. 우대 조건이라 가점 없음, 제안 근거로 표시"
+          }
+        },
+        {
+          "req_id": "R4",
+          "text": "아연도금 두께 8㎛ 이상",
+          "req_level": "필수",
+          "scope_kind": "process_link",
+          "link_id": "LNK-002-ZN",
+          "stage_required": "현재 단계",
+          "customer_evidence_state": "확인",
+          "capability_check": {
+            "status": "검수 완료",
+            "match": "일치",
+            "note": "거산 아연도금 두께 범위 5~12㎛ · 검수 완료(가상)"
+          }
+        },
+        {
+          "req_id": "R5",
+          "text": "염수분무 72시간 시험 성적서",
+          "req_level": "우대",
+          "scope_kind": "process_link",
+          "link_id": "LNK-002-ZN",
+          "stage_required": "샘플 단계",
+          "customer_evidence_state": "확인",
+          "capability_check": {
+            "status": "검수 대기",
+            "match": null,
+            "note": "거산 시험 성적 검수 대기. 우대 조건이라 접촉을 막지 않음"
+          }
+        },
+        {
+          "req_id": "R6",
+          "text": "월 20만 개 처리",
+          "req_level": "미확인",
+          "scope_kind": "opportunity",
+          "link_id": null,
+          "stage_required": null,
+          "customer_evidence_state": "미확인",
+          "capability_check": null
+        },
+        {
+          "req_id": "R7",
+          "text": "아연도금 후 3가 크로메이트(유색) 처리",
+          "req_level": "필수",
+          "scope_kind": "process_link",
+          "link_id": "LNK-002-CRM",
+          "stage_required": "현재 단계",
+          "customer_evidence_state": "확인",
+          "capability_check": {
+            "status": "검수 완료",
+            "match": "일치",
+            "note": "거산 크로메이트 보유 · 검수 완료(가상)"
+          }
+        }
+      ],
+      "evidence": [
+        {
+          "evidence_id": "EVD-00201",
+          "source_grade": "A",
+          "source_ref": "고객 메일 (사용 허용)",
+          "event_date": "2026-10-08",
+          "summary": "체결용 볼트 신규 품목 문의",
+          "external_ai_allowed": "허용(사용 허용 기록 있음)"
+        },
+        {
+          "evidence_id": "EVD-00202",
+          "source_grade": "A",
+          "source_ref": "고객 메일",
+          "event_date": "2026-10-08",
+          "summary": "탄소강 · 아연도금+유색 크로메이트 ↔ 거산 보유(검수 완료)",
+          "external_ai_allowed": "허용(사용 허용 기록 있음)"
+        },
+        {
+          "evidence_id": "EVD-00203",
+          "source_grade": "A",
+          "source_ref": "거산 비식별 실적(가상)",
+          "event_date": "2026-10-12",
+          "summary": "동일 품목(볼트) 아연도금 실적",
+          "external_ai_allowed": "허용(사용 허용 기록 있음)"
+        },
+        {
+          "evidence_id": "EVD-00205",
+          "source_grade": null,
+          "source_ref": "보도·공시 소스 조회",
+          "event_date": "2026-10-13",
+          "summary": "증설 신호 없음 확인",
+          "external_ai_allowed": "공개"
+        },
+        {
+          "evidence_id": "EVD-00206",
+          "source_grade": "C",
+          "source_ref": "언론",
+          "event_date": "2026-09-30",
+          "summary": "모회사 전장 사업 확대 (간접) → 일치도 0.5",
+          "external_ai_allowed": "공개"
+        },
+        {
+          "evidence_id": "EVD-00208",
+          "source_grade": null,
+          "source_ref": "채용 소스 조회",
+          "event_date": "2026-10-13",
+          "summary": "관련 공고 없음 확인",
+          "external_ai_allowed": "공개"
+        }
+      ],
+      "timing_requirements": {
+        "direct_action_signal": false,
+        "deadline_confirmed": false,
+        "ready_confirmed": false,
+        "deadline": null,
+        "notes": []
+      },
+      "research_requirements": null
+    },
+    "response": {
+      "eval_id": "EVAL-002",
+      "opp_id": "OPP-002",
+      "batch_id": "B20261014-01",
+      "run_status": "완료",
+      "profile": "B",
+      "base_date": "2026-10-14",
+      "data_kind": "virtual",
+      "filter_state": "통과",
+      "filter_reasons": [],
+      "requirement_checks": [
+        {
+          "req_id": "R1",
+          "result": "통과",
+          "result_kind": null,
+          "scope": "기회 전체",
+          "stage": "현재 단계",
+          "reason": "고객 메일(A등급)에서 확인. 우대 조건이라 가점 없음, 제안 근거로 표시",
+          "checked_at": "2026-10-08"
+        },
+        {
+          "req_id": "R4",
+          "result": "통과",
+          "result_kind": null,
+          "scope": "공정: 아연도금",
+          "stage": "현재 단계",
+          "reason": "거산 아연도금 두께 범위 5~12㎛ · 검수 완료(가상)",
+          "checked_at": "2026-10-12"
+        },
+        {
+          "req_id": "R5",
+          "result": "미확인",
+          "result_kind": "충족 미확인",
+          "scope": "공정: 아연도금",
+          "stage": "샘플 단계",
+          "reason": "거산 시험 성적 검수 대기. 우대 조건이라 접촉을 막지 않음",
+          "checked_at": null
+        },
+        {
+          "req_id": "R6",
+          "result": "미확인",
+          "result_kind": "요구 미확인",
+          "scope": "기회 전체",
+          "stage": "—",
+          "reason": "필수인지 희망인지 아직 모름. 수량·생산 여력은 담당자 확인 사항",
+          "checked_at": null
+        },
+        {
+          "req_id": "R7",
+          "result": "통과",
+          "result_kind": null,
+          "scope": "공정: 크로메이트",
+          "stage": "현재 단계",
+          "reason": "거산 크로메이트 보유 · 검수 완료(가상)",
+          "checked_at": "2026-10-12"
+        }
+      ],
+      "items": [
+        {
+          "item_code": "B1",
+          "name": "제품·부품 생산 근거",
+          "weight": 25,
+          "axis": "F",
+          "state": "확인",
+          "match_rate": 1,
+          "certainty": 1,
+          "decay": 1,
+          "score": 25,
+          "evidence_note": "체결용 볼트 신규 품목 문의"
+        },
+        {
+          "item_code": "B2",
+          "name": "소재·보유 공정 일치",
+          "weight": 20,
+          "axis": "F",
+          "state": "확인",
+          "match_rate": 1,
+          "certainty": 1,
+          "decay": 1,
+          "score": 20,
+          "evidence_note": "탄소강 · 아연도금+유색 크로메이트 ↔ 거산 보유(검수 완료)"
+        },
+        {
+          "item_code": "B3",
+          "name": "유사 산업·부품 실적",
+          "weight": 15,
+          "axis": "F",
+          "state": "확인",
+          "match_rate": 1,
+          "certainty": 1,
+          "decay": 1,
+          "score": 15,
+          "evidence_note": "동일 품목(볼트) 아연도금 실적"
+        },
+        {
+          "item_code": "B4",
+          "name": "처리 목적·성능 태그",
+          "weight": 10,
+          "axis": "F",
+          "state": "미확보",
+          "match_rate": null,
+          "certainty": null,
+          "decay": null,
+          "score": null,
+          "evidence_note": "요구 성능(염수분무 등) 미확보"
+        },
+        {
+          "item_code": "B5",
+          "name": "증설·신규 라인",
+          "weight": 10,
+          "axis": "T",
+          "state": "신호 없음",
+          "match_rate": 1,
+          "certainty": 0,
+          "decay": 1,
+          "score": 0,
+          "evidence_note": "증설 신호 없음 확인"
+        },
+        {
+          "item_code": "B6",
+          "name": "신규 수주·사업 확대",
+          "weight": 8,
+          "axis": "T",
+          "state": "확인",
+          "match_rate": 0.5,
+          "certainty": 1,
+          "decay": 1,
+          "score": 4,
+          "evidence_note": "모회사 전장 사업 확대 (간접) → 일치도 0.5"
+        },
+        {
+          "item_code": "B7",
+          "name": "입찰·협력사 모집 공고",
+          "weight": 7,
+          "axis": "T",
+          "state": "미확보",
+          "match_rate": null,
+          "certainty": null,
+          "decay": null,
+          "score": null,
+          "evidence_note": "공고 소스 미조회"
+        },
+        {
+          "item_code": "B8",
+          "name": "관련 직무 채용",
+          "weight": 5,
+          "axis": "T",
+          "state": "신호 없음",
+          "match_rate": 1,
+          "certainty": 0,
+          "decay": 1,
+          "score": 0,
+          "evidence_note": "관련 공고 없음 확인"
+        }
+      ],
+      "metrics": {
+        "E": 64,
+        "F": 60,
+        "T": 4,
+        "P": 83,
+        "S": 77.1,
+        "C": 75,
+        "R": 81,
+        "direct_confirmed_weight": 68,
+        "judged_items": 6,
+        "total_items": 8
+      },
+      "flags": {
+        "ops_ready": true,
+        "core_evidence": "충족",
+        "core_reason": "고객 연결 근거 확인/강한 추정 + 거산 근거 검수 완료",
+        "timing_priority": false,
+        "research_ready": null
+      },
+      "classification": {
+        "rule": 7,
+        "code": "CONTACT_REVIEW",
+        "label": "담당자 검토 후 접촉 후보",
+        "group": "contact"
+      },
+      "ranked": true,
+      "sort_keys": {
+        "deadline": null,
+        "E": 64,
+        "F": 60,
+        "direct_confirmed_weight": 68,
+        "P": 83,
+        "recheck_date": null
+      },
+      "blocking": [],
+      "questions": {
+        "internal": [
+          "염수분무 72시간 시험 성적서 보유 여부 (R5, 검수 대기)",
+          "월 20만 개 처리 가능 여부 — 담당자 확인 사항, 시스템이 확정하지 않음"
+        ],
+        "customer": [
+          "월 20만 개 처리 요구가 필수 조건인지, 희망 수준인지",
+          "도금 후 크로메이트 색상(유색/흑색)과 외관 기준",
+          "요구 성능(염수분무 시간 등)이 정해져 있는지"
+        ],
+        "generation": "완료"
+      },
+      "next_action": {
+        "text": "담당자 검토 후 접촉. 검수된 아연도금·크로메이트 역량을 소개하고 성능·수량 요구를 확인합니다.",
+        "purpose": "검수된 역량 소개",
+        "owner": "영업 담당",
+        "deadline": null
+      },
+      "explanation": "고객 메일로 품목·소재·공정이 직접 확인됐고 거산 아연도금·크로메이트 역량은 검수 완료입니다. E 64 · P 83으로 검토 후 접촉 기준(E 60 · P 70)을 넘습니다. 성능 요구와 수량 요구는 아직 몰라 질문으로 남깁니다.",
+      "versions": {
+        "rule_version": "rules-v0.15",
+        "rule_hash": "sha256:a91f3c2… (가상)",
+        "code_version": "engine-0.2.0 (가상)",
+        "capdb_version": "cap-2026-10-12 (가상)"
+      },
+      "created_at": "2026-10-14T08:30:00+09:00"
+    }
+  },
+  "call_B_error": {
+    "request_note": "OPP-006 입력에서 requirements[2].link_id가 process_links에 없는 값",
+    "response": {
+      "eval_id": "EVAL-006",
+      "opp_id": "OPP-006",
+      "batch_id": "B20261014-01",
+      "run_status": "오류",
+      "error": {
+        "code": "INPUT_INVALID",
+        "field": "requirements[2].link_id",
+        "message": "입력 검증 실패 — 요구 R3(공정별 필수)의 link_id가 공정 연결(인산염피막)과 일치하지 않습니다. BE가 입력을 수정한 뒤 다시 평가해야 합니다."
+      },
+      "classification": null,
+      "ranked": false,
+      "versions": {
+        "rule_version": "rules-v0.15",
+        "rule_hash": "sha256:a91f3c2… (가상)",
+        "code_version": "engine-0.2.0 (가상)",
+        "capdb_version": "cap-2026-10-12 (가상)"
+      },
+      "data_kind": "virtual"
+    }
+  },
+  "code_tables": {
+    "classification": [
+      {
+        "rule": 1,
+        "code": "EXCLUDED",
+        "label": "해당 범위 제외",
+        "group": "exclude"
+      },
+      {
+        "rule": 2,
+        "code": "FILTER_PENDING",
+        "label": "필터 확인 대기",
+        "group": "check"
+      },
+      {
+        "rule": 3,
+        "code": "OPS_PENDING",
+        "label": "운영 검증 대기",
+        "group": "check"
+      },
+      {
+        "rule": 4,
+        "code": "INITIAL_PENDING",
+        "label": "초기 평가 대기",
+        "group": "check"
+      },
+      {
+        "rule": 5,
+        "code": "CONTACT_TIMING",
+        "label": "시점 우선 접촉 후보",
+        "group": "contact"
+      },
+      {
+        "rule": 6,
+        "code": "CONTACT_PLANNED",
+        "label": "계획형 접촉 후보",
+        "group": "contact"
+      },
+      {
+        "rule": 7,
+        "code": "CONTACT_REVIEW",
+        "label": "담당자 검토 후 접촉 후보",
+        "group": "contact"
+      },
+      {
+        "rule": 8,
+        "code": "RESEARCH_READY",
+        "label": "추가조사 검토 대기",
+        "group": "research"
+      },
+      {
+        "rule": 9,
+        "code": "RESEARCH_CONDITIONAL",
+        "label": "조건부 대기",
+        "group": "research"
+      },
+      {
+        "rule": 10,
+        "code": "WATCH",
+        "label": "관찰",
+        "group": "watch"
+      },
+      {
+        "rule": 11,
+        "code": "LOW_PRIORITY",
+        "label": "후순위",
+        "group": "watch"
+      },
+      {
+        "rule": 0,
+        "code": "RUN_ERROR",
+        "label": "평가 오류",
+        "group": "error"
+      }
+    ],
+    "item_codes_B": [
+      {
+        "item_code": "B1",
+        "name": "제품·부품 생산 근거",
+        "weight": 25,
+        "axis": "F"
+      },
+      {
+        "item_code": "B2",
+        "name": "소재·보유 공정 일치",
+        "weight": 20,
+        "axis": "F"
+      },
+      {
+        "item_code": "B3",
+        "name": "유사 산업·부품 실적",
+        "weight": 15,
+        "axis": "F"
+      },
+      {
+        "item_code": "B4",
+        "name": "처리 목적·성능 태그",
+        "weight": 10,
+        "axis": "F"
+      },
+      {
+        "item_code": "B5",
+        "name": "증설·신규 라인",
+        "weight": 10,
+        "axis": "T"
+      },
+      {
+        "item_code": "B6",
+        "name": "신규 수주·사업 확대",
+        "weight": 8,
+        "axis": "T"
+      },
+      {
+        "item_code": "B7",
+        "name": "입찰·협력사 모집 공고",
+        "weight": 7,
+        "axis": "T"
+      },
+      {
+        "item_code": "B8",
+        "name": "관련 직무 채용",
+        "weight": 5,
+        "axis": "T"
+      }
+    ],
+    "item_codes_A": [
+      {
+        "item_code": "A1",
+        "name": "과거 공정·품목 일치",
+        "weight": 25,
+        "axis": "F"
+      },
+      {
+        "item_code": "A2",
+        "name": "과거 수주·샘플 승인",
+        "weight": 20,
+        "axis": "F"
+      },
+      {
+        "item_code": "A3",
+        "name": "과거 요구조건 충족",
+        "weight": 15,
+        "axis": "F"
+      },
+      {
+        "item_code": "A4",
+        "name": "실주·중단 사유 해소",
+        "weight": 10,
+        "axis": "F"
+      },
+      {
+        "item_code": "A5",
+        "name": "예상 재발주 시점",
+        "weight": 10,
+        "axis": "T"
+      },
+      {
+        "item_code": "A6",
+        "name": "신규 수주·증설 신호",
+        "weight": 10,
+        "axis": "T"
+      },
+      {
+        "item_code": "A7",
+        "name": "후속 연락 약속",
+        "weight": 10,
+        "axis": "T"
+      }
+    ],
+    "item_state": [
+      "확인",
+      "강한 추정",
+      "약한 추정",
+      "불일치",
+      "가점 없음",
+      "신호 없음",
+      "미확보"
+    ],
+    "certainty": {
+      "확인": 1,
+      "강한 추정": 0.65,
+      "약한 추정": 0.25,
+      "불일치": 0,
+      "가점 없음": 0,
+      "신호 없음": 0
+    },
+    "filter_state": [
+      "통과",
+      "미확인",
+      "제외"
+    ],
+    "requirement_result": [
+      "통과",
+      "미확인",
+      "제외"
+    ],
+    "requirement_result_kind_when_pending": [
+      "요구 미확인",
+      "충족 미확인"
+    ],
+    "req_level": [
+      "필수",
+      "우대",
+      "비요구",
+      "미확인"
+    ],
+    "scope_kind": [
+      "opportunity",
+      "process_link"
+    ],
+    "relation_status": [
+      "신규 확인",
+      "기존 관계 확인",
+      "관계 미확인"
+    ],
+    "review_opinion": [
+      "검토할 만함",
+      "추가 확인 필요",
+      "대상 아님"
+    ],
+    "contact_purpose": [
+      "요구 확인",
+      "검수된 역량 소개",
+      "기존 제안 후속 확인",
+      "일정 응답"
+    ],
+    "approval_status": [
+      "미정",
+      "승인",
+      "거절",
+      "취소"
+    ],
+    "outcome": [
+      "미실행",
+      "진행중",
+      "보류",
+      "수주",
+      "실주"
+    ],
+    "run_status": [
+      "실행 중",
+      "완료",
+      "오류"
+    ],
+    "data_kind": [
+      "real",
+      "virtual"
+    ]
+  }
+}
