@@ -1,0 +1,391 @@
+{
+  "rule_version": "rules-v0.15",
+  "basis": "설계서 3절 + 사용자 제공 부록 F 요지(2026-10-14). 원문 대조 TODO는 rule_engine.py 참조.",
+  "profiles": {
+    "B": [
+      {
+        "item_code": "B1",
+        "name": "제품·부품 생산 근거",
+        "weight": 25,
+        "axis": "F",
+        "match_rates": [
+          1
+        ],
+        "time_policy": "none"
+      },
+      {
+        "item_code": "B2",
+        "name": "소재·보유 공정 일치",
+        "weight": 20,
+        "axis": "F",
+        "match_rates": [
+          1,
+          0.5
+        ],
+        "time_policy": "none"
+      },
+      {
+        "item_code": "B3",
+        "name": "유사 산업·부품 실적",
+        "weight": 15,
+        "axis": "F",
+        "match_rates": [
+          1,
+          0.67,
+          0.33
+        ],
+        "time_policy": "none"
+      },
+      {
+        "item_code": "B4",
+        "name": "처리 목적·성능 태그",
+        "weight": 10,
+        "axis": "F",
+        "match_rates": [
+          1,
+          0.5
+        ],
+        "time_policy": "none"
+      },
+      {
+        "item_code": "B5",
+        "name": "증설·신규 라인",
+        "weight": 10,
+        "axis": "T",
+        "match_rates": [
+          1,
+          0.5
+        ],
+        "time_policy": "event"
+      },
+      {
+        "item_code": "B6",
+        "name": "신규 수주·사업 확대",
+        "weight": 8,
+        "axis": "T",
+        "match_rates": [
+          1,
+          0.5
+        ],
+        "time_policy": "event"
+      },
+      {
+        "item_code": "B7",
+        "name": "입찰·협력사 모집 공고",
+        "weight": 7,
+        "axis": "T",
+        "match_rates": [
+          1,
+          0.5
+        ],
+        "time_policy": "notice"
+      },
+      {
+        "item_code": "B8",
+        "name": "관련 직무 채용",
+        "weight": 5,
+        "axis": "T",
+        "match_rates": [
+          1,
+          0.5
+        ],
+        "time_policy": "hiring"
+      }
+    ],
+    "A": [
+      {
+        "item_code": "A1",
+        "name": "과거 공정·품목 일치",
+        "weight": 25,
+        "axis": "F",
+        "match_rates": [
+          1,
+          0.6,
+          0.3
+        ],
+        "time_policy": "none"
+      },
+      {
+        "item_code": "A2",
+        "name": "과거 수주·샘플 승인",
+        "weight": 20,
+        "axis": "F",
+        "match_rates": [
+          1,
+          0.7,
+          0.4
+        ],
+        "time_policy": "none"
+      },
+      {
+        "item_code": "A3",
+        "name": "과거 요구조건 충족",
+        "weight": 15,
+        "axis": "F",
+        "match_rates": [
+          1,
+          0.5
+        ],
+        "time_policy": "none"
+      },
+      {
+        "item_code": "A4",
+        "name": "실주·중단 사유 해소",
+        "weight": 10,
+        "axis": "F",
+        "match_rates": [
+          1,
+          0
+        ],
+        "time_policy": "none"
+      },
+      {
+        "item_code": "A5",
+        "name": "예상 재발주 시점",
+        "weight": 10,
+        "axis": "T",
+        "match_rates": [
+          1,
+          0.5,
+          0
+        ],
+        "time_policy": "reorder"
+      },
+      {
+        "item_code": "A6",
+        "name": "신규 수주·증설 신호",
+        "weight": 10,
+        "axis": "T",
+        "match_rates": [
+          1,
+          0.5
+        ],
+        "time_policy": "event"
+      },
+      {
+        "item_code": "A7",
+        "name": "후속 연락 약속",
+        "weight": 10,
+        "axis": "T",
+        "match_rates": [
+          1,
+          0.5,
+          0
+        ],
+        "time_policy": "appointment"
+      }
+    ]
+  },
+  "certainty": {
+    "확인": 1,
+    "강한 추정": 0.65,
+    "약한 추정": 0.25,
+    "불일치": 0,
+    "가점 없음": 0,
+    "신호 없음": 0,
+    "미확보": null
+  },
+  "rounding": {
+    "score_quantum": "1",
+    "display_quantum": "0.1",
+    "mode": "ROUND_HALF_UP"
+  },
+  "percent_scale": 100,
+  "zero_state_match_rate": 1,
+  "decay": {
+    "full": 1,
+    "zero": 0,
+    "event_bands": [
+      {
+        "max_days": 30,
+        "factor": 1
+      },
+      {
+        "max_days": 90,
+        "factor": 0.5
+      }
+    ],
+    "after_bands": 0
+  },
+  "schedule": {
+    "reorder": {
+      "date_field": "expected_date",
+      "absolute": true,
+      "bands": [
+        {
+          "min_days": 0,
+          "max_days": 60,
+          "match_rate": 1
+        },
+        {
+          "min_days": 61,
+          "max_days": 120,
+          "match_rate": 0.5
+        }
+      ],
+      "otherwise": 0,
+      "overdue_days": 120
+    },
+    "appointment": {
+      "date_field": "scheduled_date",
+      "absolute": false,
+      "bands": [
+        {
+          "min_days": -30,
+          "max_days": 30,
+          "match_rate": 1
+        },
+        {
+          "min_days": 31,
+          "max_days": 90,
+          "match_rate": 0.5
+        }
+      ],
+      "otherwise": 0,
+      "overdue_days": 30
+    }
+  },
+  "thresholds": {
+    "contact": 75,
+    "review_score": 60,
+    "review_coverage": 70,
+    "research_potential": 60,
+    "watch_potential": 40
+  },
+  "classification": {
+    "1": {
+      "rule": 1,
+      "code": "EXCLUDED",
+      "label": "해당 범위 제외",
+      "group": "exclude"
+    },
+    "2": {
+      "rule": 2,
+      "code": "FILTER_PENDING",
+      "label": "필터 확인 대기",
+      "group": "check"
+    },
+    "3": {
+      "rule": 3,
+      "code": "OPS_PENDING",
+      "label": "운영 검증 대기",
+      "group": "check"
+    },
+    "4": {
+      "rule": 4,
+      "code": "INITIAL_PENDING",
+      "label": "초기 평가 대기",
+      "group": "check"
+    },
+    "5": {
+      "rule": 5,
+      "code": "CONTACT_TIMING",
+      "label": "시점 우선 접촉 후보",
+      "group": "contact"
+    },
+    "6": {
+      "rule": 6,
+      "code": "CONTACT_PLANNED",
+      "label": "계획형 접촉 후보",
+      "group": "contact"
+    },
+    "7": {
+      "rule": 7,
+      "code": "CONTACT_REVIEW",
+      "label": "담당자 검토 후 접촉 후보",
+      "group": "contact"
+    },
+    "8": {
+      "rule": 8,
+      "code": "RESEARCH_READY",
+      "label": "추가조사 검토 대기",
+      "group": "research"
+    },
+    "9": {
+      "rule": 9,
+      "code": "RESEARCH_CONDITIONAL",
+      "label": "조건부 대기",
+      "group": "research"
+    },
+    "10": {
+      "rule": 10,
+      "code": "WATCH",
+      "label": "관찰",
+      "group": "watch"
+    },
+    "11": {
+      "rule": 11,
+      "code": "LOW_PRIORITY",
+      "label": "후순위",
+      "group": "watch"
+    }
+  },
+  "core": {
+    "accepted_states": [
+      "확인",
+      "강한 추정"
+    ],
+    "B_required_items": [
+      "B1",
+      "B2"
+    ],
+    "A_required_items": [
+      "A1"
+    ],
+    "A_reason_items": [
+      "A4",
+      "A5",
+      "A7"
+    ]
+  },
+  "timing_fields": [
+    "direct_action_signal",
+    "deadline_confirmed",
+    "ready_confirmed"
+  ],
+  "research_fields": [
+    "evidence_grade_ok",
+    "question_set",
+    "path_and_owner",
+    "can_change_class",
+    "time_capacity"
+  ],
+  "future_stages": [
+    "샘플 단계",
+    "양산 단계"
+  ],
+  "signal_statuses": [
+    "진행 중",
+    "마감",
+    "취소",
+    "예정",
+    "완료",
+    "미확인"
+  ],
+  "closed_statuses": [
+    "마감",
+    "취소",
+    "완료"
+  ],
+  "enums": {
+    "req_level": [
+      "필수",
+      "우대",
+      "비요구",
+      "미확인"
+    ],
+    "scope_kind": [
+      "opportunity",
+      "process_link"
+    ],
+    "relation_status": [
+      "신규 확인",
+      "기존 관계 확인",
+      "관계 미확인"
+    ],
+    "data_kind": [
+      "real",
+      "virtual"
+    ]
+  }
+}
