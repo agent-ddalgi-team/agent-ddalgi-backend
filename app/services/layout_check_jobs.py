@@ -2,13 +2,15 @@
 
 규칙
 - status=passed ⇔ render.layout_ok AND publication_policy_ok. required 검사가 not_checked면 passed가 될 수 없다(BE-07 규칙).
-  DOCX는 overflow가 not_checked라 이 범위에서는 항상 failed(fail_reasons에 overflow:not_checked). 파일 생성·PDF 기준 미리보기만 제공한다.
+  DOCX는 설정한 LibreOffice로 검사하며 엔진이 없으면 overflow=not_checked로 차단한다.
 - 완료 직전 재확인(같은 BEGIN IMMEDIATE 트랜잭션): 세션 active·미만료, 문서 현재 revision·입력 버전이 시작값과 같음, 공개 허가 현재 값,
   asset_manifest_hash 현재 DB값 = 스냅샷값. 하나라도 다르면 결과를 버리고(임시 산출물 삭제) Job failed.
 - layout Issue(origin=layout)는 이 형식의 것만 갱신·재검출·닫는다. 내용 Issue와 다른 형식의 Issue는 건드리지 않는다.
 - AI를 호출하지 않는다. 응답·result_ref에 서버 경로를 넣지 않는다.
 """
 from __future__ import annotations
+
+from collections import Counter
 
 import hashlib
 import json
@@ -33,6 +35,7 @@ CHECK_OF_CODE = {code: key for key, code in ISSUE_CODES.items()} | {"IMAGE_PUBLI
 LAYOUT_ISSUE_CODES = frozenset(ISSUE_CODES.values()) | {publication.ISSUE_CODE}
 DOCX_PREVIEW_WARNING = "DOCX 미리보기는 같은 스냅샷의 PDF 렌더 기준이며 DOCX 배치 검사 증거가 아닙니다. DOCX 쪽 나눔은 열람 프로그램에 따라 달라질 수 있습니다."
 DOCX_NOT_APPROVABLE = "DOCX는 넘침 검사를 실제로 수행하지 못해(overflow not_checked) 이 범위에서는 승인·출력할 수 없습니다."
+DOCX_CHECKED_WARNING = "DOCX 미리보기와 배치 검사는 해당 DOCX를 LibreOffice로 변환한 PDF 기준입니다. Word 등 다른 열람 프로그램·글꼴에서는 쪽 나눔이 달라질 수 있습니다."
 PREVIEW_SCALE = 1.0   # pypdfium2 render scale (72dpi 기준 1.0 ≈ 595×842px)
 
 
@@ -192,6 +195,11 @@ def run_layout_check_job(settings: Settings, session_id: str, job_id: str, docum
             document = _document_current(conn, session_row, document_id, document_revision, input_revision)
             snapshot = export_render.build_snapshot(conn, settings, session_id, document)
             pub_start = publication.check_document(conn, document)
+            jobs.record_trace(conn, job_id, "render_input", {"actual_mode": "renderer", "format": fmt,
+                "document_id": document_id, "document_revision": document_revision,
+                "input_revision": input_revision, "page_count": len(document.pages),
+                "block_count": sum(len(p.blocks) for p in document.pages),
+                "layout_keys": dict(Counter(p.layout_key for p in document.pages))})
             active_jobs = {r["job_id"] for r in conn.execute(
                 f"SELECT job_id FROM jobs WHERE status IN ({','.join('?' * len(jobs.ACTIVE))})", jobs.ACTIVE).fetchall()}
         # 임시 폴더는 세션이 살아 있음을 확인한 뒤 만든다(BE-09: 닫힌 세션 폴더 재생성 방지). 실행 중 Job의 폴더는 지우지 않는다.
@@ -202,7 +210,7 @@ def run_layout_check_job(settings: Settings, session_id: str, job_id: str, docum
         result = export_render.render(snapshot, fmt, tmp / "out", settings)
         preview_source = result.file_path
         if fmt == "docx":
-            preview_source = export_render.render(snapshot, "pdf", tmp / "preview_pdf", settings).file_path
+            preview_source = result.preview_path or export_render.render(snapshot, "pdf", tmp / "preview_pdf", settings).file_path
         previews = _render_previews(preview_source, tmp / "png")
 
         with connect(settings.db_path, immediate=True) as conn:
@@ -224,7 +232,7 @@ def run_layout_check_job(settings: Settings, session_id: str, job_id: str, docum
                                               checks=result.checks, publication_checked=True)
             fail_reasons = [f"{c.check_key}:{c.result}" for c in result.checks if c.required and c.result != "ok"] + pub.reason_codes()
             status = "passed" if (result.layout_ok and pub.ok) else "failed"
-            warnings = [DOCX_PREVIEW_WARNING, DOCX_NOT_APPROVABLE] if fmt == "docx" else []
+            warnings = ([DOCX_CHECKED_WARNING] if result.preview_path else [DOCX_PREVIEW_WARNING, DOCX_NOT_APPROVABLE]) if fmt == "docx" else []
             stamp = to_iso(now())
             conn.execute(
                 "INSERT INTO layout_checks (layout_check_id, session_id, document_id, document_revision, input_revision, format, "
@@ -239,6 +247,10 @@ def run_layout_check_job(settings: Settings, session_id: str, job_id: str, docum
                  json.dumps([f.__dict__ for f in result.findings], ensure_ascii=False),
                  json.dumps(fail_reasons), result.renderer, artifact["artifact_id"], "pdf", json.dumps(preview_ids), job_id,
                  pub.checked_at, json.dumps(warnings, ensure_ascii=False), json.dumps(pub.as_out(), ensure_ascii=False), int(snapshot.demo)))
+            jobs.record_trace(conn, job_id, "render_result", {"renderer": result.renderer,
+                "actual_pages": result.actual_pages, "layout_ok": result.layout_ok, "status": status,
+                "template_version": result.template_version, "check_results":
+                    {c.check_key: c.result for c in result.checks}})
             jobs.succeed(conn, job_id, {"layout_check_id": layout_check_id, "format": fmt, "status": status,
                                          "layout_ok": result.layout_ok, "publication_policy_ok": pub.ok,
                                          "actual_pages": result.actual_pages, "artifact_id": artifact["artifact_id"],

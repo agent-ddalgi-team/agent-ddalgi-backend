@@ -20,6 +20,7 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import date
+from decimal import Decimal, localcontext
 from typing import Any
 
 from app.agent_bridge import SourceIn
@@ -48,6 +49,25 @@ _CLAIM_KEYWORDS = ("인증", "납기", "최고", "1위", "보장", "특허", "IS
 _DIGIT = re.compile(r"[0-9%]")
 LABEL_MAX_LEN = 20
 CONNECTOR_MAX_LEN = 40
+
+
+def sequence_evidence_supported(layout: str, evidence: str,
+                                fact_evidence: list[tuple[str, list[str]]]) -> bool:
+    """Shared draft/review rule; table years and ordered step headings are evidence too."""
+    pattern = (r"(?:\d{4}년|\d{4}[-./]\d{1,2})" if layout == "timeline"
+               else r"(?:→|->|\d+[.)]\s|먼저.+다음|후에|이후)")
+    if re.search(pattern, evidence):
+        return True
+    for field, excerpts in fact_evidence:
+        if layout == "timeline" and field == "history" and any(
+                re.search(r"(?m)^\s*(?:19|20)\d{2}\s*[|｜]\s*\S", text) for text in excerpts):
+            return True
+        if layout == "process_steps" and field == "processes":
+            steps = [int(value) for text in excerpts for value in re.findall(
+                r"(?<!\w)(?:제[^\S\r\n]*)?([1-9]\d{0,2})[^\S\r\n]*단계[^\S\r\n]*[:：—–-][^\S\r\n]*\S", text)]
+            if len(steps) >= 2 and all(a < b for a, b in zip(steps, steps[1:])):
+                return True
+    return False
 
 
 def block_texts(block: Block) -> list[str]:
@@ -94,7 +114,10 @@ def _norm(text: str) -> str:
     return " ".join(text.split())
 
 
-_QUANTITY_UNITS = r"영업일|개월|시간|억원|만원|미크론|μm|µm|um|㎛|℃|°C|퍼센트|kg|mm|cm|㎡|m²|hr|%|톤|년|월|일|명|개|대|건|회|원|g|m"
+# Original approval/issue labels after standard numbers are not won amounts.
+_WON_UNIT = r"원(?!(?:승인일|발행일))"
+
+_QUANTITY_UNITS = r"영업일|개월|시간|억원|만원|미크론|μm|µm|um|㎛|℃|°C|퍼센트|kg|mm|cm|㎡|m²|hours?|hrs?|%|톤|년|월|일|명|개|대|건|회|" + _WON_UNIT + r"|g|m"
 
 
 def _expand_unit_lists(text: str) -> str:
@@ -119,7 +142,7 @@ def quantity_tokens(text: str) -> set[tuple[str, str]]:
         if not first_unit or first_unit.lower() == last_unit.lower():
             result.update((n.replace(",", ""), last_unit.lower()) for n in (first, last))
     aliases = {'미크론': 'um', 'μm': 'um', 'µm': 'um', '㎛': 'um', '℃': '°c',
-               '퍼센트': '%', 'm²': '㎡'}
+               '퍼센트': '%', 'm²': '㎡', 'hr': '시간', 'hrs': '시간', 'hour': '시간', 'hours': '시간'}
     return {(n, aliases.get(u, u)) for n, u in result}
 
 
@@ -135,16 +158,113 @@ _DATE_PATTERNS = (
     re.compile(r"(?<![\w.-])(?P<d>\d{1,2})\s+(?P<m>" + _MONTH_PATTERN + r")\s+(?P<y>[12]\d{3})(?!\d)", re.I),
     re.compile(r"\b(?P<m>" + _MONTH_PATTERN + r")\s+(?P<d>\d{1,2}),?\s+(?P<y>[12]\d{3})(?!\d)", re.I),
 )
+_CALENDAR_YEAR = re.compile(r"(?<![\dA-Za-z.-])([12]\d{3})(?:\s*년|(?=\s*\|))")
+
+# Normalize only explicit formatting relationships inside the cited text. This
+# does not establish company identity, date role, subject or contract conditions.
+_NUMBER_FORM = r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
+_COMPACT_DATE = re.compile(
+    r"(?<![A-Za-z가-힣])(?P<label>(?:설립일자?|발행일자?|만료일자?|기준일자?|공시일자?|"
+    r"접수일자?|시작일|종료일|[Dd]ate)\s*[:：]?\s*)"
+    r"(?P<y>[12]\d{3})(?P<m>\d{2})(?P<d>\d{2})(?![\dA-Za-z])")
+_KOREAN_DATE_RANGE = re.compile(
+    r"(?<![\dA-Za-z])(?P<y>[12]\d{3})\s*년\s*(?P<m>\d{1,2})\s*월\s*(?P<d>\d{1,2})\s*일"
+    r"(?P<join>\s*(?:부터|에서|[~∼–-])\s*)(?P<end_m>\d{1,2})\s*월\s*(?P<end_d>\d{1,2})\s*일")
+_TABLE_UNIT = re.compile(
+    r"(?P<label>[가-힣A-Za-z][가-힣A-Za-z \t]{0,40})[（(]\s*(?P<unit>원|%)\s*[)）]"
+    r"\s*[:：]?\s*(?P<number>[+-]?" + _NUMBER_FORM + r")(?![\d.,])")
+_PARENTHESIZED_UNIT = re.compile(
+    r"[（(](?P<number>[+-]?" + _NUMBER_FORM + r")[)）]\s*(?P<unit>" + _WON_UNIT + r"|%)")
+_WON_AMOUNT = re.compile(
+    r"(?<![\w.,+-])(?P<sign>[+-]?)(?P<parts>(?:" + _NUMBER_FORM + r"\s*[조억만]\s*)*"
+    r"(?:" + _NUMBER_FORM + r"\s*)?)" + _WON_UNIT + r"(?![A-Za-z])")
+_WON_PART = re.compile(r"(?P<number>" + _NUMBER_FORM + r")\s*(?P<scale>[조억만]?)")
+_WON_SCALES = {"조": 10**12, "억": 10**8, "만": 10**4, "": 1}
+
+
+def _numeric_format_text(text: str) -> str:
+    def compact(match: re.Match) -> str:
+        try:
+            value = date(int(match['y']), int(match['m']), int(match['d']))
+        except ValueError:
+            return match[0]
+        return match['label'] + value.isoformat()
+
+    def date_range(match: re.Match) -> str:
+        try:
+            start = date(int(match['y']), int(match['m']), int(match['d']))
+            end = date(start.year, int(match['end_m']), int(match['end_d']))
+        except ValueError:
+            return match[0]
+        if end < start:  # A year crossing cannot be inferred from the omission.
+            return match[0]
+        # Preserve Korean suffix boundaries (e.g. '일부터', '일까지').
+        return (f"{start.year}년 {start.month}월 {start.day}일{match['join']}"
+                f"{end.year}년 {end.month}월 {end.day}일")
+
+    def table_unit(match: re.Match) -> str:
+        return f"{match['label']}({match['unit']}) {match['number']}{match['unit']}"
+
+    def won(match: re.Match) -> str:
+        parts = list(_WON_PART.finditer(match['parts']))
+        if not parts or len(parts) > 4:
+            return match[0]
+        previous = 10**13
+        with localcontext() as context:
+            context.prec = 140
+            total = Decimal(0)
+            for part in parts:
+                number, scale = part['number'], _WON_SCALES[part['scale']]
+                if scale >= previous or len(number) > 40:
+                    return match[0]
+                previous = scale
+                total += Decimal(number.replace(',', '')) * scale
+            number = format(total, 'f')
+            if '.' in number:
+                number = number.rstrip('0').rstrip('.')
+        return ('-' if match['sign'] == '-' else '') + number + '원'
+
+    text = _COMPACT_DATE.sub(compact, text)
+    text = _KOREAN_DATE_RANGE.sub(date_range, text)
+    text = _TABLE_UNIT.sub(table_unit, text)
+    text = _PARENTHESIZED_UNIT.sub(lambda m: f"({m['number']}{m['unit']})", text)
+    return _WON_AMOUNT.sub(won, text)
+
+
 def numeric_evidence_tokens(text: str, *, year_heading: bool = False) -> set[tuple[str, str]]:
-    """Compare numeric values, with independent unit/date preservation tokens.
+    """Compare numeric values after exact formatting normalization.
 
     A value never changes type because it has 년, a table delimiter, or a range
     beside it. Range endpoints are ordinary values too. Full dates additionally
     stay atomic so matching digits from two different dates cannot invent a date.
-    ``year_heading`` remains accepted for saved callers but has no effect.
+    Explicit calendar years also retain the base branch's role guard, so an
+    identifier or quantity cannot supply an event year. Heading typography can
+    omit that role token while still checking every numeric value.
     Subject, chronology and conditions still require semantic review.
     """
+    text = _numeric_format_text(text)
     tokens: set[tuple[str, str]] = set()
+    # Keep approximate organization counts distinct from exact counts and other units.
+    # Both '350여 업체' and '약 350개 업체' retain the approximation qualifier.
+    count = r"(?:\d{1,3}(?:,\d{3})+|\d+)"
+    organization_count = re.compile(
+        r"(?<![\d.,A-Za-z])(?:약\s*(?P<prefix>" + count + r")\s*(?:개\s*)?업체"
+        r"|(?P<suffix>" + count + r")\s*여\s*(?:개\s*)?업체"
+        r"|(?P<exact>" + count + r")\s*(?:개\s*)?업체)")
+
+    def approximate_organizations(match: re.Match) -> str:
+        number = (match['prefix'] or match['suffix'] or match['exact']).replace(',', '')
+        qualifier = 'exact_organizations' if match['exact'] else 'approximate_organizations'
+        tokens.add(('number', number))
+        tokens.add(('quantity', number + '|' + qualifier))
+        return ' ' * len(match[0])
+
+    text = organization_count.sub(approximate_organizations, text)
+    # Monetary sign is part of the amount, including after exact scale conversion.
+    for amount in re.findall(r"(?<![\d.,A-Za-z])([+-]?" + _NUMBER_FORM + r")\s*" + _WON_UNIT, text):
+        tokens.add(("currency", amount.replace(',', '').lstrip('+')))
+    for amount in re.findall(r"(?<![\d.,A-Za-z])([+-]?" + _NUMBER_FORM + r")\s*%", text):
+        tokens.add(("percent", amount.replace(',', '').lstrip('+')))
 
     def calendar(match: re.Match) -> str:
         month = match["m"].lower().rstrip(".")
@@ -154,12 +274,15 @@ def numeric_evidence_tokens(text: str, *, year_heading: bool = False) -> set[tup
         except ValueError:
             return match[0]  # Invalid dates are not normalized.
         tokens.add(("date", value.isoformat()))
+        tokens.add(("year", str(value.year)))
         tokens.update(("number", str(n)) for n in (value.year, value.month, value.day))
         return " " * len(match[0])
 
     for pattern in _DATE_PATTERNS:
         text = pattern.sub(calendar, text)
 
+    tokens.update(("year", match[1]) for match in _CALENDAR_YEAR.finditer(text))
+    tokens.update(("year", year) for year in re.findall(r"(?m)^\s*([12]\d{3})\s+(?=[가-힣A-Za-z])", text))
     text = _expand_unit_lists(text)
 
     for number in re.findall(r"\d+(?:[.,]\d+)*", text):
@@ -171,7 +294,7 @@ def numeric_evidence_tokens(text: str, *, year_heading: bool = False) -> set[tup
         tokens.add(("number", number))
     # 년 is optional typography in a timeline, not a second numeric type.
     tokens.update(("quantity", number + "|" + unit) for number, unit in quantity_tokens(text) if unit != "년")
-    return tokens
+    return {token for token in tokens if not year_heading or token[0] != "year"}
 
 
 def subject_value_findings(text: str, excerpts: list[str]) -> list[dict]:
@@ -655,19 +778,29 @@ def _required_issue(document: Document, ctx: Context, keys: tuple[str, ...], lab
 
 
 def preflight_conflicts(ctx: Context) -> list[IssueDraft]:
-    """본문 참조·안내 삭제와 무관한 현재 자료의 충돌. 승인 직전에도 같은 규칙을 사용한다."""
+    """현재 점검의 미해결 blocker. 기존 함수/검사 이름은 호환을 위해 유지한다.
+
+    본문 참조·안내 삭제로 점검 문제를 해결할 수 없다. conflict Fact는 Issue 누락에도
+    보존하며 warning 수준의 needs_confirmation을 임의 blocker로 승격하지 않는다.
+    """
     conflicts: list[IssueDraft] = []
     covered_facts: set[str] = set()
     for issue in ctx.preflight_issues:
-        if issue.code != "VALUE_CONFLICT" or issue.severity != "blocker" or issue.status != "open":
+        if issue.scope == "layout" or issue.severity != "blocker" or issue.status != "open":
+            continue
+        if issue.code == "REQUIRED_MISSING":
+            # 필수 회사/사업·사용자 지정 항목은 아래 required_content가 문서 전체에서
+            # 재판정한다. 점검의 company_summary 누락을 대체 사업 설명까지 막는
+            # 독립 blocker로 고정하지 않는다.
             continue
         sources = set(issue.source_ids)
         for fid in issue.fact_ids:
             if fid in ctx.facts:
                 sources.update(ref.source_id for ref in ctx.facts[fid].evidence_refs)
-        conflicts.append(IssueDraft("content", "VALUE_CONFLICT", "blocker", issue.message,
+        conflicts.append(IssueDraft(issue.scope, issue.code, "blocker", issue.message,
                                     fact_ids=sorted(set(issue.fact_ids)), source_ids=sorted(sources), origin="preflight"))
-        covered_facts.update(issue.fact_ids)
+        if issue.code == "VALUE_CONFLICT":
+            covered_facts.update(issue.fact_ids)
     # 분석 결과에 Issue가 누락되거나 완화돼도 아직 conflict인 Fact를 해결된 것으로 취급하지 않는다.
     for fact in ctx.facts.values():
         if (fact.conditions or {}).get('claim_review', {}).get('quarantined'):
@@ -713,9 +846,12 @@ def server_checks(document: Document, ctx: Context) -> tuple[list[IssueDraft], l
 
     for page in document.pages:
         if page.design and page.layout_key in {"process_steps", "timeline"}:
-            evidence = " ".join(r.excerpt for b in page.blocks for r in b.evidence_refs)
-            pattern = r"(?:\d{4}년|\d{4}[-./]\d{1,2})" if page.layout_key == "timeline" else r"(?:→|->|\d+[.)]\s|먼저.+다음|후에|이후)"
-            if not re.search(pattern, evidence):
+            page_refs = [r for b in page.blocks for r in b.evidence_refs]
+            page_fids = {fid for b in page.blocks for fid in b.fact_ids}
+            # Only facts and references actually linked on this page can justify its layout.
+            fact_evidence = [(fact.field_key, [r.excerpt for r in fact.evidence_refs if r in page_refs])
+                             for fid, fact in ctx.facts.items() if fid in page_fids]
+            if not sequence_evidence_supported(page.layout_key, " ".join(r.excerpt for r in page_refs), fact_evidence):
                 drafts.append(IssueDraft("content", "UNSUPPORTED_CLAIM", "blocker",
                     "순서·시점 근거가 없는 단계/연혁 배치입니다.", block_ids=[b.block_id for b in page.blocks]))
         for block in page.blocks:
@@ -731,9 +867,11 @@ def server_checks(document: Document, ctx: Context) -> tuple[list[IssueDraft], l
                     [page.model_copy(update={"blocks": [block]})], current_sources, current_preflight)
                     if current_preflight is not None else "현재 입력에 해당하는 사전 점검이 없습니다.")
             if selected_problem:
-                drafts.append(IssueDraft("content", "EVIDENCE_INVALID", "blocker",
-                                         "현재 선택 자료와 최신 점검에서 사용할 수 없는 참조입니다. " + selected_problem,
-                                         block_ids=[bid]))
+                excluded_ids = {fact.fact_id for fact in current_preflight.excluded_facts} if current_preflight else set()
+                message = ("이번 문서에서 제외한 항목이 본문에 남아 있습니다. 해당 내용을 삭제하거나 자료 점검에서 항목을 복원해 주세요."
+                           if excluded_ids.intersection(block.fact_ids) else
+                           "현재 선택 자료와 최신 점검에서 사용할 수 없는 참조입니다. " + selected_problem)
+                drafts.append(IssueDraft("content", "EVIDENCE_INVALID", "blocker", message, block_ids=[bid]))
             elif any(fid not in ctx.refs.fact_ids for fid in block.fact_ids):
                 drafts.append(IssueDraft("content", "EVIDENCE_INVALID", "blocker",
                                          "현재 세션에서 근거로 사용할 수 없는 사실 참조입니다.", block_ids=[bid]))
@@ -1036,7 +1174,11 @@ def persist_issues(conn: Connection, session_id: str, document: Document, valida
     for row in previous_open:
         if row["identity_key"] in produced:
             continue
-        if not _covered_by_this_validation(row, agent_covered_blocks, agent_full):
+        blocks = set(json.loads(row["block_ids_json"]))
+        # 대상 블록이 전부 삭제된 지적은 현재 문서에서 존재할 수 없다.
+        # 일부 대상이 남거나 문서 전체 지적이면 기존 부분 검증 범위를 유지한다.
+        deleted_agent_target = row["origin"] == "agent" and bool(blocks) and blocks.isdisjoint(fps)
+        if not deleted_agent_target and not _covered_by_this_validation(row, agent_covered_blocks, agent_full):
             continue  # 재실행하지 않은 검사의 Issue(문서 전체 Issue 포함)는 보존
         from app.services import db_history
         db_history.invalidate_warning(conn, row["issue_id"])
@@ -1057,7 +1199,7 @@ def persist_issues(conn: Connection, session_id: str, document: Document, valida
 
 def record_preflight_conflicts(conn: Connection, session_id: str, document: Document,
                               preflight: PreflightOut) -> bool:
-    """재점검에서 발견한 충돌만 현재 문서에 합친다. 의미 검증 완료·기존 문제 해결을 대신하지 않는다."""
+    """점검의 미해결 blocker를 현재 문서에 합친다. 다른 문제를 닫거나 검증 완료로 처리하지 않는다."""
     if document.input_revision != preflight.input_revision:
         return False
     ctx = load_context(conn, session_id, preflight)
@@ -1119,6 +1261,8 @@ def to_validation_out(row: Row) -> ValidationOut:
 
 def issue_to_out(row: Row) -> IssueOut:
     return IssueOut(issue_id=row["issue_id"], scope=row["scope"], code=row["code"], severity=row["severity"],
+                    source_corrections=[item for item in json.loads(row["resolution_history_json"])
+                                        if item.get("action") == "source_typo_correction" and not item.get("purged")],
                     status=row["status"], message=row["message"], source_ids=json.loads(row["source_ids_json"]),
                     fact_ids=json.loads(row["fact_ids_json"]), block_ids=json.loads(row["block_ids_json"]),
                     resolution=json.loads(row["resolution_json"]) if row["resolution_json"] else None,

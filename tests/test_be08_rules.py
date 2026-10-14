@@ -159,6 +159,28 @@ class Flow:
         return self.c.get(f"/api/v1/sessions/{self.sid}/exports/{eid}/download")
 
 
+@pytest.mark.parametrize("corruption", ["checks", "pages", "renderer", "layout_ok"])
+def test_docx_approval_and_export_require_actual_layout_evidence(app, settings, corruption):
+    flow = Flow(app, settings)
+    validation = flow.validate()
+    fab = flow.fabricate(fmt="docx", renderer="python-docx/1;libreoffice/26.8.0.3")
+    checks = [{"check_key": key, "required": True, "result": "ok"}
+              for key in ("overflow", "broken_image", "placeholder_remaining")]
+    with connect(settings.db_path) as conn:
+        conn.execute("UPDATE layout_checks SET checks_json=? WHERE layout_check_id=?",
+                     (json.dumps(checks), fab["layout_check_id"]))
+    approval = flow.approve(validation["validation_id"], fab["layout_check_id"], fmt="docx")
+    assert approval.status_code == 201, approval.text
+    changes = {"checks": ("checks_json", "[]"), "pages": ("actual_pages", None),
+               "renderer": ("renderer", "python-docx/1"), "layout_ok": ("layout_ok", 0)}
+    column, value = changes[corruption]
+    with connect(settings.db_path) as conn:
+        conn.execute(f"UPDATE layout_checks SET {column}=? WHERE layout_check_id=?", (value, fab["layout_check_id"]))
+    assert flow.approve(validation["validation_id"], fab["layout_check_id"], fmt="docx").status_code == 422
+    exported = flow.export(approval.json()["approval_id"], fmt="docx")
+    assert exported.status_code == 422 and exported.json()["error"]["code"] == "RENDER_IDENTITY_MISMATCH"
+
+
 def _row(settings, sql, *params):
     with connect(settings.db_path) as conn:
         return conn.execute(sql, params).fetchone()

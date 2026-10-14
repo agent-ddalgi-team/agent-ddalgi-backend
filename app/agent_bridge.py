@@ -47,6 +47,8 @@ class SourceIn:
     asset_locators: dict[str, dict[str, int]] = field(default_factory=dict)  # 선택 사진의 원본 쪽수만, 파일 경로 제외
     # 서버가 전달하는 배치 후보. 회사 사실이 아니며 공개 허가/선택 범위는 저장·승인 때도 재확인한다.
     asset_descriptions: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # 선택한 버전/추출 구간의 메타. 날짜는 사실의 기준일·현재성 보증이 아니다.
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -124,6 +126,7 @@ class ValidateRequest:
     changed_block_ids: list[str]     # 마지막 유효 검증 이후 바뀐 블록. 전체 검사면 모든 블록 ID
     server_issues: list[Issue]       # 서버 일반 검사 결과(참고용). 삭제·완화 대상이 아니다
     images: list[ImageIn] = field(default_factory=list, repr=False)
+    source_corrections: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

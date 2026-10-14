@@ -1,4 +1,4 @@
-"""API 요청·응답 모델. contracts.md 계약 1.7과 OpenAPI의 원본이다.
+"""API 요청·응답 모델. contracts.md 계약 1.13와 OpenAPI의 원본이다.
 
 DB 테이블은 orm_models.py에, 요청 값의 형식 검사는 여기에 둔다.
 소유권·현재 버전·근거의 유효성 같은 업무 검사는 서비스에서 수행한다.
@@ -42,16 +42,26 @@ class Brief(BaseModel):
     usage_context: str = Field(default="", max_length=500)
     tone: Literal["plain", "formal", "concise"] = "plain"
     target_company: str | None = Field(default=None, min_length=1, max_length=200)
+    dart_corp_code: str | None = Field(default=None, pattern=r"^\d{8}$")
     required_fields: list[str] = Field(default_factory=list, max_length=14)
     brand_color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
 
     def idempotency_payload(self) -> dict:
         """계약 1.6의 요청 해시를 보존한다. 새 조건을 실제 지정하면 해시도 달라진다."""
         payload = self.model_dump()
-        for name in ("audience", "usage_context", "tone", "target_company", "required_fields", "brand_color"):
+        for name in ("audience", "usage_context", "tone", "target_company", "dart_corp_code", "required_fields", "brand_color"):
             if payload[name] == type(self).model_fields[name].get_default(call_default_factory=True):
                 payload.pop(name)
         return payload
+
+    @field_validator("target_company")
+    @classmethod
+    def normalized_target_company(cls, value):
+        if value is None:
+            return None
+        if not value.strip() or any(ord(c) < 32 or ord(c) == 127 for c in value):
+            raise ValueError("target_company must be nonblank without control characters")
+        return value.strip()
 
     @field_validator("required_fields")
     @classmethod
@@ -141,6 +151,7 @@ class SourceWarning(BaseModel):
 
 
 class SourceOut(BaseModel):
+    original_download_available: bool = False
     role: Literal["evidence", "instruction"] = "evidence"
     origin_kind: Literal["real", "mock", "demo"] = "real"
     source_id: str
@@ -169,6 +180,79 @@ class SourceListOut(BaseModel):
     items: list[SourceOut]
 
 
+class SourceContextQuery(BaseModel):
+    """Context IDs never grant access by themselves."""
+    model_config = ConfigDict(extra="forbid")
+    expected_input_revision: int = Field(ge=1, le=MAX_SQLITE_INTEGER)
+    context: Literal["selection", "preflight", "document"] = "selection"
+    preflight_id: str | None = Field(default=None, min_length=1, max_length=100)
+    document_id: str | None = Field(default=None, min_length=1, max_length=100)
+    document_revision: int | None = Field(default=None, ge=1, le=MAX_SQLITE_INTEGER)
+    source_version: int | None = Field(default=None, ge=1, le=MAX_SQLITE_INTEGER)
+
+    @model_validator(mode="after")
+    def check_context(self):
+        if self.context == "selection":
+            valid = self.preflight_id is None and self.document_id is None and self.document_revision is None
+        elif self.context == "preflight":
+            valid = self.preflight_id is not None and self.document_id is None and self.document_revision is None
+        else:
+            valid = self.preflight_id is None and self.document_id is not None and self.document_revision is not None
+        if not valid:
+            raise ValueError("context and its identifiers must match")
+        return self
+
+
+class SourceTextQuery(SourceContextQuery):
+    cursor: str | None = Field(default=None, max_length=2048)
+    limit: int = Field(default=20, ge=1, le=50)
+    focus_segment_id: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class SourceOriginalQuery(SourceContextQuery):
+    source_version: int = Field(ge=1, le=MAX_SQLITE_INTEGER)
+    segment_id: str | None = Field(default=None, min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def check_anchor(self):
+        if (self.context == "selection") != (self.segment_id is None):
+            raise ValueError("A cited context requires an anchor segment; selection has none")
+        return self
+
+
+class SourceTextSegment(BaseModel):
+    segment_id: str
+    locator: dict[str, Any]
+    text: str
+    offset: int
+    total_chars: int
+    truncated: bool
+
+
+class SourceTextOut(BaseModel):
+    text_origin: Literal["registered_excerpt", "automatic_extraction", "unknown"] = "unknown"
+    original_download_available: bool = False
+    source_id: str
+    source_version: int
+    run_id: str
+    name: str
+    context: Literal["selection", "preflight", "document"]
+    input_revision: int
+    current_input_revision: int
+    document_revision: int | None = None
+    parse_status: Literal["complete", "partial"]
+    warnings: list[SourceWarning]
+    items: list[SourceTextSegment]
+    context_segments: list[SourceTextSegment] = Field(default_factory=list)
+    anchor_segment_id: str | None = None
+    target_segment_id: str | None = None
+    excerpts: list[str] = Field(default_factory=list)
+    excerpts_truncated: bool = False
+    previous_segment_id: str | None = None
+    next_segment_id: str | None = None
+    next_cursor: str | None = None
+
+
 class UploadOut(BaseModel):
     job_id: str
     items: list[SourceOut]
@@ -183,6 +267,7 @@ class SourceDeleteOut(BaseModel):
 class JobProgress(BaseModel):
     stage: str
     message: str | None = None
+    trace: dict[str, Any] | None = None
 
 
 class JobError(BaseModel):
@@ -312,12 +397,65 @@ class PreflightCreate(BaseModel):
     expected_input_revision: RequestRevision
 
 
+class PreflightReviewCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_input_revision: RequestRevision
+    action: Literal["exclude", "restore"]
+    fact_ids: list[str] = Field(min_length=1, max_length=50)
+    reason: NonBlankText = Field(max_length=300)
+
+    @field_validator("fact_ids")
+    @classmethod
+    def unique_fact_ids(cls, value):
+        if any(not item.strip() for item in value) or len(set(value)) != len(value):
+            raise ValueError("fact_ids must be nonblank and unique")
+        return value
+
+
+class SufficiencyCategory(BaseModel):
+    key: str
+    label: str
+    status: Literal["supported", "needs_confirmation", "conflict", "missing"]
+
+
+class DataSufficiency(BaseModel):
+    score: int = Field(ge=0, le=100)
+    categories: list[SufficiencyCategory]
+    has_blockers: bool
+
+
+class CompanySearchItem(BaseModel):
+    corp_code: str
+    corp_name: str
+    display_name: str | None = None
+
+
+class CompanySearchOut(BaseModel):
+    items: list[CompanySearchItem]
+
+
+class PublicDataImport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_input_revision: RequestRevision
+
+
+class PublicDataStatus(BaseModel):
+    status: Literal["not_configured", "ready"] = "not_configured"
+    providers: list[str] = Field(default_factory=lambda: ["dart", "kipris", "g2b"])
+    message: str = "외부 API 키와 수집 연결을 아직 설정하지 않았습니다."
+    configured_providers: list[str] = Field(default_factory=list)
+
+
 class PreflightOut(BaseModel):
+    latest_preflight_id: str | None = None
     preflight_id: str
     session_id: str
     input_revision: int
     usable_source_ids: list[str]
+    sufficiency: DataSufficiency | None = None
     facts: list[Fact]
+    excluded_facts: list[Fact] = Field(default_factory=list)
+    reviewable_fact_ids: list[str] = Field(default_factory=list)
     issues: list[Issue]
     recommendations: Recommendations
     can_generate: bool
@@ -418,6 +556,7 @@ class ValidationOut(BaseModel):
 
 
 class IssueOut(Issue):
+    source_corrections: list[dict[str, Any]] = Field(default_factory=list)
     origin: Literal["server", "agent", "preflight", "layout"]   # layout = 배치 검사(BE-08, 계약 확인 ㊳)
     layout_format: Literal["pdf", "docx"] | None = None          # scope=layout Issue의 형식. 공개 허가 Issue는 None(형식 무관)
     created_at: str
@@ -441,6 +580,25 @@ class Resolution(BaseModel):
     model_config = ConfigDict(extra="forbid")
     action: Literal["resolved", "excluded", "acknowledged"]
     reason: NonBlankText
+
+
+class SourceCorrectionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: RequestRevision
+    input_revision: RequestRevision
+    validation_id: NonBlankText
+    block_id: NonBlankText
+    evidence_ref: EvidenceRef
+    original_text: Annotated[str, Field(min_length=1, max_length=200, pattern=r"\S")]
+    corrected_text: Annotated[str, Field(min_length=1, max_length=200, pattern=r"\S")]
+    reason: Annotated[str, Field(min_length=1, max_length=1000, pattern=r"\S")]
+    basis: Annotated[str, Field(min_length=1, max_length=2000, pattern=r"\S")]
+
+    @model_validator(mode="after")
+    def changed_text(self):
+        if self.original_text.strip() == self.corrected_text.strip():
+            raise ValueError("원문과 정정 내용이 같습니다.")
+        return self
 
 
 class IssueResolveBody(BaseModel):
@@ -514,7 +672,7 @@ class LayoutCheckRecordOut(BaseModel):
 
 class FindingOut(BaseModel):
     kind: Literal["overflow", "broken_image", "placeholder_remaining"]
-    page_id: str
+    page_id: str | None
     block_id: str | None = None
     message: str
     details: dict[str, Any] = Field(default_factory=dict)
@@ -548,7 +706,7 @@ class LayoutCheckOut(BaseModel):
     renderer: str | None = None
     artifact_id: str | None = None
     preview_asset_ids: list[str] = Field(default_factory=list)
-    preview_basis: Literal["pdf"] | None = None    # DOCX도 같은 스냅샷의 PDF 렌더로 미리보기(검사 증거 아님)
+    preview_basis: Literal["pdf"] | None = None    # DOCX는 설정된 엔진의 실제 변환본 또는 검사 미완료 시 참고 PDF. warnings로 구분.
     warnings: list[str] = Field(default_factory=list)
     created_at: str
 
@@ -561,8 +719,11 @@ class LayoutChecksByFormat(TypedDict):
 class DocumentOut(BaseModel):
     demo: bool = False
     document: Document
+    input_review_required: bool = False  # 현재 입력/최신 점검을 문서에 연결해야 하는지
+    latest_preflight_id: str | None = None
     validation: ValidationOut | None = None   # 현재 문서·입력 버전의 최신 검증. 없으면 null
     approval: ApprovalOut | None = None       # 현재 문서·입력 버전의 active 승인(어느 형식이든). 없으면 null
+    approvals_by_format: dict[Literal["pdf", "docx"], ApprovalOut | None] = Field(default_factory=lambda: {"pdf": None, "docx": None})
     layout_checks: LayoutChecksByFormat = Field(default_factory=lambda: {"pdf": None, "docx": None})
 
 

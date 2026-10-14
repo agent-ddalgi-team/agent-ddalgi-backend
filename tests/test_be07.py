@@ -35,13 +35,14 @@ BANNED = ("거산", "케미칼", "Geosan")
 
 # 템플릿·폰트·DOCX 배치 상수·PDF 렌더 상수의 sha256(줄바꿈 정규화). 이 중 하나라도 바꾸면 TEMPLATE_VERSION을 올리고 여기 값을 갱신한다.
 TEMPLATE_FINGERPRINTS = {
+    "template_v14": "4ee9675c714c36c9b3d7d9da04c3f3349aa1f1180c19fefa58ac30d4e2b7d72e",
     "template_v13": "2077b206f74c365cdd09514e2d7444193fdf2a7a03895cbe8d8b674cff4c608e",
     "template_v12": "6d1452d1cb505bf9c15f88183b25caa6828445262adc924e5584a50a08805e2a",
-    "template_v10": "5f6630d99d2561b95c29400431f6c44bc4f76ce8a017c8b0411c9e3ca1b193c1",
-    "template_v11": "625f5697a31e5c04c5454196e737b2066b83bce83763c2fb9c037e727efd1332",
-    "template_v9": "b45637affe6e3f6489e8d199eb35b4ca28efe1e2cd62e49a4dd2d3e76621d3de",
-    "template_v8": "67b2db454b19b8bb7ce28a35cb35a1e80dad233473cc19674fd8f17df61e8044",
-    "template_v7": "ea2d90beadd732c442cf38f046d217f2533b4b7a58b093277d9b475f1a9b58a9",
+    "template_v11": "b63a7d29a4f7476d317bcbeffb90538f39aca3e2d1aef7c72ccfeaa4c66e4b7b",
+    "template_v10": "c002f3bb5cf786bf59e3d0d05bb18079b6832cd82701dbe64e9514fc40b062fb",
+    "template_v9": "576799643934d2178e3a03e6e569604c36e6859a51fa3e498caa1be15a8edad1",
+    "template_v8": "77bee728ad40c81e24e5abb5b12c24fcaa282399a7da8224f14a9ec9bf82ac88",
+    "template_v7": "4be75f1522c12f656c964872f89797c24e5b3396138ed237eeabaa2757562134",
     "template_v6": "20677eaf1d7238e726d7a9b13e7648ad79440be189dc17b8203cfa8ad0229950",
     "template_v5": "f8f7d40b6c886b14eb813bbdf561bf1c540d6483c336a78bee377bac46b60fa9",
     "template_v4": "538839538005c76d91e68a091398ce4cd20842499f62d147c52852339d98b237",
@@ -55,6 +56,9 @@ TEMPLATE_FINGERPRINTS = {
 BROWSER_PATH_ENV = (os.environ.get("EXPORT_BROWSER_PATH") or "").strip() or None
 BROWSER = er.find_browser(Settings(private_runs_dir=Path("."), db_path=Path("."), export_browser_path=BROWSER_PATH_ENV))
 needs_browser = pytest.mark.skipif(BROWSER is None, reason="Chromium 계열 브라우저 없음 — PDF 렌더 테스트 미실행")
+LIBREOFFICE = next((str(p) for p in [Path(os.environ.get("TEST_LIBREOFFICE_PATH") or
+    r"C:\Program Files\LibreOffice\program\soffice.com")] if p.is_file()), None)
+needs_libreoffice = pytest.mark.skipif(LIBREOFFICE is None, reason="LibreOffice 없음 — DOCX 실제 배치 검사 미실행")
 
 
 def _png(width: int = 8, height: int = 6, color=(10, 20, 30)) -> bytes:
@@ -323,6 +327,26 @@ def test_draft_pagination_preserves_content_and_fits_actual_pdf(case, out_dir, s
     assert [p.model_dump() for p in snap.pages] == before
 
 
+@pytest.mark.parametrize("with_heading", [False, True])
+@pytest.mark.parametrize("photo_count", [1, 2])
+def test_draft_split_keeps_explanation_with_trailing_photo(with_heading, photo_count):
+    blocks = [_blk("intro", "paragraph", text="소개 문장"),
+              _blk("other", "paragraph", text="앞 설명")]
+    if with_heading:
+        blocks.append(_blk("heading", "heading", text="설비 설명", level=2))
+    blocks.extend([_blk("body", "paragraph", text="사진과 연결된 설명", fact_ids=["fact_photo"]),
+                   _blk("photo", "image", asset_id="image", caption="설비 사진", fit="contain")])
+    page = Page(page_id="p", title="설비", layout_key="text_photo", blocks=blocks)
+    if photo_count == 2:
+        page.blocks.append(_blk("photo2", "image", asset_id="image", caption="다른 설비 사진", fit="contain"))
+    before = page.model_dump()
+    split = er._split_draft_page(page, "photo2" if photo_count == 2 else "photo")
+    assert split is not None and len(split) == 2
+    assert [b.model_dump() for p in split for b in p.blocks] == before["blocks"]
+    assert [b.block_id for b in split[1].blocks] == (["heading"] if with_heading else []) + ["body", "photo"] + (["photo2"] if photo_count == 2 else [])
+    assert split[0].blocks and page.model_dump() == before
+
+
 @needs_browser
 def test_draft_pagination_leaves_a_fitting_document_unchanged(out_dir, settings):
     snap = _editorial_photo_snapshot(sparse=True)
@@ -529,7 +553,7 @@ def test_render_work_dir_keeps_default_output_location(mode, tmp_path, monkeypat
 
 def test_identity_values_come_from_layout_checks(out_dir):
     r = er.render(_fixture_snapshot("1pages"), "docx", out_dir)
-    assert r.template_version == layout_checks.TEMPLATE_VERSION == "template_v13"
+    assert r.template_version == layout_checks.TEMPLATE_VERSION == "template_v14"
     assert r.render_options_hash == layout_checks.RENDER_OPTIONS_HASH == layout_checks.render_options_hash(layout_checks.DEFAULT_RENDER_OPTIONS)
     assert len(r.render_options_hash) == 16 and int(r.render_options_hash, 16) >= 0
     changed = dict(layout_checks.DEFAULT_RENDER_OPTIONS, margin_mm=20)
@@ -680,6 +704,26 @@ def test_embed_bytes_downscales_only_large_images():
 
 # ================= DOCX =================
 
+@pytest.mark.parametrize("size,expected_mm", [((441, 236), (74.676, 39.9626667)),
+                                             ((236, 441), (39.9626667, 74.676)),
+                                             ((1600, 1000), (180, 112.5))])
+def test_docx_picture_size_preserves_source_bytes_and_limits_enlargement(out_dir, size, expected_mm):
+    import zipfile
+    import docx
+
+    source = _png(*size)
+    page = Page(page_id="p", title="사진", layout_key="text_photo",
+                blocks=[_blk("photo", "image", asset_id="image", caption="원자료의 시험장비", fit="contain")])
+    snapshot = er.snapshot_from_document(_doc([page]), {"image": er.asset_from_bytes("image", source)})
+    result = er.render(snapshot, "docx", out_dir)
+    shape = docx.Document(result.file_path).inline_shapes[0]
+    assert shape.width.mm == pytest.approx(expected_mm[0], abs=0.01)
+    assert shape.height.mm == pytest.approx(expected_mm[1], abs=0.01)
+    assert shape.width / shape.height == pytest.approx(size[0] / size[1], rel=1e-4)
+    with zipfile.ZipFile(result.file_path) as archive:
+        media = [name for name in archive.namelist() if name.startswith("word/media/")]
+        assert len(media) == 1 and archive.read(media[0]) == source
+
 def test_docx_render_structure_checks_and_font(out_dir):
     snap = _fixture_snapshot("10pages")
     r = er.render(snap, "docx", out_dir)
@@ -694,7 +738,7 @@ def test_docx_render_structure_checks_and_font(out_dir):
     info = er.docx_info(r.file_path)
     total_blocks = sum(len(p.blocks) for p in snap.pages)
     assert info["inline_shapes"] == _ok_assets(snap) == 2 and info["paragraphs"] >= total_blocks and info["sections"] == 1
-    assert r.details["font_embedding"] == "not_supported_in_this_implementation"
+    assert r.details["font_embedding"] == "embedded_regular_bold"
     assert sorted(p.name for p in out_dir.iterdir()) == [r.file_path.name]   # 임시 파일이 남지 않는다
     # 글꼴 이름: Normal·Heading·Caption 스타일에 eastAsia 포함 지정, 테마 글꼴 속성 제거
     import docx
@@ -705,6 +749,26 @@ def test_docx_render_structure_checks_and_font(out_dir):
         rfonts = d.styles[name].element.rPr.find(qn("w:rFonts"))
         assert rfonts.get(qn("w:eastAsia")) == "Pretendard" == rfonts.get(qn("w:ascii")), name
         assert rfonts.get(qn("w:eastAsiaTheme")) is None and rfonts.get(qn("w:asciiTheme")) is None, name
+    # Portable regular/bold fonts must recover to the exact PDF font bytes.
+    import uuid
+    from zipfile import ZipFile
+    from lxml import etree
+    with ZipFile(r.file_path) as package:
+        table = etree.fromstring(package.read("word/fontTable.xml"))
+        font = next(f for f in table if f.get(qn("w:name")) == "Pretendard")
+        rels = etree.fromstring(package.read("word/_rels/fontTable.xml.rels"))
+        targets = {rel.get("Id"): rel.get("Target") for rel in rels}
+        for weight, tag in (("regular", "w:embedRegular"), ("bold", "w:embedBold")):
+            item = font.find(qn(tag))
+            assert item is not None and item.get(qn("w:subsetted")) == "false"
+            mask = uuid.UUID(item.get(qn("w:fontKey")).strip("{}")).bytes[::-1]
+            data = bytearray(package.read("word/" + targets[item.get(qn("r:id"))]))
+            for n in range(32):
+                data[n] ^= mask[n % 16]
+            assert data == er.FONT_FILES[weight].read_bytes()
+        settings = etree.fromstring(package.read("word/settings.xml"))
+        assert settings.find(qn("w:embedTrueTypeFonts")).get(qn("w:val")) == "true"
+        assert settings.find(qn("w:saveSubsetFonts")).get(qn("w:val")) == "false"
     assert d.core_properties.title == snap.title and d.core_properties.author == ""
     sec = d.sections[0]
     assert round(sec.page_width.mm) == 210 and round(sec.page_height.mm) == 297 and round(sec.left_margin.mm) == 15
@@ -764,22 +828,149 @@ def test_docx_build_failure_is_render_error_without_partial_file(out_dir, monkey
 
 
 def test_docx_concurrent_renders_of_same_revision_do_not_collide(out_dir):
+    from dataclasses import replace
+    import docx
+
     snap = _fixture_snapshot("1pages")
     results, errors = [], []
 
-    def run():
+    def run(index):
         try:
-            results.append(er.render(snap, "docx", out_dir))
+            title = f"동시 출력 {index}"
+            result = er.render(replace(snap, title=title), "docx", out_dir)
+            results.append((title, result))
         except Exception as exc:  # noqa: BLE001
             errors.append(exc)
-    threads = [threading.Thread(target=run) for _ in range(3)]
+    threads = [threading.Thread(target=run, args=(i,)) for i in range(3)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
     assert errors == [] and len(results) == 3
-    assert sorted(p.name for p in out_dir.iterdir()) == [results[0].file_path.name]
-    assert er.docx_info(results[0].file_path)["inline_shapes"] == 1
+    assert len({result.file_path for _, result in results}) == 3
+    assert set(out_dir.iterdir()) == {result.file_path for _, result in results}
+    for title, result in results:
+        document = docx.Document(str(result.file_path))
+        assert document.core_properties.title == title
+        assert len(document.inline_shapes) == 1
+    # 후속 렌더가 앞서 반환한 출력 파일을 바꾸지 않아야 검사·다운로드 대상이 유지된다.
+    originals = {result.file_path: result.file_path.read_bytes() for _, result in results}
+    er.render(snap, "docx", out_dir)
+    assert all(path.read_bytes() == data for path, data in originals.items())
+
+
+def test_renderer_child_does_not_inherit_open_server_stdin():
+    """실제 서버의 stdin 파이프가 열려 있어도 렌더 자식은 EOF를 받아 종료해야 한다."""
+    import subprocess
+
+    script = "from app.services.export_render import _run; import sys; r=_run([sys.executable,'-c','import sys; print(len(sys.stdin.read()))'],3,'stdin-probe'); print(r.stdout.decode().strip())"
+    parent = subprocess.Popen([sys.executable, "-X", "utf8", "-B", "-c", script], cwd=Path(__file__).resolve().parent.parent,
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        # communicate보다 먼저 wait: communicate는 부모 stdin을 닫아 오류를 숨길 수 있다.
+        assert parent.wait(timeout=10) == 0
+        output, error = parent.communicate(timeout=2)
+        assert output.strip() == b"0", error.decode(errors="replace")
+    finally:
+        if parent.poll() is None:
+            parent.kill()
+        parent.communicate(timeout=2)
+
+
+def test_docx_configured_missing_engine_does_not_pass(settings, out_dir):
+    from dataclasses import replace
+
+    result = er.render(_fixture_snapshot("1pages"), "docx", out_dir,
+                       replace(settings, export_libreoffice_path=str(out_dir / "missing-soffice.exe")))
+    assert result.actual_pages is None and result.layout_ok is False and result.preview_path is None
+    assert result.not_checked == ["overflow"]
+    assert result.checks[0].reason == "docx_layout_engine_unavailable"
+
+
+@pytest.mark.parametrize("failure", ["version", "conversion", "missing_pdf", "invalid_pdf", "timeout"])
+def test_docx_engine_failure_never_passes_and_removes_profile(settings, out_dir, monkeypatch, failure):
+    from dataclasses import replace
+
+    # Existing executable is only an identity placeholder; the runner is replaced before any invocation.
+    engine = Path(sys.executable)
+    calls = []
+    def run(command, timeout, what):
+        calls.append(command)
+        if failure == "timeout":
+            raise er.RenderError("render_timeout", "simulated timeout")
+        if "--version" in command:
+            return subprocess.CompletedProcess(command, 1 if failure == "version" else 0, b"LibreOffice 26.8.0.3", b"")
+        if failure in {"invalid_pdf", "conversion"}:
+            (Path(command[command.index("--outdir") + 1]) / "document.pdf").write_bytes(b"not a PDF")
+        return subprocess.CompletedProcess(command, 1 if failure == "conversion" else 0, b"", b"PRIVATE_SENTINEL")
+    monkeypatch.setattr(er, "_run", run)
+    with pytest.raises(er.RenderError) as exc:
+        er.render(_fixture_snapshot("1pages"), "docx", out_dir,
+                  replace(settings, export_libreoffice_path=str(engine)))
+    assert exc.value.code == ("render_timeout" if failure == "timeout" else "render_failed")
+    assert "PRIVATE_SENTINEL" not in str(exc.value)
+    assert calls and not list(out_dir.glob("docx_check_*")) and not list(out_dir.glob("*.preview.pdf"))
+
+
+@needs_libreoffice
+@pytest.mark.parametrize("pages", [1, 4, 6, 8, 10])
+def test_docx_actual_pages_text_photos_and_editability(settings, out_dir, pages):
+    from dataclasses import replace
+    import docx
+
+    contents = [Page(page_id=f"p{i}", title=f"회사 정보 {i}", layout_key="text", blocks=[
+        _blk(f"h{i}", "heading", text=f"한글 회사 소개 {i}", level=1),
+        _blk(f"b{i}", "paragraph", text=f"시험 본문 {i}: 수량 12개, 적용 기간 2026년 10월."),
+        _blk(f"l{i}", "list", items=["검사 후 출하합니다.", "납기는 확인 후 안내합니다."])] ) for i in range(pages)]
+    contents[0].blocks.append(_blk("photo", "image", asset_id="image", caption="검사용 가상 사진", fit="contain"))
+    snapshot = er.snapshot_from_document(_doc(contents), {"image": er.asset_from_bytes("image", _png(320, 160))})
+    result = er.render(snapshot, "docx", out_dir, replace(settings, export_libreoffice_path=LIBREOFFICE))
+    assert result.layout_ok is True and result.actual_pages == pages and result.findings == []
+    assert result.preview_path.is_file() and ";libreoffice/" in result.renderer
+    assert result.details["images_per_page"] == [1] + [0] * (pages - 1)
+    assert all(check.result == "ok" for check in result.checks)
+    editable = docx.Document(str(result.file_path))
+    assert any("시험 본문 0" in paragraph.text for paragraph in editable.paragraphs)
+    assert len(editable.inline_shapes) == 1 and not list(out_dir.glob("docx_check_*"))
+
+
+@needs_libreoffice
+def test_docx_actual_overflow_remains_blocked(settings, out_dir):
+    from dataclasses import replace
+
+    snapshot = er.snapshot_from_document(_doc([Page(page_id="p1", title="긴 본문", layout_key="text", blocks=[
+        _blk("long", "paragraph", text=LONG_UNIT * 250)])]), {})
+    result = er.render(snapshot, "docx", out_dir, replace(settings, export_libreoffice_path=LIBREOFFICE))
+    assert result.layout_ok is False and result.actual_pages > 1 and result.preview_path.is_file()
+    assert result.checks[0].result == "finding" and not result.not_checked
+    assert any(f.kind == "overflow" for f in result.findings)
+
+
+@needs_libreoffice
+@pytest.mark.parametrize("pages", [4, 8])
+def test_docx_dense_photo_pages_have_no_blank_break_pages(settings, out_dir, pages):
+    from dataclasses import replace
+    import docx
+
+    contents = []
+    body = "표면 처리 공정은 확인된 조건과 검사 순서를 유지하며 고객의 요청에 따라 작업합니다. "
+    for i in range(pages):
+        blocks = [_blk(f"h{i}", "heading", text=f"공정 소개 {i}", level=1),
+                  _blk(f"intro{i}", "paragraph", text=body)]
+        for j in range(4):
+            blocks.extend([_blk(f"h{i}_{j}", "heading", text=f"검사 항목 {j}", level=2),
+                           _blk(f"b{i}_{j}", "paragraph", text=body + "수량 12개, 적용 기간은 2026년 10월입니다.")])
+        blocks.append(_blk(f"photo{i}", "image", asset_id="image", caption="확인한 공정 사진", fit="contain"))
+        contents.append(Page(page_id=f"p{i}", title=f"공정 소개 {i}", layout_key="text_photo", blocks=blocks))
+    snapshot = er.snapshot_from_document(_doc(contents), {"image": er.asset_from_bytes("image", _png(320, 210))}, demo=True)
+    result = er.render(snapshot, "docx", out_dir, replace(settings, export_libreoffice_path=LIBREOFFICE))
+    assert result.actual_pages == pages and result.layout_ok is True, result.findings
+    assert result.details["images_per_page"] == [1] * pages
+    editable = docx.Document(str(result.file_path))
+    # Text and picture instances survive; the 320x210 source is no longer enlarged below 150ppi.
+    text = "\n".join(p.text for p in editable.paragraphs)
+    assert text.count(body) == pages * 5 and len(editable.inline_shapes) == pages
+    assert all(abs(shape.height.mm - 35.56) < 0.01 for shape in editable.inline_shapes)
 
 
 # ================= HTML(템플릿) 안전성 — 브라우저 없이 확인 =================
@@ -1370,3 +1561,101 @@ def test_render_browser_is_reaped_and_pipes_closed_on_every_exit(monkeypatch, mo
         with pytest.raises(error):er._run(['browser'],1,'print-to-pdf')
     assert killed==([] if mode=='ok' else [4321])
     assert proc.poll() is not None and proc.stdout.closed and proc.stderr.closed
+
+@pytest.mark.parametrize("actual,matched", [
+    ("Town-si 2026\nQty 12", True),
+    ("Town\x02si 2026 Qty 12", False),
+    ("Townsi 2026 Qty 12", False),
+    ("Town-si 2025 Qty 12", False),
+    ("Qty 12 Town-si 2026", False),
+    ("Town-si 2026", False),
+])
+def test_docx_exact_page_text_keeps_hyphens_numbers_and_order(actual, matched):
+    assert er._docx_page_text_matches(["Town-si 2026", "Qty 12"], actual) is matched
+
+
+@pytest.mark.skipif(not LIBREOFFICE, reason="LibreOffice not installed")
+def test_docx_long_process_page_keeps_photo_caption_and_address(settings, out_dir, monkeypatch):
+    from dataclasses import replace
+    import docx
+
+    import pypdfium2 as pdfium
+    original_text = pdfium.PdfTextPage.get_text_bounded
+
+    def pdfium_line_end_hyphen(self, *args, **kwargs):
+        return original_text(self, *args, **kwargs).replace("Town-si", "Town\x02si")
+
+    monkeypatch.setattr(pdfium.PdfTextPage, "get_text_bounded", pdfium_line_end_hyphen)
+    text = "가상 제조 공정은 소재와 표면 상태를 확인하고 지정한 작업 순서와 조건에 따라 검사합니다. "
+    blocks = [_blk("title", "heading", text="제조 공정과 검사", level=1),
+              _blk("intro", "paragraph", text=text)]
+    for i in range(6):
+        blocks.extend([_blk(f"h{i}", "heading", text=f"공정별 확인 항목 {i}", level=2),
+                       _blk(f"t{i}", "paragraph", text=text + "주소는 Town-si, Example-gu이며 수량은 12개입니다.")])
+    blocks.append(_blk("photo", "image", asset_id="image", caption="확인한 가상 시설 사진"))
+    snapshot = er.snapshot_from_document(_doc([Page(page_id="p1", title="제조 공정", layout_key="text_photo", blocks=blocks)]),
+                                        {"image": er.asset_from_bytes("image", _png(320, 210))}, demo=True)
+    result = er.render(snapshot, "docx", out_dir, replace(settings, export_libreoffice_path=LIBREOFFICE))
+    assert result.actual_pages == 1 and result.layout_ok, result.findings
+    assert result.details["images_per_page"] == [1]
+    editable = docx.Document(str(result.file_path))
+    full_text = "\n".join(p.text for p in editable.paragraphs)
+    assert full_text.count(text) == 7
+    assert result.details["text_extraction_fallback_pages"] == [1]
+    assert full_text.count("Town-si, Example-gu") == 6
+    assert "확인한 가상 시설 사진" in full_text
+    assert len(editable.inline_shapes) == 1
+    assert abs(editable.inline_shapes[0].height.mm - 35.56) < 0.01
+
+
+@needs_browser
+def test_eval_saved_render_keeps_input_and_reports_target_difference(tmp_path, monkeypatch):
+    from scripts.experiments import agent_quality_comparison as q
+    doc = _doc([Page(page_id='p', title='가상 품질', layout_key='text', blocks=[
+        _blk('h','heading',text='가상 품질',level=1),
+        _blk('b','paragraph',text='가상 부품은 주문 조건을 확인한 뒤 검사합니다.')])])
+    assets = tmp_path/'assets'; assets.mkdir()
+    (assets/'asset_manifest.json').write_text('[]',encoding='utf-8')
+    source = tmp_path/'document.json'; source.write_text(doc.model_dump_json(),encoding='utf-8')
+    manifest = tmp_path/'manifest.json'
+    manifest.write_text(json.dumps({'documents':[{'label':'sample','document_path':'document.json','assets_dir':'assets'}]}),encoding='utf-8')
+    before = source.read_bytes()
+    monkeypatch.setattr(q.agent_llm,'LlmOptions',lambda *a,**kw: pytest.fail('offline replay requested model setup'))
+    results = q.render_saved_comparison(manifest, tmp_path/'comparison')
+    assert source.read_bytes() == before and results[0]['missing_text_blocks'] == []
+    assert results[0]['layout_ok'] and results[0]['pages'] == 1 and not results[0]['target_pages_match']
+    with pytest.raises(FileExistsError): q.render_saved_comparison(manifest, tmp_path/'comparison')
+
+
+@needs_browser
+def test_stage_runner_current_render_resume_and_regression_dispatch(tmp_path, monkeypatch):
+    from scripts.experiments import stage_runner as runner
+    doc = _doc([Page(page_id='p', title='가상 검사', layout_key='text', blocks=[
+        _blk('h','heading',text='가상 검사',level=1),
+        _blk('b','paragraph',text='가상 품목의 수량과 검사 조건을 기록합니다.')])])
+    assets = tmp_path/'assets'; assets.mkdir()
+    (assets/'asset_manifest.json').write_text('[]',encoding='utf-8')
+    source = tmp_path/'document.json'; source.write_text(doc.model_dump_json(),encoding='utf-8')
+    manifest = tmp_path/'manifest.json'
+    manifest.write_text(json.dumps({'documents':[{'label':'sample','document_path':'document.json','assets_dir':'assets'}]}),encoding='utf-8')
+    before = source.read_bytes(); executions=[]
+    # Actual regression is run by the outer suite; verify nested dispatch without recursive pytest.
+    monkeypatch.setattr(pytest,'main',lambda args: executions.append(args) or 0)
+    monkeypatch.chdir(Path.cwd())
+    for name in ('TEMP','TMP','PYTHON_DOTENV_DISABLED','PYTHONDONTWRITEBYTECODE','PYTHONIOENCODING'):
+        monkeypatch.setenv(name,os.environ.get(name,''))
+    monkeypatch.setattr(sys,'dont_write_bytecode',sys.dont_write_bytecode)
+    monkeypatch.setattr(sys,'path',list(sys.path))
+    root=tmp_path/'run'
+    common=['--manifest',str(manifest),'--run-dir',str(root),'--expected-template',layout_checks.TEMPLATE_VERSION]
+    assert runner.main(['stage1',*common,'--docx-label','sample']) == 0
+    record=json.loads((root/'baseline/results.json').read_text(encoding='utf-8'))
+    assert record['api_calls'] == 0 and record['results'][0]['docx_smoke']['text_and_images_preserved']
+    assert not record['results'][0]['target_pages_match']
+    assert runner.main(['stage1',*common,'--docx-label','sample','--resume']) == 0
+    assert runner.main(['stage2',*common]) == 0
+    assert len(executions)==3 and all(set(runner.REGRESSION)<=set(args) for args in executions)
+    assert source.read_bytes()==before
+    (root/'baseline/sample/document.json').write_text('{}',encoding='utf-8')
+    with pytest.raises(ValueError,match='artifact'):
+        runner.main(['stage1',*common,'--docx-label','sample','--resume'])

@@ -18,4 +18,4 @@
 
 - TTF(정적)를 고른 이유: 브라우저와 reportlab 둘 다 읽을 수 있다(OTF/CFF는 reportlab 미지원).
 - 두 굵기(Regular 400 · Bold 700)만 동봉한다. 폰트 파일을 바꾸면 `app/services/layout_checks.py`의 `TEMPLATE_VERSION`을 올려야 한다(가드 테스트 `tests/test_be07.py`).
-- DOCX에는 글꼴 이름만 지정한다. 이번 구현(python-docx)에서는 폰트 임베딩을 지원하지 않으므로 받는 사람 환경에 Pretendard가 없으면 다른 글꼴로 대체될 수 있다.
+- DOCX에도 Regular/Bold 원본 TTF 전체를 OOXML 난독화 글꼴 파트로 포함한다(template_v11). 글꼴 이름·기본/굵은 스타일은 PDF와 같은 Pretendard다. 전체 글리프를 포함해 이후 편집에도 사용한다. 동봉 TTF의 OS/2 fsType은 0이며 OFL 라이선스를 따른다. 임베드 글꼴을 지원하는 뷰어가 필요하며 프로그램별 쪽 나눔은 별도 검사한다.

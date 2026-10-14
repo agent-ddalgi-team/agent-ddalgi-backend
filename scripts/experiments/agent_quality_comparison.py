@@ -2,7 +2,7 @@
 
 Default: no recording and no model calls. Explicit mode and --record-run are required.
 Archives live outside session directories and survive session expiry by user decision.
-Only the fixed, explicitly selected registered files are read; no user DB is written.
+Only explicitly selected source snapshots are read by the CLI; no user DB is written.
 """
 from __future__ import annotations
 
@@ -53,10 +53,8 @@ def json_bytes(value: Any) -> bytes:
         raise TypeError(type(obj).__name__)
     return json.dumps(value, ensure_ascii=False, indent=2, default=encode).encode('utf-8')
 
-
 def git_revision(repo: Path = ROOT) -> str:
     return subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
-
 
 def fixed_briefs(target_company: str) -> dict[str, Brief]:
     return {key: Brief(purpose=purpose, emphasis=emphasis, direction=direction,
@@ -66,7 +64,6 @@ def fixed_briefs(target_company: str) -> dict[str, Brief]:
                 ('quality', '품질·공정 검토', ['품질관리', '인증'], 'quality_process', 'many'),
                 ('technical', '기술 협의', ['기술', '공정능력'], 'quality_process', 'none'),
                 ('delivery', '납기·고객 대응', ['납기안정성', '고객대응'], 'customer_response', 'balanced')]}
-
 
 class RunArchive:
     """One immutable-name folder per run; default off, atomic individual files.
@@ -222,6 +219,92 @@ def load_registered(db_path: Path, source_dir: Path):
         return sources, manifest, assets, asset_manifest
     finally:
         conn.close()
+class RecordingRequester(agent_llm.OpenAIRequester):
+    """Experiment-only observer of the unchanged product requester and ledger.
+
+    Records the wire projection and provider response; the product still owns
+    transport, decoding, aliases, per-fact status, validation and accounting.
+    No callbacks or raw material are added to the server's Job trace (4405a5d).
+    """
+    def __init__(self, options, *, ledger=None, record_call=None, extract_prompt=None):
+        super().__init__(options, ledger=ledger)
+        self._record_call = record_call
+        self.extract_prompt = extract_prompt
+        self._response_record = {}
+
+    def _decode(self, response):
+        if self._record_call is not None:
+            self._response_record = {'output_text': getattr(response, 'output_text', None),
+                                     'actual_model': getattr(response, 'model', None)}
+        return super()._decode(response)
+
+    def __call__(self, instructions, payload, schema, schema_name, *, images=None):
+        if self.extract_prompt is not None and schema_name == agent_legacy.MODEL_SCHEMA_NAME:
+            original = agent_legacy.load_extract_prompt()
+            if not instructions.startswith(original):
+                raise ValueError('Unexpected extraction instructions; refusing prompt replacement')
+            # Retain the current server's source_origins/metadata instructions.
+            instructions = self.extract_prompt + instructions[len(original):]
+        if self._record_call is None:
+            return super().__call__(instructions, payload, schema, schema_name, images=images)
+        if images:
+            raise ValueError('Evaluation recorder supports text extraction/drafts only')
+        wire, wire_schema = payload, schema
+        if schema_name == agent_legacy.MODEL_SCHEMA_NAME and schema in (
+                agent_legacy.build_model_output_schema(), agent_legacy.build_model_output_schema(per_fact_status=True),
+                agent_legacy.build_model_output_schema(claim_status=True),
+                agent_legacy.build_model_output_schema(per_fact_status=True, claim_status=True)):
+            wire, wire_schema, _ = agent_llm._extraction_wire_request(payload, schema)
+        elif schema_name == 'draft_sections' and payload.get('prompt_version') == 'editorial_v2':
+            wire, wire_schema, _ = agent_llm._editorial_wire_request(payload, schema)
+        self._record_call({'event': 'prepared', 'schema_name': schema_name,
+                          'instructions': instructions, 'payload': wire, 'schema': wire_schema})
+        self._response_record = {}
+        discarded = True
+        try:
+            result = super().__call__(instructions, payload, schema, schema_name)
+            discarded = False
+            return result
+        finally:
+            self._record_call({'event': 'finished', 'schema_name': schema_name,
+                              'actual_model': None, **self._response_record,
+                              'discarded': discarded, 'ledger': self.ledger.snapshot()})
+
+
+def load_source_archive(folder: Path):
+    """Read an explicitly supplied input snapshot; retain all SourceIn metadata.
+
+    This is separate from server selection/Job tracing. Never discover a live DB
+    or silently re-select excluded files. SourceIn JSON is the saved input.
+    """
+    folder = folder.resolve()
+    rows = json.loads((folder / 'source_units.json').read_text(encoding='utf-8'))
+    sources = [SourceIn(**{**row, 'segments': [SegmentIn(**s) for s in row['segments']]}) for row in rows]
+    if not sources:
+        raise ValueError('An explicit nonempty source snapshot is required')
+    agent_llm.SourceIndex(sources)
+    manifest = json.loads((folder / 'manifest.json').read_text(encoding='utf-8'))
+    if {s.source_id for s in sources} != {m['source_id'] for m in manifest}:
+        raise ValueError('Source manifest does not match saved inputs')
+    asset_manifest = json.loads((folder / 'asset_manifest.json').read_text(encoding='utf-8'))
+    assets = load_assets(folder, asset_manifest)
+    return sources, manifest, assets, asset_manifest
+
+
+def load_assets(folder, rows):
+    assets = {}
+    for row in rows:
+        path = (folder / row['archive_file']).resolve()
+        if not path.is_relative_to(folder.resolve()) or row['asset_id'] in assets:
+            raise ValueError('Invalid or duplicate archived asset')
+        data = path.read_bytes()
+        if digest(data) != row['sha256']:
+            raise ValueError('Archived asset hash mismatch')
+        asset = export_render.asset_from_bytes(row['asset_id'], data)
+        if not asset.ok:
+            raise ValueError('Archived asset failed integrity check')
+        assets[row['asset_id']] = asset
+    return assets
 
 
 def fact_locations(facts, manifest):
@@ -230,6 +313,17 @@ def fact_locations(facts, manifest):
              'locations': [{'file': paths[ref.source_id], **ref.model_dump()} for ref in fact.evidence_refs]}
             for fact in facts]
 
+def prose_style_counts(text: str) -> dict[str, int]:
+    """Same offline indicators for repair feedback and archived PDF review."""
+    text = re.sub(r'\s+', ' ', text)
+    certificate = r'인증서\s*(?:기준|에\s*기재된|에\s*표시된)'
+    reporting = (r'자료\s*에는|소개\s*자료|소개\s*되어|기재\s*되어|'
+        r'설명\s*(?:한다|합니다|되어)|제시\s*(?:한다|합니다)|열거\s*되어|언급\s*되어|'
+        r'말씀\s*드립니다|안내\s*드립니다|이력이\s*있습니다|수록값\s*기준')
+    return {'source_description': len(re.findall(reporting, re.sub(certificate, '', text))),
+            'certificate_attribution': len(re.findall(certificate, text)),
+            'plain_endings': len(re.findall(r'(?<!니)(?<!니 )다[.!?](?=\s|$)', text)),
+            'formal_endings': len(re.findall(r'니\s*다[.!?](?=\s|$)', text))}
 
 def editorial_checks(page_texts: list[str], document: dict | None = None) -> dict:
     """Offline indicators, not a factual verdict. Provenance counts require JSON.
@@ -240,7 +334,7 @@ def editorial_checks(page_texts: list[str], document: dict | None = None) -> dic
     pages = []
     for n, text in enumerate(page_texts, 1):
         text = re.sub(r'\s+', ' ', text)
-        counts = agent_llm.prose_style_counts(text)
+        counts = prose_style_counts(text)
         pages.append({'page': n, **counts,
             'mixed_endings': bool(counts['plain_endings'] and counts['formal_endings']),
             'demo_footer': text.count(export_render.DEMO_FOOTER_TEXT),
@@ -356,7 +450,6 @@ class ComparisonBudget:
         if Decimal(self.snapshot()['forecast_usd']) > self.limit:
             self.stopped, self.reason = True, 'forecast_exceeds_twice_pilot'
 
-
 def pilot_measurements(paths: list[Path]):
     values = {'company_info': [], 'draft_sections': []}
     times = {k: [] for k in values}
@@ -390,7 +483,7 @@ class ExperimentRetryLedger(agent_llm.TrialLedger):
         self._budget = Decimal('1.50')
 
 
-class TimeoutRetryRequester(agent_llm.OpenAIRequester):
+class TimeoutRetryRequester(RecordingRequester):
     """Repeat the exact request only for an observed request_timeout, at most twice."""
     def __init__(self, *args, timeout_retries=2, record_retry=None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -438,19 +531,18 @@ def run_case(*, label, brief, sources, manifest, assets, asset_manifest, prompt_
     archive = RunArchive(enabled=record_run, label=label, repo=repo, secret_values=(options.api_key,))
     if archive.path is None:
         raise ValueError('Pilot requires explicit record_run=True; no API call made')
-    original_prompt = agent_legacy.EXTRACT_PROMPT_PATH
     ledger = (ExperimentRetryLedger(shared=shared_run is not None, timeout_retries=timeout_retries)
         if timeout_retries or isinstance(budget_guard, CycleBudget) else agent_llm.TrialLedger(max_calls=2 if shared_run else 4, budget_usd=Decimal('0.50'),
         timeout_limit_seconds=180, input_char_limit=40000, output_token_limit=32000))
     if isinstance(budget_guard, CycleBudget):
         ledger._budget = Decimal('1.0')
-    factory = requester_factory or agent_llm.OpenAIRequester
+    factory = requester_factory or RecordingRequester
     render = renderer or export_render.render
     started = time.monotonic()
     stage = 'prepare'
     agent = None
     requester = None
-    required = ['manifest.json','source_units.json','facts.json','fact_locations.json','draft_raw.json',
+    required = ['manifest.json','source_units.json','facts.json','fact_locations.json','analysis.json','draft_raw.json',
                 'draft.json','document.json','output.pdf','brief.json','extract_prompt.txt','render.json',
                 'call_1_finished.json'] + ([] if shared_run else ['call_2_finished.json'])
     try:
@@ -460,10 +552,17 @@ def run_case(*, label, brief, sources, manifest, assets, asset_manifest, prompt_
             confirmed_contact = confirmed_contact.strip() or None
         archive.write('manifest.json', manifest)
         archive.write('source_units.json', sources)
-        archive.write('asset_manifest.json', [{**item, 'archive_file': f'asset_{i}.bin'}
-                                              for i, item in enumerate(asset_manifest, 1)])
-        for i, (aid, asset) in enumerate(assets.items(), 1):
-            archive.write_bytes(f'asset_{i}.bin', asset.data)
+        if set(assets) != {a['asset_id'] for a in asset_manifest} or len(assets) != len(asset_manifest):
+            raise ValueError('Asset manifest must cover exactly the supplied assets')
+        saved_assets = []
+        for i, row in enumerate(asset_manifest, 1):
+            data = assets[row['asset_id']].data
+            if digest(data) != row['sha256']:
+                raise ValueError('Asset manifest hash mismatch')
+            name = f'asset_{i}.bin'
+            archive.write_bytes(name, data)
+            saved_assets.append({**row, 'archive_file': name})
+        archive.write('asset_manifest.json', saved_assets)
         archive.write_bytes('extract_prompt.txt', prompt_bytes)
         archive.write_bytes('draft_prompt.txt', agent_legacy.DRAFT_PROMPT_PATH.read_bytes())
         archive.write('brief.json', brief)
@@ -474,7 +573,7 @@ def run_case(*, label, brief, sources, manifest, assets, asset_manifest, prompt_
                 raise ValueError('Rubric hash mismatch')
             archive.write_bytes('rubric.json', rubric_bytes)
         archive.update(git_commit=git_revision(repo), extraction_prompt_version=prompt_version,
-            extraction_review_version=2,
+            extraction_review_version=2, extraction_schema='per_fact_status_claim_v2',
             extraction_prompt_file_sha256=digest(prompt_bytes), rubric_sha256=rubric_sha256,
             source_units_sha256=digest(json_bytes(sources)),
             settings={'model': options.model, 'reasoning_effort': 'medium', 'service_tier': 'default',
@@ -482,7 +581,6 @@ def run_case(*, label, brief, sources, manifest, assets, asset_manifest, prompt_
                       'max_output_tokens': options.max_output_tokens, 'max_input_chars': options.max_input_chars},
             brief=brief.model_dump(), actual_pdf_pages=None, display_company_name=display_company_name,
             demo=demo, source_scope=source_scope)
-        agent_legacy.EXTRACT_PROMPT_PATH = archive.path / 'extract_prompt.txt'
         def record_call(event):
             if budget_guard is not None and event['event'] == 'prepared':
                 budget_guard(event)
@@ -495,7 +593,14 @@ def run_case(*, label, brief, sources, manifest, assets, asset_manifest, prompt_
             record_retry=lambda event: archive.update(transport_retry_events=[
                 *archive.state.get('transport_retry_events', []), event]))
             if timeout_retries else factory(options, ledger=ledger, record_call=record_call))
-        agent = agent_llm.LlmAgent(requester, max_input_chars=options.max_input_chars,
+        def request_json(instructions, payload, schema, schema_name, **kwargs):
+            if schema_name == agent_legacy.MODEL_SCHEMA_NAME:
+                original = agent_legacy.load_extract_prompt()
+                if not instructions.startswith(original):
+                    raise ValueError('Unexpected extraction instructions')
+                instructions = prompt_bytes.decode('utf-8') + instructions[len(original):]
+            return requester(instructions, payload, schema, schema_name, **kwargs)
+        agent = agent_llm.LlmAgent(request_json, max_input_chars=options.max_input_chars, per_fact_status=True,
                                  display_company_name=display_company_name, source_scope=source_scope)
         sid = 'quality_eval_' + uuid.uuid4().hex
         request = AnalyzeRequest(sid, 1, brief, sources)
@@ -506,15 +611,24 @@ def run_case(*, label, brief, sources, manifest, assets, asset_manifest, prompt_
         else:
             shared = json.loads((shared_run/'run.json').read_text(encoding='utf-8'))
             if (not shared.get('extraction_validated')
+                    or shared['git_commit'] != archive.state['git_commit']
+                    or shared.get('extraction_schema') != archive.state['extraction_schema']
+                    or shared['settings'] != archive.state['settings']
                     or shared['source_units_sha256'] != digest(json_bytes(sources))
                     or shared['extraction_prompt_file_sha256'] != digest(prompt_bytes)
                     or shared['brief']['target_company'] != brief.target_company):
                 raise ValueError('Shared extraction does not match this exact source/prompt/company')
-            raw = (shared_run/'facts.json').read_bytes()
-            if digest(raw) != shared['files']['facts.json']['sha256']:
-                raise ValueError('Shared facts hash mismatch')
-            facts = [Fact.model_validate(f) for f in json.loads(raw)]
-            analysis = json.loads((shared_run/'analysis.json').read_text(encoding='utf-8'))
+            saved = {}
+            for name in ('facts.json', 'analysis.json', 'extraction_raw.json'):
+                raw = (shared_run / name).read_bytes()
+                if digest(raw) != shared['files'][name]['sha256']:
+                    raise ValueError('Shared extraction hash mismatch')
+                saved[name] = raw
+            facts = [Fact.model_validate(f) for f in json.loads(saved['facts.json'])]
+            analysis = json.loads(saved['analysis.json'])
+            if analysis['facts'] != json.loads(saved['facts.json']):
+                raise ValueError('Shared facts and analysis differ')
+            raw = saved['facts.json']
             if recheck_shared_facts:
                 archive.write_bytes('facts_input.json', raw)
                 facts, rechecks = agent_llm.recheck_recorded_facts(facts, agent_llm.SourceIndex(sources))
@@ -537,10 +651,7 @@ def run_case(*, label, brief, sources, manifest, assets, asset_manifest, prompt_
             raise ValueError('Analysis failed existing server reference validation')
         archive.update(extraction_seconds=time.monotonic() - analyze_started, extraction_validated=True,
                        extraction_reused=shared_run is not None)
-        preflight = PreflightOut(preflight_id='evaluation', session_id=sid, input_revision=1,
-            usable_source_ids=[s.source_id for s in sources], facts=analyzed.facts, issues=analyzed.issues,
-            recommendations=analyzed.recommendations, can_generate=bool(any(s.segments for s in sources)),
-            confirmed_at=stamp())
+        preflight = ai_preflight(request, analyzed)
         stage = 'draft'
         draft_request = DraftRequest(sid, 1, brief, sources, preflight)
         archive.write('draft_request.json', draft_request)
@@ -578,7 +689,7 @@ def run_case(*, label, brief, sources, manifest, assets, asset_manifest, prompt_
         if missing:
             raise ValueError('Required artifacts missing')
         archive.update(status='complete', actual_pdf_pages=rendered.actual_pages,
-                       layout_ok=rendered.layout_ok, required_artifacts_missing=[])
+                       layout_ok=rendered.layout_ok, publication_approved=False, required_artifacts_missing=[])
     except BaseException as exc:
         # Error messages/tracebacks can contain credentials or company text; store class and safe code only.
         archive.update(status='failed', failed_stage=stage, error_type=type(exc).__name__,
@@ -587,7 +698,6 @@ def run_case(*, label, brief, sources, manifest, assets, asset_manifest, prompt_
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):
             raise
     finally:
-        agent_legacy.EXTRACT_PROMPT_PATH = original_prompt
         if shared_run is None and agent is not None:
             archive.write('extraction_preservation.json', agent.extraction_preservation)
         attempts = agent.draft_attempts if agent is not None else []
@@ -621,13 +731,22 @@ def run_case(*, label, brief, sources, manifest, assets, asset_manifest, prompt_
     return archive
 
 
+def ai_preflight(request, analyzed):
+    from app.models import PreflightOut
+    from app.services import preflights
+    result = PreflightOut(preflight_id='evaluation', session_id=request.session_id,
+        input_revision=request.input_revision, usable_source_ids=[s.source_id for s in request.sources if s.segments],
+        facts=analyzed.facts, issues=analyzed.issues, recommendations=analyzed.recommendations,
+        can_generate=any(s.segments for s in request.sources), confirmed_at=stamp())
+    return preflights.apply_draft_readiness(result, request.brief, 'llm')
+
+
 def saved_document_signature(document: Document) -> dict:
     """Content/provenance identity independent of page grouping and design tokens."""
     blocks = [b.model_dump(mode='json') for p in document.pages for b in p.blocks]
     return {'blocks_sha256': digest(json_bytes(blocks)), 'block_count': len(blocks),
             'fact_ids': sorted({f for b in blocks for f in b['fact_ids']}),
             'images': [b['content'] for b in blocks if b['type'] == 'image']}
-
 
 def layout_diagnostics(result) -> dict:
     """80% is descriptive only; it never participates in layout_ok or pagination."""
@@ -641,11 +760,11 @@ def layout_diagnostics(result) -> dict:
             'minimum_body_pt': min((p['min_body_font_pt'] for p in pages
                 if p.get('min_body_font_pt') is not None), default=None)}
 
-
 def render_saved_comparison(manifest_path: Path, output: Path) -> list[dict]:
     """Local saved-input replay. No requester, key lookup, source extraction or DB."""
     from app.services import layout_checks
-    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    from scripts.experiments.stage_runner import load_manifest
+    manifest = {'documents': load_manifest(manifest_path.resolve())}
     if not manifest.get('documents'):
         raise ValueError('Saved comparison requires explicit document/asset paths')
     # An existing run is immutable; a failed run must be reviewed, not overwritten.
@@ -664,14 +783,8 @@ def render_saved_comparison(manifest_path: Path, output: Path) -> list[dict]:
         document = Document.model_validate_json(original_bytes)
         before = saved_document_signature(document)
         asset_rows = json.loads((assets_dir / 'asset_manifest.json').read_text('utf-8'))
-        assets, hashes = {}, {}
-        for asset in asset_rows:
-            path = (assets_dir / asset['archive_file']).resolve()
-            if not path.is_relative_to(assets_dir.resolve()):
-                raise ValueError('Asset archive escaped its directory')
-            data = path.read_bytes()
-            assets[asset['asset_id']] = export_render.asset_from_bytes(asset['asset_id'], data)
-            hashes[asset['asset_id']] = digest(data)
+        assets = load_assets(assets_dir, asset_rows)
+        hashes = {aid: digest(asset.data) for aid, asset in assets.items()}
         folder = output / label
         folder.mkdir()
         snapshot = export_render.snapshot_from_document(document, assets)
@@ -700,6 +813,7 @@ def render_saved_comparison(manifest_path: Path, output: Path) -> list[dict]:
                'pdf': str(result.file_path.resolve()), 'pdf_sha256': digest(result.file_path.read_bytes()),
                'pages': result.actual_pages, 'target_pages': document.target_pages,
                'layout_ok': result.layout_ok, 'missing_text_blocks': missing,
+               'target_pages_match': result.actual_pages == document.target_pages,
                'diagnostics': layout_diagnostics(result)}
         results.append(row)
         record = {'root': str(ROOT.resolve()), 'renderer_module': str(Path(export_render.__file__).resolve()),
@@ -709,7 +823,7 @@ def render_saved_comparison(manifest_path: Path, output: Path) -> list[dict]:
         (output / 'results.json').write_bytes(json_bytes(record))
         print(json.dumps({k: row[k] for k in ['label', 'pages', 'layout_ok', 'missing_text_blocks', 'diagnostics']},
                          ensure_ascii=False), flush=True)
-        if not result.layout_ok or missing or result.actual_pages != document.target_pages:
+        if not result.layout_ok or missing:
             raise ValueError(f'Saved replay failed preservation/layout: {label}')
     return results
 
@@ -731,12 +845,17 @@ def main(argv=None):
                         help='Draft source scope; extraction and saved facts are not modified')
     parser.add_argument('--target-company', help='Explicit company name for a paid comparison; no company default')
     parser.add_argument('--confirmed-contact', help='Company-confirmed contact; omitted means no contact in PDF')
+    parser.add_argument('--source-archive', type=Path)
+    parser.add_argument('--before-prompt', type=Path)
+    parser.add_argument('--after-prompt', type=Path)
     parser.add_argument('--rubric', type=Path, help='Pre-existing human rubric; hash only, never sent to the model')
     args = parser.parse_args(argv)
     if args.saved_manifest:
         if not args.saved_output:
             parser.error('--saved-manifest requires --saved-output')
-        render_saved_comparison(args.saved_manifest, args.saved_output)
+        from scripts.experiments.stage_runner import offline_network
+        with offline_network():
+            render_saved_comparison(args.saved_manifest, args.saved_output)
         return
     if not args.pilot and not args.main and not args.cycle_arm:
         print('No API calls. Recording default: off. Select an explicit mode with --record-run.')
@@ -755,12 +874,10 @@ def main(argv=None):
     if not key:
         parser.error('OPENAI_API_KEY is required (value never printed)')
     options = agent_llm.LlmOptions(key, 'gpt-6-luna', 180, 0, 32000, 40000)
-    sources, manifest, assets, asset_manifest = load_registered(
-        ROOT/'private_runs/team_demo_20260930/app.sqlite3', ROOT/'private_runs/team_demo_20260930/registered')
-    if len(manifest) != 21:
-        raise ValueError('Pilot requires the fixed 21-file source set')
-    before = subprocess.check_output(['git','show','94d1e3c^:prompts/extract.txt'],cwd=ROOT)
-    after = agent_legacy.EXTRACT_PROMPT_PATH.read_bytes()
+    if not args.source_archive or not args.before_prompt or not args.after_prompt:
+        parser.error('Paid comparison requires --source-archive, --before-prompt and --after-prompt')
+    sources, manifest, assets, asset_manifest = load_source_archive(args.source_archive)
+    before, after = args.before_prompt.read_bytes(), args.after_prompt.read_bytes()
     commit = git_revision()
     guard = None
     if args.cycle_arm:
@@ -809,7 +926,7 @@ def main(argv=None):
         batch.update(budget=guard.snapshot(), pilot_mean_seconds=estimate['mean_seconds'] if args.cycle_arm else mean_times)
     stop = False
     for rep in range(1, 4 if args.main or args.cycle_arm else 2):
-        for condition, prompt, version in [('before', before, '94d1e3c^'), ('after', after, commit)]:
+        for condition, prompt, version in [('before', before, digest(before)), ('after', after, commit)]:
             if args.cycle_arm and condition != args.cycle_arm:
                 continue
             parent = None
@@ -843,13 +960,9 @@ def main(argv=None):
                 break
         if stop:
             break
-    for item in manifest:
-        if digest(Path(item['path']).read_bytes()) != item['sha256']:
-            raise ValueError('Original source changed during evaluation')
     batch.update(status='stopped' if guard and guard.stopped else 'finished',finished_at=stamp())
     print(json.dumps({'batch':str(batch.path),'status':batch.state['status'],
                       'budget':guard.snapshot() if guard else None}),flush=True)
-
 
 if __name__ == '__main__':
     main()

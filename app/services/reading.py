@@ -44,10 +44,10 @@ def _apply_result(conn: Connection, row: Row, result: ParseResult) -> None:
         conn.execute("DELETE FROM segments WHERE source_id=?", (source_id,))
     for ordinal, seg in enumerate(result.segments, start=1):
         conn.execute(
-            "INSERT INTO segments (segment_id, source_id, source_version, session_id, ordinal, locator_json, text, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO segments (segment_id, source_id, source_version, session_id, ordinal, locator_json, text, created_at, document_date, extraction_method) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (f"seg_{uuid.uuid4().hex[:16]}", source_id, row["source_version"], row["session_id"], ordinal,
-             json.dumps(seg.locator, ensure_ascii=False), seg.text, stamp),
+             json.dumps(seg.locator, ensure_ascii=False), seg.text, stamp, row["document_date"], "parser"),
         )
     if result.image_available and result.width and result.height:
         conn.execute(
@@ -99,6 +99,7 @@ def run_read_job(settings: Settings, session_id: str, job_id: str, source_ids: l
             if _policy_failure(conn, settings, session_id, job_id, source_ids):
                 return
             jobs.set_progress(conn, job_id, "reading", f"0/{total}")
+            jobs.record_trace(conn, job_id, "parser_input", {"actual_mode": "parser", "source_count": total})
         for i, source_id in enumerate(source_ids, start=1):
             with connect(settings.db_path, immediate=True) as conn:
                 if _policy_failure(conn, settings, session_id, job_id, source_ids):
@@ -127,6 +128,12 @@ def run_read_job(settings: Settings, session_id: str, job_id: str, source_ids: l
                                        (source_id,)).fetchone()
                 if current is not None:
                     _apply_result(conn, current, result)
+                summary = {"source_id": source_id, "source_version": row["source_version"],
+                           "parse_status": result.status, "segment_count": len(result.segments),
+                           "text_chars": sum(len(s.text) for s in result.segments),
+                           "image_available": result.image_available,
+                           "warning_codes": sorted({w["code"] for w in result.warnings})}
+                jobs.record_trace(conn, job_id, "parsed:" + source_id, summary)
                 jobs.set_progress(conn, job_id, "reading", f"{i}/{total}")
         with connect(settings.db_path, immediate=True) as conn:
             if _policy_failure(conn, settings, session_id, job_id, source_ids):

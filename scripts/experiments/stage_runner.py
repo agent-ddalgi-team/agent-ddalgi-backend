@@ -3,7 +3,7 @@
 Run with the repository's Python, from the product revision being compared::
 
     python -B scripts/experiments/stage_runner.py stage2 --manifest INPUT.json \
-        --run-dir OUTPUT --expected-template template_v12
+        --run-dir OUTPUT --expected-template template_v14
 
 The private manifest has ``documents`` entries with unique ``label``,
 ``document_path`` and ``assets_dir``. Paths may be absolute or relative to the
@@ -90,7 +90,7 @@ def load_manifest(path):
 def code_identity(root):
     """Actual file hashes, including uncommitted edits; HEAD alone is insufficient."""
     names = subprocess.check_output(
-        ["git", "ls-files", "-z", "--", "app", "tests", "scripts/experiments",
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "app", "tests", "scripts/experiments",
          "pyproject.toml", "uv.lock"], cwd=root).decode().split("\0")
     files = {name: digest(root / name) for name in names if name and (root / name).is_file()}
     return {"head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
@@ -218,7 +218,8 @@ def inspect_pdf(result, document, folder):
     previews(result.file_path, folder)
     write(folder / "document.json", document.model_dump(mode="json"))
     write(folder / "render.json", result.to_dict())
-    return {"pages": len(reader.pages), "layout_ok": True, "missing_text_blocks": missing,
+    return {"pages": len(reader.pages), "layout_ok": True,
+            "target_pages_match": result.actual_pages == document.target_pages, "missing_text_blocks": missing,
             "diagnostics": layout_diagnostics(result), "pdf": str(result.file_path),
             "pdf_sha256": digest(result.file_path), "image_count": sum(len(p.images) for p in reader.pages)}
 
@@ -295,10 +296,8 @@ def main(argv=None):
             before, audit = doc.model_copy(deep=True), []
             assets = {}
             asset_root = entry["assets_dir"]
-            for item in read(asset_root / "asset_manifest.json"):
-                path = (asset_root / item["archive_file"]).resolve()
-                require(path.is_relative_to(asset_root), "Asset escaped archive")
-                assets[item["asset_id"]] = er.asset_from_bytes(item["asset_id"], path.read_bytes())
+            from scripts.experiments.agent_quality_comparison import load_assets
+            assets = load_assets(asset_root, read(asset_root / "asset_manifest.json"))
             if args.stage in ("stage3", "stage4"):
                 facts = {f.fact_id: f for f in map(Fact.model_validate, read(asset_root / "facts.json"))}
                 if args.stage == "stage3":
@@ -342,7 +341,7 @@ def main(argv=None):
                 strings = [str(b.content.get("text", b.content.get("caption", ""))) for p in doc.pages for b in p.blocks]
                 require(all(compact(s) in text for s in strings if s), "DOCX text loss")
                 require(len(opened.inline_shapes) == sum(b.type == "image" for p in doc.pages for b in p.blocks), "DOCX photo loss")
-                row["docx_smoke"] = {"text_and_images_preserved": True, "visual_pagination": "not_checked"}
+                row["docx_smoke"] = {"text_and_images_preserved": True, "visual_pagination": next(c.result for c in word.checks if c.check_key == "overflow"), "layout_ok": word.layout_ok}
             row["artifacts"] = tree_hashes(folder)
             record["results"].append(row)
             write(output / "results.json", record)

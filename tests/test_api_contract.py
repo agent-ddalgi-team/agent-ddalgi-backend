@@ -61,6 +61,7 @@ def _invalid(response, field=None):
 
 # Every public JSON request with a revision participates in the same rule.
 REVISION_REQUESTS = [
+    (models.PublicDataImport, {"expected_input_revision": 1}),
     (models.InputsPatch, {"expected_input_revision": 1, "selected_source_ids": []}),
     (models.PreflightCreate, {"expected_input_revision": 1}),
     (models.DraftCreate, {"preflight_id": "pf_example", "input_revision": 1, "confirmed": True}),
@@ -361,9 +362,26 @@ def test_unhandled_error_has_matching_request_id_and_hides_exception_text(app, s
 
 def test_openapi_describes_common_errors_export_statuses_and_binary_responses(app):
     schema = app.openapi()
+    origin = schema["components"]["schemas"]["SourceTextOut"]["properties"]["text_origin"]
+    assert origin["enum"] == ["registered_excerpt", "automatic_extraction", "unknown"]
+    assert origin["default"] == "unknown"
     operations = [operation for path, item in schema["paths"].items() if path.startswith("/api/v1/")
                   for method, operation in item.items() if method in {"get", "post", "patch", "delete"}]
-    assert len(operations) == 30
+    assert len(operations) == 38  # Source typo correction records and revalidation
+    correction = schema["paths"]["/api/v1/sessions/{sid}/issues/{iid}/source-corrections"]["post"]
+    assert "202" in correction["responses"]
+    assert any(p["name"] == "Idempotency-Key" and p["required"] for p in correction["parameters"])
+    correction_body = schema["components"]["schemas"]["SourceCorrectionBody"]
+    assert {"validation_id", "evidence_ref", "original_text", "corrected_text", "reason", "basis"} <= set(correction_body["required"])
+    assert correction_body["properties"]["basis"]["maxLength"] == 2000
+    for suffix in ("", "/{segment_id}"):
+        operation = schema["paths"]["/api/v1/sessions/{sid}/sources/{source_id}/segments" + suffix]["get"]
+        assert operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"].endswith("/SourceTextOut")
+        assert next(p for p in operation["parameters"] if p["name"] == "expected_input_revision")["required"]
+    assert "post" in schema["paths"]["/api/v1/sessions/{sid}/preflights/{pid}/reviews"]
+    assert "get" in schema["paths"]["/api/v1/companies"]
+    assert "get" in schema["paths"]["/api/v1/sessions/{sid}/public-data"]
+    assert "post" in schema["paths"]["/api/v1/sessions/{sid}/public-data/import"]
     assert "HTTPValidationError" not in schema["components"]["schemas"]
     for operation in operations:
         for status in ("400", "422"):
@@ -376,13 +394,57 @@ def test_openapi_describes_common_errors_export_statuses_and_binary_responses(ap
     assert {"application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"} <= download.keys()
     image = schema["paths"]["/api/v1/sessions/{sid}/assets/{asset_id}"]["get"]["responses"]["200"]["content"]
     assert {"image/png", "image/jpeg"} <= image.keys()
-    for media in (download, image):
+    original = schema["paths"]["/api/v1/sessions/{sid}/sources/{source_id}/original"]["get"]
+    for name in ("expected_input_revision", "source_version"):
+        assert next(p for p in original["parameters"] if p["name"] == name)["required"]
+    original_media = original["responses"]["200"]["content"]
+    assert {"text/plain", "text/markdown", "application/pdf", "image/png", "image/jpeg"} <= original_media.keys()
+    for media in (download, image, original_media):
         assert "application/json" not in media
         assert all(value["schema"] == {"type": "string", "format": "binary"} for value in media.values())
 
 
+@pytest.mark.parametrize("publication", [False, True])
+def test_http_checker_uses_current_frontend_runner_without_paid_mode(tmp_path, monkeypatch, publication):
+    from types import SimpleNamespace
+    from scripts import check_s01_http as checker
+    frontend = tmp_path / "frontend"
+    scripts = frontend / "scripts"
+    scripts.mkdir(parents=True)
+    workflow = scripts / "check-ai-workflow.mjs"
+    workflow.write_text("// isolated current runner", encoding="utf-8")
+    calls = []
+    monkeypatch.setenv("AI_CHECK_LIVE", "1")
+    monkeypatch.setenv("AI_CHECK_BACKEND", "C:/missing-old-backend")
+    monkeypatch.setattr(checker.shutil, "which", lambda name: "node")
+    monkeypatch.setattr(checker, "run_check", lambda **kwargs: {"ok": True})
+    def no_legacy_server(**kwargs):
+        raise AssertionError("Current frontend runner must own its temporary server")
+    monkeypatch.setattr(checker, "temporary_server", no_legacy_server)
+    def run(arguments, **kwargs):
+        calls.append((arguments, kwargs))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(checker.subprocess, "run", run)
+    arguments = ["check_s01_http.py", "--frontend", str(frontend)]
+    if publication:
+        browser = tmp_path / "browser.exe"
+        browser.write_bytes(b"synthetic browser path")
+        arguments += ["--publication", "--browser-path", str(browser)]
+    monkeypatch.setattr(checker.sys, "argv", arguments)
+    assert checker.main() == 0
+    command, options = calls[0]
+    assert command == ["node", str(workflow)] + (["--publication"] if publication else [])
+    assert options["cwd"] == frontend
+    assert options["env"]["AI_CHECK_LIVE"] == "0"
+    assert options["env"]["AI_CHECK_BACKEND"] == str(checker.ROOT)
+    if publication:
+        assert options["env"]["SOURCES_BROWSER_PATH"] == str(browser.resolve())
+    assert checker.os.environ["AI_CHECK_LIVE"] == "1"
+    assert len(calls) == 1
+
+
 def test_handoff_json_response_examples_match_route_models(app):
-    examples = json.loads((Path(__file__).parents[1] / "handoff" / "api_examples_v1.1.json").read_text(encoding="utf-8-sig"))
+    examples = json.loads((Path(__file__).parents[1] / "docs" / "api_examples_v1.1.json").read_text(encoding="utf-8-sig"))
     paths = app.openapi()["paths"]
 
     def abbreviated(value):

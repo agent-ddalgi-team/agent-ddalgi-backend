@@ -13,8 +13,9 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-PROFILE_SCHEMA_PATH = ROOT / 'contracts' / 'profile.schema.json'
-EXTRACT_PROMPT_PATH = ROOT / 'prompts' / 'extract.txt'
+APP_DIR = Path(__file__).resolve().parent
+PROFILE_SCHEMA_PATH = APP_DIR / 'resources' / 'profile.schema.json'
+EXTRACT_PROMPT_PATH = APP_DIR / 'prompts' / 'extract.txt'
 
 SCHEMA_VERSION = '1.0'
 RequestJson = Callable[[str, dict[str, Any], dict[str, Any], str], dict[str, Any]]
@@ -90,12 +91,12 @@ def check_agent_input(agent_input: Any) -> None:
 
 
 def load_extract_prompt() -> str:
-    """prompts/extract.txt를 앞뒤 공백만 정리해 읽는다. 14개 항목 이름이 빠져 있으면 멈춘다."""
+    """app/prompts/extract.txt를 앞뒤 공백만 정리해 읽는다. 14개 항목 이름이 빠져 있으면 멈춘다."""
     if not EXTRACT_PROMPT_PATH.is_file():
-        raise FileNotFoundError('추출 프롬프트 파일이 없습니다: prompts/extract.txt')
+        raise FileNotFoundError('추출 프롬프트 파일이 없습니다: app/prompts/extract.txt')
     prompt = EXTRACT_PROMPT_PATH.read_text(encoding='utf-8').strip()
     if not prompt:
-        raise ValueError('추출 프롬프트 파일이 비어 있습니다: prompts/extract.txt')
+        raise ValueError('추출 프롬프트 파일이 비어 있습니다: app/prompts/extract.txt')
     missing = [key for key in COMPANY_INFO_KEYS if key not in prompt]
     if missing:
         raise ValueError(f'추출 프롬프트에 company_info 항목 이름이 빠져 있습니다: {", ".join(missing)}')
@@ -123,10 +124,11 @@ def _keep_model_keywords(node: dict[str, Any]) -> dict[str, Any]:
     return kept
 
 
-def build_model_output_schema(*, claim_status: bool = False) -> dict[str, Any]:
+def build_model_output_schema(*, claim_status: bool = False, per_fact_status: bool = False) -> dict[str, Any]:
     """profile.schema.json의 company_info 구조에서 GPT용 출력 스키마를 파생한다.
 
-    바뀌는 점은 두 가지뿐이다: fact_id 제외(코드가 F001부터 부여), strict 모드가 받지 않는 키워드 제외.
+    기본 형식은 fact_id(코드가 F001부터 부여)와 strict 미지원 키워드만 제외한다.
+    운영용 per_fact_status는 개별 상태를 추가하고 항목 요약 상태는 어댑터가 계산한다.
     sources·is_mock·validation·schema_version은 company_info 밖에 있으므로 처음부터 들어가지 않는다.
     """
     defs = {name: _keep_model_keywords(_PROFILE_SCHEMA['$defs'][name]) for name in _MODEL_SCHEMA_DEFS}
@@ -134,6 +136,12 @@ def build_model_output_schema(*, claim_status: bool = False) -> dict[str, Any]:
     defs['fact']['required'] = [key for key in defs['fact']['required'] if key != 'fact_id']
     # 원래 규격의 status에는 enum만 있다. 모델용 스키마에만 문자열 타입을 명시한다.
     defs['field']['properties']['status'] = {'type': 'string', **defs['field']['properties']['status']}
+    if per_fact_status:
+        # Production extraction judges each fact; the field summary is derived by the adapter.
+        defs['fact']['properties']['status'] = {'type': 'string', 'enum': ['supported', 'needs_confirmation', 'conflict']}
+        defs['fact']['required'].append('status')
+        defs['field']['properties'].pop('status')
+        defs['field']['required'].remove('status')
     company_info = _keep_model_keywords(_PROFILE_SCHEMA['properties']['company_info'])
     if claim_status:
         defs['certification_fact'] = copy.deepcopy(defs['fact'])
@@ -196,15 +204,16 @@ def _iter_facts(company_info: dict[str, Any]):
             yield key, i, fact
 
 
-def _check_field_shape(key: str, field: Any) -> None:
+def _check_field_shape(key: str, field: Any, *, per_fact_status: bool = False) -> None:
     if not isinstance(field, dict) or set(field) != set(FIELD_KEYS) or not isinstance(field['facts'], list):
         raise _invalid_output('field_shape', '항목은 status와 facts 배열만 가져야 합니다.', field=key)
+    fact_keys = {*MODEL_FACT_KEYS, "status"} if per_fact_status else set(MODEL_FACT_KEYS)
     for i, fact in enumerate(field['facts']):
         claim_v2 = key == 'certifications' and isinstance(fact, dict) and 'claim_status' in fact
-        allowed = set(MODEL_FACT_KEYS) | ({'claim_status', 'conflict_group'} if claim_v2 else set())
+        allowed = fact_keys | ({'claim_status', 'conflict_group'} if claim_v2 else set())
         if (not isinstance(fact, dict) or set(fact) != allowed
                 or not isinstance(fact['text'], str) or not isinstance(fact['evidence'], list)):
-            raise _invalid_output('field_shape', 'fact는 text 문자열과 evidence 배열만 가져야 합니다(fact_id 포함 금지).',
+            raise _invalid_output('field_shape', 'fact는 호출 스키마의 text·evidence 및 허용된 경우 status만 가져야 합니다(fact_id 포함 금지).',
                                   field=key, fact_index=i)
         if claim_v2 and (fact['claim_status'] not in {'supported', 'conflict', 'needs_confirmation'}
                 or (fact['conflict_group'] is not None and
@@ -217,7 +226,7 @@ def _check_field_shape(key: str, field: Any) -> None:
                                       field=key, fact_index=i, evidence_index=j)
 
 
-def check_company_info(company_info: Any, agent_input: dict[str, Any]) -> None:
+def check_company_info(company_info: Any, agent_input: dict[str, Any], *, per_fact_status: bool = False) -> None:
     """GPT가 준 company_info를 정해진 순서로 검사한다. 첫 실패에서 INVALID_OUTPUT으로 멈추고 아무것도 고치지 않는다.
 
     순서: 1 14개 키·모양 → 2 status별 facts 개수 → 3 빈 값 → 4 근거 위치 존재 → 5 quote 원문 포함.
@@ -232,7 +241,7 @@ def check_company_info(company_info: Any, agent_input: dict[str, Any]) -> None:
         raise _invalid_output('company_info_keys', 'company_info 14개 키가 정확히 일치하지 않습니다.',
                               missing_keys=missing, unexpected_keys=unexpected)
     for key in COMPANY_INFO_KEYS:
-        _check_field_shape(key, company_info[key])
+        _check_field_shape(key, company_info[key], per_fact_status=per_fact_status)
 
     # 2) status가 4개 중 하나이고, status별 facts 개수 규칙을 지키는가
     for key in COMPANY_INFO_KEYS:
@@ -247,6 +256,22 @@ def check_company_info(company_info: Any, agent_input: dict[str, Any]) -> None:
             expected = f'{low}개' if high == low else f'{low}개 이상'
             raise _invalid_output('status_fact_count', f'{status}의 facts 개수 규칙을 어겼습니다.',
                                   field=key, status=status, expected=expected, actual=count)
+
+    if per_fact_status:
+        for key in COMPANY_INFO_KEYS:
+            statuses = [fact['status'] for fact in company_info[key]['facts']]
+            if any(type(status) is not str or status not in {'supported', 'needs_confirmation', 'conflict'}
+                   for status in statuses):
+                raise _invalid_output('fact_status_value', '개별 사실의 상태가 허용된 값이 아닙니다.', field=key)
+            claim_v2 = key == 'certifications' and all('claim_status' in fact for fact in company_info[key]['facts'])
+            if claim_v2 and any(fact['status'] != fact['claim_status'] for fact in company_info[key]['facts']):
+                raise _invalid_output('claim_status', '인증 주장 상태와 개별 사실 상태가 일치하지 않습니다.', field=key)
+            if not claim_v2 and 'conflict' in statuses and statuses.count('conflict') < 2:
+                raise _invalid_output('conflict_candidates', '충돌 사실에는 최소 두 후보가 필요합니다.', field=key)
+            expected = ('not_found' if not statuses else 'conflict' if 'conflict' in statuses
+                        else 'needs_confirmation' if 'needs_confirmation' in statuses else 'supported')
+            if company_info[key]['status'] != expected:
+                raise _invalid_output('field_status_summary', '항목 요약 상태가 개별 사실 상태와 일치하지 않습니다.', field=key)
 
     # 3) text / source_id / locator / quote가 비어 있지 않고, fact마다 evidence가 1개 이상인가
     for key, i, fact in _iter_facts(company_info):
@@ -287,11 +312,14 @@ def _deduplicate_supported_facts(company_info: dict[str, Any]) -> dict[str, Any]
     """
     result = copy.deepcopy(company_info)
     for field in result.values():
-        if field['status'] != 'supported':
+        if field['status'] != 'supported' and not any('status' in fact for fact in field['facts']):
             continue
         seen = set()
         distinct = []
         for fact in field['facts']:
+            if fact.get('status', field['status']) != 'supported':
+                distinct.append(fact)
+                continue
             evidence = frozenset(tuple(ref[name] for name in EVIDENCE_KEYS) for ref in fact['evidence'])
             key = (fact['text'], evidence, fact.get('claim_status'), fact.get('conflict_group'))
             if key not in seen:
@@ -318,7 +346,7 @@ def assign_fact_ids(company_info: dict[str, Any]) -> dict[str, Any]:
 
 
 def extract_company_info(agent_input: dict[str, Any], *, request_json: RequestJson,
-                         claim_status: bool = False) -> dict[str, Any]:
+                         claim_status: bool = False, per_fact_status: bool = False) -> dict[str, Any]:
     """허용된 source_units에서 company_info 14개 항목을 추출하고 검사한다.
 
     호출부는 JSON 객체만 반환한다. 원 응답 전체 검사 후 supported 완전중복만 줄이고 fact_id를 붙인다.
@@ -335,9 +363,11 @@ def extract_company_info(agent_input: dict[str, Any], *, request_json: RequestJs
             '값으로 지정하며, 나머지는 null이다. 서로 다른 인증·사업장·최초/발행/만료일은 별개 주장이다. '
             '각 text에도 인증명/대상과 해당 속성을 함께 써서 연결을 보존한다. 원문이 모호하면 '
             'needs_confirmation으로 두고 값을 보정하지 않는다. 필드 status는 요약이며 개별 주장 상태가 우선한다.')
+        if per_fact_status:
+            instructions += '\n개별 사실 status와 인증 claim_status는 같은 판정으로 반환한다.'
     model_output = _request_checked(request_json, instructions, payload,
-                                    build_model_output_schema(claim_status=claim_status), MODEL_SCHEMA_NAME)
-    check_company_info(model_output, agent_input)
+                                    build_model_output_schema(claim_status=claim_status, per_fact_status=per_fact_status), MODEL_SCHEMA_NAME)
+    check_company_info(model_output, agent_input, per_fact_status=per_fact_status)
     return assign_fact_ids(_deduplicate_supported_facts(model_output))
 
 
@@ -347,14 +377,14 @@ def extract_company_info(agent_input: dict[str, Any], *, request_json: RequestJs
 # 본문 섹션의 key·제목은 직접 나열하지 않고 공통 Mock에서 가져온다.
 # 이전 profile_builder와 같은 출처에서 순서·제목·안내 문구만 읽는다.
 # fixture의 가짜 회사 사실을 생성 결과에 복사하지 않는다.
-MOCK_PROFILE_PATH = ROOT / 'fixtures' / 'mock_profile.json'
+MOCK_PROFILE_PATH = APP_DIR / 'resources' / 'mock_profile.json'
 _MOCK_SECTIONS: list[dict[str, Any]] = json.loads(
     MOCK_PROFILE_PATH.read_text(encoding='utf-8'))['draft_sections']
 # 본문 섹션은 13개다. company_info의 14개 키 중 company_name만 단독 섹션이 없다.
 SECTION_ORDER: tuple[str, ...] = tuple(s['key'] for s in _MOCK_SECTIONS)
 SECTION_TITLES: dict[str, str] = {s['key']: s['title'] for s in _MOCK_SECTIONS}
 
-DRAFT_PROMPT_PATH = ROOT / 'prompts' / 'draft.txt'
+DRAFT_PROMPT_PATH = APP_DIR / 'prompts' / 'draft.txt'
 DRAFT_SCHEMA_NAME = 'draft_sections'
 SUPPORTED_FACT_KEYS = ('field', 'fact_id', 'text')
 PARAGRAPH_KEYS = ('text', 'fact_ids')
@@ -370,14 +400,14 @@ PLACEHOLDER_TEXTS: frozenset[str] = frozenset(
 
 
 def load_draft_prompt(*, editorial: bool = False) -> str:
-    """prompts/draft.txt를 앞뒤 공백만 정리해 읽는다."""
+    """app/prompts/draft.txt를 앞뒤 공백만 정리해 읽는다."""
     if not DRAFT_PROMPT_PATH.is_file():
-        raise FileNotFoundError('본문 프롬프트 파일이 없습니다: prompts/draft.txt')
+        raise FileNotFoundError('본문 프롬프트 파일이 없습니다: app/prompts/draft.txt')
     prompt = DRAFT_PROMPT_PATH.read_text(encoding='utf-8').strip()
     parts = prompt.split('[editorial_v2]', 1)
     prompt = parts[1].strip() if editorial and len(parts) == 2 else parts[0].strip()
     if not prompt:
-        raise ValueError('본문 프롬프트 파일이 비어 있습니다: prompts/draft.txt')
+        raise ValueError('본문 프롬프트 파일이 비어 있습니다: app/prompts/draft.txt')
     return prompt
 
 

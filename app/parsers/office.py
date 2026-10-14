@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import io
 import logging
+import zipfile
+from collections import Counter
 
 from app.parsers import FILE_CORRUPT, IMAGE_ONLY, NO_USABLE_TEXT, ParseResult, Segment, failed, warning
 
@@ -80,6 +82,44 @@ def _pptx_shape_segments(shape, base: dict, segments: list[Segment]) -> None:
     if getattr(shape, "shape_type", None) is not None and hasattr(shape, "shapes"):
         for m, child in enumerate(shape.shapes, start=1):
             _pptx_shape_segments(child, {**base, "child": m}, segments)
+
+
+def pptx_text_layout(data: bytes) -> list[dict]:
+    """Optional coordinates; never infer title/body links or rewrite saved text.
+
+    Only top-level unrotated text boxes are supported. Group transforms and
+    table cell geometry are omitted. Archive expansion is bounded.
+    """
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            entries = archive.infolist()
+            if len(entries) > 5000 or sum(e.file_size for e in entries) > 100 * 1024 * 1024:
+                return []
+        from pptx import Presentation
+        prs = Presentation(io.BytesIO(data))
+        result = []
+        for slide_no, slide in enumerate(prs.slides, 1):
+            # Duplicate text in unsupported groups/tables/rotated boxes still
+            # makes a text-only imported excerpt ambiguous on this slide.
+            all_segments: list[Segment] = []
+            for shape_no, shape in enumerate(slide.shapes, 1):
+                _pptx_shape_segments(shape, {"slide": slide_no, "shape": shape_no}, all_segments)
+            counts = Counter(" ".join(s.text.split()) for s in all_segments)
+            for shape in slide.shapes:
+                if not shape.has_text_frame or shape.rotation != 0:
+                    continue
+                text = shape.text_frame.text.strip()
+                if not text or counts[" ".join(text.split())] != 1 or shape.width <= 0 or shape.height <= 0:
+                    continue
+                result.append({"text": text, "layout": {
+                    "slide": slide_no,
+                    "box_mm": [round(v / 36000, 2) for v in
+                               (shape.left, shape.top, shape.width, shape.height)],
+                }})
+        return result
+    except Exception:
+        # Optional context cannot replace a saved extraction on failure.
+        return []
 
 
 def parse_pptx(data: bytes) -> ParseResult:

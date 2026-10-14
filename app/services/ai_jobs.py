@@ -12,6 +12,7 @@ import inspect
 import json
 import logging
 from collections.abc import Callable
+from collections import Counter
 from typing import Any
 
 import uuid
@@ -27,6 +28,56 @@ from app.services.doc_ops import OpError, apply_operations, touched_block_ids
 from app.timeutil import from_iso, now
 
 logger = logging.getLogger(__name__)
+
+
+def _trace_input(conn, job_id: str, settings: Settings, sources: list[SourceIn], *,
+                 exclusions=None, preflight=None, document=None) -> None:
+    data = {"configured_mode": settings.agent_mode, "source_count": len(sources),
+            "segment_count": sum(len(s.segments) for s in sources),
+            "input_text_chars": sum(len(g.text) for s in sources for g in s.segments),
+            "asset_count": sum(len(s.asset_ids) for s in sources),
+            "sources": [{"source_id": s.source_id, "source_version": s.source_version,
+                         "parse_status": s.parse_status, "segment_count": len(s.segments),
+                         "text_chars": sum(len(g.text) for g in s.segments), "asset_count": len(s.asset_ids),
+                         "document_date_present": bool(s.metadata.get("document_date")),
+                         "dated_segments": sum(bool(m.get("document_date")) for m in s.metadata.get("segments", {}).values()),
+                         "evidence_status_segments": sum(bool(m.get("evidence_status")) for m in s.metadata.get("segments", {}).values())}
+                        for s in sources], "excluded_sources": exclusions or []}
+    if preflight is not None:
+        data.update(preflight_id=preflight.preflight_id, fact_status_counts=dict(Counter(f.status for f in preflight.facts)))
+    if document is not None:
+        data.update(document_id=document.document_id, document_revision=document.document_revision,
+                    page_count=len(document.pages), block_count=sum(len(p.blocks) for p in document.pages))
+    jobs.record_trace(conn, job_id, "agent_input", data)
+
+
+def _trace_executor(conn, job_id: str, settings: Settings, bridge) -> None:
+    from app.agent_mock import MockAgent
+    from app.agent_llm import LlmAgent, OpenAIRequester
+    mode, model = "custom", None
+    if type(bridge) is MockAgent:
+        mode = "mock"
+    elif type(bridge) is LlmAgent and isinstance(bridge.request_json, OpenAIRequester):
+        mode, model = "llm", bridge.request_json.options.model
+    jobs.record_trace(conn, job_id, "executor", {"configured_mode": settings.agent_mode,
+        "actual_mode": mode, "executor": type(bridge).__name__[:100], "model": model, "agent_invoked": True})
+
+
+def _trace_result(conn, job_id: str, result, sources=None) -> None:
+    data = {}
+    if hasattr(result, "facts"):
+        data["fact_status_counts"] = dict(Counter(f.status for f in result.facts))
+        cited = {r.segment_id for f in result.facts for r in f.evidence_refs}
+        data["cited_segment_count"] = len(cited)
+        data["uncited_segment_count"] = len({g.segment_id for s in sources or [] for g in s.segments} - cited)
+    if hasattr(result, "pages"):
+        data.update(page_count=len(result.pages), block_count=sum(len(p.blocks) for p in result.pages))
+        if result.editorial is not None:
+            # 상세 제외 사유 문구는 원래 EditorialRecord에만 둔다. Job에는 분류별 수만 보존한다.
+            data["selection_dispositions"] = dict(Counter(s.disposition for s in result.editorial.selections))
+    if hasattr(result, "issues"):
+        data["issue_count"] = len(result.issues)
+    jobs.record_trace(conn, job_id, "result_checked", data)
 
 
 def _run(fn: Callable[[Any], Any], request: Any) -> Any:
@@ -81,7 +132,17 @@ def validate_analyze(result: AnalyzeResult, sources: list[SourceIn]) -> str | No
             return f"근거 없는 사실: {fact.fact_id}"
         if (problem := _check_refs(fact.evidence_refs, segs, versions)) is not None:
             return problem
+    issue_ids: set[str] = set()
     for issue in result.issues:
+        if issue.issue_id in issue_ids:
+            return f"issue_id 중복: {issue.issue_id}"
+        issue_ids.add(issue.issue_id)
+        if issue.scope == "layout" or issue.block_ids:
+            return f"초안 생성 전 문서·배치 문제를 반환함: {issue.issue_id}"
+        if issue.status != "open" or issue.resolution is not None:
+            return f"Agent가 문제의 확인·해결을 대신함: {issue.issue_id}"
+        if any(sid not in versions for sid in issue.source_ids):
+            return f"선택 자료에 없는 source_id를 가리키는 issue: {issue.issue_id}"
         if any(fid not in seen for fid in issue.fact_ids):
             return f"없는 fact_id를 가리키는 issue: {issue.issue_id}"
     return None
@@ -122,11 +183,16 @@ def validate_draft(result: DraftResult, sources: list[SourceIn], fact_ids: set[s
     return None
 
 
-def _fail_agent(conn, job_id: str, exc: Exception, *, requires_reanalysis: bool = False) -> None:
-    if requires_reanalysis:
-        code = exc.code if isinstance(exc, AgentError) else "SERVICE_TEMPORARY_FAILURE"
-        message = exc.message if isinstance(exc, AgentError) else "AI 초안 작업이 실패했습니다."
-        exc = AgentError(code, message + " 원인을 확인한 뒤 사전 점검부터 다시 진행해 주세요.", False)
+def _fail_agent(conn, job_id: str, exc: Exception, *, draft_failure: bool = False) -> None:
+    if draft_failure:
+        code = exc.code if isinstance(exc, AgentError) else "INTERNAL_ERROR"
+        message = exc.message if isinstance(exc, AgentError) else "초안 생성 작업이 실패했습니다."
+        retry = code in jobs.DRAFT_RETRY_CODES
+        if retry:
+            message += " 완료된 자료 점검은 유지됩니다. 확인 후 초안만 다시 생성할 수 있습니다."
+        jobs.fail(conn, job_id, code, message, retry,
+                  details={"recovery_action": "retry_draft" if retry else "review_inputs"})
+        return
     if isinstance(exc, AgentError):
         jobs.fail(conn, job_id, exc.code, exc.message, exc.retryable)
     elif isinstance(exc, AgentUnavailable):
@@ -147,9 +213,13 @@ def run_preflight_job(settings: Settings, session_id: str, job_id: str, input_re
                 return
             jobs.set_progress(conn, job_id, "analyzing", "자료에서 사실을 정리하는 중")
             brief = Brief.model_validate_json(row["brief_json"])
-            sources = preflights.build_sources(conn, session_id, json.loads(row["selected_source_ids"]))
+            exclusions = []
+            sources = preflights.build_sources(conn, session_id, json.loads(row["selected_source_ids"]), exclusions=exclusions, settings=settings)
+            _trace_input(conn, job_id, settings, sources, exclusions=exclusions)
         try:
             bridge = get_bridge(settings)
+            with connect(settings.db_path, immediate=True) as trace_conn:
+                _trace_executor(trace_conn, job_id, settings, bridge)
             result: AnalyzeResult = _run(bridge.analyze, AnalyzeRequest(session_id, input_revision, brief, sources))
         except Exception as exc:
             with connect(settings.db_path, immediate=True) as conn:
@@ -169,6 +239,7 @@ def run_preflight_job(settings: Settings, session_id: str, job_id: str, input_re
             if err:
                 jobs.fail(conn, job_id, *err)
                 return
+            _trace_result(conn, job_id, result, sources)
             usable = [s.source_id for s in sources if s.segments]
             can_generate = bool(usable)  # 생성 조건: 텍스트 근거가 있는 선택 자료 1개 이상(사용자 확인은 별도)
             preflight_id = preflights.save(conn, session_id, input_revision, usable, result.facts, result.issues,
@@ -230,8 +301,11 @@ def run_propose_job(settings: Settings, session_id: str, job_id: str, input_revi
                 return
             jobs.set_progress(conn, job_id, "proposing", "편집안을 만드는 중")
             brief = Brief.model_validate_json(row["brief_json"])
-            sources = preflights.build_sources(conn, session_id, json.loads(row["selected_source_ids"]))
+            exclusions = []
+            sources = preflights.build_sources(conn, session_id, json.loads(row["selected_source_ids"]), exclusions=exclusions)
+            _trace_input(conn, job_id, settings, sources, exclusions=exclusions)
             document = documents.get_current(conn, session_id, document_id)
+            _trace_input(conn, job_id, settings, sources, exclusions=exclusions, document=document)
         if document.document_revision != base_revision:
             with connect(settings.db_path, immediate=True) as conn:
                 if _policy_failure(conn, settings, session_id, job_id):
@@ -240,6 +314,8 @@ def run_propose_job(settings: Settings, session_id: str, job_id: str, input_revi
             return
         try:
             bridge = get_bridge(settings)
+            with connect(settings.db_path, immediate=True) as trace_conn:
+                _trace_executor(trace_conn, job_id, settings, bridge)
             result: ProposeResult = _run(bridge.propose, ProposeRequest(
                 session_id, input_revision, brief, sources, document, list(target_block_ids), instruction, kind))
         except Exception as exc:
@@ -279,6 +355,8 @@ def run_propose_job(settings: Settings, session_id: str, job_id: str, input_revi
             proposal_id = proposals.save(conn, session_id, document_id, base_revision, input_revision, list(target_block_ids),
                                          kind, instruction, result.changes, result.rationale, result.candidates,
                                          "stale" if stale else "proposed")
+            jobs.record_trace(conn, job_id, "result_checked", {"candidate_count": len(result.candidates or []),
+                "operation_count": len(result.changes or []), "document_revision": base_revision})
             jobs.succeed(conn, job_id, {"type": "proposal", "proposal_id": proposal_id,
                                         "status": "stale" if stale else "proposed"})
     except Exception:
@@ -316,6 +394,8 @@ def run_validate_job(settings: Settings, session_id: str, job_id: str, input_rev
 
     끝날 때 문서·입력 버전을 다시 본다. 바뀌었으면 오래된 결과를 저장하지 않고 failed로 끝낸다(계약 확인 ㉔).
     """
+    from app.services import issues as issue_service
+
     try:
         with connect(settings.db_path, immediate=True) as conn:
             if _policy_failure(conn, settings, session_id, job_id):
@@ -330,13 +410,21 @@ def run_validate_job(settings: Settings, session_id: str, job_id: str, input_rev
                 return
             jobs.set_progress(conn, job_id, "validating", "문서를 검사하는 중")
             brief = Brief.model_validate_json(row["brief_json"])
-            sources = preflights.build_sources(conn, session_id, json.loads(row["selected_source_ids"]))
+            exclusions = []
+            sources = preflights.build_sources(conn, session_id, json.loads(row["selected_source_ids"]), exclusions=exclusions)
+            _trace_input(conn, job_id, settings, sources, exclusions=exclusions)
             pf_row = conn.execute("SELECT preflight_id FROM preflights WHERE session_id=? AND input_revision=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
                                   (session_id, input_revision)).fetchone()
             preflight = preflights.get(conn, session_id, pf_row["preflight_id"]) if pf_row else None
+            _trace_input(conn, job_id, settings, sources, exclusions=exclusions, preflight=preflight, document=document)
             ctx = validation.load_context(conn, session_id, preflight)
             fps = validation.fingerprints(document, ctx.seg_texts)
+            source_corrections = issue_service.active_source_corrections(conn, document, input_revision, preflight, sources)
             base = validation.base_validation(conn, document_id, document_revision, input_revision)
+            if conn.execute("SELECT 1 FROM issues WHERE document_id=? AND resolution_history_json LIKE ? LIMIT 1",
+                            (document_id, '%source_typo_correction%')).fetchone():
+                # 기록 만료 뒤에도 이전의 정정 기반 통과를 재사용하지 않는다.
+                base = None
             origin = conn.execute("SELECT origin FROM document_revisions WHERE document_id=? AND revision=?",
                                   (document_id, document_revision)).fetchone()
             if origin and origin[0] == "impact_review":
@@ -360,11 +448,13 @@ def run_validate_job(settings: Settings, session_id: str, job_id: str, input_rev
         if changed and preflight is not None:
             try:
                 bridge = get_bridge(settings)
+                with connect(settings.db_path, immediate=True) as trace_conn:
+                    _trace_executor(trace_conn, job_id, settings, bridge)
                 result: ValidateResult = _run(bridge.validate, ValidateRequest(
                     session_id, input_revision, brief, sources, document, preflight, sorted(changed),
                     [Issue(issue_id=f"srv_{i}", scope=d.scope, code=d.code, severity=d.severity, message=d.message,
                            source_ids=d.source_ids, fact_ids=d.fact_ids, block_ids=d.block_ids)
-                     for i, d in enumerate(server_drafts)], images=images))
+                     for i, d in enumerate(server_drafts)], images=images, source_corrections=source_corrections))
                 agent_called = True
             except Exception as exc:
                 with connect(settings.db_path, immediate=True) as conn:
@@ -408,6 +498,10 @@ def run_validate_job(settings: Settings, session_id: str, job_id: str, input_rev
                 except AgentError as exc:
                     _fail_agent(conn, job_id, exc)
                     return
+            current_sources = preflights.build_sources(conn, session_id, json.loads(row["selected_source_ids"]))
+            if issue_service.active_source_corrections(conn, current, input_revision, preflight, current_sources) != source_corrections:
+                jobs.fail(conn, job_id, "SERVICE_TEMPORARY_FAILURE", "검증 중 정정 근거가 바뀌었습니다. 다시 검사해 주세요.", True)
+                return
             validation_id = f"val_{uuid.uuid4().hex[:16]}"
             drafts = list(server_drafts) + [
                 validation.IssueDraft(i.scope, i.code, i.severity, i.message, list(i.block_ids), list(i.fact_ids),
@@ -435,6 +529,9 @@ def run_validate_job(settings: Settings, session_id: str, job_id: str, input_rev
             elif status != "passed":
                 approvals.invalidate_for_document(conn, document_id, "validation_changed")
             documents.refresh_status_cache(conn, session_id, document_id)
+            jobs.record_trace(conn, job_id, "validation_scope", {"agent_called": agent_called,
+                "changed_block_count": len(changed), "reused_block_count": len(unchanged), "issue_count": len(issue_ids),
+                "document_revision": document_revision, "status": status})
             jobs.succeed(conn, job_id, {"type": "validation", "validation_id": validation_id, "status": status})
     except Exception:
         logger.exception("validate job crashed: %s", job_id)
@@ -499,11 +596,14 @@ def run_draft_job(settings: Settings, session_id: str, job_id: str, input_revisi
                 return
             jobs.set_progress(conn, job_id, "drafting", "초안을 작성하는 중")
             brief = Brief.model_validate_json(row["brief_json"])
-            sources = preflights.build_sources(conn, session_id, json.loads(row["selected_source_ids"]))
+            exclusions = []
+            sources = preflights.build_sources(conn, session_id, json.loads(row["selected_source_ids"]), exclusions=exclusions)
+            _trace_input(conn, job_id, settings, sources, exclusions=exclusions)
             preflight = preflights.get(conn, session_id, preflight_id)
             request = DraftRequest(session_id, input_revision, brief, sources, preflight)
             try:
                 bridge = get_bridge(settings)
+                _trace_input(conn, job_id, settings, sources, exclusions=exclusions, preflight=preflight)
                 if (resume := getattr(bridge, "resume_draft", None)) is not None:
                     resumed = resume(conn, request, job_id)
                     if not resumed:
@@ -512,12 +612,14 @@ def run_draft_job(settings: Settings, session_id: str, job_id: str, input_revisi
                 _fail_agent(conn, job_id, exc)
                 return
         try:
+            with connect(settings.db_path, immediate=True) as trace_conn:
+                _trace_executor(trace_conn, job_id, settings, bridge)
             result: DraftResult = _run(bridge.draft, request)
         except Exception as exc:
             with connect(settings.db_path, immediate=True) as conn:
                 if _policy_failure(conn, settings, session_id, job_id):
                     return
-                _fail_agent(conn, job_id, exc, requires_reanalysis=resumed)
+                _fail_agent(conn, job_id, exc, draft_failure=True)
             return
         problem = validate_draft(result, sources, {f.fact_id for f in preflight.facts}, preflight)
         layout_review_required = False
@@ -532,10 +634,8 @@ def run_draft_job(settings: Settings, session_id: str, job_id: str, input_revisi
                 return
             if problem:
                 logger.error("agent draft output rejected (%s): %s", job_id, problem)
-                message = "AI 초안이 자료와 맞지 않아 저장하지 않았습니다."
-                if resumed:
-                    message += " 사전 점검부터 다시 진행해 주세요."
-                jobs.fail(conn, job_id, "AGENT_OUTPUT_INVALID", message, not resumed)
+                _fail_agent(conn, job_id, AgentError("AGENT_OUTPUT_INVALID",
+                            "AI 초안이 자료와 맞지 않아 저장하지 않았습니다."), draft_failure=True)
                 return
             _, err = _load_session_for_job(conn, session_id, input_revision, settings)
             if err:
@@ -550,13 +650,17 @@ def run_draft_job(settings: Settings, session_id: str, job_id: str, input_revisi
             document_id = documents.create_initial(conn, session_id, input_revision, result.title,
                                                    brief.target_pages, result.pages, status, preflight_id=preflight_id,
                                                    editorial=result.editorial)
+            # 저장된 초기 status는 조회 시 다시 계산된다. 점검 blocker도 같은 트랜잭션에
+            # 문서 Issue로 기록해야 최초 조회/세션 요약에서 검토 필요 상태가 유지된다.
+            saved_document = documents.get_current(conn, session_id, document_id)
+            if validation.record_preflight_conflicts(conn, session_id, saved_document, preflight):
+                documents.refresh_status_cache(conn, session_id, document_id)
+            _trace_result(conn, job_id, result)
             jobs.succeed(conn, job_id, {"type": "document", "document_id": document_id, "document_revision": 1})
     except Exception:
         logger.exception("draft job crashed: %s", job_id)
         with connect(settings.db_path, immediate=True) as conn:
             if _policy_failure(conn, settings, session_id, job_id):
                 return
-            message = "초안 생성 작업이 실패했습니다."
-            if resumed:
-                message += " 사전 점검부터 다시 진행해 주세요."
-            jobs.fail(conn, job_id, "INTERNAL_ERROR", message, not resumed)
+            _fail_agent(conn, job_id, AgentError("INTERNAL_ERROR", "초안 생성 작업이 실패했습니다."),
+                        draft_failure=True)

@@ -1,12 +1,141 @@
 # 공통 데이터·API 계약
 
-**최종 쪽수 상한 (2026-10-07):** 새 요청에서는 target_pages를 최종 PDF 상한으로도 적용한다. 초안 저장 전 실제 렌더를 측정하고 넘치는 페이지는 11pt 본문을 유지한 간결 배치로 재측정한다. 본문·근거 삭제 없이 제한 안에 들어오지 않으면 초안은 검토 상태로 남고, 조판은 미해결로 기록한다. 렌더의 실제 쪽수가 target_pages를 넘으면 기존 LAYOUT_OVERFLOW 경로로 승인/최종 다운로드를 허용하지 않는다. 이전 저장 문서의 내용은 자동 변경하지 않으며 기존 LayoutCheck는 template_v10에서 재검사가 필요하다. 프론트 사본/안내 문구는 미갱신이다.
+기준일: 2026-10-14 · 문서 v1.49 · contract_version: 1.13 · 데이터 schema_version: 1.0
+
+<a id="source-typo-correction"></a>
+
+### 원문 오타 정정 기록·재검증 (F-05/BE-06, 계약 1.13)
+
+`POST /api/v1/sessions/{sid}/issues/{iid}/source-corrections`. 소유자·활성 세션과 필수 `Idempotency-Key`를 검사한다. 현재 완료된 최신 내용 검증의 열린 agent `VALUE_MISMATCH` 중 저장 문서의 텍스트 블록에 직접 연결된 문제만 지원한다. 문서에 원하는 표기를 먼저 저장한 뒤 요청한다.
+
+- JSON 필수: `expected_revision`, `input_revision`, `validation_id`, `block_id`, `evidence_ref`(기존 EvidenceRef), `original_text`, `corrected_text`, `reason`, `basis`. 원문/정정 표기는 각각 200자, 사유 1,000자, 근거 설명 2,000자 이내이며 공백만 입력·동일 표기·추가 필드는 거부한다.
+- 선택한 자료의 고정 버전/구간/위치/인용문과 저장 블록의 참조가 일치해야 한다. 원문 표기는 인용문에, 정정 표기는 저장 문서에 있어야 한다. 클라이언트 경로·URL을 열거나 원문을 고쳐 저장하지 않는다. 근거 설명에 쓴 URL도 자동 수집·검증하지 않는다.
+- 202 `JobAccepted(kind=validate)`를 반환한다. 정정 이력 저장·기존 승인 무효화·검증 작업 생성은 한 트랜잭션이다. 같은 키/본문 재전송은 같은 Job을 반환하며, 다른 본문은 409다. 이미 진행 중인 내용 검증은 409, 잘못된 대상/근거는 422, 오래된 문서/입력은 409다. 만료·타 소유자 접근은 기존 410/404 정책이다.
+- 기존 `resolution_history_json`에 정정 ID·작성자·시간·사유·근거·문서/입력/검증/점검 버전·블록/원문 지문을 기록한다. DB 스키마 v11과 원본·추출문·사실·현재 문서는 변경하지 않는다. 문제당 최대 20개이며 최신 기록만 적용 후보로 사용한다.
+- `IssueOut.source_corrections`는 기본 빈 배열이며 보존 중인 정정 이력을 반환한다. 각 항목은 요청 필드와 `action=source_typo_correction`, `correction_id`, `issue_id`, `by`, `at`, `preflight_id`, `block_fingerprint`, `source_hash`를 포함한다. 종료/만료 때 기존 세션 정리 정책으로 정정 내용·근거도 제거한다.
+- 정정 이력이 있는 문서는 전체 내용 재검증을 수행한다. 정확히 같은 문서·입력·점검·원문 구간에만 정정 기록을 AI의 별도 참고 데이터로 전달한다. 버전/내용이 바뀌면 적용하지 않고 과거 통과 결과도 재사용하지 않는다. 기록은 자동 승인이나 blocker 제외가 아니다. 의미·수치·조건 변경과 불충분한 근거는 계속 차단할 수 있고 다른 미해결 문제도 유지한다.
+- 검증 실패 시 기록은 남는다. 같은 키 재전송은 실패한 기존 Job을 반환하므로 사용자는 일반 내용 검증을 다시 실행한다. 미저장 편집·검증 진행 중에는 프론트 정정 제출을 막는다. 화면의 정정 기록에서 사유·근거를 다시 볼 수 있다.
+
+**2026-10-12 C-01 현재 범위:** 추출문 조회와 현재 세션에 직접 올린 첨부파일의 원본 다운로드를 제공한다. 등록 자료·공개자료 가져오기의 원본 배포는 제외한다. EvidenceRef·쓰기 API·DB v11은 유지한다.
+
+<a id="source-original-api"></a>
+
+### 세션 첨부 원본 다운로드 (C-01, 계약 1.11)
+
+`GET /api/v1/sessions/{sid}/sources/{source_id}/original`. 소유자 쿠키, 활성 세션, 현재 선택한 evidence 자료, 해당 세션의 `provenance=upload` 버전만 허용한다. 과거 DART 가져오기에 upload가 기록된 경우도 현재·기존 추출 실행의 PUBLIC_OPEN_DATA 표시로 제외하며 신규 DART는 public_import로 기록한다. 등록 자료의 근거 사용 허가는 원본 전체 배포 허가가 아니다. 가져온 공개자료·instruction·미선택·타 세션·삭제 자료는 404다.
+
+- query: `expected_input_revision`, `source_version` 필수. `context` 기본 selection. preflight에는 `preflight_id`와 `segment_id`, document에는 `document_id`·`document_revision`·`segment_id` 필수. selection에는 segment_id와 문맥 ID를 넣지 않는다. 추출문과 같은 현재 선택·점검/문서 저장 근거·고정 버전/run 검사를 공유한다. cursor/limit/focus/클라이언트 경로·URL은 받지 않는다. 형식/조합/알 수 없는 필드는 400이다.
+- 읽기 중·추출 실패·이미지 자료도 selection 문맥에서 원본을 받을 수 있다. 참조 문맥에서는 해당 고정 run의 실제 segment와 저장 근거가 필요하다. 최신 파일/최신 run으로 임의 대체하지 않는다.
+- 200은 JSON이 아닌 파일 바이트. 형식별 MIME(TXT/MD/PDF/DOCX/PPTX/JPG/PNG), `Content-Disposition: attachment; filename*=UTF-8''...`, `X-Content-Type-Options: nosniff`, `Cache-Control: private, no-store`를 사용한다. CORS에 Content-Disposition을 노출한다. 파일명은 제어문자/경로 구분자 등을 제거하고 저장된 허용 확장자를 붙인다.
+- 서버 버전 경로를 해당 세션 저장 폴더 안으로 제한하고 절대경로·상위 이동·심볼릭 링크/Windows 재분석 지점을 거부한다. 업로드 크기 한도 안에서 한 번 읽은 바이트의 길이·SHA-256을 버전 기록과 비교하고 그 바이트만 응답한다. 파일을 응답 시 다시 열지 않는다.
+- 401/404/409 INPUT_REVISION_CONFLICT·DOCUMENT_REVISION_CONFLICT/410 SESSION_EXPIRED·SOURCE_VERSION_UNAVAILABLE은 기존 방식이다. 파일 부재·경로/형식/크기·해시 검사 실패는 **410 SOURCE_ORIGINAL_UNAVAILABLE**이며 내부 경로를 반환하지 않는다. 오류도 no-store다.
+- SourceOut와 SourceTextOut에 `original_download_available:boolean`(기본 false)을 추가한다. 업로드 provenance와 범위를 나타내는 UI 안내값이며 권한 토큰이나 파일 존재 보증이 아니다. GET마다 전체 검사를 다시 한다. 과거 예시는 필드 생략 시 false로 해석한다.
+- 정상 다운로드는 TTL·입력/문서 revision·확인/검증/승인을 바꾸지 않으며 AI를 호출하지 않는다. 세션 만료 시 기존 정리 정책을 적용한다. 명시적으로 내려받은 파일은 사용자 기기에 남으므로 세션 종료가 그 복사본까지 지우지는 않는다.
+
+화면은 자료 카드 및 추출문 패널에 원본 다운로드 버튼을 표시한다. 근거 패널에서는 원래 anchor/문맥/버전을 전달한다. 편집 중에도 다운로드로 저장·승인되지 않는다. 닫기/문맥 변경 시 취소하고 늦은 파일 응답은 버린다. 404/409/410이면 패널의 이전 본문을 비우고, 일시 오류는 사용자가 다시 누를 수 있다. 브라우저 내 원본 렌더링·Office 변환·OCR은 제공하지 않는다.
 
 
-**인증 주장 점검 v2 (2026-10-07):** 공개 Fact/Preflight 필드와 DB 스키마는 유지한다. 새 인증 추출 응답은 주장마다 `claim_status`와 `conflict_group`을 받으며, 저장된 Fact.conditions.claim_review에 version=2·상태·그룹·본문 제외 여부를 기록한다. 동일 인증의 같은 속성 후보만 충돌로 묶고 나머지는 독립 상태를 유지한다. 새 점검의 보류 주장은 초안에서 제외하고 경고로 알리며, 이를 본문에서 인용하면 기존 근거 검사가 거부한다. 이전 필드별 상태 응답은 v1 의미대로 재생하며 자동으로 supported로 바꾸지 않는다. 프론트 사본과 상세 표시 UI는 미갱신이다.
+<a id="source-text-origin"></a>
+
+### 저장 텍스트 생성 방식 표시 (C-01, 계약 1.12)
+
+SourceTextOut에 `text_origin: registered_excerpt | automatic_extraction | unknown`을 추가한다. 기본값은 unknown이다. **현재 조회가 고정한 extraction_runs.method**가 registered_bundle이면 registered_excerpt, parser이면 automatic_extraction, 비어 있거나 다른 값이면 unknown이다. 자료 scope나 최신 current_run_id로 추측하지 않는다. 목록·근거·주변/이어읽기에서 같은 run의 분류를 유지하고, 재추출 뒤에도 이전 점검/문서의 근거가 연결된 run의 분류를 반환한다. 내부 method 문자열을 그대로 노출하지 않는다.
+
+- **등록 발췌문:** 자료 등록 시 함께 저장된 텍스트. 표 행 결합·이미지 전사 등이 포함될 수 있고 새 파일 자동 추출 결과와 다를 수 있다고 안내한다. 모든 구간이 사람이 쓴 글이라는 뜻이나 내용 검증 완료 표시가 아니다.
+- **자동 추출문:** 파일 읽기 기능으로 자동 추출한 텍스트. 이미지 속 글자나 원본 서식/배치가 빠질 수 있음을 안내한다.
+- **생성 방식 미확인:** 알 수 없는 방식과 과거 응답의 필드 누락은 추측하지 않는다. 프론트는 예상하지 못한 미래 값도 이 표시로 처리한다.
+
+화면은 자료/근거에서 공통 패널을 열어 생성 방식과 설명을 표시한다. 진입 문구는 ‘저장된 내용 보기’/‘근거 내용 확인’으로 통일한다. 로딩/오류에는 과거 분류를 남기지 않으며 본문·인용문·위치·버전은 그대로다. 다운로드 가능 여부/권한·사실 판정·AI 생성과 독립된 읽기 정보이며 DB 마이그레이션·이력 보충·원자료 수정은 없다.
+
+<a id="source-text-api"></a>
+
+### 추출문 조회 (C-01, 계약 1.10)
+
+접두사 `/api/v1/sessions/{sid}`. 두 GET 모두 소유자 쿠키와 현재 선택한 근거 자료가 필요하며 정상 조회는 입력·문서 revision, 점검 확인, 검증·승인, TTL을 바꾸지 않는다. AI 호출 없음. 성공·실패 응답은 `Cache-Control: private, no-store`다.
+
+| 경로 | 용도 |
+|---|---|
+| `GET /sources/{source_id}/segments` | 현재 선택에 고정된 버전의 추출 구간 목록. context=selection만 허용 |
+| `GET /sources/{source_id}/segments/{segment_id}` | 대상 근거와 주변 구간. source_version 필수; 저장된 점검/문서 근거와 대조 |
+
+공통 query: `expected_input_revision` 필수(현재 세션 입력 revision), `context=selection|preflight|document`(기본 selection), `limit` 기본20/1~50, `cursor` 선택(최대2048자). selection에는 문맥 ID를 넣지 않는다. preflight에는 `preflight_id`만, document에는 `document_id`와 `document_revision`을 모두 넣는다. 문맥 ID는 1~100자, 버전은 1~SQLite 정수 상한이다. 알 수 없는 query 필드와 잘못된 조합은 공통 400 INVALID_REQUEST다.
+
+단건에는 `source_version`이 필요하고, 선택 문맥에서도 해당 선택 스냅샷과 일치해야 한다. preflight 문맥은 현재 입력의 해당 점검 사실/충돌 후보/제외 사실에 실제 저장된 참조만 허용한다. document 문맥은 현재 저장 문서 revision의 블록 참조만 허용하며, 아직 옛 입력을 참조하는 문서는 그 입력에 고정된 run을 조회한다. 문맥 ID를 알고 있다는 이유로 접근 권한이 생기지 않는다. 현재 선택 밖·instruction·다른 세션·허용 취소 등록 자료·일반 세션의 demo 자료는 조회하지 못한다. 삭제/purge/만료가 우선하며 이력이 없으면 최신 run으로 대체하지 않는다.
+
+`focus_segment_id`는 단건의 주변 구간 이동용 선택 query다. URL의 segment_id는 최초 근거 anchor로 유지하고, focus는 같은 source/version/run에서 같은 문맥 그룹에 속해야 한다. PPTX는 같은 슬라이드, DOCX는 문단끼리 또는 같은 표, TXT/MD는 행, PDF는 쪽끼리 묶는다. PDF의 이전/다음은 읽어낸 쪽 사이 이동이며 비어 있거나 읽지 못한 쪽을 생성하지 않는다. DOCX 문단 뒤에 저장된 표를 원본 바로 다음 문장으로 표시하지 않는다. 목록에서는 focus를 허용하지 않는다.
+
+200 `SourceTextOut`:
+
+- `source_id`, `source_version`, `run_id`, `name`: 선택된 버전의 표시 정보. 서버 경로·원본 URL 미포함.
+- `context`, `input_revision`(조회 근거의 입력), `current_input_revision`, `document_revision`(문서 문맥 외 null).
+- `parse_status:complete|partial`, `warnings:SourceWarning[]`: 해당 run의 읽기 결과.
+- `items:SourceTextSegment[]`, `context_segments:SourceTextSegment[]`: 구간은 `segment_id`, `locator`, `text`, `offset`(0부터 Unicode 문자 위치), `total_chars`, `truncated`(뒤에 더 있음). 목록은 기본20/최대50구간, text 합계 최대50,000자, 구간당 최대10,000자다. 단건은 대상 조각1개와 이전/다음 문맥 최대2개다. 긴 구간은 목록의 한 응답을 여기서 끊는다.
+- `anchor_segment_id`, `target_segment_id`: 단건의 원래 근거/현재 표시 구간, 목록은 null. `excerpts`는 서버 저장 근거의 고유 인용문 최대5개/각2,000자이며 생략 여부를 `excerpts_truncated`로 알린다. 선택 문맥에는 인용문이 없다.
+- `previous_segment_id`, `next_segment_id`: 단건 문맥 그룹 내 이동 대상 또는 null. 주변 구간이 길면 focus로 열고 이어 읽는다.
+- `next_cursor`: 다음 목록/같은 긴 구간의 다음 조각 또는 null. 그대로 보내며 query·세션·현재 입력·문서 revision·source/version/run·anchor/focus가 바뀌면 재사용하지 않는다. cursor는 권한 증명이 아니며 매번 전체 접근 검사를 반복한다. 프론트는 다음 조각으로 교체하며 본문을 브라우저 영구 저장소에 누적하지 않는다.
+
+오류: 기존 401 UNAUTHORIZED, 범위 밖 404 RESOURCE_NOT_FOUND, 409 INPUT_REVISION_CONFLICT / DOCUMENT_REVISION_CONFLICT, 410 SESSION_EXPIRED를 유지한다. 새 409 SOURCE_NOT_READY는 읽기 중(재조회 가능), 422 SOURCE_TEXT_UNAVAILABLE은 실패/이미지만 있음/글자 없음, 410 SOURCE_VERSION_UNAVAILABLE은 허용된 자료의 버전·run 소실/만료다. 잘못된 cursor, 단건 source_version 누락, 목록에 근거 문맥/focus 지정은 422 INVALID_REQUEST다. 요청 모델 형식·상한 오류는 400이다. 일부 읽기는 200과 warnings를 반환한다. 오류 응답은 공통 봉투이며 권한 밖 자료의 상세 사유는 숨긴다.
+
+세션 첨부의 만료는 현재 세션 TTL이 기준이다. source/source_version의 업로드 당시 만료 스냅샷이 지났다는 이유로 편집 중인 활성 세션을 차단하지 않는다. 등록 자료에 별도 만료가 있으면 적용한다. 정상 GET은 TTL을 연장하지 않으며 세션 만료 감지 시 기존 정리·410 처리를 유지한다.
+
+프론트는 자료 카드와 S01 사실/후보·S02 저장 블록·S03 관련 사실/블록/자료에서 같은 추출문 패널을 연다. 출처 버전·한국어 locator·인용문과 추출문을 구분하고, 단일 정확 일치에만 강조를 표시한다. 조회 실패/이동 중에는 옛 본문을 숨기고, 닫기·문맥/세션 변경은 요청을 취소해 늦은 응답을 버린다. 미저장 편집은 유지한다. 직접 첨부 원본 다운로드는 [계약1.11](#source-original-api)을 따른다. Office 원본 미리보기·OCR은 미구현이다.
+
+**2026-10-07 화면에서 사실 제외·복원:** 선택 항목의 사용 여부는 `POST /sessions/{sid}/preflights/{pid}/reviews`로 저장한다. 요청은 `expected_input_revision`, `action:exclude|restore`, 비어 있지 않은 고유 `fact_ids`(최대50개), `reason`(최대300자)다. 200 Preflight는 새로운 불변 점검 ID와 선택적 읽기 필드 `excluded_facts`/`reviewable_fact_ids`를 반환한다. 기존 점검·원문·사실의 진실 상태는 보존하고 제외 사실만 생성 입력에서 빠진다. 회사명·사용자가 지정한 필수 내용·마지막 supported 사업 설명·필수/시연 위반 항목은 제외할 수 없다(422 RESOLUTION_NOT_ALLOWED). 복원은 원래 상태/문제를 되살린다. 소유·만료·현재 입력·최신 점검·선택 근거·진행 작업을 검사하고 멱등 재전송은 같은 결과를 반환한다. AI를 추가 호출하지 않으며 사용자 확인은 초기화하고 새 LangGraph 확인 지점을 저장한다. 기존 문서는 자동 수정하지 않고 검증/승인을 무효화한다. 제외 사실이 본문에 남아 있으면 EVIDENCE_INVALID로 삭제 또는 복원을 안내하며 기존 C-05/최종 검사 조건은 유지한다. 입력 변경 또는 새로운 AI 점검은 별도 결과로 취급하며 이전 제외를 임의 이월하지 않는다. API1.9 호환 확장·DBv11·template_v11 유지.
+
+**2026-10-07 숫자·날짜 표기 동등성:** 사실 추출·초안 수치 보존·서버 내용 검사에서 공유하는 숫자 비교는 명시된 날짜 항목의 YYYYMMDD, 같은 연도의 명확한 날짜 범위, 원화 조/억/만 단위의 정확한 Decimal 환산, 인용 표의 (원)/(%), 숫자 괄호 밖의 원/%를 정규화한다. 원문·인용 위치·저장 사실·문서는 바꾸지 않는다. 금액/백분율의 부호·실제 값 변경, 다른 통화/길이 단위, 문서 코드의 날짜 오인, 불명확한 연도 전환은 허용하지 않는다. 주체·조건·인증 범위는 별도의 의미 검사 대상으로 유지한다. 기존 저장된 needs_confirmation/Issue는 자동 해제하지 않으며 새 자료 점검이 필요하다. API 계약1.9·DB v11·template_v11 유지.
+
+**2026-10-07 초안 진입 조건 대조:** 최신 입력의 Preflight GET은 LLM 초안과 같은 결정적 입력 검사를 적용한다. 대상 회사명 미확인/불일치, 필수·제외 충돌, 사용할 supported 사실 없음은 can_generate=false와 recommendations.needed로 안내한다. 조회는 저장된 사실/확인/점검을 바꾸지 않는다. 공개 읽기 필드 latest_preflight_id:string|null을 추가해 같은 입력의 최신 점검을 알려준다. 오래된 점검은 can_generate=false이고 POST drafts는 Job/확인 지점 소비 전에 409 INPUT_REVISION_CONFLICT(latest_preflight_id 포함)로 거부한다. 자료/조건 문제도 422 INVALID_REQUEST 또는 NO_USABLE_TEXT로 접수 전에 거부한다. 일부 필수 사실 누락이나 열린 문제 자체는 검토용 초안을 일괄 차단하지 않으며 최종 승인 검사는 유지한다. 자동으로 필수가 되는 사업 설명은 명시 제외하지 않은 항목에서 선택한다. 프론트는 같은 입력의 최신 점검을 GET으로 복원하고 확인을 다시 받는다. 입력 revision이 달라지면 이전 점검/확인을 버리고 상태 새로고침을 안내한다. API 계약1.9 호환 확장·DB v11·template_v11 유지.
+
+**2026-10-07 대상 회사명 비교:** 초안 전 supported 회사명 근거와 대상 이름은 전체 이름 기준으로 비교한다. 공백·대소문자·NFKC 및 앞/뒤의 ㈜/(주)/주식회사 표기만 정규화하며 영문 번역/약칭은 기존 운영자 확인 별칭 그룹만 허용한다. 부분 이름/다른 회사/빈 법인 표기와 미확인 사실은 통과시키지 않는다. 원문·사실·인용·점검 결과와 계약1.9/DB v11을 유지한다.
+
+**2026-10-07 PDF/DOCX 글꼴 통일:** 현재 템플릿은 `template_v11`이다. DOCX에 PDF와 같은 Pretendard Regular/Bold 전체 TTF를 OOXML 글꼴 파트로 포함하고 embedTrueTypeFonts=true/saveSubsetFonts=false를 지정한다. 본문·사진·글자 크기·단일 열 배치는 유지한다. 글꼴 파일 누락은 출력 실패이며 대체 글꼴로 성공 처리하지 않는다. 템플릿 지문 변경으로 기존 형식별 배치 검사·승인은 재검사·재승인이 필요하다. 저장 문서·원자료·과거 산출물은 보존하며 AI 재생성을 요구하지 않는다. API 계약1.9/DB v11 유지.
+
+**2026-10-07 초안 실패 복구(계약1.9 호환 보완):** 생성·결과 검사·저장 단계의 AGENT_OUTPUT_INVALID/SERVICE_TEMPORARY_FAILURE/AI_RATE_LIMIT/INTERNAL_ERROR는 Job.error.retryable=true와 기존 details 안의 recovery_action:"retry_draft"로 초안만 재시도할 수 있음을 안내한다. 프론트는 실패 후 확인 체크를 해제하고 기존 점검을 보여준다. 사용자가 다시 확인한 새 POST drafts(confirmed:true, 새 Idempotency-Key)만 실행하며 실패 결과 조회·새로고침으로 AI를 호출하지 않는다. 같은 키는 기존 실패 Job을 반환한다. 확인 체크포인트 복구는 이전 Job이 같은 세션·입력 버전의 기록된 실패, 현재 새 Job은 running, 최신 점검 동일, 저장 문서 없음인 경우만 허용한다. 취소/진행 중/완료 Job, 입력 변경, 새 점검, 사라진 Job 또는 서로 다른 DB 커밋 사이 장애는 확인을 복구하지 않는다. 수치·근거·최종 승인 검사를 완화하지 않으며 자료/입력 문제는 재점검·보완 경로다. 새로운 API·DB 스키마는 추가하지 않는다.
+
+**2026-10-06 프론트 회사 선택·충족도 연결(호환 확장):** 기존 Brief.target_company를 회사 선택 UI와 연결한다. 값은 앞뒤 공백을 정리하며 공백뿐인 값·제어 문자는 400이다. 프론트는 회사 변경 시 PATCH /sessions/{sid}/inputs에 새 brief와 selected_source_ids: []를 함께 보내 입력 revision을 올린다. 원자료·기존 문서는 보존하고 최신 점검/C-05 복귀가 필요하다. 회사명 입력 자체는 사실 근거가 아니다.
+
+GET /sessions/{sid}/preflights/{pid}에 sufficiency: {score, categories, has_blockers}를 추가한다. categories는 overview/process/performance/certification의 4개이며 각 항목은 {key,label,status}다. status는 supported|needs_confirmation|conflict|missing; 값·근거가 있는 supported 사실을 포함한 분야당 25점이다. 같은 분야의 충돌/확인 필요 또는 연결된 열린 blocker는 supported보다 우선한다. score는 근거 분야 포함 비율이며 생성 가능 여부·필수 항목 충족·승인 통과를 대체하지 않는다. 구버전 응답이나 최신 입력과 다른 점검은 프론트에서 '점검 필요'로 표시한다.
+
+**2026-10-07 DART 회사 검색·실제 수집(계약1.9 호환 확장):** GET /companies?query=기업명은 세션 생성 전에도 이용할 수 있는 공개 회사명 조회다. query는 2~50자이며 반환은 {items:[{corp_code,corp_name,display_name?}]} 최대20개다. 회사명 전체 일치→앞부분 일치→부분 포함 순서이며 법인 표기·공백·대소문자는 검색에서 정규화한다. 네이버의 DART 목록명 NAVER와 법인명 네이버(주)(고유번호00266961)는 확인된 동일 회사 명칭으로 검색·전체 이름 비교에 적용한다. 다른 영문 번역을 추측하지 않는다. corpCode.xml은 서버 메모리에 키별24시간 캐시하며 키/원문 URL 인증값을 반환하지 않는다. 미설정은503 PUBLIC_DATA_NOT_CONFIGURED, 검색 결과 없음은200 items:[]다.
+
+GET /sessions/{sid}/public-data는 {status:ready|not_configured,providers:[dart,kipris,g2b],configured_providers:[dart]|[],message}를 반환한다. ready는 서버 키 설정 여부이며 호출에서 인증 실패를 별도로 안내한다. POST /sessions/{sid}/public-data/import는 {expected_input_revision}와 Idempotency-Key를 받아202 JobAccepted(kind=read)를 반환한다. 세션 소유·활성/현재 revision·회사 선택을 검사하며 회사 미선택422 COMPANY_REQUIRED, 키 미설정503 PUBLIC_DATA_NOT_CONFIGURED다. 동일 active 대상은 Job 합류, 같은 키는 같은 응답이다. 실제 조회 실패는 Job.error에 DART_AUTH_ERROR/DART_RATE_LIMIT/DART_COMPANY_NOT_FOUND/DART_COMPANY_AMBIGUOUS/DART_COMPANY_MISMATCH/DART_DATA_NOT_FOUND/DART_SERVICE_ERROR 등으로 기록한다.
+
+회사는 Brief.target_company와 선택적 dart_corp_code(8자리 숫자)로 저장한다. 목록으로 대상을 먼저 검증하고 기업개황의 corp_code가 같으며 corp_name 또는 stock_name이 전체 이름으로 일치해야 수집한다. 목록의 공시명과 법인명이 다를 수 있으며 provider의 동일 고유번호/명칭으로 확인하고 임의 번역/부분 이름을 허용하지 않는다. 수집 텍스트는 실제 회사명과 공시 등록명을 모두 보존한다. 고유번호가 없으면 정식 전체 이름이 유일할 때만 수집하고 부분/유사 이름으로 자동 결정하지 않는다. 기존 기본값 요청의 멱등 해시는 보존한다. 기업개황1건과 최근3년의 최신 공시 최대1건을 실제 세션 자료로 저장한다. 공시가 없으면 기업개황만 저장하며 원문 JSON/ZIP과 인증값 없는 출처·접수일을 함께 보존한다. TEXT_LIMIT으로 부분 읽기를 공개하며 본문은 최대min(MAX_SOURCE_CHARS,25000)자다. Source는 origin_kind=real/scope=session, warnings.code=PUBLIC_OPEN_DATA이며 기존 구간·추출 이력·소유/정리 정책을 따른다. 자동 선택/AI 실행/revision 변경은 하지 않는다. 조회 중 회사/조건 변경·종료·용량 초과는 자료/파일을 남기지 않으며 DB와 파일을 함께 롤백한다. 특허청·나라장터 수집은 미연결이다. DB v11/template_v11 유지, API는34개다.
+
+**2026-10-06 형식별 승인 조회:** 문서 GET에 `approvals_by_format: {pdf: Approval|null, docx: Approval|null}`을 호환 가능한 조회 필드로 추가한다. 현재 문서·입력 버전의 active 승인만 형식별로 반환하며 문서/입력 변경 또는 승인 무효화 후에는 null이다. 기존 `approval`은 어느 형식이든 최신 active 승인이라는 의미를 유지한다. 프론트는 새 필드가 있으면 선택 형식의 승인을 사용하고, 구버전 응답/가상 미리보기에서는 기존 필드를 사용한다. 승인·출력 조건·자동 생성/승인 정책·DB 스키마는 변경하지 않는다.
+
+**2026-10-06 DOCX 사진 확대 제한:** template_v10은 기존 출력 영역과 원본 픽셀/150ppi 크기 중 작은 크기로 사진을 표시한다. 원본 비율·중앙 정렬·임베드 처리를 유지하며 작은 원본을 과도하게 확대하지 않는다. 150ppi는 출력 크기 상한이며 사진의 인쇄 품질 인증이나 새 승인 blocker가 아니다. PDF 사진 크기 정책은 유지한다. API 계약1.9·DB v11은 유지하며 이전 PDF/DOCX 배치·승인은 새 템플릿에서 재검사·재승인이 필요하다. 과거 출력 파일은 자동 교체하지 않는다. 아래 문단 간격 보완은 template_v9 도입 이력이며 사진 표시 크기는 이번 정책을 따른다.
+
+**2026-10-06 DOCX 문단 간격·추출 대조 보완:** 이 간격 보완 이후 템플릿은 `template_v10`이었다. 단일 열 DOCX의 문단 전0pt/후1pt/줄 간격1.0을 명시해 기본 서식의 추가 여백으로 사진·캡션이 다음 쪽에 밀리는 것을 줄인다. 해당 보완 당시 본문·폰트 크기·사진 바이트·표시 크기·순서는 유지하며 과도한 내용은 기존 실제 넘침 검사로 계속 차단한다. PDFium이 줄 끝 하이픈을 잘못 추출하면 기존 pypdf로 같은 실제 쪽의 전체 원문 문자·수치·순서를 다시 대조하며, 정확히 일치한 경우에만 본문 검사를 통과한다. 쪽수·사진수·인쇄 영역 검사는 그대로다. 새 API·DB 변경은 없으며 기존 PDF/DOCX 배치·승인은 템플릿 변경으로 재검사·재승인이 필요하다. 과거 저장 산출물과 사용자 승인/문제 행을 자동 교체하지 않는다.
+
+**2026-10-06 C-05 화면 연결:** 문서 GET은 호환 가능한 조회 필드 `input_review_required: boolean`(기본false), `latest_preflight_id: string|null`(기본null)를 추가 제공한다. 앞 필드는 입력 버전 차이 또는 DB v11의 연결 점검/최신 점검 차이를 뜻하며 사용자 확인만으로 false가 되지 않는다. 최신 점검 확인·유효한 영향 검토 적용 후 false가 된다. 진행 중 점검의 완료 여부와 적용 가능 여부는 기존 Job/ImpactReview 조회와 적용 가드에서 다시 확인한다. C:\frontend의 기존 API 타입·자료 변경 배너·영향 선택 화면에 연결하며 브라우저에는 생성 요청 ID/버전/키와 적용 키/검토 ID/해시만 저장한다. 문서 본문·근거 인용·유지 사유·사용자 확인은 저장하지 않는다. 정상 적용은 반환한 전체 검증 Job을 조회하고, 적용 응답 유실은 applied 검토/문서 GET으로 복구한다. 실자료 의미 검증·사진별 공개 허가·사용자 최종 승인은 후속이다. 계약1.9·DB v11·template_v8 유지.
+
+**2026-10-06 DOCX 빈 페이지 보완:** 현재 출력 템플릿은 `template_v8`이다. DOCX의 독립 쪽 나눔 문단을 제거하고 다음 논리 쪽의 라벨에 page_break_before를 지정한다. 본문·사진·캡션·글꼴·그림 크기·순서는 유지하며 출력 중 문서를 재작성하거나 내용을 삭제하지 않는다. 이전 템플릿 검사는 재검사·재승인이 필요하다(PDF/DOCX 공통 템플릿 식별값). 기존 문서 revision·내용 검증·DB v11·계약1.9는 유지한다. 실제 넘침·내용 누락·사진 누락 검사와 승인 차단은 그대로 적용한다.
+
+**2026-10-06 DOCX 화면 연결 후속:** 출력 형식별 배치 검사·미리보기·승인·다운로드를 선택한다. 형식 변경 시 동의 체크는 해제하며 다른 형식의 검사/승인으로 다운로드하지 않는다. 문서 전체 쪽수 불일치 Finding은 특정 논리 쪽을 지정할 수 없으므로 `findings[].page_id`가 null일 수 있다. 형식별 실패는 조회 가능한 검사 결과와 미해결 필수 문제로 반환하며 승인할 수 없다. 헤드리스 변환 자식은 서버의 열린 표준 입력을 상속하지 않는다. DB v11·template_v7은 유지한다.
+
+**2026-10-06 점검 문제의 문서 연결 보완(BE-04/06):** 최신 Preflight의 열린 content/source blocker는 필수 내용 누락을 제외하고 VALUE_CONFLICT 외의 코드도 본문 참조 여부와 무관하게 문서 Issue(origin=preflight)에 보존한다. needs_confirmation 사실에 연결된 UNSUPPORTED_CLAIM blocker도 초안 최초 저장·조회/세션 요약·재검증·승인 차단에 연결한다. REQUIRED_MISSING은 문서 전체의 기존 필수 내용 검사에서 대체 사업 설명·사용자 지정 필수 항목을 함께 재판정한다. warning 수준의 미확인 사실은 임의 blocker로 승격하지 않는다. Agent가 확인/해결 상태·resolution을 반환하거나 선택 밖 자료/사실, 중복 Issue ID, 생성 전 블록/배치를 참조하면 AGENT_OUTPUT_INVALID로 점검 전체를 저장하지 않는다. 점검의 필수 문제는 안내 삭제·확인/제외 버튼으로 해결할 수 없으며 자료 보완·최신 점검·문서 재검증이 필요하다. 재점검은 다른 문제를 닫지 않고, 실제 문서 재검증에서 원인이 사라진 문제만 해결한다. 기존 preflight_conflicts 검사 키와 preflight_conflict 승인 무효화 사유는 호환을 위해 유지하며 이번 보완 이후 점검 필수 문제 전체를 포함한다. API 필드·계약1.9·DB v11·template_v7은 유지한다. 프론트는 문서 Issue와 review_required를 표시하며 최종 통합 검수는 후속이다.
+
+**연결 대조 이력(2026-10-06, BE-01/10):** 현재 계약 1.9·데이터 1.0·DB v11·template_v11이 기준이며 아래 연결 대조 당시 템플릿은 v8이었다. 아래 1.5/1.6/1.7/1.8 설명은 각 기능의 도입 이력이며 현재 계약을 낮춰 연결하지 않는다. 백엔드 `test` 0ad3eb2와 프론트 `C:\frontend` develop 0771d54를 대조했다. 대조 당시 프론트에는 계약 사본이 없고 C-05/생성 계획 타입·화면이 미연결이었다. C-05 API 타입·화면의 현재 연결은 이 문서 첫 C-05 화면 연결 규칙과 task_backend.md의 c05-ui-20261006 기록을 따른다. 생성 계획 타입/화면과 새 계약 사본은 추가하지 않았다. `D:\frontend`는 다른 커밋(15289fb)이므로 같은 작업본으로 취급하지 않는다. 현재 DOCX 검사·승인 규격은 아래 계약 1.9를 따른다. 프론트 반영 완료를 뜻하지 않는다.
+
+| 연결 영역 | 백엔드 제공·보존 규칙 | 프론트 후속 |
+|---|---|---|
+| 자료 변경 복귀(C-05) | 영향 검토 생성/조회/적용. 적용 전 문서 보존, 정확히 같은 사실만 자동 연결. 적용 결과의 `validation_job_id`로 전체 재검증 조회 | 자료 변경 배너·최신 점검 명시 확인·영향/선택 수정·근거 연결·유지 사유·문서/Job 재조회 연결/가상 확인 완료. 실자료 의미 검수 후속 |
+| 작성 조건·초안 기록 | Brief의 audience/usage_context/tone/target_company/required_fields/brand_color, nullable Document.editorial, editorial_v1/v2 호환 | 타입·입력·생성 사유·보완/제외 사유 표시. 생성 감사 기록을 현재 검증 완료 표시로 쓰지 않음 |
+| 분량·배치 | 새 초안의 target_pages는 최소 분량. generated_pages는 생성 당시 논리 쪽수, 현재 pages와 LayoutCheck.actual_pages는 각각 별도 값 | 선택 최소 분량·현재 논리 쪽수·검사한 출력 쪽수와 차이 사유 구분 |
+| 편집·승인 | Page.design·set_page_design 및 level 2 heading 유지. 버전/내용 변경에 따른 검사·승인 무효화 | 디자인/소제목 표시, 재검사 안내, 최신 검사·개별 경고 확인 후 명시 승인 |
+| DOCX | 명시 설정한 LibreOffice로 검사 대상 DOCX를 PDF로 변환해 실제 쪽수·쪽별 본문 순서/사진 수·인쇄 영역 검사. 필수 검사 통과 후 같은 DOCX를 승인·다운로드 | format=docx의 최신 검사·승인 연결. warnings 표시. 엔진 미설정/미측정은 계속 차단 |
+
+인계 예시는 기존 `docs/api_examples_v1.1.json`을 유지하며 최상위 `contract_version=1.9`를 따른다. 예시의 가짜 값과 실제 HTTP·실제 모델 검증은 구분한다.
+
+**계약 1.9 — DOCX 실제 검사·승인·출력(2026-10-06):** 현재 템플릿은 `template_v11`, 데이터 1.0·DB v11·공개 API 필드는 유지한다. 서버의 `EXPORT_LIBREOFFICE_PATH`가 절대 실행 파일 경로로 설정되면 DOCX 자체를 변환한 PDF에서 `actual_pages`를 측정하고 필수 검사 3종을 수행한다. `preview_basis=pdf`의 PNG는 이 변환본 기준이며 경고에 LibreOffice 검사 기준을 명시한다. 엔진 미설정/경로 오류는 `overflow=not_checked`, 변환/측정 실패는 실패 Job으로 남아 승인할 수 없다. 엔진 없는 경우의 별도 HTML/PDF 미리보기는 DOCX 검사 증거가 아니다. 실제 검사 통과·최신 내용 검증·명시 확인·사진 공개 허가·버전/해시 일치가 모두 충족되면 검사 때 만든 편집 가능한 DOCX를 그대로 내려준다. Word 등 다른 프로그램이나 글꼴에서 같은 쪽 나눔을 보장하지 않는다. DOCX는 기존 단일 열 배치이며 PDF 브로슈어 디자인과 동일 배치를 보장하지 않는다. 이전 템플릿의 PDF/DOCX 검사·승인은 재검사·재승인이 필요하고 과거 산출물을 자동 교체하지 않는다. 프론트 사본·DOCX 화면 연결은 별도 후속이다.
+
+**최종 쪽수 상한 (2026-10-07, PR #49 통합):** 아래 10/1 최소 쪽수 설명 중 상한 없이 페이지를 추가한다는 동작은 이 결정으로 대체한다. 새 요청에서는 target_pages를 최종 PDF 상한으로도 적용한다. 초안 저장 전 실제 렌더를 측정하고 넘치는 페이지는 11pt 본문을 유지한 간결 배치로 재측정한다. 본문·근거 삭제 없이 제한 안에 들어오지 않으면 초안은 검토 상태로 남고, 조판은 미해결로 기록한다. 렌더의 실제 쪽수가 target_pages를 넘으면 기존 LAYOUT_OVERFLOW 경로로 승인/최종 다운로드를 허용하지 않는다. 이전 저장 문서의 내용은 자동 변경하지 않으며 기존 LayoutCheck는 병합된 template_v14에서 재검사가 필요하다. 프론트 사본/안내 문구는 미갱신이다.
 
 
-기준일: 2026-10-01 · 문서 v1.23 · contract_version: 1.8 · 데이터 schema_version: 1.0
+**인증 주장 점검 v2 (2026-10-07):** 공개 Fact/Preflight 필드와 DB 스키마는 유지한다. 새 인증 추출 응답은 주장마다 `claim_status`와 `conflict_group`을 받으며(운영의 개별 사실 `status`와 동일 판정인지 검사), 저장된 Fact.conditions.claim_review에 version=2·상태·그룹·본문 제외 여부를 기록한다. 동일 인증의 같은 속성 후보만 충돌로 묶고 나머지는 독립 상태를 유지한다. 새 점검의 보류 주장은 초안에서 제외하고 경고로 알리며, 이를 본문에서 인용하면 기존 근거 검사가 거부한다. 이전 필드별 상태 응답은 v1 의미대로 재생하며 자동으로 supported로 바꾸지 않는다. 프론트 사본과 상세 표시 UI는 미갱신이다.
+
+
 
 **2026-10-01 내부 작성 응답 보완:** 새 AI 응답의 `fact_notes`는 모든 사실 ID를 필수 키로 받는 객체다. 사용 사실은 null, 미사용 사실은 분류·160자 이내 사유를 기록한다. 전체 키·null 사용 범위·정책을 서버에서도 검사하며 옛 목록 응답은 재생 호환한다. 복합 인증을 소개하는 heading/lead는 해당 인증 ID를 참조하고 상세 수치·조건은 전체 문구 point에 보존한다. 묶음 `fact_notes`에서 실제 본문에 사용한 supported 사실(회사명은 페이지 제목 포함)의 중복 사유만 생략된 경우 포함 감사 기록을 서버가 계산한다. 미사용·제외·보완 사유 누락과 중복·외부 ID, 본문·수치 누락은 계속 거부한다. history 원문에 있는 `연도 | 사건`도 연혁 시점으로 인식하되 공정 순서 근거로는 쓰지 않는다. processes 원문에서 설명이 있는 한글 단계 번호가 두 개 이상 증가하는 경우도 명시된 순서로 인식한다. 공개 입출력·상태·계약1.8·DB v11은 유지한다. [결정과 범위](plan.md#458-실제-설정별-생성에서-확인한-근거연혁-처리-보완-2026-10-01-ag-0304). 프론트 계약 사본은 미갱신이다.
 
@@ -46,7 +175,7 @@
 
 **내부 추출 전송 형식(2026-09-29, 문서 v1.12):** 실제 `company_info` 호출에서 각 원문 구간에 요청 내 `unit_id`를 부여하고 모델의 evidence는 `{"unit_id": 1}`처럼 그 번호만 반환한다. 서버가 해당 구간의 원문 전체를 정확히 quote로 연결하고 기존 source_id·locator·버전을 복원한다. 번호는 이번 요청의 선택 자료 구간만 허용하며 bool/실수/문자열·범위 밖 ID·임의 quote 필드는 거부한다. fact의 text·상태·충돌 후보를 자동 보정하거나 삭제하지 않고 기존 원문·형식 검사와 후속 의미 검증을 유지한다. 이는 인용문 재작성 오류를 없애는 내부 전송 변경이다. 공개 Preflight/Fact/EvidenceRef JSON과 DB 스키마는 그대로이며 프론트는 같은 API를 사용한다. 인용 범위는 모델이 재작성한 짧은 발췌 대신 선택된 원문 구간 전체다.
 
-**계약 1.2(2026-09-28):** 사용자가 요청한 AG-04 연결 후속으로, 같은 입력의 재점검에서 충돌이 발견되면 기존 승인을 무효화하고 승인 요청 재전송도 현재 승인 상태를 확인한다. `invalidated_reason`의 `preflight_conflict`, 기존 `APPROVAL_NOT_ACTIVE`·`REVALIDATION_REQUIRED` 오류가 적용되는 경로를 아래에 반영했다. 모델 필드·상태값·API 경로·문서 schema_version은 그대로이며 승인 재전송의 응답 동작 변경에 맞춰 계약 버전을 올렸다. 기존 [API 예시](handoff/api_examples_v1.1.json)는 파일 경로를 유지하고 내부 contract_version과 관련 예시를 1.2로 갱신한다. 프론트 사본·오류 표시 갱신은 필요하며 아직 확인하지 않았다.
+**계약 1.2(2026-09-28):** 사용자가 요청한 AG-04 연결 후속으로, 같은 입력의 재점검에서 충돌이 발견되면 기존 승인을 무효화하고 승인 요청 재전송도 현재 승인 상태를 확인한다. `invalidated_reason`의 `preflight_conflict`, 기존 `APPROVAL_NOT_ACTIVE`·`REVALIDATION_REQUIRED` 오류가 적용되는 경로를 아래에 반영했다. 모델 필드·상태값·API 경로·문서 schema_version은 그대로이며 승인 재전송의 응답 동작 변경에 맞춰 계약 버전을 올렸다. 기존 [API 예시](api_examples_v1.1.json)는 파일 경로를 유지하고 내부 contract_version과 관련 예시를 1.2로 갱신한다. 프론트 사본·오류 표시 갱신은 필요하며 아직 확인하지 않았다.
 
 이 문서는 프론트·백엔드·Agent의 데이터 교환 기준이다. 기존 API와 필드가 이미 있다면 백엔드 BE-01에서 연결표를 만들고 호환 어댑터를 우선한다. 아래 이름은 현재 코드에 구현되어 있다는 뜻이 아니다.
 
@@ -59,6 +188,8 @@
 **S02/S03 프론트 연결(2026-09-28, 문서 v1.9):** 직접 문구/페이지/블록 편집·저장, 기존 자료의 사진 교체, AI 수정안 비교·명시 적용/거절, 내용 검증·PDF 배치 미리보기·최종 승인·출력/다운로드를 기존 API에 연결한다. 요청은 편집 시작 문서 버전을 사용하며 충돌 때 로컬 편집을 유지한다. 미저장 변경·검사 실패·미확인 경고는 화면에서 승인을 막고, 검사/문서가 바뀌거나 새로고침하면 최종 동의를 다시 받는다. 화면은 `Validation.status=passed`이고 현재 PDF 검사와 미해결 문제가 없는 경우만 승인한다. 이는 미구현 D-07 서버 강제를 대체하지 않는다. 실제 LLM 수정안·검증, C-05 자료 변경 복귀, DOCX 승인/출력, 저장본 이력 복원 UI는 후속이다. API/계약 버전은 1.4로 유지한다.
 
 **계약 1.5(2026-09-29, D-07 백엔드):** 개별 경고 확인과 승인 검사를 연결한다. `acknowledged` 요청에는 기존 문서 버전·사유에 `input_revision`, `validation_id`가 필수이며, 완료된 최신 검증과 일치해야 한다. 확인 기록을 `confirmations(kind=warning_ack)`에 저장하고 승인·승인 재전송·출력/다운로드에서 유효성을 검사한다. 미확인 경고는 `422 WARNING_ACKNOWLEDGEMENT_REQUIRED`로 거부한다. 원문·입력·관련 블록·경고 설명/심각도가 바뀌면 재확인하고, 무관한 변경은 재검증 후 원 확인자/시각을 보존한 연결 기록을 남긴다. 프론트 계약 사본·확인 버튼/요청/오류 표시는 아직 갱신하지 않았다. 이전 절의 D-07 미구현 표기는 당시 상태다. 데이터 schema_version은 1.0, DB는 v11을 유지한다.
+
+**2026-10-07 자료 종류별 AI 점검 활성화:** 등록 자료 선택은 필수가 아니다. 공개 연동 자료 또는 이번 작업 첨부만 선택한 경우에도 role=evidence/use_as_company_evidence=true이고 complete|partial 상태의 읽을 수 있는 텍스트가 하나 이상 있으면 점검을 실행할 수 있다. 선택한 자료가 queued|reading이면 완료를 기다리며 선택하지 않은 자료의 읽기 상태는 실행을 막지 않는다. 미저장 조건/진행 중 요청/업로드 응답 유실/C-05/사진만 선택한 상태의 제한은 유지한다. 서버는 기존 선택 자료·소유·버전 정책을 유지하며 별도의 등록자료 필수 조건을 추가하지 않는다. API/DB 형식 변경 없음.
 
 ## 1. 공통 규칙
 
@@ -108,6 +239,7 @@
 | audience / usage_context | string / string | 독자(기본 처음 회사를 접하는 고객·협력사) / 사용 상황(기본 빈 문자열) |
 | tone | plain / formal / concise | 문체; 기본 plain |
 | target_company | string 또는 null | 원문에서 대상 회사를 고르는 단서; 사실 근거가 아님 |
+| dart_corp_code | 8자리 숫자 string 또는 null | DART 검색에서 명시 선택한 회사 고유번호; 이름과 함께 검증하며 사실 근거가 아님 |
 | required_fields | string[] | 반드시 포함할 기존 회사정보 key; 근거 부재 시 보완 요청 |
 | brand_color | #RRGGBB 또는 null | 제공된 브랜드 강조색 |
 
@@ -132,7 +264,7 @@
 
 이미지 표시가 가능해도 `text_available=false`일 수 있다. 지원하는 이미지 파일 자체의 정상 처리는 complete가 가능하지만, 그 안의 글자를 읽었다는 의미는 아니다. 파일 제외는 선택 목록에서 해제하는 것이며 등록 자료 원본 삭제와 다르다.
 
-`warnings[]`의 항목은 `code`, `message`, nullable `locator`(위치 객체), nullable `action`(권장 조치 문자열)이다. 원문/추출문 조회 API와 이미지 조회 API는 다르며 원문/추출문 조회는 아직 구현되지 않았다. 목록 응답은 `{items: Source[]}`, 업로드 접수 응답은 `{job_id, items: Source[]}`다. 업로드만으로 선택 목록에 자동 추가하지 않는다.
+`warnings[]`의 항목은 `code`, `message`, nullable `locator`(위치 객체), nullable `action`(권장 조치 문자열)이다. [추출문 조회](#source-text-api)는 이미지 조회와 별도 API이며 원본 파일 조회는 미구현이다. 목록 응답은 `{items: Source[]}`, 업로드 접수 응답은 `{job_id, items: Source[]}`다. 업로드만으로 선택 목록에 자동 추가하지 않는다.
 
 ### Asset — 화면과 출력에 사용하는 이미지
 
@@ -248,7 +380,7 @@ after 값이 null이면 맨 앞이다. 존재하지 않는 대상, 자신 뒤로
 필수: `preflight_id`, `session_id`, `input_revision`, `usable_source_ids`, `facts`, `issues`, `recommendations`, `can_generate`, `confirmed_at`.
 
 - recommendations는 `{suggested_pages: 1/4/6/8/10, reason: string, needed: string[]}`다. 필요한 사진/인증/보완자료 설명이 없으면 needed는 빈 목록이다. 새 고정 분류 코드는 추가하지 않는다.
-- can_generate는 읽기·최소 텍스트 근거 등 생성 조건을 뜻한다. 사용자 확인은 별도로 필요하다.
+- can_generate는 읽기·최소 텍스트 근거·최신 점검 및 위 결정적 초안 입력 조건을 뜻한다. 사용자 확인은 별도로 필요하다. latest_preflight_id는 같은 최신 입력의 최신 점검 ID이며 이전 입력을 조회할 때는 null이다.
 - 필수 내용 누락과 읽기 실패를 동일하게 처리하지 않는다. 읽을 근거가 있고 필수 내용 일부가 빠진 경우 검토용 초안은 가능하다.
 
 ### Issue — 확인할 내용
@@ -365,6 +497,7 @@ HTTP 필드·상태·DB 스키마는 그대로여서 contract_version 1.5/schema
 | PATCH /sessions/{sid}/inputs | expected_input_revision, brief?/selected_source_ids? 중 하나 이상 | `{session_id, input_revision, selected_source_ids, preflight_invalidated}` |
 | POST /sessions/{sid}/preflights | expected_input_revision | Job; 완료 시 Preflight |
 | GET /sessions/{sid}/preflights/{pid} | 없음 | 저장된 Preflight; 현재 입력 버전인지 함께 확인 |
+| POST /sessions/{sid}/preflights/{pid}/reviews | expected_input_revision, action, fact_ids, reason | 200 새 Preflight; 명시 제외/복원·재확인 필요·AI 호출 없음 |
 | POST /sessions/{sid}/drafts | preflight_id, input_revision, confirmed: true | 최신 사전 확인 기록, 초안 생성 Job |
 | GET /sessions/{sid}/documents/{did} | 없음 | Document, 검사/승인 상태 |
 | PATCH /sessions/{sid}/documents/{did} | expected_revision, operations | DocumentChangeOut; 전체 문서는 별도 GET |
@@ -388,11 +521,21 @@ HTTP 필드·상태·DB 스키마는 그대로여서 contract_version 1.5/schema
 
 source 업로드만으로 자동 선택하지 않는 UI를 택하면 사용자가 선택할 때 input_revision을 갱신한다. 단, 선택된 기존 원자료를 수정·삭제하거나 문서가 참조하는 자산을 바꾸면 즉시 영향 상태를 갱신한다.
 
-`DocumentChangeOut`은 `{document_id, document_revision, input_revision, status, validation_job_id}`이며 전체 문서 본문이 아니다. `validation_job_id`는 C-05 영향 적용에서 예약한 전체 검증 Job ID다. 일반 직접 수정/Proposal 적용/복원에서는 null이며 필요하면 validate API를 호출한다. 문서 GET은 `{demo, document, validation, approval, layout_checks}`이며 `layout_checks`는 `{pdf: LayoutCheck|null, docx: LayoutCheck|null}`다. `document_summary.status`, 문서 변경의 `status`, `document_status`는 Document의 4종 상태를 공유한다. 다운로드 성공은 PDF 또는 DOCX 바이트이며 JSON 오류는 아래 공통 봉투다.
+`DocumentChangeOut`은 `{document_id, document_revision, input_revision, status, validation_job_id}`이며 전체 문서 본문이 아니다. `validation_job_id`는 C-05 영향 적용에서 예약한 전체 검증 Job ID다. 일반 직접 수정/Proposal 적용/복원에서는 null이며 필요하면 validate API를 호출한다. 문서 GET은 `{demo, document, input_review_required, latest_preflight_id, validation, approval, approvals_by_format, layout_checks}`이며 새 조회 필드는 위 C-05·형식별 승인 조회 규칙을 따른다. `layout_checks`는 `{pdf: LayoutCheck|null, docx: LayoutCheck|null}`다. `document_summary.status`, 문서 변경의 `status`, `document_status`는 Document의 4종 상태를 공유한다. 다운로드 성공은 PDF 또는 DOCX 바이트이며 JSON 오류는 아래 공통 봉투다.
 
 ### Job — 진행 상태와 결과 조회
 
-Job 조회는 `job_id`, `kind`, `status`, `progress`, `result_ref`, `error`, `created_at`, `updated_at`을 반환한다. `progress={stage: string, message: string|null}`이며 백분율은 없다. 접수 응답 `JobAccepted`는 `{job_id, status: queued/running, kind, session_id, created_at}`다. Source 업로드와 Export는 위 표의 별도 접수 형식을 사용한다.
+Job 조회는 `job_id`, `kind`, `status`, `progress`, `result_ref`, `error`, `created_at`, `updated_at`을 반환한다. `progress={stage: string, message: string|null, trace: object|null}`이며 백분율은 없다. trace는 선택적 진단 정보로 과거 Job은 null일 수 있다. 접수 응답 `JobAccepted`는 `{job_id, status: queued/running, kind, session_id, created_at}`다. Source 업로드와 Export는 위 표의 별도 접수 형식을 사용한다.
+
+`trace`는 `{version:1, input_revision:int|null, stages:object[], outcome?:object, omitted_stage_count?:int}`다. 각 단계는 `stage`, `recorded_at`과 종류별 수량/상태/ID를 가진다. Agent 단계의 `configured_mode`와 실제 `actual_mode:mock|llm|custom`, `executor`, `model`을 구분한다. parser/public_api/renderer/approved_artifact 실행도 각 단계에 표시한다. `agent_invoked:true`는 bridge 메서드 호출이며 실제 유료 SDK 호출 횟수·성공 증명이 아니다. 실제 호출 여부·사용량은 기존 제한 시험의 ledger와 구분한다. `input_text_chars`는 선택한 파싱 구간의 글자 수이며 최종 직렬화 요청 크기/토큰 수가 아니다.
+
+자료별 ID/버전/구간 수/사진 수/날짜 존재 여부, `preflight_id`·문서 ID/revision·분류별 사실/선택 수와 `validation_scope.status`, 렌더러/실제 쪽수/검사 결과를 연결한다. 제외 자료는 `outside_evidence_scope|selected_run_unavailable|parse_not_usable`의 고정 이유 코드만 남긴다. 초안 사실의 상세 제외 문구는 기존 Document.editorial.selections.reason에 보존하며 Job에는 분류별 수만 남긴다. 원문·프롬프트·파일명·로컬 경로·키·상세 근거 문구를 trace에 복제하지 않는다. 최대16단계/64KiB로 제한하며 `omitted_stage_count` 또는 `summary_omitted:trace_size_limit`로 생략을 공개한다.
+
+실행 완료/실패의 trace.outcome은 Job 상태를 요약한다. 최종 상태는 Job.status를 따르며 cancelled는 outcome이 없을 수 있다. `Job.status:succeeded`라도 `result_ref.status:failed`면 내용/배치 검증은 실패다. 세션 종료/만료 정리 시 성공한 Job을 포함한 trace를 제거한다. 현재 소유·만료 검사와 기존 조회 접근 조건은 유지한다. DB 마이그레이션/새 API가 없는 호환 읽기 필드 확장이며 프론트는 null/추가 진단 필드를 허용해야 한다.
+
+내부 Agent SourceIn.metadata는 선택 버전의 출처 정보다. source의 문서 날짜·검증 여부·파일명 날짜 힌트와 segments의 chunk_id/evidence_status/document_date/extraction_method를 보존한다. 이전 버전의 source 날짜 스냅샷이 없으면 최신 source 날짜 대신 null을 전달한다. 구간 metadata는 선택 extraction_run의 값을 사용한다. 자료 날짜·근거 상태는 사실의 기준일·현재 인증·공개 승인 확정을 대신하지 않으며 공개 Fact/EvidenceRef 형식과 승인 정책은 유지한다.
+
+2026-10-08 사전 점검의 PPTX 구간 metadata에는 선택 원본과 해시·문구가 일치할 때 선택적 `layout: {slide, box_mm:[left,top,width,height]}`를 추가한다. mm 좌표는 제목/설명 배치 참고이며 회사의 사실 수치나 상태 확정 근거가 아니다. 같은 쪽의 공백 정규화 전체 문구가 유일한 최상위 비회전 텍스트 상자만 지원한다. 그룹/회전/표 안의 동일 문구도 중복 판정에 포함한다. 선택 버전의 경로·해시와 저장 범위를 검사하고 파일당 업로드 한도 및 ZIP5,000항목/해제100MiB 한도를 적용한다. 누락·변조·모호한 대응·미지원 배치에는 좌표를 추가하지 않고 기존 구간을 보존한다. 원문 locator/ID/버전/텍스트·DB는 변경하지 않으며 파일 경로와 미선택 문구는 모델에 전달하지 않는다. API1.9/데이터1.0/DBv11/template_v11 유지, 프론트 변경은 필요하지 않다.
 
 | kind | 성공한 Job의 result_ref | 이후 조회 |
 |---|---|---|
@@ -406,7 +549,7 @@ Job 조회는 `job_id`, `kind`, `status`, `progress`, `result_ref`, `error`, `cr
 
 진행·실패 시 `result_ref`는 null일 수 있다. layout_check/export에는 기존에 `type` 필드가 없으므로 새로 추가하지 않는다. `actual_pages`는 DOCX에서 null일 수 있다. Job의 `succeeded`는 작업 실행이 끝났다는 뜻이며 검증/배치 결과의 `status=failed`도 가능하다. `error`는 없으면 null, 있으면 `{code, message, retryable, details, request_id}`이며 비동기 Job의 `request_id`는 null일 수 있다.
 
-문서 v1.4(2026-09-28)는 최초 초안의 LangGraph 내부 연결·정리 결과를 C-06/E10에 반영한다. API 형식과 계약/스키마 버전은 유지한다. 초안 확인을 소비한 뒤 생성·검사·저장에 실패하면 `retryable=false`와 재점검 안내를 반환하므로 프론트는 기존 오류 필드를 표시해야 한다. 프론트 사본 갱신은 확인하지 않았다.
+문서 v1.4(2026-09-28)의 최초 초안 LangGraph 내부 연결·정리는 유지한다. 당시 실패 후 재점검 정책은 2026-10-07의 초안 실패 복구 정책으로 대체한다. API 형식과 계약/스키마 버전은 유지하며 프론트의 기존 점검 확인·초안 생성 화면에 연결한다.
 
 ### 비동기·중복 요청
 
@@ -417,7 +560,7 @@ Job 조회는 `job_id`, `kind`, `status`, `progress`, `result_ref`, `error`, `cr
 - 업로드의 같은 요청은 파일 순서·표시 파일명·내용과 서버가 결정한 kind/role/MIME이 같은 경우다. kind 생략 시 사진은 photo, 나머지는 other이며 role 생략은 evidence다. 생략값과 같은 유효값을 명시한 요청은 동일하게 취급한다. 기존 저장 해시와 응답의 메타정보를 함께 검사하므로 과거 업로드 키도 재사용할 수 있다.
 - 업로드 재전송은 이미 채워진 세션 파일 개수에 다시 더하지 않고 최초 202를 반환한다. 새로운 업로드는 저장 직전에 현재 개수를 검사하며, 동시에 들어온 동일 키 요청도 파일·읽기 Job을 한 번만 만든다. 파일/DB 저장 실패 시 이번 요청의 행과 파일을 정리하고 기존 파일·선택 상태를 보존한다. 프로세스 강제 종료나 파일 삭제 권한 오류까지 원자성을 보장하지 않으며 남은 파일은 세션 정리 대상이다.
 - 사전 점검/초안의 같은 입력 작업이 진행 중이면 새 키도 기존 Job을 가리키는 202로 접수·기록한다. 그 키의 재전송은 작업이 완료/실패한 뒤에도 최초 202를 반환한다. 최신 결과는 해당 Job GET으로 확인하며 재전송 자체가 작업을 재실행하지 않는다. 종료/만료·접근 제한은 기존 정책대로 우선 검사한다.
-- 실패한 작업을 새로 실행할 때는 새 키로 요청한다. 실제 AI가 이미 소비한 초안 확인은 재사용하지 않으며, 새 사전 점검 결과를 확인한 뒤 생성한다. 문서가 이미 있으면 `DOCUMENT_EXISTS`로 편집 화면을 안내한다.
+- 실패한 작업을 새로 실행할 때는 새 키로 요청한다. 재시도 가능한 초안 실패라면 현재 점검 내용을 다시 확인하고 초안만 요청한다. 서버는 기록된 실패·최신 점검·입력 버전·문서 부재를 확인한 뒤 소비된 확인을 복구한다. 문서가 이미 있으면 DOCUMENT_EXISTS로 편집 화면을 안내한다.
 - 같은 적용 요청의 재전송은 최초 결과를 돌려주고 문서 버전을 다시 늘리지 않는다.
 - 승인 요청은 같은 키·같은 본문이어도 저장된 승인이 현재 `active`일 때만 최초 성공 응답을 반환한다. 무효화·소실된 승인은 `409 APPROVAL_NOT_ACTIVE`이며 같은 키로 새 승인을 만들지 않는다. 같은 키·다른 본문은 기존 `409 IDEMPOTENCY_KEY_CONFLICT`를 유지한다.
 - Export 재사용 키는 승인 ID, 형식, 템플릿 버전, 렌더 설정, 자산 목록을 포함한다. 만료된 결과는 반환하지 않는다.
@@ -486,7 +629,7 @@ HTTP 오류의 `request_id`는 필수 문자열이고 `X-Request-Id` 헤더와 �
 
 | ID | 우선순위 | 현행 코드에서 확인한 내용 | 합의·반영할 것 |
 |---|---|---|---|
-| C-01 | P0 | Source.asset_ids와 이미지 GET | 기존 목록 형식은 계약 1.3 반영. 원본/추출문 미리보기 API는 미구현·별도 후속 |
+| C-01 | P0 | 이미지 GET·인용문 표시·추출문/근거 패널·직접 첨부 원본 다운로드 | 2026-10-12 1·2차 구현. [추출문](#source-text-api)·[원본 계약1.11](#source-original-api). 등록/공개자료 원본 배포 권한은 별도 후속 |
 | C-02 | P0 | Proposal의 rationale/candidates/applied_revision과 선택 적용 | 기존 후보·빈 값 형식은 계약 1.3 반영. 실제 AI 후보/프론트 비교 화면은 후속 |
 | C-03 | P0 | Job.progress와 7종 result_ref, Preflight/Proposal GET | 현행 필드·결과 조회 방식을 계약 1.3/OpenAPI에 반영. 백분율은 추가하지 않음 |
 | C-04 | P0 | SourceWarning와 Recommendations | 현행 위치·문자열 보완 목록을 계약 1.3에 반영. 새 고정 보완 분류는 별도 결정 |
@@ -502,10 +645,10 @@ HTTP 오류의 `request_id`는 필수 문자열이고 `X-Request-Id` 헤더와 �
 
 | ID | 우선순위 | 현재 상태 | 합의·구현할 것 |
 |---|---|---|---|
-| C-05 | P0 | 계약 1.6: DB v11에서 재점검 확인·영향 조회·선택 수정/유지 사유·최신 입력 연결·전체 재검증 API 구현. 다른 입력 복원 우회 차단 | 프론트 계약 사본/타입/화면 연결, 실제 모델의 변경 자료 의미 검증과 사용자 통합 확인. 자동 의미 수정안 생성은 별도 |
+| C-05 | P0 | 계약 1.6: DB v11에서 재점검 확인·영향 조회·선택 수정/유지 사유·최신 입력 연결·전체 재검증 API 구현. 다른 입력 복원 우회 차단 | 2026-10-06 기존 프론트 타입/화면 연결·가상 PDF/DOCX 완주 완료. 새 계약 사본 미생성. 실제 모델의 변경 자료 의미 검증·사용자 실자료 확인은 후속. 자동 의미 수정안 생성은 별도 |
 | C-06 | P0 | 서버 시작·최종 저장 가드 유지. 최초 초안의 LangGraph 대기·재개도 세션·입력 버전·현재 preflight·DB의 사용자 확인을 검사하고 소비한 확인의 중복 호출을 거부함. 세션 폴더 체크포인트 삭제 연결 검사 완료(task_agent.md 6.22절) | 실제 모델을 붙인 그래프·편집 단계·프로세스 장애 복구 확인. 별도 SQLite 커밋 사이 장애는 재점검 필요(plan.md 4.7절) |
 | C-08 | P1 | 계약 1.5에서 D-07 서버 확인 기록·최신 검증/버전 검사·승인/출력 차단 구현. 기존 정확성 blocker 유지 | 프론트 확인 UI·계약 사본 연결, 실제 Agent/화면 통합 검증은 후속. 시연 warning도 명시 확인하며 일반 문서의 정확성 기준은 완화하지 않음 |
-| C-09 | P1 | PDF 배치·미리보기·승인·Export·다운로드와 형식·버전 일치 검사 구현. DOCX 파일 생성과 PDF 기준 미리보기는 있으나 DOCX의 `actual_pages=null`·`overflow=not_checked`로 승인·Export·다운로드는 차단됨 | DOCX 배치 검증 방법과 승인 보장 범위를 별도 합의한 뒤 후속 구현. 기존 PDF 검사·미리보기·승인/출력 규격은 프론트와 맞추며 PDF 검사만으로 DOCX 검증 완료로 표시하지 않음 |
+| C-09 | P1 | 계약 1.9: PDF와 명시 설정한 LibreOffice 기반 DOCX 실제 검사·미리보기·승인·Export·다운로드. 실제 측정/필수 검사 증거 없는 DOCX는 차단 | 프론트 형식별 검사·승인 연결, LibreOffice 검사 기준/다른 열람 환경의 배치 차이 경고 표시. 실자료·실제 화면 품질 확인 후속 |
 | C-10 | P1 | 보완 메모가 근거·수명 정책에 등장하지만 전용 API/모델은 없음 | 지원 여부부터 결정. 지원하면 원자료 버전·근거 위치·수명 연결, 미지원이면 텍스트 파일 첨부로 안내 |
 | C-11 | P1 | 직접 삽입 ID는 클라이언트가 전달하고 서버가 중복 검사. 초안 ID는 Agent 결과에 포함. 페이지 구조 제안의 범위가 불명확함 | ID 발급 책임과 블록/페이지 구조 편집 범위. 빈 페이지·페이지 단독 요청 표현도 합의 후 모델·검사와 맞춤 |
 
@@ -517,7 +660,7 @@ C-05의 사용자 흐름은 [prd.md BR-05](prd.md)를 따른다. 현재 서버�
 - 파일 개수 초과도 현재 `413 FILE_TOO_LARGE`를 사용한다. 안내 문구는 개수 제한을 설명하므로 코드 구분 필요성을 확인한다. 추출 글자 제한은 `partial + TEXT_LIMIT` 경고이며 업로드 크기 초과와 다르다.
 - `INVALID_REQUEST`, `IDEMPOTENCY_KEY_CONFLICT`, `AGENT_OUTPUT_INVALID`, `INVALID_OPERATION`, `DOCUMENT_EXISTS`, `RESTORE_REFERENCE_INVALID`, `CANDIDATE_REQUIRED`, `UNSUPPORTED_PROPOSAL`, `NO_IMAGE_CANDIDATES` 등 현행 코드를 C-07에서 정리한다.
 - 적용/거절/오래된 수정안의 재적용은 현재 `PROPOSAL_STALE + details.status`로 구분한다. 같은 멱등 키·같은 본문의 재전송은 기존 성공 결과를 반환한다. 코드 통합 여부와 사용자 안내를 함께 결정한다.
-- `handoff/api_examples_v1.1.json`에는 계약용 가상 예시와 가짜 자료로 받은 실서버 응답이 함께 있다. 각 `_note`의 작성·검증 범위를 따른다. DB v9의 기존 예시는 형식 참고이며 전체를 재실행한 응답은 아니다. 등록 자료·검증·PDF 출력은 구현된 기능이지만 실제 회사 자료의 품질 검증을 뜻하지 않는다. 이동된 작업일지 절 번호만 이번에 정정하며 응답값·필드·상태는 바꾸지 않는다.
+- `docs/api_examples_v1.1.json`에는 계약용 가상 예시와 가짜 자료로 받은 실서버 응답이 함께 있다. 각 `_note`의 작성·검증 범위를 따른다. DB v9의 기존 예시는 형식 참고이며 전체를 재실행한 응답은 아니다. 등록 자료·검증·PDF 출력은 구현된 기능이지만 실제 회사 자료의 품질 검증을 뜻하지 않는다. 이동된 작업일지 절 번호만 이번에 정정하며 응답값·필드·상태는 바꾸지 않는다.
 - 프론트가 현재 적용 중인 파일 제한·만료 설정을 어느 응답에서 읽을지도 정한다. 제한값 자체는 plan.md D-01/D-02에서 관리한다.
 
 ### 7.4 반영 순서와 담당
@@ -542,15 +685,19 @@ C-05의 사용자 흐름은 [prd.md BR-05](prd.md)를 따른다. 현재 서버�
 | E05 편집 중 자료 추가 | 선택 변경 시 `input_revision` 증가; 현재 입력이 오래된 문서는 편집 차단 | 업로드와 자료 선택을 구분한다. 계약 1.6의 재점검 확인→영향 조회→선택 수정/유지 사유→적용→검증 Job 조회에 프론트를 연결한다. 화면 연결은 미완료다. |
 | E06 수정안 기준 버전 충돌 | `Proposal.status=stale`, `base_document_revision`, `base_input_revision`; `PROPOSAL_STALE` 등 | 오래된 제안의 적용을 막고 최신 문서에서 재요청하도록 안내한다. 현재 stale 기록을 실제 삭제로 해석하지 않는다. 늦은 결과·만료는 C-06, 오류 구분은 C-07에 연결한다. |
 | E07 필수 문제 미해결 | `Issue.severity/status/resolution`, Validation·LayoutCheck·Approval, 3절 승인 조건 | D-07 서버는 미확인/무효 경고 확인을 차단한다. 허용 경고 확인 후에도 필수 문제·배치·최종 동의를 별도로 검사한다. 프론트 연결은 후속이다. |
-| E08 출력 실패 | `Export.status/error`, 승인 스냅샷·형식·버전·재사용 규칙 | PDF는 유효한 승인·세션을 확인하고 출력만 재시도하는 경로까지 구현되어 있다. AI 초안을 다시 생성하지 않는다. 가짜 자료 실서버 검증 범위이며 DOCX 승인·Export·다운로드는 C-09 후속 작업이다. |
+| E08 출력 실패 | `Export.status/error`, 승인 스냅샷·형식·버전·재사용 규칙 | PDF는 유효한 승인·세션을 확인하고 출력만 재시도하는 경로까지 구현되어 있다. AI 초안을 다시 생성하지 않는다. 가상 자료로 확인한 서버 범위이며 실제 DOCX 검사 통과본도 같은 재사용 규칙을 따른다. 실자료·프론트 품질 검수는 후속이다. |
 | E09 세션 만료 예고 | `Session.expires_at`; 현재 무활동 120분과 생성 후 24시간 중 빠른 때 | 서버 만료 시각으로 남은 시간을 표시한다. 10분 전 알림·명시적 연장은 합의 대기다. 현재 연장 전용 API는 없고 GET·폴링은 활동으로 세지 않는다. |
 | E10 세션 종료·만료 | `Session.status`, `410 SESSION_EXPIRED`, 종료·정리 상태 | BE-09 내용 제거·폴더 삭제·재시도에 최초 초안의 LangGraph 체크포인트를 연결했다(C-06). 접근 차단과 `cleanup=done/pending`을 구분한다. 등록 원본과 내용 제거 후 감사용 메타 기록은 보존하며 편집 단계 그래프·실제 운영 검증은 후속이다. |
 
 **화면 표시에서 재사용할 정보**
 
-- 출처는 `EvidenceRef.source_id/source_version/segment_id/locator/excerpt`를 사용한다. 원자료 ID는 작성 결과의 `document_id`와 구분하고 PDF 쪽·PPTX 슬라이드·DOCX 문단/표·TXT 줄 등 실제 위치를 표시한다. 원문/추출문 조회 경로는 C-01에서 별도 합의한다.
+- 출처는 `EvidenceRef.source_id/source_version/segment_id/locator/excerpt`를 사용한다. 원자료 ID는 작성 결과의 `document_id`와 구분하고 PDF 쪽·PPTX 슬라이드·DOCX 문단/표·TXT 줄 등 실제 위치를 표시한다. 추출문 경로는 [C-01 계약1.10](#source-text-api), 원본 파일 조회/배포 권한은 별도 후속이다.
 - 근거 상태는 `Fact.status`와 관련 Issue로 보여준다. 현재 모델에는 수정안의 신뢰도 점수나 ‘신뢰도 높음’ 판정이 없다. 근거 있음이 외부 현실의 진위를 보증하지 않는다.
 - 페이지 카드는 기존 Document의 제목·본문 일부·사진 포함 여부로 구성할 수 있다. 수치 확인은 연결된 Fact·Issue·검사 결과를 사용하며 화면 보기 전환만으로 검증 완료 상태를 만들지 않는다.
 - A4 비율의 편집 화면과 선택 형식의 배치 검사·출력 미리보기(C-09)를 구분한다. PDF와 DOCX의 쪽수·배치 일치를 보장하지 않는다.
 
 명시적 세션 연장, 별도 AI 페이지 요약, 문장별 출처, 별도 결재자 절차의 채택 여부는 [plan.md 4.1절](plan.md)에서 정한다. 채택 전 새 필드·API를 추가하지 않는다. 연장 목적으로 입력 수정 API를 호출하거나 화면 전환마다 AI 요약을 생성하지 않는다. 이 화면 연결표를 처음 정리할 당시에는 기존 필드·상태값·API 형식과 계약/스키마 버전을 유지했다. 이후 승인 재전송 동작의 변경은 상단의 계약 1.2와 3~4절을 따른다. 확인 요청·응답이나 상태 연결을 변경할 때는 실제 모델·예시·계약 버전의 영향을 함께 검토한다. 프론트 계약 사본에는 최신 설명의 동기화가 필요하며 아직 확인하지 않았다.
+
+### 초안 작성 내부 복구 제한 (2026-10-07)
+
+실제 interactive/runtime 초안에서 사실 선별 누락·본문 수치 누락·쪽수 검사 실패에 한해 최대 1회 다시 작성한다. 자료 분석은 다시 호출하지 않으며 기존 실행 한도·수동 중단·근거 검사를 유지한다. 통신 오류나 입력 오류에는 이 자동 재작성을 적용하지 않는다. 두 작성이 모두 실패하면 실패 Job을 반환하며 명시적인 재확인과 새 Idempotency-Key로 초안만 다시 시도할 수 있다. 실패 조회·새로고침은 AI 호출을 만들지 않는다.

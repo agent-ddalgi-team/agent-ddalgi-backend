@@ -1,0 +1,2087 @@
+# 회사소개서 도우미 백엔드 작업 현황판
+
+> **서비스 목표**: 회사 자료로 만든 소개서를 안전하게 저장·편집하고, 검증·승인한 파일을 내려받게 한다.\
+> **현재 집중 영역**: [F-04 직접 편집·AI 수정안·사진] C-05 복귀 API · [F-08 실제 화면 연결·품질 평가]
+
+---
+
+## 1. Quick Status
+
+- **2026-10-13 폴더·README 관리 규칙:** 지침 반영·승인한 README 개편 반영 · 제품 상태 유지 · [기록](#backend-docs-rules-20261013).
+
+- **2026-10-13 README 축약:** 문서 정리 단위 완료/제품 상태 유지 · [상세·검증](#backend-readme-shortening-20261013).
+
+- **2026-10-12 F-05/BE-06 원문 오타 정정:** 입력·근거 기록·재검증 구현/격리 검증 완료. [결과와 제한](#source-typo-correction-20261012). 일반품질·Agent 상태 유지.
+
+<a id="source-typo-correction-20261012"></a>
+
+### 원문 오타 정정 기록·재검증 (2026-10-12)
+
+- **후속 PR/병합 요청:** 사용자가 백엔드 test·프론트 develop 대상 PR 생성과 병합을 명시적으로 요청했다. [백엔드 PR #48](https://github.com/agent-ddalgi-team/agent-ddalgi-backend/pull/48), [프론트 PR #29](https://github.com/agent-ddalgi-team/agent-ddalgi-frontend/pull/29)을 생성했다. 최신 프론트 develop(b5ccf53)의 화면 효과/다운로드 변경을 작업 브랜치에 충돌 없이 반영한 뒤 build·변경 파일 ESLint(오류0, 기존 경고1)·격리 원문 정정 브라우저 검사를 다시 통과했다(Temp/ddalgi-ai-ui-9mWIhd). 기능 상태는 유지하며 아래 로컬 커밋 한정 기록은 최초 구현 시점의 기록이다. 최종 병합 여부는 각 PR의 상태를 따른다. 기존 서버/.env/원본 DB는 변경하지 않는다.
+
+- **변경:** 새 브랜치 codex/source-typo-correction-20261012에서 BE-06/F-05 후속 구현. app/models.py·routers/issues.py·services/issues.py/ai_jobs.py/validation.py에 현재 VALUE_MISMATCH의 정정 전후 표기·사유·근거 기록과 검증 Job 연결을 추가했다. agent_bridge.py/agent_llm.py는 기록을 별도 참고 데이터로 전달하고 자동 승인·지침으로 취급하지 않는다. 프론트 publication.ts/usePublication.ts/DocumentWorkspace.tsx에 버튼·입력·기록·진행 상태를 연결했다. 기존 파일만 수정했다.
+- **보존/버전:** 원본·추출문·현재 문서 불변, 기존 issues 이력 JSON 사용·DBv11 유지. 문서/입력/점검/원문 지문이 바뀌면 재사용하지 않으며 정정 이력이 있는 문서는 전체 재검증한다. 기존 승인은 무효화하고 독립 blocker는 유지한다. 세션 종료/만료 시 사유·근거도 정리한다. 새 API/타입/예시는 계약1.13, 계획·PRD·프론트 README에 실제 범위를 반영했다.
+- **백엔드:** 임시 DB·가상 AI로 tests/test_be06.py tests/test_be09.py tests/test_orm_workflow.py 실행: **293 passed, 2 skipped, 1 warning (218.79초)**. 잘못된 원문/참조·다른 소유자·버전 충돌·중복 요청·검증 실패/재시도·자료/점검 변경·이력 삭제를 포함한다. 문서/예시 갱신 후 API 계약+LLM 정정 입력 선택 검사 **47 passed, 1314 deselected, 1 warning (11.37초)**. LLM 단위 검사는 캡처한 요청만 대조했고 유료 AI 판정을 시험하지 않았다. 건너뛴 환경/유료 실행은 성공으로 계산하지 않는다.
+- **프론트:** TypeScript/Vite build 통과(기존 큰 JS 청크 경고). 변경 코드 ESLint 오류0·기존 useEffect 의존성 경고1. 기존 scripts/check-ai-workflow.mjs에 --source-correction을 추가, 격리 임시 DB·실제 HTTP/Chrome에서 필수 입력→정정 저장→재검증→다른 blocker 유지→문서 불변→새로고침 후 기록을 확인했다. PASS·브라우저 오류0·유료 AI0. 캡처는 Temp/ddalgi-ai-ui-LmRYpT에서 확인했다. 최초 검수의 문서 상태 비교 시점과 캡처 스크롤을 보정했으며 최종 결과만 기록한다.
+- **완료/제한:** 이 기능 단위 구현·격리 검증 완료, BE-10/F-08 일반품질/AG-07 상태는 유지한다. 원하는 표기는 먼저 문서에 편집·저장해야 하며 현재는 직접 연결된 텍스트 블록의 값 불일치만 지원한다. 근거 URL 자동 수집과 실제 AI 판단 품질 평가는 미실행. 보호 대상 .env/DB/원자료 46파일의 기존 SHA-256과 대조해 변경0을 확인했다. 기존 사용자 서버는 재시작하지 않는다. 양쪽 저장소 로컬 커밋까지만 수행하며 push·test/develop 병합 없음. 다음은 새 백엔드 실행 후 사용자 사례 검수이며 원본 DB 변경을 수반하는 검수는 이번 범위에 포함하지 않는다.
+
+- **2026-10-12 거산 실자료 화면 검수:** 등록/자동 추출 표시·근거·편집 보존·PDF/DOCX5쪽 다운로드 확인, 화면 문제3건 수정·회귀 통과. [기록](#geosan-full-ui-20261012). BE-10/F-08 일반품질 진행중 유지.
+
+<a id="geosan-full-ui-20261012"></a>
+
+### 거산 실자료 전체 화면 검수와 자료 카드 보완 (2026-10-12, F-01/C-01·BE-10/F-08)
+
+- **격리/범위:** 사용자 요청에 따라 현재 codex/resume-quality-check-20261012에서 진행했다. 앞선 거산 검수 DB를 SQLite mode=ro backup으로 Temp/geosan-full-ui-fipcrltd/runs에 복제하고 원본 파일 복사본을 사용했다. 복제본의 세션 시각만 새 검수에 맞췄다. 서버는 명시 Settings·PYTHON_DOTENV_DISABLED=1·새 Agent 호출 차단으로 실행했다. 원본 .env·SQLite/WAL/SHM·회사 원문11파일의 시작/종료 SHA-256 동일. 실사용 DB·원문·환경 설정 변경, 새 저장소 파일/의존성/API/DB 스키마 변경 없음.
+- **실제 브라우저:** 격리 Vite/API/Chrome에서 등록4자료 모두 등록 발췌문과 원본 배포 차단을 확인했다. 기존 실제 AI 점검/초안의 S01 인용문·S02 고정 문서 근거를 열어 위치/본문/강조를 확인했다. 미저장 문구를 입력한 상태에서도 조회/닫기는 편집 문구와 서버 문서·검증·승인을 보존했고 GET만 발생했다. 재첨부3자료는 자동 추출문, SSQ는 글자 없음/텍스트본 보완 안내를 표시했다. 직접 첨부4원본의 실제 브라우저 다운로드 바이트가 검수용 원본과 일치했다.
+- **새 첨부 경로:** 별도 새 임시 세션에서 네 실제 파일을 브라우저 file input으로 다시 첨부했다. PPTX/AS9100/KSPC는 글자 추출 완료, SSQ는 partial/글자 없음이다. SSQ만 선택할 때 AI 점검 비활성·원본 다운로드 가능, 읽을 수 있는 자료를 추가 선택할 때 명시 AI 점검 활성화를 확인했다. 점검/초안/내용 검증 POST는0이며 이전 유료 점검78사실/5쪽 초안/내용 검증을 재사용했다. 새 회사 의미 분석·초안 생성 품질을 검증했다는 뜻은 아니다.
+- **출력:** 기존5쪽 문서에서 화면으로 PDF/DOCX 배치 검사를 새로 실행하고 형식별 동의·승인·파일 준비·다운로드까지 확인했다. PDF5쪽/72,575바이트, DOCX5쪽/2,398,320바이트, 두 형식 layout passed. DOCX 재다운로드 바이트 동일. 실제 출력 미리보기10쪽의 contact sheet와 근거/등록/자동/SSQ 화면을 직접 확인해 검사 범위 내 잘림·겹침을 발견하지 못했다. 문서는 사진0개이며 DOCX는 LibreOffice 기준으로 Word 엔진 검수는 아니다. 실자료 S03 미해결 문제0건이므로 문제별 근거 이동은 아래 가상 회귀 결과와 구분한다.
+- **발견·수정1:** SourceSelectionView.tsx가 점검 전 파일명·개수로 근거를 추측해 거산4첨부에 ‘96%·핵심 팩트 충족’을 표시했다. 해당 휴리스틱을 제거하고 현재 입력 버전의 실제 점검 결과만 표시한다. 미점검/조건 변경/옛 결과는 점검 필요·범주별 점검 전이며 퍼센트/진행률을 숨긴다. 실제 점검0%는 미점검과 구분한다.
+- **발견·수정2:** 글자/이미지 추출이 모두 없는 첨부는 프론트에서 선택 불가여서 선택을 요구하는 원본 다운로드에도 진입할 수 없었다. 서버가 original_download_available을 준 직접 첨부는 선택 가능하게 했다. 읽을 수 있는 근거 수 계산과 AI 시작 조건은 유지한다. SSQ 선택 해제/재선택·신규 첨부에서 재현 해소를 확인했다. 서버의 소유·선택·버전 검사를 우회하지 않는다.
+- **발견·수정3:** 다운로드 완료 안내가 가로 공간을 차지해 실제 인증서 파일명이 한 글자씩 세로로 눌렸다. SourceSelectionView.tsx의 파일 정보와 동작 영역을 나누고 AiWorkflowPanel.tsx의 원본 안내 폭/줄바꿈을 제한했다. 실제 SSQ의1440px/390px 캡처와 DOM 치수에서 파일명 폭 유지·카드/페이지 가로 넘침 없음 확인.
+- **회귀/빌드:** 기존 scripts/check-ai-workflow.mjs의 --publication --evidence에 미점검/오래된 점검 표시, 실제 빈 PDF 파싱→선택/다운로드→재선택·AI 차단 및 다운로드 후 데스크톱/모바일 배치 검사를 추가했다. 원본 PDF와 출력 PDF를 혼동하지 않도록 출력 파일 탐색도 명확히 했다. 최종 **33시나리오 묶음 PASS**, 격리 mock·실제HTTP/Chrome/PDF4쪽25,416바이트, 오류0·종료0(Temp/ddalgi-ai-ui-yqPIdy). 이전 실행과 중복 합산하지 않는다. TypeScript/Vite build·수정 TSX2개/검사 스크립트 ESLint·Node 구문/diff 검사 통과. JS521.50kB 청크 경고 유지. 백엔드 제품 변경이 없어 전체 pytest는 반복하지 않았다.
+- **검수 도구 보정/한계:** 처음 임시 다운로드 폴더 조회가 너무 빨랐고 Chrome 다운로드 경로의 구분자를 Windows 형식으로 고친 뒤 실제 파일을 확인했다. 새 작업 진입은 초기 시연 체크를 켠 상태에서 서버가 정상 거부해 일반 작업으로 선택 후 재검수했다. 검사 도구/설정 단계 실패와 제품3건을 구분한다. 최종 실자료7검수 묶음·브라우저 런타임 오류0, 새 유료 AI0. 보고서/캡처/다운로드는 위 Temp 폴더에 보존했다.
+- **상태/다음:** 이번 실자료 화면 수용 검수·3건 수정 완료. BE-10/F-08 일반품질 및 Agent 상태는 유지한다. 프론트4파일은 로컬 커밋까지만, 백엔드는 기존 기록3파일만 로컬 커밋한다. push/PR/test 병합 없음. 다음은 사용자/팀 검토이며 새 요구나 실제 재현 없이 동일 합성 시험을 계속 추가하지 않는다. OCR·등록 원본 배포는 별도 범위다.
+
+- **2026-10-12 C-01 생성 방식 표시:** 등록 발췌문/자동 추출문/미확인 표시 구현·검증 완료. [기록](#source-text-origin-20261012).
+
+- **2026-10-12 C-01 1차 구현:** 추출문 목록/근거 GET과 S01/S02/S03 패널 연결 완료. 계약1.10·DBv11 유지. 새 API25건·계약 포함70건·격리 브라우저30묶음 통과. 원본 파일 다운로드는 후속. [구현·검수 기록](#source-text-implementation-20261012).
+
+
+<a id="source-text-origin-20261012"></a>
+
+### 등록 발췌문·자동 추출문 구분 표시 (2026-10-12, F-01/C-01)
+
+- **변경:** 사용자 요청에 따라 app/models.py의 SourceTextOut에 text_origin(registered_excerpt/automatic_extraction/unknown, 기본 unknown)을 추가했다. app/services/sources.py는 현재 선택·점검·저장 문서가 고정한 run의 method를 읽어 registered_bundle→등록 발췌문, parser→자동 추출문, 나머지→미확인으로 반환한다. scope/최신 current_run_id/본문 추측을 사용하지 않는다. 저장된 근거·본문·위치·원본 다운로드 권한/동작은 유지하며 DB 마이그레이션·과거 이력 보충·AI 호출은 없다.
+- **화면:** 프론트 src/api/sources.ts의 타입/표시 helper와 AiWorkflowPanel.tsx 공통 패널을 수정했다. ‘저장된 내용 보기’/‘근거 내용 확인’으로 진입해 생성 방식과 설명을 표시한다. 등록 발췌문은 표 결합/이미지 전사 가능성과 재첨부 자동 추출과의 차이, 자동 추출문은 이미지 글자/서식 누락 가능성을 설명한다. 누락·unknown·미래 값은 ‘생성 방식 미확인’이며 로딩/오류에서 이전 분류를 남기지 않는다. 등록 표시가 모든 구간의 수동 작성이나 내용 검증 완료를 뜻하지 않는다.
+- **계약/문서:** 계약1.12·문서v1.47, 합성 JSON 응답/매핑 예시, 계획/요구사항/프론트 README를 함께 갱신했다. 계약 원본은 docs/contracts.md의 source-text-origin 절이며 프론트 타입/안내도 실제 갱신했다. 새 파일·계약 사본은 만들지 않았다.
+- **서버 검증:** tests/test_orm_workflow.py와 tests/test_api_contract.py에서 source_text/source_original/openapi 선택 실행 **51 passed, 123 deselected, 1 warning (18.94초)**. 신규8사례는 session/registered scope와 parser/registered_bundle/미래/빈 method 조합, 목록/이어읽기/단건 일관성을 검사한다. 기존 점검 고정 run 회귀를 확장해 registered_bundle 뒤 parser로 재추출되어도 이전 근거 응답 전체가 동일함을 확인했다. 문서 문맥의 분류도 확인했다. 계약/예시 갱신 후 test_api_contract.py 전체 **46 passed, 1 warning (8.59초)**로 enum/기본 unknown·예시 호환을 확인했다. 중복 검사를 합산하지 않는다.
+- **실자료 확인:** 앞선 Temp/geosan-evidence-audit-e1blzw3q 검수 DB에서 실제 응답을 조회했다. 등록4자료는 registered_excerpt, 재첨부 후 글자를 읽은3자료는 automatic_extraction이며 SSQ 재첨부1자료의422/글자 없음은 유지된다. 원본 실사용 DB/.env·실회사 파일에는 쓰지 않았고 유료 AI0회다.
+- **화면/빌드:** AI_CHECK_BACKEND=C:/final/backend, AI_CHECK_LIVE=0, node scripts/check-ai-workflow.mjs --publication --evidence의 **32개 시나리오 묶음 통과**. 실제 자동 추출 응답, 등록/unknown/필드 누락/미래 값의 CDP 표시 fixture, 본문 불변·GET만 사용·오류 시 분류 제거와 기존 근거/미저장 편집/원본 다운로드/승인 흐름을 검사했다. PDF4쪽/25,416바이트 출력도 유지. 결과 Temp/ddalgi-ai-ui-V4hfDh의 자동/등록 캡처를 직접 확인했다. 등록/미확인 브라우저 분류는 합성 응답이며 실제 서버 분류는 위 단위/실자료 API 확인으로 구분한다. TypeScript/Vite·변경 TS/TSX ESLint 통과, 기존 JS 청크522.11kB 경고 유지.
+- **상태/한계:** 생성 방식 표시 보완 구현·검증 완료, BE-10/F-08 일반품질 진행중 유지·Agent 상태 불변. 전체 pytest/실회사 유료 생성/DOCX 화면은 반복하지 않았다. `.env`/실사용 DB/원자료/프론트 미추적 .claude/ 보호. 현재 codex/resume-quality-check-20261012에서 변경 파일만 로컬 커밋하며 push·PR·test 병합 없음. 다음은 팀 사용 검토이며 OCR·등록 원본 배포는 기존 미정 범위를 유지한다.
+
+<a id="geosan-evidence-acceptance-20261012"></a>
+
+### 거산 실자료 근거·원본 대조 (2026-10-12, F-01/C-01·BE-10/F-08)
+
+- **범위:** 원문·근거 조회/직접 첨부 원본 다운로드 후속 검수. 기존 거산4자료와 앞선 격리 점검/문서만 사용하고 유료 AI·초안 재생성·실사용 DB 쓰기·.env 수정·원격 push·test 병합은 하지 않았다. 제품 코드/계약/DB 스키마/Agent 상태 변경 없음.
+- **검수 환경:** 기존 Temp/geosan-resume-20261012-ndg_rmu3의 DB를 mode=ro SQLite backup으로 새 Temp/geosan-evidence-audit-e1blzw3q/runs/app.sqlite3에 복사했다. 만료 예정 세션은 이 폐기 가능한 복사본에서만 TTL을 조정한 뒤 조회 전후 불변을 확인했다. 실제 원본4개는 private_runs/demo_preview_20260929_131826/registered에서 읽어 해당 임시 registered 폴더에 복사했으며 저장 SHA-256과4/4 일치했다. 실사용 .env·SQLite/WAL/SHM·등록 원본 보호 해시는 전후 동일했다.
+- **이전 기록 정정:** 앞선 ‘새 작업 브랜치와 기존 거산 자료의 품질 표본’의 원본 파일 복사 설명은 실제 파일 확인과 달랐다. 당시 임시 스크립트가 상대 stored_path를 DB 폴더 대신 저장소 루트에 붙이고 누락을 건너뛰어, 추출문/점검/문서는 있었지만 원본4개 복사본은 없었다. 앞선 생성·내용/출력 검사 결과와 이번 원본 대조 결과를 구분한다. 이번에는 실제 보관 파일 존재·해시를 모두 확인했으며 원본 DB의 경로를 수정하지 않았다.
+- **실제 API 대조:** FastAPI TestClient/현재 코드에서 등록4자료의 전체 추출문106구간을 paging하여 DB의 segment_id/본문/locator와 일치 확인. 점검 사실/후보의108개 참조, 저장 문서의132개 참조 모두200, 각 인용문이 해당 구간에 실제 포함되고 locator 일치. 등록 원본4개 다운로드는 정책대로404·available=false. 조회 전후 sessions/documents/document_revisions/preflights/confirmations/jobs 전체 행 동일, 정상 GET의 TTL/승인/문서 변경 없음.
+- **원본 위치 대조:** 같은 쪽/슬라이드의 정규화 텍스트 직접 일치64구간(공백·대소문자 정규화), 같은 PPT 표 행의 셀을 기존 구분자로 결합해26구간 일치. 남은 PDF6구간은 인증서4쪽 렌더를 직접 확인했고 PPT10구간은 해당 슬라이드의 embedded 이미지8개를 직접 확인했다. 날짜 배치·표 셀 결합·이미지 전사 차이로 단순 문자열 대조가 실패했던 경우이며 잘못된 쪽/슬라이드 연결은 발견하지 않았다. 인증/사업 정보의 현재 효력을 외부에서 독립 검증했다는 의미는 아니다.
+- **재첨부/다운로드:** 별도 임시 세션에 동일한 실제4파일을 API로 업로드·선택하고 원본 GET을 호출했다. 4/4 원본 바이트 일치. PPTX/AS9100/KSPC는 텍스트 추출 complete, SSQ는 이미지형 PDF로 partial/text_available=false이지만 원본 다운로드200. 새 OCR·외부 문서 전송·등록 원본 공개를 추가하지 않았다.
+- **도구/제한:** PDF 스킬의 Poppler로 렌더링하고 직접 화면 확인했다. bundled Poppler의 Bulgarian/Greek/Thai nameToUnicode 경로 경고가 있었지만 PNG가 생성되어 필요한 한글/영문을 직접 읽었다. PPT는 XML 표/슬라이드 이미지 연결을 대조했으며 PowerPoint 전체 재렌더는 하지 않았다. 기존 실제 회사 브라우저 UI/유료 LLM 품질/최종 승인·출력은 이번에 반복하지 않았다. 앞선 mock 브라우저31묶음 통과와 이번 실자료 API/원본 검수를 혼동하지 않는다. 새 제품 코드가 없어 전체 회귀/빌드는 반복하지 않는다.
+- **산출물/상태:** 임시 report.json에 참조 수·원본/첨부 결과·106구간별 위치 검사와 한계를 보존했다. 저장소에는 기존 작업/계획/README만 갱신한다. C-01 거산4자료 표본 대조 완료, BE-10/F-08 일반품질은 진행중 유지. 다음은 등록 발췌문과 새 파일 자동 추출문의 차이를 사용자가 구분할 수 있는 표시 검토이며, SSQ 등의 자동 OCR 도입과 등록 원본 배포 권한은 별도 범위다.
+
+<a id="source-original-implementation-20261012"></a>
+
+### 직접 첨부 원본 다운로드 구현 (2026-10-12, F-01/C-01 2차)
+
+- **범위/결정:** 사용자의 ‘가장 이상적인 작업’ 위임에 따라 1차 추출문 후속으로 현재 세션에 직접 올린 선택 evidence 첨부만 원본 다운로드를 제공한다. 등록 자료와 DART 공개자료 가져오기는 제외한다. 현재 codex/resume-quality-check-20261012에서 기존 파일만 수정하며 .env·실사용 DB·실회사 원문·프론트 미추적 .claude/는 보존한다. DBv11·프롬프트·Agent 상태를 바꾸지 않는다.
+- **백엔드:** app/models.py 공통 조회 문맥/SourceOriginalQuery와 original_download_available 안내값, app/routers/sources.py의 GET sources/{source_id}/original, app/services/sources.py의 공통 선택/버전/저장 근거 검사와 파일 검증을 추가했다. 파일은 해당 세션 폴더 안인지, 링크/Windows 재분석 지점이 아닌지, 크기와 SHA-256이 버전과 일치하는지 확인하고 읽은 바이트 그대로 응답한다. 누락·변조·경로 이탈은 410이며 최신 파일로 대체하지 않는다. 안전한 파일명/형식별 MIME/attachment/nosniff/no-store, CORS Content-Disposition을 적용했다. 글자 추출 실패/이미지 자료도 selection 문맥에서는 원본 다운로드가 가능하다.
+- **DART 구분:** 기존 DART도 store를 공유해 provenance=upload로 기록되는 것을 확인했다. 앞으로 public_import로 저장하고, 과거 자료는 현재·기존 추출 실행의 PUBLIC_OPEN_DATA 기록으로 제외한다. 실제 DB를 일괄 수정하거나 원본 보관 정책을 바꾸지 않는다. 기존 DART 가져오기/중복 방지는 tests/test_be02.py의 legacy/ORM 두 방식에서 확인했다.
+- **프론트:** src/api/sources.ts에 Blob 다운로드와 JSON 오류 해석, AiWorkflowPanel.tsx에 취소 가능한 공통 원본 버튼과 근거 문맥/anchor/버전 연결, SourceSelectionView.tsx에 자료 카드 버튼을 추가했다. 패널의 404/409/410에서는 이전 본문을 비우며 다운로드는 문서 저장/검증/승인/TTL/AI를 바꾸지 않는다. 닫기·문맥/세션 변경 후 늦은 응답은 버리고 Blob URL을 해제한다. 내려받은 파일은 기기에 남는다고 안내한다.
+- **계약/문서:** 계약1.11·문서v1.46, 기존 JSON 예시와 README/plan/prd를 갱신했다. SourceOut/SourceTextOut의 original_download_available은 UI 안내이며 권한이나 파일 존재 보증은 아니다. 프론트 타입/README는 실제 갱신했으며 계약 사본 신규 생성은 없다.
+- **백엔드 검증:** PYTHON_DOTENV_DISABLED=1, 임시 DB·가상 자료·mock Agent 사용. tests/test_orm_workflow.py + tests/test_be03.py + tests/test_api_contract.py **184 passed, 1 warning (72.63초)**. 공통 조회 리팩터링·업로드/파서/문서 이력·계약 회귀 포함. DART 구분 보완 후 workflow + BE02에서 source_original/source_text/dart_import_real 선택 실행 **44 passed, 150 deselected, 1 warning (15.61초)**. 원본 바이트/한국어·제어문자 파일명, 소유/세션/선택/역할/등록/공개자료/만료/버전, 실제 TXT/MD/PDF/DOCX/PPTX, 실패·이미지·읽기 중 상태, 파일 누락·변조·크기·상위 이동·절대/타 세션 경로를 검사했다. 재분석 지점·읽기 직전 삭제는 monkeypatch로 재현했으며 실제 OS 링크 생성 시험이라고 주장하지 않는다.
+- **화면 검증:** AI_CHECK_BACKEND=C:/final/backend, AI_CHECK_LIVE=0, node scripts/check-ai-workflow.mjs --publication --evidence. 임시 ORM DB·실제 HTTP/Chrome **31개 시나리오 묶음 통과**, PDF4쪽/25,416바이트 출력·승인·다운로드도 유지. 서버 원본과 내려받은 파일 바이트 일치, 점검/저장 문서 근거의 원본 요청 문맥, 미저장 편집·승인 보존, Blob 오류 409/410/503와 닫기 취소 확인. 오류/대기 응답은 CDP 합성, 실제 권한 판정은 서버 테스트다. 최종 화면 산출물은 사용자 Temp/ddalgi-ai-ui-HYKsOM이며 근거 패널 캡처도 직접 확인했다. 후속 DART metadata 보완은 서버 선택 회귀로 재확인했다.
+- **빌드/한계:** TypeScript/Vite 및 변경 TS/TSX ESLint 통과. JS 청크520.91kB 경고는 남는다. 전체 pytest·실회사/유료 LLM 품질·DOCX 화면은 이번에 반복하지 않았다. 원본 Office/PDF 인라인 뷰어·등록 원본 배포·OCR은 미구현이다. 기능은 로컬 커밋하며 push/PR/test 병합은 하지 않는다.
+- **상태/다음:** F-01/C-01 직접 첨부 원본 다운로드 구현·검증 완료. BE-01/03 기존 완료, BE-10/F-08 일반 품질 진행중 유지. 다음은 실제 사용자 자료로 추출 위치/인용·원본을 대조하는 수용 검수다. 등록 원본 공개는 별도 권한 정책 결정 후 검토한다.
+
+<a id="source-text-implementation-20261012"></a>
+
+### C-01 1차 추출문 조회 API·근거 확인 화면 (2026-10-12)
+
+- **사용자 범위/작업:** 설계 후속 구현 요청에 따라 현재 codex/resume-quality-check-20261012에서 구현했다. 백엔드와 프론트의 기존 파일만 확장하며 새 저장소 파일·DB 마이그레이션·.env 수정·실회사 원문/DB 변경·과금 AI 호출은 없다. 프론트는 커밋까지만 하며 두 저장소 모두 push/PR/병합하지 않는다.
+- **백엔드:** app/models.py의 SourceTextQuery/Out/Segment, app/routers/sources.py의 목록/단건 GET, app/services/sources.py의 선택·근거·문서/입력·버전/run 검사와 bounded text 조회를 추가했다. 현재 선택에 허용된 자료만 조회하고 당시 run이 없으면 최신 본문으로 대체하지 않는다. 서버 사실/상충 후보 또는 문서 블록의 실제 참조와 대조하며 임의 content 안의 evidence_refs는 인정하지 않는다. 긴 구간의 Unicode/NUL 보존·이어읽기·문맥 그룹·경고를 제공한다. app/__init__.py에서 새 조회의 성공/오류 모두 no-store를 적용한다. 세션 첨부는 현재 세션 만료가 기준이며 업로드 당시의 과거 만료 스냅샷으로 활성 세션을 오차단하지 않는다.
+- **프론트:** src/api/sources.ts에 조회 타입/호출/한국어 위치 라벨, AiWorkflowPanel.tsx에 기존 Evidence 확장·공통 옆 패널·취소/요청 키·오류/긴 구간 처리를 추가했다. SourceSelectionView.tsx의 자료 카드/점검 문맥, DocumentWorkspace.tsx의 저장 문서 revision과 S03 사실/상충 후보·블록/자료 대안을 연결했다. 인용문과 추출문을 분리하고 전체 대상 구간의 단일 정확 일치만 강조한다. React 텍스트 렌더·포털·Escape/키보드 포커스 복귀를 사용하며, 본문 영구 저장·원본 파일 열기·자동 AI/문서 적용은 하지 않는다. 미저장 편집을 유지한다.
+- **계약/요구사항:** docs/contracts.md 계약1.10·문서v1.45, docs/api_examples_v1.1.json의 합성 응답 예시, docs/prd.md/plan.md/README 경로를 갱신했다. 기존 Source/EvidenceRef·쓰기 API·DBv11은 유지한다. 프론트의 타입/호출/README는 실제 갱신했으며 계약 사본 파일을 새로 만들었다고 주장하지 않는다.
+- **백엔드 확인:** tests/test_orm_workflow.py의 새 API 회귀 **25 passed, 78 deselected, 1 warning (9.92초)**. 선택/소유/인증/역할/등록 허가/demo/삭제/purge/세션 만료, stale 입력/문서·위조 참조·재추출 고정 run·누락 이력·문서의 옛 입력·상충 후보·추출 상태·TXT/MD/PDF/DOCX/PPTX 실제 파서 위치·긴 구간/문맥/Unicode/NUL·총 응답 상한·TTL 비변경을 확인했다. 전 범위 관련 실행은 ORM workflow/database·BE03·BE04·API contract에서 279 passed와 OpenAPI 경로 수 기대값 실패1건(기존34→신규36)이 나왔고, 기대값과 신규 응답 모델 검사를 보완한 뒤 **추출문/계약 선택 실행70 passed, 78 deselected, 1 warning (16.99초)**를 확인했다. 마지막 TTL 회귀는 위25건에 포함된다. 최초 신규 검사2건은 등록 테스트 자료의 DB 제약과 기존400 형식 오류 기대값을 맞춘 후 해소했다.
+- **화면 확인:** `AI_CHECK_BACKEND=C:/final/backend`, `AI_CHECK_LIVE=0`, `node scripts/check-ai-workflow.mjs --publication --evidence` 실행. 임시 ORM DB·mock Agent·실제 HTTP/Chrome로 **30개 시나리오 묶음 통과**, 기존 PDF4쪽/25,416바이트 승인·다운로드도 통과. 자료 카드의 점검 전 조회, S01 저장 인용문, S02 미저장 편집/문서/검사/승인 보존, S03 사실과 블록/자료 대안 직접 조회, 409/410 본문 제거·일시 오류 GET 재시도·닫은 요청 취소/늦은 응답을 포함한다. API 판정 오류는 실제 서버 회귀로, 화면 오류 표시/일부 S03 issue 연결은 CDP 합성 응답으로 검사했음을 구분한다. 최종 결과는 사용자 Temp/ddalgi-ai-ui-Df2DIR, 초기 패널 캡처는 Temp/ddalgi-ai-ui-Cgwbn7이며 목록·문서 근거 화면을 직접 열어 배치를 확인했다.
+- **빌드/한계:** 프론트 TypeScript/Vite·수정 TS/TSX ESLint 통과. 추가 상대 링크·앵커27개와 공유 F-01 연결·diff 형식을 확인했다. 기존 JS 청크500kB 경고가 남는다. 전체 pytest/실회사·실제 LLM 품질·DOCX 출력은 이번에 반복하지 않았다. 조회 기능 자체는 AI를 호출하지 않으며 기존 세션 보관/승인 정책을 바꾸지 않는다. 원본 파일 다운로드와 등록 원본 전체 배포 권한은 2차 후속이다.
+- **완료/다음:** C-01 1차 API·화면 구현/검증 완료. BE-01/03 기존 완료·BE-10/F-08 일반품질 진행중과 Agent 상태는 유지한다. 현재 파일만 저장소별 로컬 커밋한다. 다음은 사용자/팀의 실제 사용 검토이며 원본 다운로드가 필요하면 권한 정책부터 확정한다.
+
+- **2026-10-12 C-01 원문·근거 확인:** 현재 인용문 표시/문제→사실 연결까지 구현 확인. 추출문·원본 조회는 미구현이며 후속 API/화면·권한·버전 설계안을 작성했다. 기존 기능 회귀19건 통과. BE-01/03 기존 완료·BE-10/F-08 진행중 유지. [결과와 다음 작업](#source-evidence-audit-20261012).
+
+<a id="source-evidence-audit-20261012"></a>
+
+### 원문·근거 확인 현황 대조와 설계 (2026-10-12, F-01/C-01)
+
+- **요청/범위:** 원문·근거 기능이 어디까지 있는지 확인하고 부족한 부분을 설계했다. 현재 codex/resume-quality-check-20261012에서 기존 문서만 수정한다. 신규 파일·제품 구현·DB 마이그레이션·원격 push/PR/병합은 하지 않는다. 프론트는 기존 README의 연결 안내만 별도 로컬 커밋한다.
+- **구현 확인:** SourceOut/EvidenceRef, 자료·이미지 라우터, 선택·추출 이력, 실제 프론트 진입점을 대조했다. 인용문/출처/locator와 S01 사실·상충 후보, S02 블록, S03 문제 관련 사실 표시는 있다. 저장 추출문/원본 파일 조회 라우트·프론트 호출은 없다. 출력 미리보기나 사용하지 않는 시안의 ‘원문’ 표기를 원본 파일 확인 완료로 해석하지 않는다.
+- **설계/파일:** plan.md 4.100절에 1차 구간 목록/근거 문맥 조회와 2차 원본 다운로드를 분리했다. 선택·점검·문서 문맥의 버전 고정, 제외/삭제/만료/재추출, 긴 구간·DOCX 순서 한계, 미저장 편집/늦은 응답, 권한과 검수 기준을 명시했다. contracts.md C-01에는 미구현 설계안 링크만 추가하며 계약1.9·현재 API/DB는 유지한다. 프론트 README는 실제 연결 파일과 화면별 완료 기준을 안내한다.
+- **실행 검증:** 기존 test_be03의 TXT/PDF/DOCX/PPTX locator·이미지 접근, test_be04의 위조 segment 거부·초안 근거 보존·타 소유자 거부, test_orm_workflow의 선택 시 run 고정/재추출·삭제 정리, test_orm_database의 source/version/run 결합 검사를 선택 실행했다. 매개변수 사례 포함 **19 passed, 1 warning (7.13초)**. PYTHON_DOTENV_DISABLED=1, 임시 DB/합성 자료, 유료 AI 0회. 최초 샌드박스 실행은 5건 후 임시 디렉터리 권한 때문에 setup 오류3건으로 중단되어 권한 승인 후 동일 목록을 재실행했다.
+- **문서 검증/한계:** 추가된 상대 링크·앵커26개, 공유 F-01 행의 기록 연결, 양쪽 diff 형식 통과. 라우터 AST 대조에서도 제안 segments/original GET이 없음을 확인했다. 기존 기능의 회귀 결과이며 새 조회 API/브라우저 화면 통과가 아니다. 프론트 제품 코드 변경이 없어 빌드·화면 시험은 반복하지 않는다. .env/실사용 DB/실회사 원문·프론트 미추적 .claude/를 편집하지 않는다.
+- **남은 일/다음 작업:** [설계안](plan.md#source-evidence-viewer-design-20261012)의 1차 요청/응답/오류를 계약으로 확정하고 추출문 GET·공통 패널부터 구현·검증한다. 등록 원본 전체 배포 권한은 별도 결정 전 제공하지 않는다. C-01은 설계안 작성/구현 대기, 기존 BE-01/03 완료와 BE-10/F-08 진행중 및 Agent 상태는 유지한다.
+
+- **2026-10-12 구조·경로 정리 PR:** 사용자 요청으로 codex/resume-quality-check-20261012를 push하고 [백엔드 PR #46](https://github.com/agent-ddalgi-team/agent-ddalgi-backend/pull/46)을 test 대상으로 생성했다. 문서·실행 자원 이동, 코드/링크 수정, 공유 경로 지침과 실제 검증 결과를 포함한다. PR 생성 전 origin/test=d4b9725 기준 분기 없음/작업9커밋·diff 형식 확인. 이 기록을 같은 PR 브랜치에 후속 커밋한다. 병합하지 않았으며 프론트는 별도 저장소로 이번 PR에 포함하지 않는다. BE-10/F-08 및 다른 담당 상태 유지.
+
+- **2026-10-12 공유 MD 경로 기준:** 사용자 의도를 재확인해 AGENTS/양쪽 README에 저장소 상대경로·읽을 문서·옛 위치 사본 금지를 명시했다. 앞선 로컬 autostash 설정/팀원별 설정 안내는 철회한다. test 병합 없음. [기록](#shared-path-guidance-20261012).
+
+<a id="shared-path-guidance-20261012"></a>
+
+### pull로 함께 받는 MD 경로 기준 (2026-10-12)
+
+- 사용자는 Git의 충돌 자동 해결이 아니라 공유 MD에 실제 경로를 명시해 팀원이 pull로 같은 기준을 받기를 원한다고 정정했다. 앞선 모의 Git 검사 기록은 과거 수행 사실로 보존하되 autostash 설치를 현재 사용 절차로 유지하지 않는다. 우리가 직전 턴에 추가한 두 저장소 로컬 pull.autoStash=true를 해제하고 전역/기존 merge·rebase·upstream 설정은 변경하지 않는다.
+- backend AGENTS.md 1절에 공통 경로 표와 저장소 루트/MD 상대경로의 차이, 작업 전 README 확인, 옛 루트 문서/자원 사본 생성 금지를 추가했다. 기존 역할별 필독 문서·새 파일 확인·책임·검증 규칙은 보존하고 CLAUDE/Copilot 포인터는 그대로 유지했다. README의 팀원별 Git 설정 안내는 경로 기준 공유 방식으로 교체했다.
+- frontend README의 기존 문서 찾아가기 아래에 docs/src/public/scripts/fixtures의 기준 위치·옛 AI AGENT 사본 금지·별도 백엔드 저장소를 각각 갱신해야 함을 명시했다. 기존 .agents/rules/work_history.md의 docs 위치와 일치하며 .claude/ 등 미추적 파일은 변경하지 않았다. 새 저장소 파일이나 새 작업일지를 만들지 않았다.
+- 경로 안내는 PC별 C:/final 같은 절대 경로를 요구하지 않는다. 실제 파일 이동·코드 경로 수정은 기존 정리 커밋에 있고 이번은 안내 보완이다. MD가 런타임 설정/파일 이동/충돌 해결을 실행하거나 모든 AI가 모든 문서를 자동 읽는다고 주장하지 않는다. .env/DB의 개인 경로는 기존 설정을 유지한다.
+- 백엔드 AGENTS/README/공통task와 프론트 README의 상대 파일 링크375개, 새 경로 기준 앵커·Claude/Copilot의 AGENTS 연결·프론트 기준 폴더 존재·양쪽 Git diff 형식이 통과했다. 두 로컬 pull.autoStash 항목 제거도 확인했다. 실행 코드 변경이 없어 제품 회귀·실제 AI·Git 모의 검사는 반복하지 않는다. 현재 codex/resume-quality-check-20261012에서 자기 변경만 저장소별 로컬 커밋하며 원격 push/test 병합 없음. BE-10/F-08 및 다른 담당 상태는 유지한다.
+
+- **이전 해석의 팀 pull 자동 보관 기록(현재 설정 철회):** 임시 저장소14상황 검수 기록은 아래에 보존한다. 현재 사용 절차는 위 공유 MD 경로 기준을 따른다.
+
+<a id="team-pull-automation-20261012"></a>
+
+### 구조 이동 후 팀원 pull 자동 처리 검수 (2026-10-12)
+
+- 사용자 요청은 팀원의 옛 경로 수정이 구조 변경과 충돌하지 않게 자동 처리하는 것이다. Git의 이동 감지와 autostash를 재사용하며 임의 덮어쓰기·ours/theirs 강제 선택·사용자 Git 훅 실행은 추가하지 않았다. 같은 내용의 실제 충돌을 없앨 수 있다고 보장하지 않는다.
+- 현재 백엔드/프론트의 .git/config에 pull.autoStash=true를 각각 설정하고 --show-origin으로 확인했다. 전역 설정·merge/rebase/ff 정책·upstream·브랜치·원격은 변경하지 않았다. 이 설정은 Git에 추적되지 않아 팀원에게 pull로 전파되지 않는다. 기존 README에 팀원별 각 저장소1회 설정·일회성 --autostash·자동 처리 범위·충돌/stash 확인법을 추가했다. 미추적 .claude/와 ignored .env/DB는 자동 보관 대상으로 오인하지 않는다.
+- Git2.55.0.windows.2, backend test d4b9725→작업본746d3dc, frontend develop e590f6f→작업본dc08291을 시스템 임시 bare 원격/복제본으로 재현했다. 실제 원격 접근·push·test/develop 병합은 없다. 양쪽 이동 파일은 각12개이며 모든 이동 파일의 공통 본문에 서로 다른 팀원 수정 표식을 넣었다.
+- 각 저장소7상황/총14상황 확인: 수정 없는 pull, 옛 경로의 커밋된 수정, 미커밋 수정의 기본 pull 중단/원본 바이트 보존, 명시 --autostash, pull.autoStash 설정 후 일반 pull, 같은 줄의 커밋 충돌 보존, 같은 줄의 autostash 복원 충돌/보관본 유지. 정상 사례에서는 옛 경로가 없어지고 새 경로에 팀원 수정 표식이 모두 남으며 unmerged 항목0이다. 실제 같은 줄 충돌은 markers/unmerged 항목을 남겼고 autostash 복원 충돌에서는 stash도 남았다. 성공 종료 코드만 검사하지 않았다.
+- 최초 임시 clone은 샌드박스 권한으로 실패해 승인 후 재실행했다. 첫 모의 설정은 clone 후 core.autocrlf를 바꿔 파일을 수정 상태로 만들었으므로 제거하고 실제 줄바꿈 설정을 유지해 위14상황을 완료했다. 사용자 저장소의 줄바꿈 설정은 변경하지 않았다.
+- 결과/모의 저장소는 Temp/team-pull-20261012-51_936_b/report.json 및 하위 디렉터리, 도구는 Temp/check_team_pull_20261012.py에 보존한다. 제품 코드/의존성/DB 변경 없이 Git 협업 시나리오만 검사했으므로 제품 회귀·유료 AI는 반복하지 않았다. 기존 README/백엔드·공통 작업 기록만 현재 codex/resume-quality-check-20261012에서 커밋하며 새 저장소 파일·원격 push는 없다. BE/AG 상태와 BE-10/F-08 일반품질은 유지한다. 실제 팀원에게 자동 적용됐다고 보고하지 않는다.
+
+- **2026-10-12 새 브랜치 작업 재개·거산 표본 검수:** codex/resume-quality-check-20261012에서 정리 내용을 이어받았다. 격리 화면 PDF26/DOCX29묶음·실자료4개/실제 AI3회·5쪽 내용 및 PDF/DOCX 배치 통과. 원본 .env/DB 보존, test 병합 없음. BE-10/F-08 일반품질 진행중 유지. [기록](#geosan-resume-quality-20261012).
+
+<a id="geosan-resume-quality-20261012"></a>
+
+### 새 작업 브랜치와 기존 거산 자료의 품질 표본 (2026-10-12, BE-10/F-08)
+
+- 사용자 요청에 따라 백엔드4e224f4와 프론트dc08291의 codex/organize-markdown-docs에서 각각 codex/resume-quality-check-20261012를 만들었다. 따라서 새 브랜치에도 정리된 문서/실행 자원 구조가 포함된다. 부모 C:/final/.vscode의 숨김·파일 접기 설정은 두 저장소 밖의 로컬 설정으로 브랜치와 독립적이다. frontend의 기존 미추적 .claude/는 보존했다. test에서 새로 시작하거나 정리 내용을 test에 병합한 것이 아니다.
+- 정리 후 실제 연결 검수: AI_CHECK_BACKEND=C:/final/backend, AI_CHECK_LIVE=0에서 `node scripts/check-ai-workflow.mjs --publication`와 `--publication --docx` 각각 통과. PDF26/DOCX29 시나리오 묶음이며 공통 검사를 합산하지 않는다. 임시 DB/API/Vite/브라우저, 가상 AI와 실제 출력 엔진으로 편집·응답 유실/복원·내용/배치·명시 승인·동일 바이트 다운로드·편집 후 옛 승인 차단·종료 정리를 확인했다. 산출물은 각각4쪽/25,416바이트와4쪽/2,396,342바이트다. Temp/ddalgi-ai-ui-lRhWS9, Temp/ddalgi-ai-ui-4bpeBY에 보존하며 실제 회사 품질 결과와 구분한다.
+- 사용자가 기존 거산 자료 사용을 선택했다. 원본 SQLite는 mode=ro로 열고 실제 등록 소개서PPTX·AS9100·KSPC·SSQ4개의 sources/source_versions/extraction_runs/segments만 새 임시 ORM DB에 복사했다. 선택 자료의 파일도 임시 등록 폴더로 복사했다. 기존 사용자 세션·문서·자료를 새 세션으로 재사용하거나 변경하지 않았다. 추출문8,280자, 시연 가상 납기/주문 자료와 사진은 선택하지 않았다. 목적은 신규 고객 공정·기술·인증 소개, 최소4쪽, 사진 없음이다. 일반 PC .env의 실행 모드를 상속하지 않고 자식 프로세스에 trial 모델/상한을 명시했다.
+- gpt-6-luna로 점검1/초안1/내용검증1, 총3호출·SDK 재시도0. 제한은 요청180초/입력40,000자/출력32,000토큰/내용검증400,000자, 각 프로세스 trial 상한$1이다. 두 실행의 ledger 추정 합계$0.018544150/미확인 예약0이며 실제 카드 청구액이 아니다. 점검78사실(76supported/2missing), can_generate=true. 공정 총수와 납기는 원문에 없는 값으로 missing이며 임의 계산·보충하지 않았다.
+- 초안doc_0c0018be88e14203/revision1/input_revision2, 논리5쪽/58블록. 내용검증val_f5e8a118691349d9는 실제 모델 호출/58블록 대조로 passed, Issue0이다. 본문을 확인해 AS9100D/ISO9001 범위·2028-09-24 만료/유지 조건, KSPC 범위·2020-12-28 최초/2026-01-17 재발행/2027-02-15 만료, 2–3미크론 피막·5/13/25미크론·알루미늄 후처리168hr와1A/3종 문구가 담긴 것을 확인했다. 이것은 선택 원문 기준 표본이며 실제 회사의 현재 인증 유지·현장 성능을 독립적으로 확정한 것이 아니다.
+- 실제 배치: template_v11, Chrome155 PDF5쪽/passed·LibreOffice26.8.0.3 DOCX5쪽/passed. overflow/broken_image/placeholder_remaining 모두ok, findings0·publication_policy_ok=true다. 거산 초안의 최종 승인·외부 배포·다운로드는 실행하지 않았다. 앞의 가상 UI 승인/다운로드 통과와 구분하며 Word에서 동일 쪽 나눔을 보장하지 않는다.
+- 검사 도구 실패를 보존한다. 최초 임시 스크립트는 DocumentOut의 document.pages 대신 pages를 읽어 초안 성공 뒤 중단됐다. API/제품 오류로 보고하지 않으며 기존 임시 세션·초안을 복원해 내용검증만 이어갔다. 최초 DOCX 검사는 임시 Settings에 기존 설정의 soffice.com 대신 soffice.exe를 지정해 render_timeout으로 실패했다. .env나 제품 코드는 변경하지 않고 임시 설정만 기존 실행기로 맞춰 같은 문서/90초 제한에서 배치만 재검사해 성공했다. 점검/초안/내용검증의 추가 유료 재호출은 없다.
+- 실자료 산출물/JSON/격리 DB와 실패 기록은 시스템 Temp/geosan-resume-20261012-ndg_rmu3, 실행 도구는 Temp/geosan_resume_20261012.py·geosan_resume_finish_20261012.py·geosan_resume_layout_20261012.py에 있다. 저장소에 새 인계/임시 파일을 만들지 않았다. .env와 원본 SQLite/WAL/SHM7파일 SHA256은 전후 동일하다. test ref d4b9725801677c094d7e489dbd7ea2c02b9ad0c1, frontend develop e590f6f86275e263e71485786f4d500a88190dee는 유지했다.
+- 이번 표본과 정리 후 연결 검사 단위 완료. 제품/프롬프트/API/DB 스키마 변경 없으므로 기존 전체 회귀를 다시 반복하지 않았다. 자기 계획·공통/백엔드 작업 기록3파일만 새 브랜치에 로컬 커밋한다. 원격push/test 병합 없음. BE-10/F-08 일반품질과 Agent 상태는 유지하며 다음은 실제 새 입력에서 오류가 재현될 때 해당 부분 수정, 또는 사용자 요청에 따른 공유다. 4개 자료/사진 없는1회 통과를 모든 자료·사진·문체·반복 안정성의 완료로 확대하지 않는다.
+
+- **2026-10-12 로컬 .venv 옛 경로 복구:** 직접 실행기·PowerShell/CMD 활성화·관련295검사 통과, 87패키지 버전/.env/DB5파일 해시 동일. 이전 경로 검수의 환경 후속 해결. 복구 단위 완료, BE-10/F-08 일반품질과 Agent 상태 유지. [기록](#venv-path-repair-20261012).
+
+<a id="venv-path-repair-20261012"></a>
+
+### 로컬 가상환경의 옛 경로 복구 (2026-10-12)
+
+- 사용자 요청 범위: 현재 codex/organize-markdown-docs에서 .venv의 D:\backend\awesomeapp 잔여 경로를 복구한다. .env/DB는 수정하지 않고 test 병합은 하지 않는다. 환경 복구는 현재 PC의 ignored .venv에 적용하며 팀 공유는 README/기존 계획·작업 기록으로 남긴다.
+- 보호/준비: .env와 private_runs의 SQLite/관련 WAL·SHM 총5파일 SHA-256, 설치 패키지87개 이름·버전을 기록했다. 해당 환경을 직접 사용하는 Python 프로세스0을 확인하고 전체 .venv를 시스템 Temp/backend-venv-backup-*에 백업했다. 기존 실행 스크립트를 제공하는23개 패키지를 정확한 버전으로 고정해 먼저 Temp/backend-venv-stage-*에서 오프라인 준비를 확인했다. 저장소 안에 새 임시/인계 문서는 만들지 않았다.
+- 복구: 기존과 같은 CPython3.13.12로 `uv venv --allow-existing --relocatable --no-python-downloads --offline --prompt backend .venv`를 실행했다. 기존 site-packages를 보존하는 방식은 [uv 공식 설명](https://docs.astral.sh/uv/reference/cli/#uv-venv)을 확인했다. 이어 실행 스크립트 패키지23개만 현재 버전으로 no-deps/reinstall/offline/link-mode copy 재설치했다. 의존성/lock/.env/DB/API/Agent 지침 내용은 변경하지 않는다. 자동 생성에서 제외돼 남은 기존 activate.csh 한 파일은 현재 로컬 경로와 prompt로 직접 정정했다.
+- 실행 확인: uvicorn.exe0.53.0·pytest.exe9.1.1·alembic.exe1.20.0 버전 조회 및 `uv run --locked --no-sync uvicorn --version` 모두 종료0. uv pip check는87패키지 호환 통과. PowerShell/CMD의 VIRTUAL_ENV와 실제 Python sys.prefix가 C:\final\backend\.venv인 것을 확인했다. PowerShell 첫 검사는 Source의 슬래시 표기 차이를 오류로 판정했으며 실제 prefix 검사로 정정했다. csh/fish/nu/Bash 등은 파일 경로 정적 확인이고 해당 셸을 모두 실행한 것은 아니다.
+- 옛 경로 검사: ignore 영향을 제외한 `rg --no-ignore --hidden`으로 Scripts의 바이너리 포함 모든 파일과 환경 텍스트 파일에서 D:\backend\awesomeapp 및 slash 변형0건을 확인했다. 최초 일반 rg는 .venv의 내부 ignore 규칙 때문에 검사 범위가 제한돼 이후 플래그를 바꿨고, 남아 있던 csh를 이 검사에서 발견해 수정했다. 설치 패키지87개의 이름·버전은 전후 동일, 테스트 뒤에도 보호5파일 해시는 동일하다.
+- 실제 회귀: PYTHON_DOTENV_DISABLED=1/PYTHONDONTWRITEBYTECODE=1, 복구한 pytest.exe로 API 계약·BE-03 파일 읽기·마이그레이션/ORM·등록자료·시연·자원 CWD/해시·서식/글꼴·실제 PDF 페이지/폰트/텍스트 검사를 실행해 **295passed/경고3/실패0/107.07초**를 확인했다. 임시 DB·가상 자료/모델 응답이며 실제 회사 세션·유료 AI를 사용하지 않았다. 전체 회귀나 실제 모델 품질 평가로 확대하지 않는다.
+- README의 현재 PC 미해결 환경 안내를 복구 완료로 갱신했다. 로컬 백업·준비 파일은 위 시스템 임시 폴더에 남기며 Git에 포함하지 않는다. .venv/.env/private_runs ignored/추적0, test ref d4b9725 유지. 자기 기록만 로컬 커밋하고 원격 push/test 병합은 하지 않는다. 환경 후속은 완료이며 다음은 일반 제품 작업/사용자 요청에 따른 공유다.
+
+- **2026-10-12 README 폴더·자료 관리 안내:** 폴더 역할/저장 위치·수명/경로 지정 기준/찾기 표와 상단 바로 가기 추가, 파일 링크39개·내부 앵커5개/diff 검사 통과. 문서 정리 단위 완료·제품 상태 유지. [기록](#readme-folder-storage-guide-20261012).
+
+<a id="readme-folder-storage-guide-20261012"></a>
+
+### README 폴더 역할·자료 저장 안내 (2026-10-12)
+
+- 사용자 요청에 따라 기존 README의 주요 폴더 설명을 한곳의 폴더/자료 관리 안내로 확장했다. 상단 문서 찾아가기에서 역할·저장/보관·직접 지정·찾기 표로 바로 이동한다. 새 문서·실행 파일은 만들지 않았다.
+- 실제 코드의 자료/세션/등록 적재/산출물/미리보기/정리/평가 저장 규칙과 현재 .env의 경로 항목만 대조했다. 운영 저장 루트와 저장소 기준 quality_runs를 구분하고 .env의 현재 PC 예시·실행 옵션 우선·기존 erd_v2 폴더와 활성 DB의 차이를 명시했다. 세션 자료/출력의 종료·만료 정리와 등록 자료/명시적 평가 기록의 별도 보관, 최종 다운로드/백업 위치 선택을 설명한다.
+- 실제 확인: README 상대 파일 링크39개·내부 앵커5개 모두 유효, 코드 블록 쌍과 4개 바로 가기 목적지 확인, git diff --check 통과. 문서 변경만 있어 제품 테스트·유료 AI·DB 마이그레이션은 새로 실행하지 않았다. 런타임·.env·DB·VS Code 설정은 변경하지 않았다.
+- 현재 codex/organize-markdown-docs에 자기 문서 변경만 로컬 커밋한다. test 병합/원격 push 없음. BE-10/F-08 일반품질·Agent 상태/선행 조건은 그대로 유지한다. 다음은 사용 중 새 저장 방식이 확정될 때 같은 README와 관련 기준 문서를 함께 갱신하는 것이다.
+
+- **2026-10-12 현재 경로 검수:** 실행 자료/설정 경로·88개 Python·파일 링크 확인, README 옛 경로와 --frontend 검사 도구 연결 보완. 로컬 복사 .venv의 옛 실행기 경로는 남으며 Python 모듈 실행은 정상이다. 경로 검수 단위 완료/환경 재구성 후속, BE-10/F-08 일반품질과 Agent 상태 유지. [기록](#backend-path-audit-20261012).
+
+<a id="backend-path-audit-20261012"></a>
+
+### 현재 경로 검수·실행 안내 보완 (2026-10-12)
+
+- 현재 `codex/organize-markdown-docs`에서 실행 코드·도구·루트 지침·문서의 옛 경로와 상대 링크를 확인했다. README에 현재 없는 C:\backend/C:\frontend 실행 경로가 남아 있어 C:\final 기준과 상대 frontend/시연 자료 경로로 고쳤다. 시연 내용은 2026-10-06 당시 기록이며 현재 만료/출력 유효성을 보장하지 않음을 명시했다. 과거 작업일지의 당시 PC/원본 저장소 경로는 역사 기록으로 보존한다.
+- 실제 읽기 전용 검사: 저장소 밖 C:\final에서 스키마·섹션 자료·추출/초안/editorial 프롬프트·PDF 서식·Regular/Bold 글꼴·API 예시·Alembic 폴더·현재 설정 DB/자료 폴더·Chrome/LibreOffice 경로 모두 존재/읽기 성공. Python88개 AST와 내부 app 모듈 import 경로 오류0, 백엔드 상대 파일 링크620개·깨진 경로0. 기록 추가 뒤 최종622개·깨진 경로0을 재확인했다. 검사는 DB 초기화·내용 조회·AI 요청 없이 수행하며 .env의 파일 경로 항목만 확인하고 키는 출력하지 않는다.
+- 검사 도구 결함: --frontend가 현재 프론트에 없는 check-s01-browser.mjs만 찾고 있었다. 현재 check-ai-workflow.mjs를 우선 사용해 자체 임시 서버/DB/Vite로 검사하도록 연결했다. AI_CHECK_BACKEND를 현재 루트로, AI_CHECK_LIVE를0으로 지정해 상속된 유료 모드를 차단하고, 지정한 출력 브라우저 경로도 전달한다. 옛 검사 도구만 있는 저장소와의 호환 분기는 유지한다. docs/API/DB/Agent 동작 정책은 바꾸지 않는다.
+- 테스트: PYTHON_DOTENV_DISABLED=1/출력 브라우저 비활성 설정으로 API 계약·DB 마이그레이션/ORM·등록자료·자원 CWD/해시·출력 서식/글꼴 관련 pytest **230passed/경고3/실패0,78.31초**. 도구 연결 보완 후 tests/test_api_contract.py **46passed/경고1/실패0,8.39초**, 지정 브라우저 경로 전달까지 추가한 최종 재검사도 **46passed/경고1/실패0,8.43초**다. 중복 검사로 합산하지 않는다.
+- 실제 통합: `python -X utf8 -B scripts/check_s01_http.py --frontend ..\frontend --timeout 30` 통과. 임시 DB·mock AI·별도 HTTP/Vite/Chrome의 HTTP13개·화면12개 검사 항목, 요청 유실/재조회·초안 저장/복원·세션 정리 확인. 화면 출력은 시스템 Temp/ddalgi-ai-ui-mteNnV에 있다. 이 기본 명령은 publication 승인/다운로드나 실제 AI 품질 시험으로 확대하지 않는다. 유료 호출0·사용자 시연 DB/세션/환경 파일 변경0이다.
+- 초기 정적 검색은 rg lookaround 옵션 오류로 다시 실행했고, 읽기 전용 보조 검사는 샌드박스 부모 CWD 접근 차단·검사 코드의 템플릿 상수명 오류를 바로잡아 재실행했다. 이 실패들을 제품 경로 검수 성공으로 숨기지 않는다. 제품 테스트 자체에는 실패가 없었다.
+- 추가 환경 확인: .venv/Scripts의 CMD/Bash/csh/fish/nu 활성화에 D:\backend\awesomeapp의 옛 위치가 남았다. uvicorn.exe 버전 조회는 샌드박스 밖에서도 `uv trampoline failed to canonicalize script path`/종료1이다. `.venv/Scripts/python.exe -m uvicorn`과 `uv run --locked --no-sync python -m uvicorn`은 Uvicorn0.53.0/CPython3.13.12로 정상, 같은 방식의 pytest9.1.1/Alembic1.20.0 버전 조회도 종료0이다. README 실행 예시는 python -m으로 갱신했다. 생성된 가상환경·실행기의 교체/재설치는 수행하지 않았고 직접 실행기/CMD·Bash 활성화 문제는 남는다. 이 문제를 소스 경로 정상 결과에 섞어 완료 처리하지 않는다.
+- 자기 변경만 로컬 커밋하며 원격 push/test 병합은 하지 않는다. BE-10/F-08 일반품질·다른 담당 상태는 유지한다. 다음은 로컬 가상환경 재구성과 검토 후 사용자 요청에 따른 공유다.
+
+- **2026-10-12 실행 자료 위치 정리:** 루트 contracts/fixtures/prompts/handoff의 5개 파일을 app/resources·app/prompts·docs로 통합했다. 관련 pytest 1,493개·프론트 build·파일 링크627개 통과. 경로 정리 단위 완료, BE-10/F-08 일반품질과 Agent 상태 유지. [기록](#runtime-resources-organization-20261012).
+
+<a id="runtime-resources-organization-20261012"></a>
+
+### 실행 자료 위치 정리·관련 회귀 (2026-10-12)
+
+- 사용자 요청: 현재 `codex/organize-markdown-docs`에서 제안한 구조로 정리·경로/링크 수정·관련 테스트까지 수행한다. test 병합은 하지 않는다. 백엔드가 이 경로 정리 단위를 담당하며 Agent 기능·모델·프롬프트 내용을 바꾸지 않는다.
+- 이동: `contracts/profile.schema.json` → `app/resources/profile.schema.json`, `fixtures/mock_profile.json` → `app/resources/mock_profile.json`, 루트 prompts의 extract/draft → app/prompts, `handoff/api_examples_v1.1.json` → `docs/api_examples_v1.1.json`. SHA-256으로 5개 원본 내용 동일을 확인하고 비어 있는 루트 4폴더만 제거했다.
+- 코드: agent_legacy의 로더는 자기 app 디렉터리를 기준으로 자료/프롬프트를 찾는다. agent_mock의 스키마 주석, API 계약 예시 검사, stage_runner의 코드 해시 범위와 문서/지침을 갱신했다. 기존 tests/test_agent_llm.py에 저장소 밖 CWD에서 자료·프롬프트 읽기와 평가 해시의 새 자원 포함 확인을 추가했다. 기존 평가 아카이브의 경로·코드 해시가 달라진 경우 기존 재개 차단을 유지한다.
+- 프론트: 같은 이름의 정리 브랜치에서 README·타입 파일의 스키마 출처 주석·기존 보고서만 갱신했다. 실제 npm run build 성공, JS 508.76kB/500kB 청크 경고 유지. `.claude/` 미추적 자료와 ignored 산출물은 커밋하지 않는다.
+- 검증: `PYTHON_DOTENV_DISABLED=1`, `EXPORT_BROWSER_PATH=C:\final\backend\tests\no-browser-for-tests.exe`로 `.venv/Scripts/python.exe -X utf8 -B -m pytest tests/test_agent_llm.py tests/test_api_contract.py tests/test_be04.py tests/test_demo.py -q -p no:cacheprovider --disable-warnings --maxfail=3`를 실행해 **1,493 passed / 1 warning / 실패0, 143.91초**를 확인했다. 새 CWD·자원 해시 회귀, 실제 로더의 추출/초안 변환과 가상 SDK, 서버/API 계약 예시를 포함한다. 실제 모델 품질·브라우저 출력 전체 회귀는 이 결과에 포함하지 않는다. 파일 링크627개·깨진 경로0개, 5개 자원 SHA-256 동일, git diff --check 통과. .env/.venv/private_runs는 ignored·추적0을 확인했다. DB·승인·공통 계약 버전·프롬프트 내용은 유지하며 유료 AI 호출0이다.
+- 최초 샌드박스 실행은 pytest 임시 폴더 생성 OSError로 막혔다. 새 로더 검사의 개별 실행에서도 같은 setup 오류를 확인했고 승인된 재실행에서 전부 통과했다. 막힌 최초 프로세스는 자기 테스트 명령으로 식별해 종료했으며 최초 실패를 성공으로 합산하지 않는다.
+- 다음: 검증된 변경만 두 저장소에 각각 로컬 커밋·팀 검토. 원격 push/test 병합 없음. BE-10/F-08 일반품질 진행중과 다른 담당 상태·선행 조건은 그대로다.
+
+- **2026-10-12 문서 위치 정리:** 백엔드 7개·프론트 12개 일반 문서를 각 `docs/`로 이동하고 링크·읽을 경로·문서 안내를 갱신했다. 문서 정리 단위 완료이며 BE-10/F-08 일반품질과 Agent 상태는 유지한다. [기록](#markdown-docs-organization-20261012).
+
+<a id="markdown-docs-organization-20261012"></a>
+
+### 문서 위치 정리·검증 (2026-10-12)
+
+- 사용자 요청 범위: 백엔드/프론트 각각 새 브랜치 `codex/organize-markdown-docs`에서 일반 MD를 기존 `docs/`에 모으고 참조를 갱신한다. `README.md`, `AGENTS.md`, `CLAUDE.md`는 루트에 유지한다. 프론트에는 기존 루트 AGENTS/CLAUDE가 없어 새로 만들지 않았다.
+- 백엔드: plan/prd/contracts/agent/task/task_backend/task_agent 7개 이동. 루트 지침과 README, 기존 docs의 상대 링크를 갱신했다. 테스트 묶음 설명서·글꼴 출처는 자원과 함께 유지한다. 공통 계약 내용·버전과 DB·실행 설정은 동일하다.
+- 프론트: 루트 5개 문서·AI AGENT 작업 기록 6개·fixtures 사용 안내 1개 이동. `.agents/rules/work_history.md`는 docs의 번호형 작업 기록을 찾도록 경로·탐색 범위를 갱신했다. 기존 `.claude/` 미추적 파일은 작업·커밋 대상에서 제외한다.
+- 실제 확인: 두 저장소 문서의 상대 파일 링크 623개·깨진 경로 0개, 이동 19개·목적지 존재/원위치 제거 확인, Git 기준 비MD 추적 파일 변경 0개. 루트 안내와 Claude의 작업표 경로, 테스트 사용 안내에 새 위치를 명시했다. 추가 기록 링크는 커밋 전 다시 확인한다.
+- 제한: 파일 경로 존재 검사이며 원격 URL과 모든 문서 앵커의 유효성을 검사한 것은 아니다. 제품 코드 변경이 없어 전체 회귀·유료 AI·실제 화면·빌드를 새로 실행하지 않는다. 작업 중 최초 수정은 보호된 `.agents` 경로 권한 때문에 중단됐고 승인 후 같은 기준 내용으로 재실행했다. 최초 비MD 바이트 검사는 Git의 LF/작업 폴더 CRLF 차이를 변경으로 오인해 실패했으며 Git 정규화를 적용한 재검사에서 변경 0개를 확인했다.
+- 두 저장소에 자기 변경만 별도 로컬 커밋한다. 원격 push와 test 병합은 수행하지 않는다. 백엔드 BE-10/F-08은 기존 진행중을 유지하고 Agent 작업 상태·선행 조건은 변경하지 않는다. 다음 작업은 정리 브랜치의 팀 검토와 사용자 요청 시 공유다.
+
+- **2026-10-08 배치 변형·모호함/충돌 검수:** 새 합성PPT4종/관련19건 통과·실제모델4사례 기대충족·정상조건/연혁 보존 및 실제blocker 유지. 일반품질 진행중. [기록](#layout-heldout-evaluation-20261008).
+
+- **2026-10-08 PPT 배치·사건 주체 보완:** 선택 원본의 배치 전달/연혁 주체 보존·관련전체1,468건 및 최종파서/점검98건 통과·최종 실추출2회 확인필요0/충돌0·4쪽 내용검증passed/문제0. BE-10 일반품질 진행중 유지. [기록](#pptx-layout-context-20261008).
+
+- **2026-10-08 원문 적용 범위 추출 보완:** 고객 관계 부재 오탐3회 미재현·관련50건 통과·최종 실검증 기술 연결1건/사건 주체1건 차단·BE-10 진행중. [기록](#source-scope-extraction-20261008).
+
+- **2026-10-08 추출 지침 보완:** 목록 합산/번호 연도 오인 지침·회귀1,288건 통과·같은 실자료 새4회에서 두 오인 미재현/확인필요0·선택 누락 후속·BE-10 진행중. [기록](#extraction-count-date-guidance-20261008).
+
+- **2026-10-08 실제 추출 반복 측정:** 동일 입력4회/필수 회사·사업 누락0·초안 진입 오류0·공정 계산 총수4회/자격번호 연도 오인1회는 확인 필요·선택168시간 누락2회 확인·BE-10 진행중. [기록](#extraction-repeat-measurement-20261008).
+
+- **2026-10-08 실자료 검증·승인 완주:** 시간 단위 표기 오탐 수정/회귀1,280건·같은 초안 문구 편집 후 내용passed·PDF/DOCX 각각4쪽 승인/다운로드 확인·BE-10 진행중 유지. [기록](#real-publication-recovery-20261008).
+
+- **2026-10-07 숫자·날짜 표기 동등성:** 공통 수치 검사 정규화·회귀1,306건 통과·현재 NAVER 인용4건 읽기 전용 일치 확인·BE-10 진행중 유지. [기록](#numeric-notation-equivalence-20261007).
+
+- **2026-10-07 등록 자료 없이 AI 점검:** 선택 자료 기준 버튼/대기 보완·API69건/UI28묶음 통과·BE-10 진행중 유지. [기록](#selected-source-analysis-20261007).
+
+- **2026-10-07 DART 법인명/공시명 차이 수정:** NAVER 실수집2자료/선택저장·관련55건 통과·BE-10 진행중 유지. [기록](#dart-legal-name-fix-20261007).
+
+- **2026-10-07 DART 수집·기업 검색 완료:** 실제조회/화면연결·백엔드186건/가상UI27묶음 통과·특허청/나라장터 및 일반품질 후속·BE-10 진행중 유지. [기록](#dart-integration-20261007).
+
+- **2026-10-07 [F-02·03·08 / BE-04·10] 초안 진입 조건 대조·보완:** 점검/접수/초안 규칙 공유·최신 점검 GET 복구·사진만 선택 차단·관련1,205건/최종78건·PDF27/DOCX33묶음 통과. BE-10 진행중 유지. [기록](#draft-entry-audit-20261007).
+
+- **2026-10-07 [F-03·08 / BE-04·10] 대상 회사명 법인 표기 오류 수정:** 전체 회사명 정규화·13건 통과·관련1,241건 통과/기존 해시 실패2건 재현·BE-10 진행중 유지. [기록](#target-company-notation-20261007).
+
+- **2026-10-07 [F-06·08 / BE-07·08·10] PDF/DOCX 글꼴 통일:** Pretendard Regular/Bold 전체 임베딩·관련39건 통과/1skip·현재 실문서6쪽 렌더/시각 검수 완료. 기존 배치 재검사·재승인 필요. [기록](#docx-font-parity-20261007).
+
+- **2026-10-06 [F-08 · BE-10] 유사 표현 의미 검수 3건 완료:** 실제 AI 직접 검증에서 추가 정보는 경고 없음·수량4→5는 VALUE_MISMATCH blocker·유사 제목/본문은 반복 경고 없음. 마지막 사례는 제목 요약의 허용 기준 판단이 필요하며 전체 품질 통과로 표시하지 않는다. [기록](#semantic-repetition-cases-20261006).
+
+- **2026-10-06 [F-03/08 · BE-04/10] 동일 제목·본문 반복 보완:** 새초안 변환에서 문구/근거가 같은 항목제목만 생략·본문/숫자/근거 보존. 관련163건 통과·현재서버 적용/실제물류1쪽 내용passed·기존8쪽/9쪽 승인 유지. 프롬프트/모델 변경없음. [기록](#duplicate-point-label-20261006).
+
+- **2026-10-06 [F-08 · BE-10] 물류 업종 실제 AI 품질 표본 확인:** 정상1쪽 내용passed·회사명누락 REQUIRED_MISSING·동일조건 설비4/5대 VALUE_CONFLICT/양쪽근거 보존 확인. 첫 정상초안의 반복warning2건은 품질변동으로 유지. 검수4세션 정리·기존시연 승인 보존. [기록](#logistics-quality-cases-20261006).
+
+- **2026-10-06 [F-08 · BE-10/프론트] 가상 미리보기 코드 정리 완료:** 명시적preview=1·저장값4개 보존·API 호출0·출력제한 검사PASS, 일반모드 C-05/사진/DOCX 실제4쪽 승인·다운로드 검사PASS. 기존미커밋 코드10개+README를 프론트develop/b0f58ac에 커밋(.claude 제외). [기록](#frontend-preview-commit-20261006).
+
+- **2026-10-06 [F-08 · BE-10/프론트] 로컬 프론트 인계 정리 완료:** 계약1.9 형식별승인/C-05/쿠키·프록시 연결 코드 대조·TypeScript/Vite 빌드·가상 미리보기 검사PASS. 프론트README만 develop/4f93e02에 커밋, 기존 코드10개/.claude 보존. 원격 공유/미커밋 코드 릴리스는 별도. [기록](#frontend-local-handoff-20261006).
+
+- **2026-10-06 [F-04/08 · BE-05/10] 실제 AI 자료 제외 복귀 검수 완료:** 제외 자료 주장2블록 명시 삭제·나머지6블록/직접 편집 제목 보존·최신 근거 연결·전체 내용passed/열린문제0·멱등/정리 확인. 기존8쪽/9쪽 승인·출력4개 해시 보존. C-05 추가/수치교체/자료제외 표본 검수 완료. [기록](#c05-source-exclusion-20261006).
+
+- **2026-10-06 [F-04/08 · BE-05/10] 실제 AI 수치 교체 복귀 검수 완료:** 가상 CNC 설비2→3대 자료 교체·기존 본문 보존·근거 미수정422·옛 수치 검증 실패·명시 수정 후passed·멱등/정리 확인. 기존8쪽/9쪽 승인과 출력 파일4개 해시 보존. [기록](#c05-number-replacement-20261006).
+
+- **2026-10-06 [F-06/08 · BE-08/10] 백엔드 인계 정리 완료:** README의 기존 DB/40만 자 기본 실행·현재 계약·C-05/DOCX 완료 상태를 정리했다. 서버/프론트 HTTP200·DB 무결성·두 시연 형식별 승인/출력 유지 확인. 서버 구현과 표본 검수 완료, BE-10 일반 통합 품질은 진행중. [인계 기록](#backend-handoff-20261006).
+
+- **2026-10-06 [F-06/08 · BE-08/10] 품질 목적9쪽 시연 승인/다운로드 완료:** revision3 PDF/DOCX 형식별active승인·다운로드 바이트/SHA일치·멱등/ready재사용·무소유401·기존고객용8쪽 승인/파일 보존·DB검사 통과. 추가AI/렌더 없음. [기록](#quality-purpose-approval-20261006).
+
+- **2026-10-06 [F-03/06/08 · BE-04/07/10] 사진 단독쪽·설명 보완 완료:** 자동 분할에서 사진 앞 설명/제목을 함께 이동하도록 수정. 품질 목적 문서revision3의 사진 설명6개/분할 경계 보완·본문/근거/사진 순서 보존·내용 및 PDF/DOCX9쪽 검사 통과. [기록](#photo-continuation-fix-20261006).
+
+- **2026-10-06 [F-03/08 · BE-10] 작성 목적별 실제 AI 비교 완료:** 동일18개 실자료/시연 자료로 품질 심사 목적 초안 생성·내용passed·PDF/DOCX9쪽passed·참조/제외 조건 확인. 인증 범위·규격 설명 확대, 자동 분할의 사진 단독1쪽/범용 캡션6개 보완 후속. 기존8쪽 승인 보존. [기록](#quality-purpose-comparison-20261006).
+
+- **2026-10-06 [F-04/08 · BE-05/10] C-05 실제 AI 보완 자료 복귀 검수 완료:** 별도 가상 자료 세션의 실제 점검/초안·자료 추가 재점검·편집 보존·명시 참조/선택 적용·중복 방지·내용 재검증 완료. 과도한 설비 보유 표현1건은 수정 후passed, 검수 세션cleanup=done·기존 시연 승인 보존. [기록](#c05-live-ai-20261006).
+
+- **2026-10-06 [F-08 · BE-10] 완료 기준/잔여 항목 대조:** 서버·시연 완료와 실제 AI/목적별 품질·회사 확인·공유 범위를 구분하고 오래된 DOCX/C-05/공개 허가 후속을 정리했다. 입력 변경 후 재시작 검사의 기대값 보완·전체 회귀1,807 passed/10 skipped/3 warnings/실패0. [기록](#backend-completion-audit-20261006).
+
+- **2026-10-06 [F-06/08 · BE-08/10] 최신 사진 설명·크기 반영 문서 승인/다운로드 완료:** revision7 내용·PDF/DOCX8쪽 검수 후 두 형식 시연 승인·파일 바이트/해시 일치·멱등 재전송/ready 재사용·구버전/무소유 접근 차단·DB 무결성 확인. 제품 코드·AI 호출·프론트 변경 없음. [기록](#native-ppi-approval-download-20261006).
+
+- **2026-10-06 [F-06/08 · BE-07/10] 사진 설명·DOCX 확대 제한 반영 완료:** 사진6개 caption/alt 저장·불명확 공정1개 중립 설명 보완, template_v10에서 DOCX 사진150ppi 확대 상한 적용. 관련40건 통과·revision7 실제 내용/두 형식8쪽 검사 통과·사진 원본/과거 승인 파일 보존·새 버전 명시 승인 후속. [기록](#photo-native-ppi-20261006).
+
+- **2026-10-06 [F-08 · BE-10] 사진 설명·실제 출력 해상도/제외 자료 검수 완료:** 사진6개의 원자료 표기 기반 캡션 정리, PDF/DOCX 실제 배치 크기/PPI 계산 및 카탈로그8쪽·ISO4쪽 원본 대조 완료. 기존 승인/선택/자료 보존. [기록](#photo-source-quality-20261006).
+
+- **2026-10-06 [F-05/06/08 · BE-06/08/10] 형식별 승인 복원·실화면 다운로드 검수 완료:** 실제 S01~S03과 PDF/DOCX8쪽·사진6장 조회, 형식별 승인 조회 보완 뒤 실제 화면 다운로드/해시·새로고침·형식 재전환 통과. 사용자 공개자료 사용 가능 확인 반영. 관련8건/API전체43건·프론트 빌드/ESLint 통과, 시연 서버8000/5173·검증40만자 구동. [기록](#final-ui-approvals-20261006).
+
+- **2026-10-06 [F-07/08 · BE-09/10] 실제 AI 종료·중단/재시도 검수 완료:** 실제 요청 전송 중 세션 종료 뒤 유효 응답 미저장·cancelled 유지, 서버 강제 중단/재시작 뒤 자동 AI 재호출0회·명시 재시도 결과1건/중복0건 확인. 기존 정리 회귀43 passed·유료2건 기본skip. [기록](#live-ai-interruption-20261006).
+
+- **2026-10-06 [F-06 · BE-07/08/10] DOCX 문단 공간·추출 대조 보완:** template_v9에서 실제 저장 초안9→8쪽·배치 문제0건, 본문/사진6장 바이트/표시 크기 보존 확인. DOCX·템플릿/승인 연결 회귀42건 통과. 같은 시연 DB/검증40만자 서버 재시작 완료, 기존 DB 검사/문제/승인은 자동 갱신하지 않았다. [기록](#docx-spacing-20261006).
+
+- **2026-10-06 [F-06/08 · BE-07/08/10] 복원 DB 실제 AI·출력 검수:** 새 세션에서 자료18개로 실제 AI3회(점검/초안/의미 검증)를 실행했다. 8쪽·사진6장 초안, PDF8쪽 배치 passed, DOCX9쪽 배치 failed(논리5쪽 사진이 다음 쪽으로 이동). 내용은 근거 부족1건/중복 경고2건으로 failed, 승인·Export0건 유지. [기록](#restored-live-publication-20261006).
+
+- **2026-10-06 [F-01/08 · BE-02/10] 누락된 시연 DB 복원:** 사용자 요청으로 Downloads의 2026-09-30 백업을 기존 demo_preview 경로에 복원했다. 등록 자료21개(실7/시연14)·이미지21개·추출223구간, 파일42개 해시/크기·이미지 디코딩 및 DB/FK 검사를 통과했다. 백업은 세션/문서0개이므로 이후 초안·승인 이력 복구를 주장하지 않는다. [기록](#demo-db-restore-20261006).
+
+- **2026-10-06 [F-07/08 · BE-09/10] 시연 세션 만료 후 원자료 보존 재확인:** 활성 세션0개, 종료41개/만료24개 모두 cleanup=done, 저장 문서54개 revision 본문 정리 확인. 등록 원자료21개/이미지21개 파일·해시·크기 정상, DB 무결성 정상·쓰기0건. 이전 실문서의 최신 배치/승인은 새 작업 생성 후 진행해야 한다. [기록](#expired-demo-audit-20261006).
+
+- **2026-10-06 [F-04/06/07 · BE-05/08/09/10] 실제 HTTP 요청 중단·중복 방지:** 문서 적용/출력의 저장 전·저장 직후·발행 중 강제 종료를 v9/v11에서 검사했다. 같은 키로 복구해 revision/Export/Job 중복0건·기존 승인 PDF 바이트 보존 확인, 관련 **23 passed / 1 warning / 실패0**. 사용자 요청으로 시연 백엔드8000은 중지하고 프론트5173만 유지했다. [기록](#http-crash-replay-20261006).
+
+- **2026-10-06 [F-07/08 · BE-09/10] 실제 Chrome·HTTP 서버 재시작 정리:** 실제 Chrome 프로필과 자식 프로세스, 임시 포트 Uvicorn의 시작/HTTP 복구를 v9/v11에서 검사했다. 종료 세션과 활성 세션의 남은 작업 폴더4건 및 기존 정리 회귀를 포함해 **43 passed / 1 warning / 실패0**. 시연 서버/DB·프론트 변경 없음. [기록](#chrome-http-cleanup-20261006).
+
+- **2026-10-06 [F-06/08 · BE-07/08/10] 다섯 분량 출력·승인 검사 보완:** PDF/DOCX 각각1·4·6·8·10쪽의 실제 배치→명시 승인→다운로드·재사용·수정/종료 차단을 기존 통합 테스트에 연결했다. 관련 회귀 **100 passed / 8 skipped / 1 warning / 실패0**. 제품 코드·시연 DB·프론트 변경 없음. [기록](#publication-page-matrix-20261006).
+
+- **2026-10-06 [F-08 · BE-10] 실자료·사진 읽기 전용 검수:** 등록 자료21개·사진21개 파일/해시/크기 정상, 실사진19개는 PPTX의 회전·잘라내기 반영 후 픽셀 일치, 최신 사실105개/근거208개 참조 오류0건. 사진 설명3개·작은 원본9개·인증/공개 허가의 사람 확인은 후속이다. [기록](#real-material-audit-20261006).
+
+- **2026-10-06 [F-04/08 · BE-01/05/06/10] C-05 화면 연결 완료:** 자료 변경 시작·재점검·최신 근거 확인·영향 선택·유지 사유·편집 복귀를 연결했다. 관련 백엔드295건과 가상 자료의 실제 PDF/DOCX 브라우저 완주를 확인했다. 실자료 의미·사진 허가·사람 검수는 후속. [기록](#c05-ui-20261006).
+
+- **2026-10-06 [F-06/08 · BE-07/08/10] DOCX 동시 출력·전체 회귀:** 출력 파일 덮어쓰기를 막고 전체 검사 **1,764 passed / 8 skipped / 3 warnings / 실패0**를 확인했다. 프론트·Agent 변경 없음. [기록](#backend-regression-20261006).
+
+- **2026-10-06 [F-06 · BE-07/08/10] DOCX 11쪽→8쪽 배치 보완:** 독립 쪽 나눔 문단이 만든 빈 쪽 3개를 제거했다. 본문·사진 6장의 바이트와 표시 크기를 유지하고 실문서 8쪽/배치 문제0건을 확인했다. template_v8 사용으로 기존 검사는 재실행 필요. [기록](#docx-blank-pages-20261006).
+
+- **2026-10-06 [F-06/08 · BE-07/08/10] DOCX 화면 연결·오류 보완:** 출력 형식별 검사·승인·다운로드를 연결하고 열린 stdin의 변환 중단 및 쪽수 불일치 조회 500을 수정했다. 시연 검증 한도는 기존 기본값 40만자로 복구했다. [기록](#docx-ui-20261006).
+
+- **2026-10-06 [F-07 · BE-09] Windows 잠금·재시작 정리 확인:** 실제 파일 잠금과 260자 초과 프로필 경로를 v9/v11 DB에서 검사했다. 종료 시 접근 차단·내용 제거, 잠금 해제 후 재시도 완료, 등록 자료·활성 세션 보존을 확인했다. [실행 기록](#windows-cleanup-20261006).
+
+- **2026-10-06 [F-05 · BE-04/06] 점검 blocker 연결 보완:** 미참조 needs_confirmation 관련 필수 문제의 초기 저장·재검증·승인 차단과 v9/v11 DB 무결성을 확인했다. [기록](#preflight-blockers-20261006).
+
+- **2026-10-06 [F-06 · BE-07/08] DOCX 서버 범위 완료:** 계약 1.9·template_v7의 실제 검사·승인·다운로드 검증 완료, 프론트/실자료 검수 후속. [실행 기록](#docx-layout-20261006).
+
+- **2026-10-06 [F-04/08 · BE-01/05/10] 계약 대조·C-05 실제 HTTP 확인**: 현재 백엔드 `test` 0ad3eb2와 `C:\frontend` develop 0771d54를 읽기 전용 대조했다. 계약 1.8·DB v11·template_v6 기준과 프론트 미연결 항목을 contracts.md v1.24/기존 인계 예시에 정리했다. 새 C-05 HTTP 검사와 관련 회귀 290건, 사진 포함 PDF 승인·다운로드·종료 정리를 확인했다. [현재 실행 기록](#backend-contract-c05-20261006). 이후 DOCX 실제 검사·승인은 아래 2026-10-06 DOCX 기록을 따른다. 프론트·실제 모델·최종 품질 검수는 미완료다.
+- **2026-09-30 분량 사전 확인 후속(BE-04/07)**: 새 editorial 초안 저장 전에 실제 PDF를 확인하고 내용을 보존하며 페이지를 자동 추가한다. 기존 저장본은 유지한다. [자동 분할 기록](#draft-pagination-20260930).
+- **2026-09-30 PDF 사진 넘침 후속(BE-07/08)**: 고정 사진 높이 때문에 6쪽 초안이 8쪽 PDF로 밀리는 사례를 보완했다. template_v6에서 초과한 editorial 페이지의 contain 사진 높이만 제한적으로 줄이며 본문·사진·근거는 유지한다. 동일 문서의 로컬 시험은 6쪽·넘침 0건, 본문 동일·사진 5장 보존이며 6쪽 모두 시각 확인했다. [사진 맞춤 기록](#pdf-photo-fit-20260930).
+- **현재 작업**: **[F-06/08 · BE-08/10] 고객용8쪽/품질목적9쪽 시연 승인·다운로드 검수 완료**. 서버 기능과 목적별 두 표본 완료, 일반 통합 품질 BE-10 진행중. [현재 기록](#quality-purpose-approval-20261006).
+- **다음 작업**: 서버 구현·시연 표본·로컬 인계·제한된 추가 의미 검수는 완료했다. 현재 확인된 미구현 백엔드 필수 항목은 없다. BE-10 잔여는 Agent 일반 의미/문체/사진 관련성 평가와 회사 정보 현재성 확인이며, 원격 push·병합·운영 배포는 별도 요청 범위다. 새 요구나 재현 오류 없이 같은 시연/품질 검사를 계속 추가하지 않는다. [최신 정리](#backend-remaining-scope-20261006).
+- **주요 메모**: 2026-09-29, 원격 develop / 22fc345에서 백엔드 변경 PR #21~#23 병합을 확인했다. 아래 이전 작업 환경·프론트 시험 결과는 담당자의 당시 기록이며 이 PC에서 다시 확인한 결과는 아니다. 자료 적재 보류와 BE 상태를 유지한다.
+- **이전 작업 환경 기록**: 2026-09-29, 로컬 기준. 원격 `develop`은 ca3ecf4(현황판 양식)까지이며 PR #19·#20 병합을 확인했다. 백엔드 로컬에는 `app/agent_llm.py`·`agent_bridge.py`·`agent_mock.py`, `app/services/ai_jobs.py`·`preflights.py`·`proposals.py`·`validation.py`·`export_render.py`, `contracts.md`(문서 v1.11, 계약 1.5 유지), `app/prompts/extract.txt`, `.env.example`, `plan.md`(4.24~4.30절), `tests/test_agent_llm.py`·`test_be05.py`, 신규 `scripts/run_llm.ps1`의 미커밋 변경이 있다. 프론트 기준 폴더는 `C:\frontend`이며 `D:\frontend`는 9/29 이전 사본이다. 시연 자료는 `private_runs/demo_preview_20260929_131826/app.sqlite3`에만 있고 기본 `private_runs/erd_v2`의 등록 자료는 0개다. 자료 적재는 사용자 요청으로 보류 중이다.
+- **상태 기준**: BE-01~09는 서버 범위 완료이며 BE-08의 PDF·LibreOffice DOCX와 프론트/실자료 시연 표본도 완료했다. BE-10의 일반 통합 품질은 진행중(IN_PROGRESS)이다. 기존 BE 업무 10개에 동일 비중과 완료1/진행중0.5를 적용하면 (완료9개 + 진행중1개 × 0.5) / 10 = 약95%다. 작업 시간·서비스 출시 준비도를 뜻하지 않는 참고값이며 F/Agent 상태는 별도로 유지한다.
+- **2026-09-30 PDF 후속**: macOS Chrome의 출력 후 종료 지연을 보완했다. BE-07 50건·BE-08 16건을 확인했고, 가상 사진 포함 초안의 저장·검증·승인·다운로드까지 통과했다. 실제 AI 의미 판단·실자료·프론트 재검증은 이번 범위에 포함하지 않았다. [실행 결과](#macos-pdf-photo-workflow-20260930).
+- **2026-09-30 병합 확인**: 현재 작업과 병합 해결을 `84393ef`로 커밋했다. `git fetch origin` 뒤 `origin/develop`은 이미 포함된 상태였고, 병합 코드의 전체 pytest **1,370 passed / 경고 3개**를 확인했다. [병합·검증 기록](#merge-verification-20260930).
+- **2026-09-30 실제 HTTP 후속**: Mac용 검사 스크립트의 브라우저 자동 탐색을 보완하고 `--publication --photos`를 추가했다. 가상 사진의 업로드·접근 보호·PDF 픽셀 일치·미리보기·승인·동일 파일 다운로드·종료 정리를 실제 localhost HTTP로 확인했다. 제품 API·실사용 DB·실제 AI·프론트는 변경하지 않았다. [검사 결과](#http-photo-publication-20260930).
+- **2026-09-30 C-05 후속**: DB v11의 기존 영향·확인 테이블에 편집 복귀 API를 연결했다. 백엔드 구현·회귀 검증을 완료했으며 프론트·실제 모델 연결은 후속이다. [구현·검증 기록](#c05-edit-return-20260930).
+- **기록 운영**: 보고는 **[F 번호 기능명] → 세부 업무**로 시작하며 번호 구분은 [공통 번호 안내](task.md#번호-읽는-기준)를 따른다. [plan.md](plan.md)·[prd.md](prd.md)·[contracts.md](contracts.md)를 기준으로 결과를 이 파일에 기록하고, 상태·선행 조건을 바꾸면 같은 변경에 [task.md](task.md) 2절도 맞춘다. 옛 6.x절 결과는 맨 아래 기능별 이력으로 모았다. 6.32절까지의 종전 상세 기록은 `git show dcc1aaa:task_backend.md`로 볼 수 있다. 6.33~6.44절의 결과는 PR #21에 포함된 이 파일의 5절 요약에서 확인하며, 양식 적용 전 상세 원문 사본은 `C:\Users\이강욱\AppData\Local\Temp\ddalgi-task-local\task_backend.local.md`에 있다(커밋 대상 아님).
+
+---
+
+## 2. 전체 기능 지도 (Feature Map)
+
+| 기능 번호 | 기능명 | 상태 | 세부 업무·결과 | 기존 업무 참조 |
+|---|---|---|---|---|
+| **F-01** | 자료 선택·파일 읽기 | 완료 | BE-02/03 기존 서버 범위. 첨부·등록 자료 구분, 읽기 상태·출처 위치·사진 제공. 별도 시연 DB 적재(18개·사진 21개)와 현재 프론트 S01 연결 완료. 원문 조회 화면은 후속. | BE-02/03 |
+| **F-02** | 자료 점검·작성 조건 추천 | 완료 | BE-04 점검 API·선택 자료 전달. 현재 프론트의 실제 LLM 점검 연결 완료. 실자료 4개(8,280자)의 실제 점검 통과(사실 25개). 추천 품질 확인은 AG-02 진행중. | BE-04 |
+| **F-03** | 사용자 확인·초안 생성 | 완료 | BE-04 최신 점검 확인·작업 조회·중복 생성 방지. 가상 자료·실자료 텍스트의 실제 초안 생성 통과. 2026-09-30 저장 전 분량 확인·자동 분할 구현/검증은 [후속 기록](#draft-pagination-20260930). 실제 AI 전체 연결은 AG-03/04 진행중. | BE-04 |
+| **F-04** | 직접 편집·AI 수정안·사진 | 진행중 | BE-05 저장·적용·복원 API와 기존 S02 연결 유지. 2026-10-06 C-05 서버·프론트 복귀 화면·가상 자료 검증 완료. 실제 AI 보완 자료 복귀/편집 보존·선택 적용·재검증 표본 완료. 수치2→3대 교체 및 자료 제외 후 주장 삭제/편집 보존의 실제 AI 복귀 표본도 완료. 다른 업종의 일반 품질·자동 구조 수정은 별도 범위. [자료 제외 기록](#c05-source-exclusion-20261006). [실제 AI 기록](#c05-live-ai-20261006). [현재 기록](#c05-ui-20261006). | BE-05 |
+| **F-05** | 내용 검증·경고 확인·승인 | 진행중 | BE-06 서버 완료·2026-10-06 점검 blocker 전달 후속 완료. [현재 기록](#preflight-blockers-20261006). 기존 계약 1.5 도입 기록 유지. 현재 프론트의 개별 경고 확인·승인 차단 연결과 실제 LLM 내용 검증 완주(가상·실자료 표본) 완료. AG-07 의미 검증 품질 확대는 Agent 진행중. · 2026-10-06 실제 중복2건 정리/삭제 대상 해결·회귀94건 통과·PDF/DOCX8쪽 통과·점검 근거1건/명시 승인 후속 · [최신 검수](#deleted-review-targets-20261006) · 2026-10-06 연도/인증 인용 보완·110건 통과·실제 재점검2회·시연 식별자 인용/새 근거 연결 후속 · [연혁 근거 후속](#history-evidence-20261006) · 2026-10-06 식별자/새 근거 연결 완료·113건 통과·revision5 내용검증/형식별8쪽 통과·최종 명시 승인 후속 · [최신 근거 연결](#record-evidence-binding-20261006) · 2026-10-06 revision5 시연 PDF/DOCX 승인·다운로드/재사용 검수 완료·실제 AI 중단/품질 검수 후속 · [최신 승인/다운로드](#demo-approval-download-20261006) | BE-06 |
+| **F-06** | PDF·DOCX 내려받기 | 진행중 | BE-07/08 기존 PDF 흐름 유지. template_v6 사진 높이 맞춤으로 실문서 6쪽/넘침 0건 로컬 렌더 확인(2026-09-30). 사용자 화면 재검사·승인은 후속. 2026-10-06 LibreOffice 기반 DOCX 실제 검사·승인·다운로드 서버 검증 완료, DOCX 프론트 연결과 실문서 빈 쪽 보완 완료·template_v8·문단 공간/본문 추출 대조 보완(template_v9)·42건 회귀 완료·재검사/승인 표본 검수 후속. [문단 공간 기록](#docx-spacing-20261006). [빈 쪽 기록](#docx-blank-pages-20261006). [화면 기록](#docx-ui-20261006). [DOCX 기록](#docx-layout-20261006). [사진 맞춤 기록](#pdf-photo-fit-20260930). · 2026-10-06 식별자/새 근거 연결 완료·113건 통과·revision5 내용검증/형식별8쪽 통과·최종 명시 승인 후속 · [최신 근거 연결](#record-evidence-binding-20261006) · 2026-10-06 revision5 시연 PDF/DOCX 승인·다운로드/재사용 검수 완료·실제 AI 중단/품질 검수 후속 · [최신 승인/다운로드](#demo-approval-download-20261006) | BE-07/08 |
+| **F-07** | 세션 보호·종료 정리 | 완료 | BE-02/09 서버 범위. 접근 보호·만료 정리·DB v11 관계 검사. 2026-10-06 실제 Chrome/HTTP 정리43건 및 실제 preflight AI 종료·강제 중단/복구 검수 완료. 다른 AI 작업의 종료 보호는 대역 회귀 범위. [최신 기록](#chrome-http-cleanup-20261006). | BE-02/09 |
+| **F-08** | 실제 화면 연결·품질 평가 | 진행중 | BE-01 규격 정리 완료. BE-10 후속으로 현재 프론트 S01~S03 실제 연결, 화면설계도 v1.0 배치 적용, 실자료 텍스트 표본의 실제 LLM 완주까지 확인. 실자료 전체·사진별·DOCX·전체 통합 검수는 남았다. · 2026-10-06 실제 중복2건 정리/삭제 대상 해결·회귀94건 통과·PDF/DOCX8쪽 통과·점검 근거1건/명시 승인 후속 · [최신 검수](#deleted-review-targets-20261006) · 2026-10-06 연도/인증 인용 보완·110건 통과·실제 재점검2회·시연 식별자 인용/새 근거 연결 후속 · [연혁 근거 후속](#history-evidence-20261006) · 2026-10-06 식별자/새 근거 연결 완료·113건 통과·revision5 내용검증/형식별8쪽 통과·최종 명시 승인 후속 · [최신 근거 연결](#record-evidence-binding-20261006) · 2026-10-06 revision5 시연 PDF/DOCX 승인·다운로드/재사용 검수 완료·실제 AI 중단/품질 검수 후속 · [최신 승인/다운로드](#demo-approval-download-20261006) | BE-01/10 |
+
+---
+
+## 3. 현재 진행 작업: [F-08 실제 화면 연결·품질 평가] [NOW]
+
+- [x] **2026-10-06 [BE-01/05/10]** 계약 1.8과 현재 코드·프론트 차이를 정리하고 C-05의 실제 localhost HTTP 복귀→사진 포함 PDF 승인·다운로드를 가상 자료/mock AI로 확인했다. [실행 기록](#backend-contract-c05-20261006).
+- [x] **2026-10-06 [BE-07/08/10]** LibreOffice DOCX 검사·미리보기·승인·다운로드 서버/프론트 연결 완료. 실문서 쪽수 불일치는 실제 배치 문제로 승인 차단하며 품질 검수 후속이다. [기록](#docx-ui-20261006).
+- [x] **BE-10 후속**: 현재 프론트 S01(자료 선택·작성 조건·첨부·AI 점검·초안), S02(직접 편집·저장·AI 수정안·사진 후보), S03(내용 검증·개별 경고 확인·PDF 배치·승인·다운로드)을 계약 1.5 API에 연결했다.
+- [x] 화면설계도 v1.0(2026-09-29) 5·8·11·14쪽 기준으로 S01~S03 배치를 적용했다. 임의 신뢰도 점수·내부 도구명·승인 전 PDF 빠른저장·워터마크는 설계도 검토 메모대로 넣지 않았다.
+- [x] 실제 LLM으로 가상 자료의 점검→초안→수정안 적용→내용 검증→경고 확인→PDF 승인·다운로드를 완주했다(6.36·6.42절 기록).
+- [x] 거산 실자료 텍스트 4개(회사소개 PPTX·AS9100·KSPC·SSQ)로 실제 점검·초안·검증·4쪽 PDF를 완주했다. 시간 120초·입력 40,000자 명시 상한과 검증 입력 무손실 압축(67,122→39,669자)을 추가했다(6.43절).
+- [x] 사진 후보 선택·교체와 실제 이미지 검증을 연결했다. 합성 이미지 2회 시험에서 작은 사진의 오탐 1건을 기록했다(6.44절).
+- [/] **[F-08 실제 화면 연결·품질 평가] → 변경 공유 상태 확인 (진행중)**: 백엔드 PR #21~#23은 develop 병합 확인, 프론트 저장소의 공유 상태는 이번 작업에서 확인하지 않았다.
+- [/] 실자료 파일/사진19개·근거 참조 및 카탈로그/ISO 원문 대조 완료. 공개 사용은 사용자 확인 완료, 사용 사진6개 설명·revision7 승인/다운로드 완료. 제외 ISO 날짜/번호·미사용 사진 명칭·다른 목적별 품질은 미확인. [최신 기준](#backend-completion-audit-20261006).
+- [x] **2026-10-06 [BE-10]** 시연 DB의 파일·해시·이미지 디코딩·원본 사진 대응·근거 참조를 읽기 전용 검사하고 카탈로그8쪽/ISO4쪽/SSQ1쪽과 실사진19개를 시각 확인했다. 공개 허가는 이후 사용자 확인으로 완료했으며 회사 현재 정보·제외 인증 상태는 위 미완료 항목으로 유지한다. [검수 기록](#real-material-audit-20261006).
+- [x] **2026-10-06 C-05 서버·프론트 복귀 연결:** 자료 변경 배너·최신 점검 명시 확인·영향/선택 수정·근거 연결·유지 사유·전체 재검증을 실제 가상 브라우저에서 확인했다. 실제 AI 추가/수치 교체/제외 복귀 표본도 완료했다. [화면 기록](#c05-ui-20261006)·[실제 AI 기록](#c05-source-exclusion-20261006).
+- [x] DOCX LibreOffice 실제 배치 검사·승인·다운로드 서버 연결·검증 완료(2026-10-06). 프론트 연결과 고객용8쪽/품질용9쪽 실자료 시연 검수도 완료했다. [서버 기록](#docx-layout-20261006)·[시연 기록](#quality-purpose-approval-20261006).
+
+### 완료 검증 기준 (Definition of Done)
+
+환경 준비가 필요한 PC에서는 저장소 루트의 PowerShell에서 `uv sync --locked --group dev`를 먼저 실행한다. 아래 검사는 `$env:PYTHON_DOTENV_DISABLED = "1"`로 .env 자동 로딩을 끄고 실행한다. 테스트는 임시 DB와 가짜 AI 응답을 사용한다.
+
+- [x] `uv run python -B -m pytest -q -p no:cacheprovider tests/test_agent_llm.py tests/test_be05.py`가 실패 없이 끝난다. 2026-09-29 마지막 실행 **528 passed, 1 warning**(6.44절).
+- [x] 전체 백엔드 pytest: 2026-10-08 eval/customer-purpose-quality-20261008/ca15a2d 기반 **2,116 passed / 10 skipped / 3 warnings / 실패0**(991.20초). 실제 Chrome·LibreOffice/가상 자료·임시 DB·대역 AI. Windows에서 실행하지 않는 macOS POSIX 전용8건과 명시적으로 끈 실제 유료AI2건은skip이며 통과로 계산하지 않는다. [최신 전체 회귀](#backend-full-regression-20261008). 이전2026-10-06 ffb8496의1,807건은 [당시 완료 기준](#backend-completion-audit-20261006),039b46e의1,764건은 [이전 기록](#backend-regression-20261006)에 보존한다.
+- [x] `C:\frontend`에서 `node scripts/check-ai-workflow.mjs --publication --photos`가 `result: PASS`로 끝난다. 2026-09-29 설계도 배치 적용 후 재실행 **19개 검사 묶음 통과**, 시연 PDF 4쪽·26,213바이트, 재다운로드 동일.
+- [x] `C:\frontend`에서 TypeScript(`tsc -b`)·ESLint·Prettier·`vite build` 통과.
+- [x] **2026-09-30 Mac 재실행**: `scripts/check_s01_http.py --publication --timeout 120` 및 `--publication --photos --timeout 120` 모두 `status: passed`. 실제 localhost HTTP·Chrome·가상 자료 범위이며 이번 프론트 실행은 포함하지 않는다. [최신 결과](#http-photo-publication-20260930).
+- **위 이전 확인의 범위**: 별도 날짜를 붙이지 않은 검사는 2026-09-29 담당자의 당시 PC(`C:\backend` .venv, `C:\frontend`) 기록이다. 당시 실제 LLM 호출은 6.43·6.44절 시험 이후 추가하지 않았고, 원격 `develop`은 ca3ecf4이며 로컬 변경은 미커밋·미푸시였다. 2026-09-30의 Git 공유·전체 회귀와 Mac HTTP 결과는 아래 최신 기록을 따른다.
+
+---
+
+## 4. 향후 예정 기능
+
+아래는 2026-10-06 완료 기준 대조 후 남은 항목이다. 이전 DOCX 승인·C-05 화면 연결·사진 공개 허가·실제 preflight 중단 시험은 완료 기록으로 이동했으며 다시 개발할 항목이 아니다.
+
+- **[F-04 · BE-05/10] C-05 실제 AI 복귀 표본 완료:** 보완 자료 추가 후 실제 재점검·명시 근거 연결·기존 편집 보존·선택 수정·재검증 완료. [기록](#c05-live-ai-20261006). 수치2→3대 자료 교체 후 차단/명시 수정/재검증 실제 AI 표본도 완료했다. [수치 교체 기록](#c05-number-replacement-20261006). 자료 제외 후 해당 주장2블록 삭제·나머지6블록/편집 제목 보존·실제 재검증 표본도 완료했다. [자료 제외 기록](#c05-source-exclusion-20261006). 보완 추가/수치 교체/자료 제외의 확인한 C-05 표본 검수는 마무리했다. 다른 업종·복합 조건 일반 품질과 자동 구조 수정 범위는 별도이며 AG-05/06의 상태는 유지한다.
+- **[F-08 · BE-10 / AG-08] 목적·분량별 최종 품질:** 가상 1·4·6·8·10쪽 PDF/DOCX 실제 출력/승인 검사는 완료했다. 현재 실자료 고객용8쪽 revision7과 품질목적9쪽 revision3의 내용·사진 설명·형식별 승인/다운로드도 완료했다. 물류 업종 정상/필수정보누락/수치충돌 실제 AI 표본도 확인했다. [기록](#logistics-quality-cases-20261006). 정상 초안 첫 실행에서 발견한 제목/본문 완전일치 반복은 새초안 변환에서 동일 항목제목 생략으로 보완했다. [보완 기록](#duplicate-point-label-20261006). 의미가 비슷한 다른 표현의 반복과 일반 생성 품질 변동은 남아 있다. 다른 작성 목적/실자료 조건의 일반 의미 품질·문체/사진 관련성 및 AG-07 반복 평가는 Agent 범위로 유지하고 대신 완료 처리하지 않는다.
+- **[F-08 · 회사 확인] 제외 자료/사용하지 않은 사진:** 공개 사용 허가는 사용자 확인 완료. 카탈로그의 과거 정보 현재성, ISO14001/45001 원본 최초승인일/인증번호, 미사용 사진의 정확한 공정·장비명은 미확인이다. 필요한 경우 중립 설명/제외 유지로 진행하며 확인 없는 사실을 넣지 않는다.
+- **[F-01 · BE-01/03] 원문 조회와 공유 범위:** C-01 1차 추출문 API·화면 구현/검증 완료 · 2026-10-12 · [최신 기록](#source-text-implementation-20261012), [계약1.10](contracts.md#source-text-api). 원본 전체 파일 조회/배포 권한은 2차 후속이며 실제 원자료의 기본 DB 적재 보류는 유지한다.
+- **[F-08 · 프론트/공유] 별도 작업본:** C:\frontend develop의 현재 연동/미리보기 사용법과 계약1.9 참조를 기존README에 정리하고 4f93e02로 로컬 인계했다. [기록](#frontend-local-handoff-20261006). 가상 미리보기 코드10개는 후속 검토/검사 후 b0f58ac에 로컬 커밋해 미커밋 코드 정리를 완료했다. [코드 정리 기록](#frontend-preview-commit-20261006). .claude는 제외했다. 프론트 계약 문서 사본은 새로 생성하지 않았으며 백엔드 원본을 참조한다. 원격 공유/병합/운영 배포는 남아 있다. 원격push·다른 담당 인계 메시지는 요청 시 진행한다.
+- **선행 조건 유지**: BE-01 없음; BE-02는 BE-01; BE-03은 BE-02; BE-04/05는 BE-01/02; BE-06은 BE-05·AG-07; BE-07은 BE-01·AG-04; BE-08은 BE-06/07; BE-09는 BE-02/04/08·AG-03; BE-10은 BE-08/09·AG-08·프론트 FE-08. 서버 구현과 통합 품질 완료를 구분하며 BE-10은 진행중이다.
+
+---
+
+## 5. 완료된 기능 히스토리 (누적 아카이브)
+
+<a id="duplicate-point-label-20261006"></a>
+
+### [F-03/08 · BE-04/10] → 새 초안의 동일 항목 제목·본문 반복 보완 (2026-10-06)
+
+- **원인/변경:** 물류 최초초안 REPETITION2건을 대조했다. app/agent_llm.py의 editorial 블록 변환은 항목 label/text가 완전히 같아도 제목/본문 둘다 만들었다. 두claim의 숫자/선택 사실/근거 검사를 먼저 수행한 뒤 공백정규화 문구·fact_ids·evidence_refs가 모두 같으면 level2 항목 제목만 생략한다. 본문은 원문 그대로 남기고 기존본문중복정리·필수본문/숫자 커버리지 검사는 유지한다. 생략 개수는 page_count_reason에 기록한다. 유사한 문구/서로다른 제목/페이지회사명 제목/기존저장문서는 건드리지 않는다.
+- **범위:** 공유 초안 변환의 좁은 보완이며 Agent 프롬프트/모델/추출 규칙 전체를 교체하지 않는다. API계약1.9/DB v11/template_v10 유지, 결정은 plan.md v1.88/4.73에 기록했다. 본문/근거를 자동 삭제하거나 검증 경고를 숨기는 처리와 구분한다.
+- **회귀:** tests/test_agent_llm.py의4개 신규사례는 완전일치/공백차이 제목 생략·다른제목 보존·동일 제목/본문의 근거없는 숫자 거부를 확인한다. 본문content/fact_ids/evidence_refs·쪽수·입력불변·기존validate_draft까지 확인했다. 관련editorial 검사 **163 passed/920 deselected/기존경고1/12.31초**. 최초제한환경158 passed/임시폴더 권한setup오류2건은 허용환경 재실행으로 해소했다. 초기집중10건은 위163건에 포함하며 합산하지 않는다. 전체pytest는 반복하지 않았다.
+- **현재서버/실제 AI:** 확인된8000 uvicorn만 재시작해 수정본 적용(부모PID38744). 기존시연 DB 경로와runtime/입력200000/review400000/output64000/180초/재시도2 설정 유지. /docs·프론트 HTTP200. 별도가상물류 sess_f8cccc10a53448d9 / doc_d063e50322a94226 / pf_0516612c8a56444c의실제초안1쪽·val_9b9e6d03bd254d2e passed·열린문제0, 숫자4대/원문인용/선택근거 확인. 제목/인접본문의 완전일치가 없었다. 이번AI응답은창고보관/포장 별도사실을회사개요에포함된것으로제외하여 중복제목 생략개수는없었고, 생략분기의 직접재현은 고정응답 회귀에서 확인했다. 검수 중편집/조건부중복삭제는하지 않았다.
+- **정리/보존:** 검수세션 DELETE200·closed/cleanup=done. DB quick_check=ok·외래키오류0. 기존고객revision7/품질revision3 PDF/DOCX active승인·ready출력 유지. 프론트코드/원자료/.env/원격push/다른담당메시지 변경없음.
+- **완료/잔여:** 확인한 완전일치 반복의 변환 처리를 보완했다. BE-10 일반통합품질 진행중 유지, 유사하지만 동일하지 않은 반복·다른 업종/조건의 의미 품질 및 회사 현재정보 확인·원격공유/배포는 별도다. 기존완료 시연·C-05를 다시 필수개발로 돌리지 않는다.
+
+
+<a id="logistics-quality-cases-20261006"></a>
+
+### [F-08 · BE-10] → 다른 업종(물류)의 정상·누락·수치 충돌 실제 AI 확인 (2026-10-06)
+
+- **범위:** 기존 runtime/모델/검증40만자 설정의 실제 HTTP API에서 가상 물류 TXT를 사용했다. 회사명·소개·창고보관/상품포장 서비스 및 서울 물류센터의 지게차4대, 회사명이 없는 자료, 같은 기준일/센터의 지게차4대/5대 상충 자료를 확인했다. 모델/프롬프트·제품코드·원자료는 변경하지 않았다. 유료AI 표본이며 전체 품질 평가 완료를 뜻하지 않는다.
+- **첫 정상 표본:** sess_67bf9c4308d24ecc / doc_c040d7b6a7d34fdd / pf_3639e70bc43b4efb. 점검 열린문제0,1쪽 초안의 지게차4대·supported사실ID·선택자료/원문excerpt 참조 확인. val_0515cf93e7614f0a는needs_review로 본문의 ‘창고 보관’, ‘상품 포장’이 각각 바로앞 제목을 반복하는 REPETITION warning2개를 반환했다. 열린문제0 기대는 실패했다. 이 초안을 편집으로 고쳤다고 기록하지 않는다.
+- **두번째 정상 표본:** sess_1f8bb61f1fd84362 / doc_38cffa4f89ff4971 / pf_1e1bb3b887944882. 동일 입력으로 새 점검/초안1쪽을 생성했고 val_294d53bcb4d54685 passed·열린문제0. supported사실/현재선택원문 인용과 지게차4대 표기를 확인했다. 조건부 중복문단 삭제 검수 코드를 준비했지만 두번째 초안에는 경고가 없어 적용하지 않았다. 첫 생성 품질 문제를 해결한 제품 수정이나 재현성 보장으로 확대하지 않는다.
+- **필수정보 누락:** sess_7df35b385df642b9 / pf_e531ad0783f9477c. 회사명이 없는 사업/서비스 자료의 점검은 REQUIRED_MISSING blocker를 반환했고 company_name을supported로 만들지 않았다. 초안/승인/출력은 요청하지 않았다.
+- **수치 충돌:** sess_5205bd3d36fe45c1 / pf_8ce266dae91b4f49. 2026-10-06 동일 서울 물류센터의 지게차4대/5대 자료는 capabilities=conflict·VALUE_CONFLICT blocker. 충돌 사실에 두source의 원문 근거와4대/5대 값이 모두 남음을 확인했다. 초안/승인/출력은 요청하지 않았다.
+- **상태 해석:** 위 점검들의can_generate=true는 사용 가능한 텍스트 근거가 있다는 의미다. 필수정보/충돌blocker 해소나 내용검증·승인 가능을 뜻하지 않는다. 정상두번째·누락안내·충돌보존의3상황은 확인했지만 정상첫번째의 warning2건까지 모두통과로 합산하지 않는다. Agent의 일반 생성 품질은 진행중이다.
+- **정리/보존:** 검수4세션 각각DELETE200·closed/cleanup=done. 읽기5·점검4·초안2·검증2 Job13개 모두succeeded(검증결과needs_review와 Job성공은 별개). DB quick_check=ok·외래키오류0. 기존 고객용revision7/품질용revision3 PDF/DOCX active승인·ready출력 유지. 새출력렌더/프론트변경/전체pytest/원격push/다른담당메시지 없음.
+- **완료/잔여:** 백엔드의 다른업종 점검/근거/문서검증 표본을 추가 확인했다. BE-10 일반통합품질은 진행중 유지. 첫표본의 반복 문체와 재현성 등은 Agent 후속으로 남기며 회사 현재정보 확인·명시 요청 시 원격공유/배포와 구분한다. 백엔드 서버 기능/완료된 시연·C-05를 다시 미구현 작업으로 만들지 않는다.
+
+
+<a id="frontend-preview-commit-20261006"></a>
+
+### [F-08 · BE-10/프론트] → 가상 미리보기 기존 코드 검토·일반 연동 회귀·커밋 (2026-10-06)
+
+- **범위/변경:** 사용자의 다음 작업 요청으로 남아 있던 C:\frontend 가상 미리보기10개 변경을 검토하고 로컬 커밋으로 정리했다. preview=1에서만 가상adapter/별도sessionStorage·가상사진URL·가상결과 표시를 사용한다. 일반모드는 실제API/쿠키·기존저장 키/이미지 경로를 유지한다. 미리보기의 export와 직접 다운로드는 로컬 오류로 차단하고 미지원 가상동작을 서버 호출로 대체하지 않는다. 원래 미리보기 동작은 보존했다.
+- **검사 보완:** scripts/check-ai-workflow.mjs의 preview검사에서 일반모드 source/AI/publication/upload 저장키4개에 기존값을 넣어 새로고침 뒤에도 그대로인지 확인하도록 보강했다. 일반DOCX 사진 검사는160×100 원본이 template_v10의150ppi 제한으로 작게 표시되어 넘침을 만들지 못하던 옛fixture 문제를 발견했다. DOCX 검사 사진만1600×1000으로 높여 실제넘침을 재현했고, 실패/승인차단 기대값은 유지했다. PDF 검사 사진은160×100 유지. 제품 렌더러·정책을 바꾸지 않았다.
+- **검증:** 변경TypeScript9개 ESLint·node --check 검사스크립트 통과. 제품TS는 직전 TypeScript/Vite 빌드 통과한 동일코드이며 이번 추가수정은 검사스크립트/README다. AI_CHECK_LIVE=0의 --screen-preview → PASS(세화면·편집/저장·새로고침·가상검사/승인·출력제한·API0·기존저장4개 보존). --publication --photos --impact --docx → PASS, 실제LibreOffice DOCX4쪽/52,542바이트. C-05 자료교체/근거연결·편집/사진 보존·명시확인·멱등/응답유실복구·전체검증·넘침 승인차단·사진삭제 후정상배치·형식동의·MIME거부·동일바이트 재다운로드·편집 후옛다운로드 차단·종료정리 확인. 임시DB/mock AI만 사용했고 유료AI/현재시연DB는 사용하지 않았다. 최초 실패는 앞의 옛사진fixture 기대 불일치이며 최종 보완 후완주했다.
+- **커밋/상태:** 프론트 develop/b0f58ac, 기존코드10개+README 총11파일만 포함. git status는 untracked .claude/만 남고 추적파일 변경없음. 백엔드 제품코드·API계약·.env·모델·원자료 변경없음. 원격push/병합/배포·다른담당 메시지 없음. 진단은 시스템임시폴더 ddalgi-ai-ui-7RwMvv(미리보기), ddalgi-ai-ui-KBhLnL(최종DOCX), ddalgi-ai-ui-rFkvBQ(최초fixture 실패)이며 저장소에 추가하지 않았다.
+- **잔여:** 로컬 프론트 미커밋 코드 정리는 완료. 백엔드 서버/시연표본·C-05표본·로컬 인계/프론트 정리 완료와 BE-10의 모든목적/업종 일반품질 완료는 구분한다. 남은 범위는 Agent 일반품질·회사 정보 확인·요청 시 원격 공유/배포이며, 이미완료한 시연/C-05 검사 반복은 다음필수작업이 아니다.
+
+
+<a id="frontend-local-handoff-20261006"></a>
+
+### [F-08 · BE-10/프론트] → 계약1.9 연동 대조·현재 작업본 빌드·로컬 인계 (2026-10-06)
+
+- **범위:** 사용자의 다음 작업 요청으로 C:\frontend develop의 현재 API 타입/호출/상태와 백엔드 contracts.md(API1.9·문서1.32)를 읽기 대조했다. 기존 미커밋 코드10개와 .claude/를 보존했다. 프론트 제품 코드를 새로 수정하지 않았다.
+- **대조:** apiClient의 쿠키 포함·동일origin/Vite /api 프록시, 명시적인 preview=1의 별도adapter/저장 공간, PublicationDocument.approvals_by_format과 선택형식 승인/버전 가드, C-05 최신입력·점검·사용자확인·영향조회·operations/reference_updates/keep_reason·validation_job_id 연결이 현재 코드에 있음을 확인했다. 모든API의 신규 실화면 검수나 별도 계약 사본 전달을 완료한 것으로 확대하지 않는다.
+- **검사:** 현재 미커밋 작업을 포함한 npm run build(TypeScript/Vite) 통과. AI_CHECK_LIVE=0으로 node scripts/check-ai-workflow.mjs --screen-preview → PASS. 세화면·편집/저장·새로고침 보존·가상내용/배치/승인·출력제한·백엔드API 호출0·일반저장 공간 보존 확인. 새 실제AI/실자료/PDF/DOCX 검수는 실행하지 않았다. 진단은 시스템임시폴더 ddalgi-ai-ui-YE5JrM이며 저장소에 추가하지 않았다.
+- **인계 변경:** 기존프론트 README에 현재PC 경로/브랜치·계약1.9 원본위치·DOCX/형식별승인·C-05·일반연동과 가상미리보기·검사범위를 추가했다. 프론트 develop 커밋4f93e02는README1파일만 포함한다. 미커밋10개 코드의 상태/변경량은 유지했고 .claude/도 포함하지 않았다. 프론트 계약 사본을 새로 만들지 않았으며 원본 C:\backend\contracts.md와 작업표를 참조한다.
+- **상태/잔여:** 로컬 연동 대조·빌드/미리보기·README 인계 정리 완료. BE-10 전체통합품질 진행중 유지. 미커밋 코드의 별도검토/커밋·원격공유/병합/운영배포, Agent 일반품질과 회사정보 확인은 별도다. 백엔드 제품/DB/모델/프롬프트/.env 변경·유료AI호출·원격push·다른담당 메시지 없음. 완료한 C-05/시연표본을 다시 필수검사로 반복하지 않는다.
+
+
+<a id="c05-source-exclusion-20261006"></a>
+
+### [F-04/08 · BE-05/10] → 실제 AI 자료 제외 후 주장 삭제·편집 복귀 (2026-10-06)
+
+- **범위:** 기존 서버 runtime/모델/40만자 설정과 실제 HTTP API를 사용했다. 가상 회사의 기본 TXT(회사명·개요·사업·제품)와 별도 설비 TXT(CNC 설비7대)를 선택해 실제 점검/초안을 만든 뒤 첫 쪽 제목을 직접 편집했다. 설비 자료만 선택에서 제외해 다시 점검했다. 실제 시연 원자료/문서는 수정하지 않았다.
+- **세션/결과:** sess_1e968e6b04ef4efb / doc_655e39e419b14d14. 읽기2·점검2·초안1·검증1의 Job6개 모두succeeded. 점검facts 각14개. 영향 적용revision3/input3의 val_75cdd21b132f42b4 passed·열린문제0개. 실제 유료 AI 의미 검증 표본이며 모든 업종/조건의 일반 보장은 아니다.
+- **제외/차단:** 최신 점검 근거에 제외 자료가 없는 것을 확인했다. 입력 변경·영향 검토만으로 기존pages가 바뀌지 않았고, 제외 자료를 사용하는 블록에EVIDENCE_REMOVED가 표시됐다. 유지 사유만 적용하면422·본문 불변이었다. 문서를 재생성하거나 제외 주장을 자동으로 사실 승인하지 않았다.
+- **명시 적용/보존:** 제외 설비 자료의 주장/근거를 담은2블록만 delete_block으로 지정하고, 남은6블록은 같은 기본 자료의 source/version/segment에 근거한 최신supported 사실을 명시 연결했다. 기존6블록ID/content·전체page ID/title(직접 편집 제목 포함)·순서가 동일했다. CNC/7대 문구와 제외source 참조가 남지 않았다. 같은키 재전송은 동일 응답·추가revision0개였다.
+- **검수 준비 보완:** 첫 실행(sess_282bfc0f966f446e)은 재점검 회사 요약의 추출값 문자열 완전 일치를 요구한 검수 조건에서 연결 단계 전에 중단됐다. 제품 가드는 유지하고, 동일 원문source/version/segment의 근거 포함 관계를 확인해 최신supported 사실을 명시 연결하도록 검수 명령만 보완한 뒤 새 세션에서 완주했다. 유지 본문의 의미는 최종 실제 AI 내용 검증으로 확인했다.
+- **정리/보존:** 두 검수 세션 DELETE200·closed/cleanup=done. 기존 고객용8쪽/품질용9쪽 PDF/DOCX active승인·ready출력 각각 유지. 원래 출력4개 SHA-256 동일, DB quick_check=ok·외래키오류0. 승인/출력 재생성·.env·모델·프롬프트·프론트·제품코드 변경 없음. 이번 변경은 task 기록만이며 전체pytest를 반복하지 않았다.
+- **완료/잔여:** C-05 보완자료 추가·수치2→3대 교체·자료 제외 후 주장 삭제의 실제 AI 복귀 표본 검수는 완료했다. BE-10 전체 통합 품질은 진행중 유지. 다른 업종/복합 조건의 일반 의미 품질·Agent 평가, 회사 확인, 별도 프론트 공유는 남아 있다. 완료한 C-05 표본을 다음 필수 검사로 다시 반복하지 않는다. 원격push 없음.
+
+
+<a id="c05-number-replacement-20261006"></a>
+
+### [F-04/08 · BE-05/10] → 실제 AI 수치 변경·자료 교체 후 편집 복귀 (2026-10-06)
+
+- **범위:** 기존 runtime/모델/40만자 설정의 실제 HTTP API로 별도 가상 회사 세션을 만들었다. CNC 설비2대가 적힌 TXT로 점검/초안 생성 후3대 TXT를 업로드하고 선택을 교체했다. 기존 실자료 시연은 수정하지 않았다. 유료 AI 호출을 사용했으며 mock 회귀 결과와 구분한다.
+- **세션/작업:** sess_aab926fd2fdf41e3 / doc_87b30f187c36400a. 읽기2·점검2·초안1·검증2의 Job7개 모두succeeded. 각 점검 facts14개·초안에2대 문구 포함 확인. 초안 재생성 없이 기존 문서를 사용했다.
+- **차단/보존:** 입력/자료 교체와 영향 검토만으로 기존 pages/content가 바뀌지 않았다. 최신 근거를 연결하지 않고 유지 사유만 적용하면422였고 본문 불변. 선택에서 제외한 옛 자료 대신 최신supported 사실/원문 근거를 명시 연결하되2대 본문을 유지한 revision2는VALUE_MISMATCH 열린 항목2개로 검증 실패했다. 참조 갱신이 옛 수치를 사실로 승인하지 않는 것을 확인했다. 같은 적용 키 재전송은 동일 응답으로 추가 적용이 없었다.
+- **명시 수정:** 수치가 있는 블록의2대 문구만3대로 PATCH한 revision3/input3를 재검증했다. val_da8ac3dbfbea4c71 passed·열린 문제0개·Agent 검증 호출/나머지 블록 검증 재사용 확인. 승인/출력은 이번 검사 범위가 아니다.
+- **검수 준비 수정:** 첫 실행(sess_849c287ca15f4e47)은 업로드의 상위 읽기Job 완료 대기를 빠뜨려 점검에서 필수 정보 부족을 받았다. 검수 명령에 읽기Job 완료 대기를 넣고 새 세션에서 위 흐름을 완주했다. 서버 가드를 낮추거나 제품 코드를 수정하지 않았다.
+- **정리/보존:** 두 검수 세션 DELETE200·closed/cleanup=done. 시연 DB quick_check=ok·외래키 오류0. 기존 고객용8쪽/품질용9쪽 PDF/DOCX active 승인·ready 출력 유지, 기존 출력4개 SHA-256이 직전 기록과 동일. 파일 읽기 권한 제한은 허용 환경에서 읽기 전용 해시 검사로 확인했다.
+- **상태/다음:** 수치 교체의 실제 AI 복귀 표본 완료, BE-10 전체 통합 품질 진행중 유지. 자료를 제외하고 대체 근거 없이 주장 삭제하는 실제 의미 품질, 다른 업종/수치 단위/조건 일반 평가는 별도다. 기존 제외 사진·현재 선택 참조 차단 자동 검사는 완료 기록을 유지한다. 이번 변경은 작업표 기록만이며 전체pytest/출력 렌더/프론트 변경/원격push 없음.
+
+
+<a id="backend-handoff-20261006"></a>
+
+### [F-06/08 · BE-08/10] → 백엔드 실행·완료 범위 인계 (2026-10-06)
+
+- **변경:** 기존 README에 C:\backend/test·시연 DB 재사용 경로·LibreOffice·runtime 실행과 40만 자 기본 검증 한도·C:\frontend 실행을 정리했다. 계약1.6/C-05 미검수/DOCX 후속이라는 오래된 안내를 현재 계약1.9/검수 완료 상태로 고쳤다. API 예시의 2026-09-30 제한 실행 기록은 과거 조건임을 표시하고 현재 실행 안내를 연결했다. API·제품 코드·모델·.env·프론트 변경 없음.
+- **현재 확인:** 실행 로그 runtime/demo=true·입력200000/review400000/output64000/timeout180/retries2와 스크립트 기본값 일치. API /docs 및 프론트 / 각각 HTTP200. 실제 시연 DB 읽기 전용 quick_check=ok·foreign_key_check=0. 고객용 sess_cece8323f3a247ce/doc_f682a61bb898474e revision7과 품질용 sess_8f4384b8aec64c10/doc_ac7f263b2320421e revision3에 PDF/DOCX active 승인과 ready 출력 각각 유지. 만료 정책은 유지되며 영구 보존 약속이 아니다.
+- **검사 근거:** 전체 회귀1,807 passed/10 skipped/3 warnings는 [완료 기준 대조](#backend-completion-audit-20261006), 이후 분할 수정10 passed는 [사진 설명 보완](#photo-continuation-fix-20261006), 실제 형식별 승인/다운로드는 [고객용8쪽](#native-ppi-approval-download-20261006)과 [품질용9쪽](#quality-purpose-approval-20261006)을 따른다. 이번 문서 수정에서는 JSON 구문·변경 diff·상태 연결을 검사하며 AI/렌더/전체 pytest를 반복하지 않는다.
+- **완료/잔여:** BE-01~07·09 및 BE-08 PDF/LibreOffice DOCX 서버 구현·두 시연 표본 검수·이번 인계 정리는 완료. BE-10의 다른 목적/업종 의미 품질·Agent 반복 평가, 제외 자료의 회사 확인, 별도 프론트 계약/변경 공유는 진행중/미확인이다. 로컬 test 완료와 원격 병합·운영 배포는 별개다. 다음은 사용자 우선순위에 따라 이 잔여 범위 중 선택하며, 완료된 시연 검사를 반복하는 작업은 필수가 아니다.
+
+
+<a id="quality-purpose-approval-20261006"></a>
+
+### [F-06/08 · BE-08/10] → 품질 목적9쪽 보완본 시연 승인·다운로드 (2026-10-06)
+
+- **범위:** 사용자의 ‘ㄱㄱ’ 요청으로 직전 예고한 품질목적9쪽 보완본 승인/다운로드만 실행했다. sess_8f4384b8aec64c10 / doc_ac7f263b2320421e revision3/input2, val_3a1eef6cd6d24bb2 passed·input_review_required=false·PDF/DOCX9쪽passed 확인. 기존사진단독쪽/캡션 보완본의 로컬demo승인이며 회사 사업상결재/외부배포를 대신하지 않는다.
+- **승인/출력:** PDF apr_076a9bcda62e4e34 → exp_fe8916f0697f4e9a / art_e8d720ab1b2544d1, DOCX apr_8922693e88f1452c → exp_acb7b6d313644b3d / art_5f5319c3f4704114. 기존 승인API confirmed=true·현재형식별검사ID 사용, 둘다demo=true/active·GET approvals_by_format 동시복원 확인.
+- **파일 동일성:** 각형식HTTP다운로드2회가 검사artifact와 바이트·저장SHA동일. PDF2,661,785bytes SHA88fabee20599ad48172b114ec7a5df597a13d281d2cb2cc1fa481e52f5488285, DOCX2,321,256bytes SHAd0c3b62343df35475d9e813db3397af00e06a7900e38d438667e73eadbc8f08a. 동일키승인/출력응답재현, 새키ready재사용200/같은Export, 무소유다운로드각401 확인.
+- **중복/보존:** 승인0→2/Export0→2/Job11→13(출력준비2개)·artifact6/revision3 그대로. 추가AI·초안/점검/내용검사·렌더없음. 기존고객용 sess_cece8323f3a247ce revision7/active승인2개·최신출력파일SHA보존, DBquick_check=ok/FK0건. 시연 세션/출력은 기존만료정책을 따르며 영구공유파일로 바꾸지 않았다.
+- **변경/잔여:** 제품코드/프론트/모델/프롬프트·.env 변경없음·pytest반복없음. BE-10진행중 유지. 고객용8쪽/품질목적9쪽 두표본 시연완료와 다른목적/분량/업종 일반품질·제외ISO회사확인·프론트별도공유를 구분한다. 다음은 기존문서의 마무리인계 정리 또는 사용자가 원하는 추가품질 범위다.
+
+<a id="photo-continuation-fix-20261006"></a>
+
+### [F-03/06/08 · BE-04/07/10] → 사진 단독쪽 분할 경계·사진 설명 보완 (2026-10-06)
+
+- **구현:** export_render._split_draft_page에서 넘침 이후가 사진만으로 구성되면 연속사진의 시작을 찾아 앞 설명그룹도 함께 다음쪽으로 이동한다. 설명의 heading/paragraph는 묶어서 이동하고 앞쪽에 최소1그룹을 남긴다. 블록ID/content/근거/순서 유지, 기존 긴문장 분할·넘침 거부·재시도 제한 유지. 저장 문서를 자동 고치거나 사진을 삭제하지 않는다. 새초안 저장전 분할 정책만 변경하므로 렌더상수/템플릿은v10/API1.9/DBv11 유지.
+- **현재 문서 적용:** 품질목적 sess_8f4384b8aec64c10 / doc_ac7f263b2320421e의revision1에 사진6개caption/alt와 사진 단독4쪽 앞의 설명heading/paragraph2개 이동을 한PATCH로revision2에 저장했다. 전체블록을 펼쳐 본문/근거/ID/사진asset/fit/순서 동일·사진단독쪽0건·같은키 재전송 추가revision0건 확인. 기존9쪽수를 유지하고 무리하게8쪽으로 줄이지 않았다.
+- **의미 검사/수정:** revision2 실제 검증val_396eb894f16940cf에서 흑착색 사진의 공정특정 근거 부족 IMAGE_UNVERIFIABLE1건이 차단됐다. 해당 사진만 ‘원자료의 표면처리 설비’로 수정해revision3 저장. 최종val_3a1eef6cd6d24bb2 passed·열린문제0개. 사진caption은 외관/인사말·아연도금라인·중립설비·전해/크롬도금구역·중립설비·염수분무시험기이며 공정명이 확인되지 않는 사진을 임의확정하지 않는다.
+- **실제 배치:** revision3 PDF lc_5ec8f5b86a0b46de / DOCX lc_6d210f5fb2d3406c 모두9쪽/layout/publicationpassed·필수3종ok. 양형식4쪽 미리보기에서 설명/사진이 같은쪽에 있고 잘림없음을 확인했다. DOCX는LibreOffice기준. 새보완본은아직미승인이고 기존고객용revision7 승인/파일은 변경하지 않았다.
+- **서버/보존:** 진행작업0건 확인 후 같은 시연DB/검증400000자 설정으로 최종코드 재시작, 기존revision7 형식별active승인/출력SHA 보존·프론트5173 HTTP200 확인.
+- **검증/범위:** tests/test_be07.py 기존파일에 제목 유무·연속사진1/2개의 설명 동행/본문·참조·ID·순서 보존 검사를 추가했다. 최초 단일사진 포함 관련8건 통과 후 연속사진 확장 중 테스트의 원본블록 목록 예상값1건을 실제Page스냅샷으로 바로잡았다. 최종 관련10 passed/84 deselected/1 warning/실패0(20.01초). 기존 실제 PDF 분할/본문보존6건과 신규4조합을 포함한다. 전체회귀/점검/초안 재생성은 반복하지 않았다. 사진 의미검증2회/형식별배치4회만 실행했다. 프론트/Agent프롬프트/모델/.env 변경 없음, 새제품파일 없음.
+
+<a id="quality-purpose-comparison-20261006"></a>
+
+### [F-03/08 · BE-10] → 고객 제안/품질 심사 목적의 실제 AI 결과 비교 (2026-10-06)
+
+- **방법/범위:** 기존 sess_cece8323f3a247ce의18개 선택 자료를 그대로 새demo 세션 sess_8f4384b8aec64c10에 선택했다. 실제 회사4개(PPT/AS9100/KSPC/SSQ)·시연14개 혼합이며 카탈로그/ISO14001/45001 제외 유지. 목적은 고객 제안에서 품질 심사 사전 검토로, 강조는 공정 처리 범위·실험실 시험·인증 적용 범위/유지 조건, direction=quality_process/독자=품질·공급업체 심사 담당자로 설정했다. 요청8쪽·사진balanced·toneplain·납기제외·가상자료시연표시는 유지. 목적·강조·독자를 함께 바꾼 표본이며 기존revision7은 수동 보완된 문서이므로 목적 효과만 분리한 통제 평가나 모든 목적의 일반 품질 보증은 아니다.
+- **실제 AI/문서:** 점검 pf_30fc1275ff074e0d can_generate=true·104facts, 초안 doc_ac7f263b2320421e revision1/input2 생성. 점검83초·초안71초(각Job시각 기준). 초안8쪽이 본문 보존 자동 분할로9쪽이 됐으며 editorial requested_pages8/generated_pages9/분할 사유에 표시된다. 실제 작업은 점검1/초안1/의미검증1이며 SDK개별 호출수/비용을 임의 환산하지 않는다.
+
+| 비교 항목 | 기존 고객 제안용 revision7 | 새 품질 심사용 revision1 |
+|---|---|---|
+| 쪽수/사진 | 8쪽/6개 | 9쪽/같은6개asset |
+| 인증 설명 | 마지막1쪽의 AS9100/ISO9001 표준·유효기간·유지 조건 | LRQA 범위/유지조건1쪽 + KSPC·SEMES 범위/규격/기간1쪽 |
+| 공정 설명 | 공정별 주요 특징·소재 | 아연두께5/13/25미크론·크로메이트168hr/1A·3종 등 원자료의 구체 내용 확대 |
+| 사진 설명 | 원자료 대조 후6개 구체/중립 설명 | 모두‘선택 자료 사진’으로 생성되어 설명 보완 필요 |
+| 배치 품질 | PDF/DOCX8쪽 승인·다운로드 확인 | PDF/DOCX9쪽 실제 검사는통과, 논리4쪽에 사진만 남아 구성 보완 필요 |
+
+- **내용/근거 검사:** val_a2d3b2c644514ce2 passed·열린문제0개. 모든블록fact_ids가 최신supported사실에 있고 evidence_refs의source/segment/원문excerpt를 DB읽기전용으로 직접 대조했다. 납기/ISO14001/45001 문구는 본문에없음. 인증의 기간·유지 조건을 원자료기재 범위로 서술했다. 검증 통과는 실제 공정 성능·인증 현재 효력이나 사실성 일반 보장이 아니다.
+- **실제 출력/시각 확인:** template_v10 PDF lc_a1352698a88a4d7b/art_526f255b395d4b5e, DOCX lc_194fa71042f24e13/art_49d44286ed6a487c 모두actual_pages9·layout/publicationpassed·필수3종ok. 두형식9쪽 전체미리보기를열어 인증 페이지 확대와 논리4쪽 사진 단독 배치를 확인했다. DOCX는LibreOffice기준이며 Word동일쪽수를 보장하지 않는다. 사진asset6개는 기존문서와동일하나 범용캡션을 사진 의미 검수 완료로 기록하지 않는다.
+- **보존/상태:** 새세션document1/revision1/job5(점검/초안/내용검증/배치2)/승인0/Export0. 품질보완 후속을 위해새세션 유지(관측expires08:51:24UTC, 정책상만료될수있음). 기존revision7/내용passed·두형식active승인·최신출력SHA동일, DBquick_check/FK정상. 제품코드/프론트/Agent·.env·모델/API/DB변경 없음, pytest재실행없음·원격push없음. BE-10진행중 유지, 다음은 자동분할의 사진 단독쪽/캡션 보완·재검수다.
+
+<a id="c05-live-ai-20261006"></a>
+
+### [F-04/08 · BE-05/10] → 실제 AI 보완 자료의 편집 복귀·근거 연결 검수 (2026-10-06)
+
+- **범위/환경:** 사용자 다음 작업 요청으로 기존 시연 서버에서 별도 demo 세션 sess_bbefaf28990a475b를 생성했다. ‘복귀검수 가상정밀’의 가상TXT 기본 자료4행/보완 자료3행을 HTTP첨부했다. 실제 Agent llm 점검2회·초안1회·의미검증2회를 실행했으며 SDK 개별 호출수/비용을 작업수로 환산하지 않는다. 기존 모델·검증40만자·.env·프롬프트·제품 코드·프론트·DB 스키마는 변경하지 않았다. 실제 회사 자료의 변화나 다른 업종 전체 품질을 검증한 결과는 아니다.
+- **초기 편집/재점검:** input2 점검 pf_7060247a5a4c43b5 can_generate=true, doc_a13d2aefb5ff4276 1쪽 초안revision1 생성. 직접 페이지 제목을 ‘직접 편집한 복귀 검수 소개’로 바꿔revision2 저장. 두께측정기 보완자료 추가/선택으로input3, 실제 재점검 pf_785c8e0dd7824dd5 완료. 문서revision2/input2와 제목/본문은 유지되고 input_review_required=true 확인.
+- **영향 검수:** impact_4141a95cc2a642f2 생성/명시 확인. 사업/제품은 정확 일치해 자동 사실 연결2개, 회사명 근거 추가·CNC 설명 표현 차이는3블록 FACT_REVIEW_REQUIRED로 남았다. 확인 없이 유지 사유만 적용하면422 IMPACT_REFERENCE_INVALID·본문/버전 불변. 원자료를 대조해 회사명/CNC의 최신supported사실/근거를3블록에 명시 연결하고 새 검사 장비 문장1개만 insert_block으로 선택 적용했다. 적용revision3/input3·validation Job1개, 같은키 재전송200/동일 응답으로중복0건. 기존6블록의ID/content·편집 제목 동일, 전체 참조는 최신 사실ID로 연결됐다.
+- **실제 의미 검사:** 최초val_3a9e19f19ce54aaa failed. 이전 초안 ‘CNC 가공기 2대 보유’가 원자료 ‘가공 설비: CNC 가공기 2대’보다 강한 보유 단정이라는 UNSUPPORTED_CLAIM blocker1개가 저장됐다. 문제를 확인 버튼으로 없애지 않고 ‘가공 설비로 CNC 가공기 2대가 기재되어 있습니다.’로 직접 수정해revision4 저장. 실제재검증 val_3edf60b5eb38433a passed·열린문제0개·input_review_required=false·최신사실참조 확인. 영향 검수status=applied. 일회 통과를 모델 안정성 보장으로 기록하지 않는다.
+- **중복/보존/정리:** 검수세션의 문서1개·revision4개·점검2개·영향검수1개·유지확인1개·Job7개(읽기2/점검2/초안1/검증2)·승인/Export0개 확인. DELETE정상종료200/cleanup=done, 이후문서GET410·revision본문{}·큐done. 기존 sess_cece8323f3a247ce의revision7/내용passed·PDF/DOCXactive승인2개·최신출력파일SHA동일, DBquick_check=ok/FK0건 확인.
+- **상태/다음:** C-05 실제 AI 보완자료 복귀 표본 완료, BE-10/F-04 전체 통합 품질 진행중 유지. 수치 교체/자료 제외의 실제 의미 품질·다른 목적/실자료 조건은 별도 후속. 제품 코드 변경이 없어 pytest를 반복하지 않았으며 직전1,807건 전체 회귀는 당시 기록이다. 원격push/다른 담당 메시지 없음.
+
+<a id="backend-completion-audit-20261006"></a>
+
+### [F-08 · BE-10] → 백엔드 완료 기준·잔여 QA 대조 (2026-10-06)
+
+- **방법/결론:** AGENTS/plan/PRD/contracts와 역할별 현재 기능표·체크리스트·완료 기록을 현행 코드/기존 검사에 대조했다. BE-01~07·09 기존 서버 범위와 BE-08 PDF/LibreOffice DOCX 서버 범위는 구현/검사 완료이며 BE-10 전체 통합 품질은 진행중이다. 기능 구현 완료·현재 시연 표본 완료를 모든 목적/실자료 조건의 품질 완료로 확대하지 않는다. 기존 업무 진행률90% 산식은 기존 부분/통합 상태 기준 참고값이며 이번 대조로 새 정밀 완료율을 만들어 내지 않는다.
+
+| 백엔드 QA | 구현/검사 근거 | 확인 범위 |
+|---|---|---|
+| QA-02 세션 접근 | test_be02 no_cookie/other_owner/expired, test_be09 cleanup | 소유·만료 가드, 최신 시연 무소유 다운로드401 |
+| QA-03/04 파일 읽기 | test_be03 TXT/PDF/DOCX/PPTX/용량·부분 읽기, registered_import | 파싱·위치·자료 참조. 수치 의미 품질은 Agent 평가와 분리 |
+| QA-07 최신 점검·생성 | test_be04 draft_requires_confirmation/입력 변경/중복 | 확인·버전·작업·저장 가드, 현재 실자료 실제 AI 기록 |
+| QA-11 편집·충돌·적용 | test_be05 revision/input_conflict, C-05 impact API | 저장/선택 적용/기존 편집 보존. C-05 실제 변경 자료 의미 검수는 후속 |
+| QA-14 부분 검증 | test_be06 partial_revalidation/untouched_blockers | 미해결 문제 보존·선택 변경 검사. 일반 사실 정확성 보증 아님 |
+| QA-16/17 승인·무효화 | test_be06 approval_conditions/invalidation, test_be08_rules | 필수 조건·경고 확인·문서/입력/허가 변경 가드 |
+| QA-18/19 실제 출력·재사용 | test_be07/test_be08 실제Chrome/LibreOffice/다섯 분량 | 현재revision7 PDF/DOCX8쪽 승인·바이트 동일 다운로드, 렌더/AI 재생성 없음 |
+| QA-20 정리·중단 복구 | test_be09 Windows잠금/Chrome/HTTP/늦은 결과 | 기본 대역 회귀, 실제 preflight 유료2사례는 이전 live-ai-interruption 기록 |
+
+- **발견/보완:** 전체 회귀 최초 실행은952 passed/3 failed/1 warning(41.97초, maxfail3 중단). test_stopped_trial_preserves_existing_document_through_server가 입력 변경 후 재시작 GET을 변경 전 응답과 완전히 동일하다고 기대했다. 본문은 그대로지만 C-05 조회 필드 input_review_required=true/latest_preflight_id=null이 맞으므로 제품 코드를 바꾸지 않았다. 기존 tests/test_agent_llm.py의 해당 서버 통합 검사에서 변경 직후 본문 동일·재점검 필요·최신 점검 없음, 재시작 후 변경 상태 동일을 각각 검사하도록 보완했다. 등록/첨부·수동/횟수 중단4조합은4 passed/1075 deselected/1 warning(14.81초). 실패를 숨기거나 본문 비교를 삭제하지 않았다.
+- **최종 전체 회귀:** PYTHON_DOTENV_DISABLED=1, python -X utf8 -B -m pytest -q -p no:cacheprovider --disable-warnings --maxfail=3 --tb=short로 전체 재실행 **1,807 passed / 10 skipped / 3 warnings / 실패0 / 736.27초**. 건너뜀은 Windows의POSIX 전용8건·실제 유료AI 명시 실행2건. Starlette AnyIO 별칭1건/마이그레이션 외래키 정렬2건의 기존 경고는 남으며 실패로 바뀌지 않았다. 실자료 의미 보증/실제 유료AI 전체 실행 결과로 확대하지 않는다. 검사 중 시연revision7 내용passed·형식별active승인2개·DB quick_check/FK 정상·프론트5173 HTTP200 재확인.
+- **문서 정리:** 역할별4절을 실제 남은 작업으로 갱신했다. DOCX 시연 승인·C-05 가상 화면 연결·사진 공개 사용·실제 preflight 중단은 완료 이력으로 정리하고 회사 현재 정보/제외 ISO·미사용 사진 명칭·목적별 품질·별도 프론트 공유는 미확인으로 유지했다. 공통task의 오래된 전체 실패/후속 표시를 최신 결과와 맞추되 Agent 행·상태는 바꾸지 않는다.
+- **환경 보호:** 백엔드 test 작업본·시연 승인revision7 유지. C:\frontend 미커밋10파일/.claude 미변경. 이번 제품 API/DB/프롬프트/모델·.env 변경·실제 유료 AI 요청·원격 push 없음. 일반 회귀는 임시 DB·가상 자료·대역 AI이며 별도 유료검사 기본skip을 성공으로 계산하지 않는다.
+
+<a id="native-ppi-approval-download-20261006"></a>
+
+### [F-06/08 · BE-08/10] → 사진 품질 반영 최신 문서 시연 승인·다운로드 검수 (2026-10-06)
+
+- **범위/확인:** 사용자의 ‘다음 작업’ 요청으로 직전 예고한 최신 버전 최종 확인·형식별 시연 승인·다운로드 검수를 실행했다. 현재 문서 본문8쪽/사진 설명6개를 GET으로 읽고 두 형식 전체8쪽 미리보기를 열었다. revision7/input2·내용 val_2750c4eadcbc40fb passed·열린 문제0·input_review_required=false, PDF lc_c45f71e706e44d08 / DOCX lc_33ee9cc390b54674 template_v10/8쪽/passed 확인. 제외 ISO 자료의 진위/현재성이나 회사 현재 운영 상태를 확정하지 않는다.
+- **명시 시연 승인:** sess_cece8323f3a247ce / doc_f682a61bb898474e에 기존 승인 API confirmed=true로 PDF apr_def9f32f2bb742b7 / DOCX apr_a39bf1b07fc04039를 생성했다. 둘 다 demo=true·revision7·active이며 GET approvals_by_format에서도 함께 복원된다. 기존 검사 산출물 각각 art_80082f9db7df4b26 / art_c02e8b35f90f4cc2와 연결했다. 사용자 사업상 최종 결재나 외부 배포를 대신한 것이 아닌 로컬 시연 승인이다.
+- **다운로드:** PDF exp_17f4aed597234a9b / DOCX exp_8a8a1a92664847c4 ready. 각2회 실제 HTTP 다운로드가 검사 artifact와 바이트/저장 SHA256 모두 일치했다. PDF2,654,801bytes / 81efceb31de290c9ae695a9836562b5e4b7aeb98505246898b1aeae28db0c1ca, DOCX2,320,528bytes / 657db2c5c570761fa09b27ed4e15d28df24c15732cc839d7c70965b1bb888b5d. 올바른 MIME 확인.
+- **중복/접근 보호:** 각 승인/출력의 동일키 재전송 상태·응답 동일, 새키 ready 재사용200/같은Export 확인. 세션 승인2→4·Export2→4·Job29→31(새 출력2개)이며 artifact14/revision7은 그대로다. 추가 렌더·초안/점검/검증 AI 호출 없이 기존 검사 파일 사용. 이전revision5 다운로드2개는409 APPROVAL_NOT_ACTIVE, 파일 해시는 보존. 새 출력2개 무소유 요청은401. DB quick_check=ok·foreign_key_check0건.
+- **환경/한계:** 기존 시연 서버8000과 프론트5173 HTTP200 유지. 제품 코드·프론트·Agent·.env 변경 없음. 기존 파일과 HTTP 상태만 검사했으므로 별도 pytest/브라우저 버튼 다운로드를 이번 실행으로 주장하지 않는다. 직전 코드 회귀40건과 이전 실제 화면 검사 기록은 각각 당시 결과다. BE-10 진행중 유지, 완료 기준/잔여 QA 대조 후속.
+
+<a id="photo-native-ppi-20261006"></a>
+
+### [F-06/08 · BE-07/10] → 사진 설명 반영과 DOCX 원본 해상도 확대 제한 (2026-10-06)
+
+- **구현:** export_render.py에서 원본 픽셀/150ppi와 기존180mm/120mm 영역 중 작은 크기로 DOCX 사진을 배치한다. 비율·중앙 정렬·임베드 처리 유지, 작은 원본에 새 세부를 생성하지 않는다. 이 값은 인쇄 품질 인증 기준이 아닌 출력 확대 상한이다. PDF 크기 정책은 유지하며 공통 template_v10으로 이전 형식별 검사/승인은 재실행이 필요하다. API 계약1.9·DB v11 유지, contracts 문서v1.32/plan v1.86. 프론트·Agent·.env 변경 없음.
+- **시연 편집:** sess_cece8323f3a247ce / doc_f682a61bb898474e / input2에서 원자료 기반 사진6개 caption/alt만 PATCH로 revision5→6 저장. 같은 키 재전송 응답 동일·추가 버전0건, 본문·사진 asset/fit·근거 참조 동일 확인. 최초 의미 검증은 크로메이트 사진의 공정 특정 근거 부족 IMAGE_UNVERIFIABLE 1건으로 실패했다. 이를 임의 해결하지 않고 ‘원자료의 표면처리 설비’로 수정해 revision7을 저장했다. 나머지 설명은 직전 후보와 같다.
+- **실제 검사:** revision7 내용 검증 val_2750c4eadcbc40fb passed·열린 문제0건. 실제 AI는 수정 사진6개 확인, 본문62개 검사는 이전 결과 재사용. revision6 검사1회/수정 후 재검사1회이며 초안·점검 재생성 없음. PDF lc_c45f71e706e44d08 / DOCX lc_33ee9cc390b54674 모두 template_v10·actual_pages8·필수3종ok·layout/publication 통과. 두 형식8쪽 전체 미리보기를 열어 사진/캡션·빈 쪽/잘림을 확인했다. DOCX 미리보기는 LibreOffice 기준이다.
+- **보존/해상도:** 최종 DOCX 그림 관계를 원본 asset 바이트와 직접 대조해6개 모두 동일 확인. 가로는180.00/81.45/76.88/81.96/75.35/74.68mm, 원본 기준179.63/150/150/150/150/150ppi. 이전revision5 Export2개의 파일 SHA256은 저장된 원래 해시와 일치한다. 새 버전의 approvals_by_format은 둘 다null이며 과거 승인을 새 버전에 자동 적용하지 않았다.
+- **회귀/구동:** 기존 tests/test_be07.py에 가로/세로/충분한 원본의 실제 그림 크기·비율·바이트 확인을 추가하고 기존 사진 크기 예상값을 갱신했다. DOCX/템플릿/형식별 승인 관련40 passed / 89 deselected / 1 warning / 실패0(112.39초). 기존 시연 DB로 서버 재시작·실행 로그 review400000 확인, 프론트5173 HTTP200 유지. 전체 회귀 재실행은 이번 범위에 포함하지 않았다.
+- **남은 일:** 최신revision7의 사람 최종 확인·형식별 명시 승인/다운로드, 전체 의미 품질 및 제외 인증 자료 확인. BE-10 진행중 유지.
+
+<a id="photo-source-quality-20261006"></a>
+
+### [F-08 · BE-10] → 사진 설명·실제 출력 해상도와 카탈로그/ISO 근거 검수 (2026-10-06)
+
+- **방법/범위:** 사용자 다음 작업 요청으로 SQLite mode=ro에서 현재revision5의 사진6개·caption_candidate/원자료 위치를 확인하고 원본 PPTX3/11/17쪽 텍스트 및 등록 PDF를 대조했다. 카탈로그8쪽·ISO14001/45001 국영문4쪽을 PDFium으로 렌더해 직접 열었다. PDFium은 기존 설치 의존성을 사용했고 새 제품 파일/라이브러리를 추가하지 않았다. 문서 본문·캡션·사진/공개 허가·선택·승인·프론트·.env는 변경하지 않았다. 사용자 공개자료 사용 가능 확인은 직전 기록을 유지한다.
+- **사진 설명 후보:** 아래 문구는 원자료 표기와 저장된 사진 위치를 대조한 반영 후보이며 현재 문서에는 아직 저장하지 않았다. 외관만으로 처리 품질·성능·현재 운영 상태를 주장하지 않는다.
+
+| 문서 쪽/원자료 사진 | 확인된 설명 후보 | 근거 위치 |
+|---|---|---|
+| 1 / P03_S156 | 거산케미칼 건물 외관과 대표 인사말 | 회사소개 PPTX3쪽 인사말 이미지 |
+| 3 / P11_S309 | 원자료에 기재된 아연도금 생산라인 | PPTX11쪽 아연도금 표기/현장 표지 |
+| 4 / P11_S322 | 원자료에 기재된 흑착색 처리라인 | PPTX11쪽 흑착색 항목 |
+| 5 / P11_S310 | 원자료의 전해/크롬도금 작업 구역 | PPTX11쪽 전해/크롬도금 항목 |
+| 6 / P11_S319 | 원자료에 기재된 크로메이트 처리라인 | PPTX11쪽 크로메이트 항목 |
+| 7 / P17_S446 | 원자료의 염수분무 시험기 | PPTX17쪽 장비 표기/사진 대조 |
+
+- **실제 해상도:** 승인 PDF의6개 실제 이미지 객체 경계(pt)와 승인 DOCX의6개 drawing extent(EMU)를 읽어 원본 픽셀/출력 inch로 PPI를 계산했다. 좌우/상하 미세 차이는 PDF 배치 치수의 반올림이다. 아래는 가로 기준이며 인쇄 표준 통과 판정이나 새 blocker가 아니다.
+
+| 쪽 | PDF 가로(cm) / PPI | DOCX 가로(cm) / PPI | 150ppi를 가정한 원본의 가로(cm) |
+|---|---|---|---|
+| 1 | 16.62 / 194.6 | 18.00 / 179.6 | 21.56 |
+| 3 | 10.21 / 119.6 | 16.59 / 73.7 | 8.14 |
+| 4 | 10.85 / 106.3 | 18.00 / 64.1 | 7.69 |
+| 5 | 6.85 / 179.4 | 16.55 / 74.3 | 8.20 |
+| 6 | 10.98 / 102.9 | 17.80 / 63.5 | 7.54 |
+| 7 | 13.81 / 81.1 | 18.00 / 62.2 | 7.47 |
+
+- **품질 판단:** 표지 외5장은 DOCX에서 약62~74ppi로 커져 PDF보다 선명도가 제한된다. 특히7쪽441×236 원본은 PDF에서도 약81ppi다. 작은 원본을 단순 확대/재압축해 실제 세부가 복원된 것으로 처리하지 않는다. 원본 교체 또는 표시 크기 축소가 품질 보완 수단이며 이번에는 파일/배치를 바꾸지 않았다. PDF 이미지 측정 첫 실행은 존재하지 않는 get_pos 호출로 중단됐고 실제 get_bounds로 수정해6개 모두 계산했다.
+- **카탈로그 포함 판단:** 원본8쪽에는 회사/과거 연혁·공정/품목·옛 인증 소개·두 공장 주소/직통번호가 있다. 공정 소개 및 과거 연혁은 출처와 시점을 명시한 참고 근거로 사용할 수 있으나 현행 인증·연락처·현재 거래관계/최신 시설의 확정 근거로 확대하지 않는다. 현재선택은 기존 제외를 유지하며 실제 포함 시 사용자의 자료 선택·재점검/영향 연결을 거친다.
+- **ISO 포함 판단:** 두 원본 모두 회사/주소/금속제품 표면처리 범위, 재발행2024-08-19·만료2027-08-26이 기재돼 있다. 각 국문 최초승인일은2016-09-27, 영문은2016-09-09로 다르고 두 규격의 인증번호는 KU0018-EC-SC로 동일하다. 이 차이는 원본에서도 확인되어 추출값을 임의로 통일하지 않았다. 인증서의 기간 표기가 현재 인증 상태를 단독 증명한다고 처리하지 않는다. 원문 발급기관 https://www.uni-cert.com 접근은 web 도구에서 실패했으며 검색에서도 해당 회사/번호의 검증 결과를 확보하지 못했다. 비슷한 이름의 다른 인증기관 결과를 증거로 사용하지 않았다. 두 자료의 현재 인증 주장·최초승인일/번호 확정은 보류하고 기존 제외를 유지한다. 인증 자체가 무효라는 판단은 아니다. 발급기관 연락/이메일 전송은 하지 않았다.
+- **보존/실행 결과:** 끝에 기존승인2/Export2/artifact10/Job23·등록 자료 선택의 제외3개·승인 PDF/DOCX 실제SHA256·DB integrity=ok/FK0을 읽기 전용으로 재확인했다. 이번 AI/렌더 재생성/승인 호출0회다. 제품 코드 수정이 없어 pytest를 반복하지 않았으며 실제 원문·이미지 배치 치수·DB 확인 결과를 기록한다. 검수PNG는 기존 Codex 시각화 폴더에만 저장했다.
+- **상태/다음:** 이번 사진/원자료 판단 단위 완료·BE-10/F-08 진행중 유지. 다음은 확인된 설명6개를 문서에 반영하고 DOCX 저해상도 사진의 확대 제한을 검토하는 품질 보완 단위다. 변경 시 기존 승인 파일을 대체하지 않고 현재 문서의 내용/형식별 배치와 승인을 다시 확인한다. Agent 작업 상태는 변경하지 않는다.
+
+<a id="final-ui-approvals-20261006"></a>
+
+### [F-05/06/08 · BE-06/08/10] → 공개자료 확인·실화면/형식별 승인 복원 (2026-10-06)
+
+- **사용자 확인/범위:** 사진3개 설명·공개 여부 질문에 사용자가 “다 쓰셈 공개자료임 다”라고 답했다. 실자료/사진의 공개자료 사용 가능 확인으로 기록한다. 기존 실사진19개 허가=true는 유지하므로 DB 허가 플래그를 중복 수정하지 않았다. 이 답변으로 미확정 공정/장비명이나 제외 중인 카탈로그/ISO의 현재 사실성을 임의 확정하지 않는다. 현재 문서는 기존 실자료4개+시연14개 선택·revision5·8쪽·사진6장이고 본문/선택/허가/승인 원본을 보존했다.
+- **실제 시각/품질:** 승인 PDF와 LibreOffice DOCX의 저장 미리보기16개 해시를 확인하고8쪽씩 모아 직접 열었다. 사진 누락·본문/사진 겹침·잘림을 관측하지 않았다. DOCX는 단일 열 본문이 조밀하고 PDF2쪽은 여백이 큰 편으로 제품 출력 구분을 유지한다. 현재 사진의 출처는 1쪽P03_S156(1273×717),3쪽P11_S309(481×348),4쪽P11_S322(454×300),5쪽P11_S310(484×351),6쪽P11_S319(445×300),7쪽P17_S446(441×236)이며 모두 기존 허가 기록true다. 캡션6개는 “선택 자료 사진”이고7쪽 원본은 확대 시 선명도가 제한된다. 미확정 P11_S299/P17_S465/P17_S474는 현재6장에 포함되지 않는다. 사진별 정확한 공정/장비명을 새로 단정하지 않았다.
+- **화면 발견/보완:** 실제 Chrome으로 기존 본인 세션을 복원해 S01 자료21개/기존 선택, S02 편집 조회, S03 내용/형식별8쪽 통과·실제 미리보기를 확인했다. 처음에는 PDF/DOCX 모두 승인된 상태에서 문서 GET의 최신 approval1건(DOCX)만 사용해 PDF 출력 준비/다운로드가 비활성화됐다. app/models.py·routers/documents.py에 approvals_by_format을 추가해 각 형식의 현재 문서/입력 active 승인만 반환한다. 기존 approval 의미·정책·DB는 유지한다. 프론트 api/publication.ts·hooks/usePublication.ts는 선택 형식의 승인/복원 상태를 계산하며 필드가 없는 구버전/가상 응답은 기존 필드를 사용한다.
+- **실제 UI 완주:** 보완 뒤 PDF/DOCX 각각 출력 준비→다운로드 클릭·실제 파일 수신을 확인했다. PDF2,654,282바이트·DOCX2,320,424바이트이며 직전 승인 artifact SHA256과 각각 일치한다. 카드/페이지 보기·DOCX 단일 열/LibreOffice 안내·새로고침 후 DOCX 다운로드 복원·DOCX→PDF 재전환/준비를 확인했고 깨진 이미지0/브라우저 runtime 오류0이다. 첫 임시 검수 스크립트의 JS 따옴표 오류와 재로딩 중 단계 버튼 재생성 대기 오류는 검사 코드에서 수정했다. 최종 화면 검사 결과와 구분하며 제품 오류로 처리하지 않는다. 스크린샷/16쪽 모음은 Codex 시각화 작업 폴더의 qa-s01/02/03*, qa-pdf/docx-8pages.png에 있고 저장소에 진단 파일을 생성하지 않았다.
+- **검사:** tests/test_be08.py에 양식별 실제 배치/승인→새 GET 두 승인 유지/기존 latest 필드 유지→형식별 출력 ready 재사용→문서 수정 후 둘 다null 회귀를 추가했다. 처음에는 검사 helper에 없는 fmt 인자로 실패해 기존 export/job 경로로 고쳤다. 최종 관련선택 검사 **8 passed/74 deselected/경고1/35.88초**, 별도 API 계약전체 **43 passed/경고1/6.61초**. 두 실행의 중복 항목을 합산하지 않는다. 프론트 TypeScript/Vite build와 해당2파일 ESLint 통과. 전체 백엔드 pytest는 이번에 미실행이다. 계약문서v1.31·plan4.70/v1.85·계약1.9 유지이며 프론트 계약 사본 파일은 추가하지 않았다.
+- **시연/공유:** test 백엔드8000·프론트5173 실제HTTP200, 프론트 API프록시 인증 없음401, 진행Job0 확인 후 백엔드만 보완 재시작했다. runtime·LlmAgent·demo=true·input200000/review400000/output64000/timeout180/retries2를 확인했다. 이번 AI 호출0회, 시연 approvals2/exports2/artifacts10/jobs23 그대로·같은 승인ID2개·본문revision5/등록 자료 보존·DB integrity=ok/FK0이다. 프론트는 기존 미커밋 오프라인 미리보기10파일·.claude/를 보존하고 이번6줄추가/1줄삭제만 HEAD 기준 인덱스 패치로 develop3257753에 별도 커밋했다. 원격push 없음.
+- **상태/다음:** 현재 선택 시연 문서의 실제 화면·승인 복원·형식별 다운로드 검수 완료, BE-06/07/08/09 서버 범위 유지·BE-10/F-08 진행중. 공개자료 사용 가능 확인 항목은 해소됐으며 사진6개 설명·작은 원본의 선명도·카탈로그/ISO의 현재 근거 포함 판단 및 실자료 전체 의미 품질은 남는다. Agent 상태를 변경하지 않는다.
+
+<a id="live-ai-interruption-20261006"></a>
+
+### [F-07/08 · BE-09/10] → 실제 AI 실행 중 종료·강제 중단/복구 검수 (2026-10-06)
+
+- **구현/격리:** 기존 tests/test_be09.py에 BE09_LIVE_AI=1 명시 시에만 실행하는 두 실제 유료 사례를 추가했다. 일반 실행은 skip하며 격리 ORM v11·가상 TXT·무작위 포트 HTTP 서버에서 현재 .env 모델/실제 SDK를 사용한다. 요청 본문 전송 완료와 실제 결과 검증/Job 종료만 관측하며 비밀값·회사 원문을 기록하지 않는다. Windows 기반 Python과 venv 라이브러리를 사용해 강제 종료 대상 PID가 실제 임시 서버가 되도록 했다. 제품 코드·API·모델·프롬프트·의존성·프론트·.env 변경 없음.
+- **세션 종료:** 실제 요청 전송 중 DELETE로 종료·cleanup=done을 확인했다. 유효한 AI 응답이 뒤늦게 돌아와도 Job cancelled/고정 종료 오류 유지, preflight/document/proposal/approval/export0건, 세션 폴더 제거·brief 본문 제거·접근410, 다른 활성 세션 접근200과 DB/FK 정상이다.
+- **강제 중단/복구:** 실제 요청 전송 중 임시 서버를 kill/wait하고 같은 DB로 재시작했다. 기존 Job failed/SERVICE_TEMPORARY_FAILURE/retryable, 선택 자료 parse_status=complete와 세션 접근 보존, 같은 키의 최초 응답/Job 재사용·자동 AI 재호출0회를 확인했다. 새 키 명시 재시도만 실제 응답 succeeded로 저장하고 재전송 뒤에도 preflight1건·점검 Job2건(실패1/성공1)·document0건을 유지한다. 다른 활성 세션과 DB/FK도 정상이다.
+- **실제 실행:** 최초 유료 실행은 세션 종료1 passed, 재시작1 failed였다(30.82초/기존 경고1). 재시작 뒤 자료 상태를 읽는 테스트가 계약에 없는 read_status를 참조한 오류로, 제품 실패가 아니다. 실제 parse_status로 수정한 후 재시작 사례만 재실행하여1 passed/44 deselected/기존 경고1/26.04초를 확인했다. 유료 두 사례는 각각 통과했으며 최종 두 사례를 한 명령으로 다시 실행하지 않았다. 기본 BE-09 전체는 **43 passed / 2 skipped / 기존 경고1 / 77.67초**; skip2는 신규 유료 검수다. 별도 집중 회귀도2 passed/2 skipped/41 deselected/경고1/2.93초였다. 전체 저장소 pytest는 이번에 재실행하지 않았다.
+- **호출/비용:** 실제 전송4회(정상 응답2/강제 중단2)를 관측했다. 완료 응답의 추정 비용은 USD0.001122925+0.000723845=0.001846770이며 공급사 청구 확정값이 아니다. 중단2회의 응답/사용량/비용은 미확인이다. 이번 검수는 preflight 실제 AI 경계이며 초안/편집안/내용 검증 모든 작업의 실제 유료 중단 검수로 확대하지 않는다.
+- **시연 보존/상태:** 기존 시연 DB는 읽기 전용으로 approvals2/exports2/artifacts10/jobs23·등록 자료21개·DB integrity=ok/FK0을 확인했고 승인 PDF/DOCX 실제 바이트 해시가 직전 기록과 동일하다. 감사 스크립트의 잘못된 registered_sources 테이블 참조는 실제 sources/scope=registered로 고쳐 확인했다. HTTP 확인은 연결 거부였고8000/5173 리스너가 없었다; 이번에 제품 서버를 종료/재구동하지 않았으며 HTTP200으로 기록하지 않는다. 임시 서버는 finally에서 종료한다. BE-09 서버 완료·BE-10/F-07/F-08 진행중을 유지하고 Agent 상태는 변경하지 않는다. 다음은 실자료 전체·사진별 사람 품질 검수와 사용자 화면 최종 통합 확인이다. 결정은 plan4.69에 기록했다.
+
+<a id="demo-approval-download-20261006"></a>
+
+### [F-05/06/08 · BE-06/08/10] → 최신 시연 문서 승인·다운로드 검수 (2026-10-06)
+
+- **범위:** 사용자 '다음작업' 요청으로 현재 시연 문서 doc_f682a61bb898474e/revision5/input2의 내용 passed·input_review_required=false 및 형식별8쪽 배치 passed를 확인하고 기존 승인/출력 API를 실제 호출했다. demo=true인 로컬 시연 검수이며 실제 회사의 공개 허가나 실사용 최종 품질 승인으로 확대하지 않는다. 제품 코드·모델·프롬프트·원자료·사진 허가·프론트·.env 변경 없음.
+- **승인/출력:** PDF apr_8bd7cfec0e5144c8→exp_adc6953bc2fb40c4, DOCX apr_a8e7b202e4c94520→exp_1dbcf34c59a24ee4가 각각active/ready다. 같은 승인 키 재전송 응답 동일, 같은 출력 키의 최초 상태/본문 동일, 새 키 ready 재요청도 같은 Export ID 재사용을 확인했다. 다운로드 각200·private/no-store·attachment/UTF-8 파일명, 반복 다운로드 바이트 동일이다.
+- **실파일:** 다운로드 bytes의 SHA256/크기가 DB 승인 artifact와 일치한다. PDF2,654,282바이트·SHA256 10fae709f4f3a57c10767c7c533eb4b3c4a43898eb208d0e52401db087a97c6f·pypdf 실제8쪽/사진6장/매 쪽 시연 footer. DOCX2,320,424바이트·SHA256 9d72f4fc370c16bffb5f4f23377da9c64b2b1d97d871982448c3d94779566db1·ZIP CRC 정상/내장 이미지6개/그림 배치6개, 해당 승인 배치의 LibreOffice 실제8쪽을 확인했다. 검수는 다운로드 메모리에서 했으며 별도 회사 파일/진단 폴더를 생성하지 않았다.
+- **중복/보호:** 이번 전체 검수 전후 승인0→2·Export0→2·Job21→23(출력2건), artifact10 그대로·문서 revision행5 그대로다. 재요청/재다운로드로 산출물이나 초안을 다시 생성하지 않는다. 인증 없는 다운로드401 UNAUTHORIZED, 다른 형식의 승인 사용422 EXPORT_NOT_ALLOWED, 과거revision 승인409 DOCUMENT_REVISION_CONFLICT, confirmed=false 승인422 APPROVAL_NOT_CONFIRMED를 확인했고 거부 요청은 행 수를 늘리지 않았다.
+- **제한/무결성:** 최초 검수 스크립트가 artifact의 해시 필드명을 content_hash로 잘못 읽어 PDF 승인/출력 후 중단됐다. 실제 DB 필드sha256으로 고쳐 같은 승인/출력 재사용을 확인했으며 중복 승인/Job은 없었다. DB integrity_check=ok·foreign_key_check0·등록 자료21개 보존·OpenAPI200. AI ledger calls_started7은 직전 단위와 동일하여 이번 AI 호출0회다. 새 제품 코드가 없어 pytest를 반복 실행하지 않았고 실제 HTTP·파일·DB 확인 결과를 기록한다.
+- **상태/다음:** 최신 선택 문서1건의 시연 내용 점검→형식별 배치→승인→파일 다운로드 검수는완료했다. BE-06/07/08 서버 범위 유지·BE-10/F-05/F-06/F-08 진행중·약90% 유지. 남은 후속은 실제 AI 실행 중 종료/복구 시 늦은 저장 방지, 실자료 전체·사진별 사람 품질 검수 및 사용자 화면 최종 통합 확인이다. 다음 백엔드 작업은 실제 AI 중단/복구 검수이며 기존 시연 승인/산출물을 보존한다. 다른 Agent 상태는 변경하지 않는다.
+
+<a id="record-evidence-binding-20261006"></a>
+
+### [F-05/08 · BE-10 연결] → 시연 식별자 인용·기존 문서 근거 연결 완주 (2026-10-06)
+
+- **보완:** 기존 app/prompts/extract.txt에 사례/품목/검사 기록의 식별 구간과 실제 측정값/조건 구간을 함께 인용하고 다른 기록을 합치지 않도록 명시했다. tests/test_agent_llm.py에 식별자 구간 누락·정상 연결·다른 번호 연결의3개 회귀를 추가했다. 숫자/날짜 검사·모델·Agent 추출 코드·API/DB·프론트·원자료·허가·.env 변경 없음. plan.md 4.68절에 기록했다.
+- **회귀/실제 점검:** 관련 추출/숫자/사전 점검/인증/식별자 선택 **113 passed/1060 deselected/기존 경고1건/12.96초**. 실제 company_info1회/77.81초, pf_0b7f9a7fb68b4d93/input2는97 facts 전부supported·needs_confirmation/conflict/missing0·issues0. 사실 개수가 이전128보다 줄었으므로 이것만으로 정보의 완전 추출/최종 승인을 보장하지 않는다.
+- **명시 연결:** 기존 doc_f682a61bb898474e/revision2의 사용 사실27개를 원문과 대조했다. 같은 의미의 새 사실이 합쳐지거나 분리돼 정확한 자동 대응은3개, 영향 검사에서 참조 검토 필요61블록이었다. impact_a3a9aa2bda1f43c6 생성 후64블록의 새 fact 참조를 명시 적용해revision3·전체 검증 Job을 저장했다. 적용 재전송은 같은 응답/버전/Job이었다. 본문·디자인·사진·기존 원문 인용은 동일했다.
+- **중간 실패/보완:** revision3의 검증은 새 사실의 추가 인용 누락으로 EVIDENCE_INVALID와, 실제 공정 목록 요약 F055에 시연 근거가 섞여 생긴 DEMO_VALUE를 검출했다. 통과로 기록하지 않는다. 새 사실의 모든 인용을 추가하고 F055 대신 실제 원문만 연결된 공정/기술 사실들을 명시 연결해21블록의 참조만 수정한revision4를 만들었다. 기존 API의 삭제/삽입 연산을 한 원자적 PATCH로 적용했고 블록 ID·순서·본문·사진·디자인을 보존했다. PATCH 멱등 재전송도 추가 버전을 만들지 않았다. 검사 가드를 완화하거나 Issue 상태를 직접 바꾸지 않았다.
+- **최종 정리/내용 검증:** revision4는 필수 오류0·REPETITION warning1이었다. 6쪽의 앞 설명을 반복하는 문장과 비게 되는 소제목2블록만 삭제해revision5/input2로 저장했다. 최종 실제 검증 val_ec310da74e4f4a50은 **passed·열린 Issue0**이고 input_review_required=false다. 최초 승인일/장비 명칭 등 최신 요약에 자세히 적히지 않은 내용은 기존 직접 원문 인용을 유지하고 다시 의미 검증했다. revision2와 비교해 중복2블록을 제외한 모든 표시 내용·페이지 순서·디자인·사진6장 동일, 남은 블록의 기존 인용 모두 보존, 새 사실의 인용 모두 포함, 실제 원문 참조만 사용함을 검증했다.
+- **형식별 실제 검사:** 최종revision5/template_v9의 PDF lc_33240a3cb9394164·DOCX lc_2adb9d31d6be4e9b는 모두passed·actual_pages8·layout_ok/publication_policy_ok=true·필수 배치3종ok·findings0. 중간revision3/4의8쪽 통과 기록도 보존하며 현재 결과로 혼동하지 않는다. 최종 approval은없고 승인/다운로드 호출은하지 않았다.
+- **비용/상태/다음:** 실제 company_info1회·content_review3회(초기 연결 실패/인용 보완/중복 삭제), 추정 합계 USD0.0370937이며 공급사 청구 확정값이 아니다. 초안 재생성/자동 재시도0회. 전체 pytest는 이번에 미실행이다. 시연 식별자 보완·새 근거 연결·내용/배치 재검증 단위는완료, BE-06/07/08 서버 범위 유지·BE-10/F-05/F-08 진행중·약90% 유지. 다음은 검토 가능한 최신 문서의 최종 명시 승인·PDF/DOCX 다운로드 통합 검수 및 남은 실제 중단/복구 확인이다. Agent 전체 상태는 변경하지 않는다.
+
+<a id="history-evidence-20261006"></a>
+
+### [F-05/08 · BE-10 연결] → 연혁 연도·인증번호 근거 재점검 (2026-10-06)
+
+- **원인 확인:** 이전 F033의 '승인(2017)'에서 2017은 일반 number 토큰, 원문 '2017 | 사건'은 year 토큰으로 읽혀 숫자 근거 차이가 2017/2018/2020이었다. 원문 구간 5개와 저장 인용이 일치하며 연도 자체는 자료에 있었다. 이전의 현재 고객 정보 부족 설명만으로 원인을 확정하지 않는다. 과거 승인 이력이 현재 거래 관계를 보증하지 않는다는 제한은 별도로 유지한다.
+- **수정 범위:** 기존 app/prompts/extract.txt에 연혁 연도를 '(2017년)'처럼 명시하고 원문 인용을 보존하는 지침, 과거 공정 승인 사건과 현재 고객 정보의 구분, 인증명/규격 번호와 scope를 한 사실로 쓰면 두 구간을 모두 인용하는 지침을 추가했다. 모델·Agent 추출 코드·숫자/날짜 검사·사전 blocker/승인 정책·API·DB·원자료·사진 허가·프론트·.env 변경 없음. 결정은 plan.md 4.67절이다. Agent 전체 작업 상태는 변경하지 않는다.
+- **회귀:** 최초 수치/추출35 passed. 확대 검사는 샌드박스 임시 폴더 접근 오류로91 passed/2 setup errors였고 같은 검사를 허용 환경에서 실행해108 passed를 확인했다. 인증서 머리말/범위 근거 2구간 회귀를 추가한 최종 tests/test_agent_llm.py·test_be06.py 선택 검사는 **110 passed/1060 deselected/기존 경고1건/12.46초**다. 명시 연도 통과·모호한 괄호 숫자 유지·잘못된 연도·수량의 연도 변환 차단, 인증번호 구간 누락 차단/연결 통과, 기존 점검/미참조 blocker 보호 포함. 전체 pytest는 이번에 미실행이다.
+- **실제 점검 1:** company_info 1회/95.76초, pf_a37332313cd34ab3는117 facts(supported116/needs_confirmation1). 과거 승인 이력의 연도 표기가 개선됐으며 한정된 과거 사실은 supported다. 모델은 일부 과거 이력을 customers_markets에도 중복 분류했으므로 분류 지침의 완전 준수로 보지 않는다. 새 blocker는 AS9100D·ISO 9001 번호를 쓰면서 scope 구간만 인용한 F038이다. 숫자 근거 차이는9100/9001이며 그 번호가 적힌 인증서 머리말을 인용하지 않았다.
+- **실제 점검 2:** 인증명/번호와 scope를 모두 인용하도록 보완 후 company_info 1회/76.39초, 최신 pf_feecbefcc48a451e는128 facts(supported127/needs_confirmation1). 기존 과거 승인/인증 범위 문제는 최신 사실에서 미확인 상태가 아니다. 남은 blocker는 DEMO_DDALGI_V2_QUALITY의 F082: '[시연] Q-P01 ... 치수'인데 연결된4행에는 치수만 있고 Q-P01은1~2행에 있다. numeric 차이는01이다. 치수 값 자체의 차이나 DB 손상으로 판정하지 않는다. 추가 자동 재시도/점검 재호출 없이 인용 범위 선택의 Agent 품질 후속으로 남긴다.
+- **보존/비용:** 이번 실제 company_info 총2회, 추정 합계 USD0.017568225(공급사 청구 확정값 아님), 초안/내용 검증/승인/다운로드 호출0회. 기존 doc_f682a61bb898474e/revision2/input2의 content_json SHA256 f30359f78d1f429f3b21432ffa879f44dc1e36681b9946430811e50cd647309d와 사진6장 동일, approval 없음. 최신 점검 변경으로 input_review_required=true이며 과거 검증/승인을 되살리지 않는다. 과거 PDF/DOCX 실제8쪽 통과 기록은 당시 문서/점검 범위를 유지하며 이번 최신 점검의 최종 승인 결과가 아니다.
+- **상태/다음:** 원인 조사·추출 지침 보완·실제 재점검 단위 완료. 남은 식별자/인용 구간 누락·분류 중복은 Agent 품질 후속, 새 점검과 기존 문서의 명시적 근거 연결·전체 재검증/배치/사용자 최종 승인·다운로드 검수는 후속이다. BE-06 서버 범위 유지·BE-10/F-05/F-08 진행중·전체 약90% 유지. '실제 점검 필수 문제0건'이나 백엔드 전체 완료로 기록하지 않는다.
+
+<a id="deleted-review-targets-20261006"></a>
+
+### [F-05/08 · BE-06/10] → 실제 중복 정리·삭제한 검증 대상 해결 (2026-10-06)
+
+- **실문서 조치:** sess_cece8323f3a247ce의 doc_f682a61bb898474e에서 첫 쪽의 같은 회사 설명 2문장과 비게 되는 소제목 2개를 기존 PATCH API로 삭제했다. 문서 revision1→2/input2, 멱등 재전송 응답 동일·추가 버전 없음, 다른 7쪽과 사진 6장의 내용/참조/표시 설정 전부 동일함을 대조했다. 원자료·사진 공개 허가·사전 사실·Agent 모델/프롬프트·프론트·.env 변경 없음.
+- **발견/보완:** 첫 실제 재검증은 삭제된 블록의 REPETITION 2건을 open으로 보존했다. 부분 재검증 범위에는 삭제 블록이 없기 때문이었다. app/services/validation.py의 성공한 재검증 저장에서 명시 대상 블록이 전부 삭제되고 이번 결과에도 없는 Agent 지적만 resolved로 닫도록 수정했다. 일부 대상이 남거나 문서 전체 문제이면 기존 검사 범위를 유지한다. 사전 점검 blocker·배치 검사는 각 기존 정책을 유지한다. 복원으로 원인이 돌아오면 같은 ID를 open으로 되돌린다. 결정은 plan.md 4.66절, API/DB/의존성 변경 없음.
+- **담당 직접 확인:** tests/test_be06.py 전체 **94 passed/기존 경고1건/55.69초**. 신규 회귀는 삭제 대상 해결·다중 대상 일부 보존·문서 전체 문제 보존·복원 시 재개방을 한 흐름으로 검증한다. 기존 점검 blocker 유지·부분 검사·승인 보호도 통과했다. 최초 실행은 샌드박스의 pytest 임시 폴더 접근 권한으로 setup 2건이 실패해 권한 허용 환경에서 같은 검사를 재실행했다. 이번 전체 pytest는 미실행이다.
+- **최신 실제 결과:** 같은 시연 DB/runtime/검증400000 설정으로 서버 재시작 후 재검증 val_45b5255573b54d83에서 중복 2건 resolved, 열린 문제는 사전 점검 UNSUPPORTED_CLAIM 1건뿐이다. 이번 내용 검증은 사진 재확인 정책 때문에 실제 content_review 2회(보완 전/후) 호출했다. 초안/점검 재생성·승인·최종 다운로드 호출은 없다. 추정 비용 합계 USD0.009940385이며 공급사 청구 확정값은 아니다.
+- **출력 검사:** revision2/template_v9의 실제 API 검사 PDF lc_d69931f0334c4106·DOCX lc_7cc4fc1bb7ed4fe9 모두 passed·실제8쪽·배치 필수3종ok·findings0·시연 공개 정책ok. 기존 DOCX 넘침/이미지 문제 2건은 해당 DOCX 재검사에서 resolved다. 배치 통과는 내용 승인 통과를 뜻하지 않으며 최종 approval은 없다.
+- **근거 검수/남은 일:** F033은 PPT6쪽의 2017~2020년 휴니드·SEMES·한화시스템·세트렉아이 공정 인증/승인 이력이다. 원문 근거는 있으나 현재 고객·시장 현황을 보장하지 않는다. Agent가 customers_markets/needs_confirmation으로 분류했으며 현재 문서에는 F033 참조 블록이 없다. 그렇더라도 사전 점검 blocker 보존 정책을 우회해 해결하지 않는다. 다음은 Agent의 연혁/현재 고객 구분 및 필요한 사용자 확인/자료 보완 후 재점검·명시 승인이다. BE-06 서버 범위 유지, BE-10/F-05/F-08 진행중·약90% 유지.
+
+<a id="docx-spacing-20261006"></a>
+
+### [F-06 · BE-07/08/10] → DOCX 문단 공간·본문 추출 대조 보완 (2026-10-06)
+
+- **원인/보완:** 저장 초안 doc_f682a61bb898474e/revision1/input2의 논리5쪽은15블록/본문533자·사진1장으로 Word 기본 문단 간격을 포함하면 사진/캡션이 다음 실제 쪽으로 이동했다. export_render.py에서 문단 전0pt/후1pt/줄 간격1.0을 명시했다. 본문·폰트/크기·쪽 순서·사진 바이트와 그림 가로세로 크기는 바꾸지 않았다. 초안 재생성·본문 삭제·사진 축소·AI 호출은 없다.
+- **추출 차이:** 간격 보완 뒤 실제8쪽에 들어갔지만 마지막 쪽의 줄 끝 하이픈을 PDFium이 U+0002로 추출해 본문 검사가 실패했다. 원문 문자/수치를 제거하거나 바꿔 통과시키지 않는다. PDFium의 전체 원문 순서 대조가 실패할 때 기존 pypdf의 같은 쪽 추출로 모든 문자·하이픈·수치·순서가 정확히 일치한 경우만 통과하도록 보완했다. 두 추출 실패/대체 추출 오류는 기존 failure를 유지하며 쪽수·사진수·인쇄 영역 가드도 유지한다. details.text_extraction_fallback_pages에 대체 사용 쪽을 기록한다.
+- **실문서 확인:** 원본 DB는 mode=ro/query_only로 읽고 임시 출력만 생성/자동 정리했다. 같은 저장 초안은 최종 실제8쪽·layout_ok=true·findings0·대체 추출8쪽 사용이다. 기존 실패 DOCX와 비교해 모든 문단 텍스트/순서 동일, 그림6개 가로세로 EMU값 동일, word/media 파일명·SHA256 전부 동일했다. 문제 쪽인 실제5쪽의 PNG를 직접 확인해 본문·사진·캡션이 같은 쪽에 표시되고 잘림/겹침이 보이지 않았다. 해당 PNG도 검수 후 삭제했으며 저장소에 새 진단 폴더를 만들지 않았다.
+- **담당 직접 회귀:** 첫 DOCX/템플릿 집중28 passed/59 deselected/경고1건(58.43초). 최종 PDFium 하이픈 재현·pypdf 대체 경로를 추가한 뒤 tests/test_be07.py·test_be08.py·test_be08_rules.py·test_api_contract.py의 docx/template/fingerprint 선택은42 passed/165 deselected/기존 경고1건/106.07초. 실제 LibreOffice1/4/6/8/10쪽, 밀도 높은 본문/사진/캡션, 과도한 본문 차단, DOCX 승인/다운로드·버전/템플릿 가드 포함. 원문 하이픈/숫자 변경·순서 변화·본문 누락은 통과하지 않는 새 회귀를 추가했다. 최초 메타데이터 없는 진단 입력은 실패했고, 중간 간격 후보의9쪽/캡션/추출 실패를 보존한 뒤 최종 후보를 검증했다. 전체 pytest는 이번에 실행하지 않았다.
+- **버전/운영:** layout_checks.py의 template_v9 및 배치 지문576799643934d2178e3a03e6e569604c36e6859a51fa3e498caa1be15a8edad1을 사용한다. contracts.md 문서v1.30·plan4.65 갱신, API/DB v11/계약1.9/의존성 변경 없음. 진행 Job0건 확인 후 이번 서버만 재시작해 OpenAPI200 및 runtime/시연/검증400000/LibreOffice 설정을 확인했다. 이전 PDF/DOCX 검사/승인은 새 템플릿에서 재실행해야 한다. 과거 DB의9쪽 실패 검사·내용 문제·승인 행은 자동 갱신하지 않았다. 실제 사용자 서버에서 API 재검사/승인은 이번에 실행하지 않았다.
+- **상태/다음:** DOCX 배치 보완 단위 완료·BE-07/08 서버 범위 유지·BE-10/F-06/F-08 진행중·약90% 유지. 다음은 현재 고객·시장 근거 부족/중복 경고의 내용 검수 및 사람 확인, 이후 최신 배치 재검사/사용자 명시 승인이다. Agent·프론트 코드/모델/실자료/공개 허가/.env 변경 없음.
+
+<a id="restored-live-publication-20261006"></a>
+
+### [F-06/08 · BE-07/08/10] → 복원 DB 새 실제 초안·형식별 검수 (2026-10-06)
+
+- **실행:** 사용자 ‘다음 작업’ 요청으로 test/b17bcca 서버를 복원 시연 DB·runtime·입력20만/검증40만/출력64000토큰/180초·LibreOffice 설정으로 구동했다. .env·원자료·허가·제외 규칙·프론트 코드는 바꾸지 않았다. 실제 HTTP로 새 세션 sess_cece8323f3a247ce를 만들고 자료18개(실4/시연14)를 선택했다. 카탈로그/ISO2개는 기존 기본 제외를 유지했다. 서버OpenAPI·일반/preview 프론트200, 인증 없는 프론트 API프록시401 확인.
+- **실제 AI:** company_info→draft_sections→content_review 총3회, 자동 재시도/초안 재생성0회. 점검 pf_69dda6f644f3405a는 사실122개(supported121/needs_confirmation1), can_generate=true. 부족한 사실은 과거 공정 승인 연혁을 현재 고객·시장 근거로 확정할 수 없는 customers_markets이며 UNSUPPORTED_CLAIM blocker를 유지했다. 검토용 초안 doc_f682a61bb898474e/revision1/input2는8쪽·사진6장이다. 실제 의미 검증 val_7fceaa28f43b4b8d는 failed: 사전 점검 blocker1건과 첫 쪽 사업 설명 반복 warning2건. 문제·확인 이력을 임의로 변경하지 않았다.
+- **PDF:** template_v8/Chrome154.0.8037.57의 실제 검사 lc_f699e4279a434f3e passed·8쪽·필수 배치3종ok·findings0. artifact art_760106eaf1d94f31은2,656,532바이트이며 저장 SHA256/크기 일치. 각 쪽 이미지수1/0/1/1/1/1/1/0으로 총6장, 시연 footer8/8 확인. 구조/자동 배치 확인이며 전 쪽 사람 검수를 완료했다고 주장하지 않는다.
+- **DOCX:** python-docx1.2.0/LibreOffice26.8.0.3의 실제 검사 lc_e215390d735a4929 failed·9쪽·overflow/broken_image findings. artifact art_38df0ed323d3414e는2,320,370바이트·저장 SHA256/크기·ZIP 검증 정상, word/media 이미지6장 보존. 실제4~6쪽 PNG를 직접 확인한 결과 논리5쪽(크롬도금·전해연마·인산염피막,15블록·본문533자)의 사진/캡션이 별도 실제6쪽으로 넘어가며 이후 쪽 대응이 밀린다. broken_image는 논리 쪽과 실제 쪽의 사진 대응 실패로 관측되며 파일6장이 사라졌다고 단정하지 않는다. 사진 공간·쪽 나눔 보완은 미실행이다.
+- **보호/사용량:** 승인0/Export0건, DB quick_check=ok/FK 오류0건. 백엔드 검증 한도는148,071자 검증 입력을 허용했으며 본문을 잘라 통과시키지 않았다. 런타임 계측3회 추정0.031677025 USD(cost_complete=true), 공급자 최종 청구 확정값은 아니다. 산출물은 해당 비공개 세션 artifacts/기존 정리 정책 아래 보관하며 추가 진단 폴더를 만들지 않았다. 서버는 구동 상태를 유지한다.
+- **상태/다음:** 이번 실제 검수 단위 완료, 내용·DOCX 실패를 성공으로 바꾸지 않는다. BE-10/F-06/F-08 진행중·약90% 유지. 다음은 같은 저장 초안으로 DOCX 사진 공간/쪽 나눔 재현·보완·회귀이며 초안 재생성은 필요하지 않다. 고객·시장 근거 확인/점검 분류와 중복 경고, 사진/인증/공개 허가 사람 검수 및 최종 사용자 승인은 후속이다. Agent 코드·모델·상태는 바꾸지 않았다.
+
+<a id="demo-db-restore-20261006"></a>
+
+### [F-01/08 · BE-02/10] → 시연 DB 백업 복원 (2026-10-06)
+
+- **발견/원인 한계:** 새 검수 서버의 세션 생성은 INTERNAL_ERROR/500으로 실패했다. 실제 오류는 sqlite unable to open database file이며 기존 demo_preview_20260929_131826 폴더가 없음을 재확인했다. 앞의 만료/원자료 조회 이후 폴더가 사라진 시점·원인은 확인되지 않았으며 세션 만료로 DB 폴더 전체가 삭제됐다고 주장하지 않는다. 방금 띄운 서버만 중지했고 실제 AI 호출0회, 기본 erd_v2 DB(자료0/이미지0/문서0/세션1)는 보존했다.
+- **복원:** 사용자 요청으로 Downloads/거산_시연DB_test_20260930_154553.zip을 확인했다. manifest의 백엔드 test/4efb67c, DB v11/20260929_01, 등록 자료21개·사진21개·구간223개와 파일42개 SHA256/크기를 검증한 뒤 기존 private_runs/demo_preview_20260929_131826에 app.sqlite3 및 registered 파일만 복원했다. 대상 경로 부재를 확인해 덮어쓰지 않았으며 압축 경로 이탈/심볼릭 링크를 거부했다. 원본 백업·기본 DB·.env·제품 코드·프론트 변경 없음.
+- **최종 확인:** 복원 DB를 mode=ro/immutable=1/query_only로 열어 integrity_check=ok/FK 오류0건 확인. sources21(실7/시연14)·assets21·segments223·sessions0·documents0. 등록 파일42개 DB 해시/크기 일치 및 이미지21개 전체 디코딩/저장 크기 일치. 백업에 없는 이후 사용자 세션·초안·검증·승인은 복구하지 않았다. 사람이 확인해야 하는 사진/인증/공개 허가 항목은 기존 검수 기록을 유지한다.
+- **상태/다음:** 원자료 복원 완료, BE-10/F-08 진행중·약90% 유지. 실자료 최신 PDF/DOCX 검수는 복원 DB에 새 세션·초안을 생성해 진행한다. 이번 복원에서는 서버 재구동·AI 호출·사용자 승인 미실행. private_runs/DB/실회사 원문은 Git에 넣지 않는다.
+
+<a id="expired-demo-audit-20261006"></a>
+
+### [F-07/08 · BE-09/10] → 시연 세션 만료 및 원자료 보존 재확인 (2026-10-06)
+
+- **발견:** 다음 실문서 최신 배치 검수에 앞서 현재 DB를 확인했다. 활성 세션0개, 종료41개·만료24개이며 모두 cleanup_status=done이다. 기존 검수 문서 doc_302ead28fda94a64의 세션은 2026-10-06 12:42:15 KST 만료, 12:49:07 KST 정리 완료이며 content_json={}다. 전체 문서 revision54개(종료30·만료24)의 본문도 정리돼 있다. 문서 ID와 revision 메타데이터가 남아 있어도 출력 가능한 본문이 남았다는 뜻은 아니다. 앞의 ‘활성 세션/현재 문서’ 기록은 당시 조회 결과로 보존한다.
+- **읽기 전용 확인:** 같은 시연 DB를 mode=ro/query_only로 조회했다. integrity_check=ok, foreign_key_check=0건, 진행 Job0개. 등록 자료21개(실자료7개)와 이미지21개는 존재·SHA256·자료 크기·전체 이미지 디코딩/저장 크기 모두 일치했다. 검사 전후 DB 파일 SHA256이 같아 DB 쓰기가 없음을 확인했다. 서버 재구동·실제 AI 호출·데이터 복구·만료 연장·사용자 승인·새 렌더링은 수행하지 않았다. 삭제된 문서를 검사 통과로 취급하지 않는다.
+- **사람 확인 잔여 항목:** 아래 정보는 원문/사진 구조 확인만으로 확정할 수 없다. 이번 재확인에서 설명·공개 허가·자료 선택 값을 바꾸지 않았다.
+
+| 대상 | 남은 확인 | 확인 전 처리 |
+|---|---|---|
+| P11_S299 | 정확한 공정명 | 일반 외관 설명 유지 |
+| P17_S465 | 장비명·측정 용도 | 구체 장비/성능 주장 금지 |
+| P17_S474 | 지그의 시험 용도 | 일반 외관 설명 유지 |
+| ISO 14001/45001 | 국영문 최초 승인일 차이·같은 인증번호의 회사/기관 확인 | 근거 기본 제외 유지 |
+| 과거 카탈로그 | 현행 공정·연락처·인증 정보 여부 | 근거 기본 제외 유지 |
+| 실사진19개 | 외부 공개 권한자·현재 허가 유효성 | 기존 DB 허가 기록을 이번 사람 확인으로 간주하지 않음 |
+| 작은 원본9개 | 최종 배치 크기의 선명도 | 새 문서 출력 후 시각 확인 |
+
+- **결과/다음:** 만료 정리 이후 원자료 보존 확인 완료, BE-10/F-08 진행중·진행률 약90% 유지. 실제 AI 및 최종 사람 검수는 미완료다. 다음 실제 문서 검수는 새 세션/초안이 필요하며, 백엔드 구동·AI 호출은 사용자가 요청한 후 진행한다. 만료된 원본 세션을 되살리지 않는다. 기존 프론트 가상 화면 비교 모드는 별도 작업이며 백엔드 완료율에 반영하지 않는다.
+
+<a id="http-crash-replay-20261006"></a>
+
+### [F-04/06/07 · BE-05/08/09/10] → 실제 HTTP 요청 중단·재요청 중복 방지 (2026-10-06)
+
+- **검사 추가:** 기존 `tests/test_be08.py`에 v9/v11 × 수정안 적용 저장 전/저장 직후·Export 저장 전/저장 직후/발행 중의10개 HTTP 프로세스 중단 검사를 추가했다. 임시 DB·가상 자료·mock 초안/수정안과 실제 Chrome의 승인 PDF를 준비하고, 독립 Uvicorn 프로세스를 지정한 트랜잭션 경계에서 `os._exit(71)`로 강제 종료한다. 실제 종료 코드와 idempotency 행/DB 상태를 확인하므로 단순 HTTP 응답 오류를 서버 중단으로 계산하지 않는다.
+- **문서 적용:** 저장 전 중단은 문서/수정안/중복 방지 기록이 롤백되며 동일 요청 재전송으로 한 번 적용된다. 저장 직후 응답 유실은 원래 키의 저장 응답을 재사용하고 문서 revision 증가1회·applied 상태·초안 Job1개를 유지한다. 같은 키로 변경된 본문을 보내면409를 반환한다.
+- **출력:** 저장 전 중단은 Export 행0개, 저장 직후/발행 중 중단은 요청 행과 최초202 응답을 보존한다. 재시작 시 유효 승인 artifact를 재확인해 같은 Export/Job을 ready로 복구한다. 키 재요청은 최초 응답 그대로, 키 없는 상태 조회는 실제 ready이며 attempt1/Export1개/출력 Job1개/artifact 추가0개다. 다운로드·재다운로드 바이트는 기존 승인 PDF와 같다. 새 서버의 앱 시작 전에 렌더/AI bridge를 실패하도록 막아 복구나 출력이 새 렌더/초안을 호출하면 검사가 실패하게 했다.
+- **검증:** 첫 중단 표본10건 통과(54.37초). 시작 전 렌더/AI 금지와 DB 버전/foreign_keys 검사를 추가한 최종 `tests/test_be08.py tests/test_be05.py`의 중단·재시작·멱등·동시 적용·롤백·변조/허가 철회 관련 선택 회귀는 **23 passed / 96 deselected / 1 warning / 실패0 / 90.35초**, 건너뜀0건이다. v9/v11 유지·foreign_keys=ON·integrity_check=ok·foreign_key_check=0건을 확인했다. .env 자동 로딩/배경 sweep/pytest 캐시를 끄고 실행했으며 diff 공백 검사도 통과했다. deselected96건은 이번 실행에 포함하지 않았고 통과로 계산하지 않는다.
+- **범위/보호:** API·제품 코드·DB/계약/템플릿·프론트·Agent 변경은 없고 새 추적 파일도 없다. 시연 DB·원문·승인·.env·40만자 기본 한도는 보존했다. 실제 AI 호출 중 중단·실자료 의미·공개 허가의 사람 검수를 완료 처리하지 않는다. 전체 저장소 pytest는 이번에 재실행하지 않았다. BE-05/08/09 서버 범위 및 BE-10 진행중 유지. 다음은 남은 실자료 사람 확인 항목 정리와 실제 문서의 최신 배치/명시 승인 확인이다.
+- **사용자 화면 요청:** 이 작업 도중 사용자 요청으로 시연 백엔드8000의 확인된 PID만 중지했다. 진행 Job0건을 읽기 전용 확인한 후 중지했으며 프론트5173의 HTTP200을 확인하고 화면 열기를 요청했다. 이후 사용자가 요청하기 전 시연 백엔드를 다시 켜지 않는다. 검사 서버들은 별도 임시 포트/DB를 사용하고 종료한다.
+
+<a id="chrome-http-cleanup-20261006"></a>
+
+### [F-07/08 · BE-09/10] → 실제 Chrome 프로필과 HTTP 서버 재시작 정리 (2026-10-06)
+
+- **검사 추가:** 기존 `tests/test_be09.py`에 Windows 실제 Chrome 검사4개(v9/v11 × 종료 세션/활성 세션의 중단 작업 폴더)를 추가했다. 실제 AI 없이 가상 첨부/임시 DB를 쓰며 Chrome은 고유 작업 프로필·헤드리스·표준 입력 닫기·창 숨김으로 실행한다. Toolhelp 스냅샷으로 해당 프로세스 자손만 확인하고 제품의 `_kill_tree`로 종료한 뒤 잔존 자손0건을 검사한다. 일반 사용자 Chrome이나 시연 서버를 종료하지 않는다.
+- **종료 세션:** Chrome이 실제 파일을 잡고 있을 때 DELETE는 closed/pending을 반환한다. 자료 삭제 이력은 유지하면서 이름·작성 조건을 지우고 접근을 차단한다. 중단된 정리 점유를 저장한 뒤 별도 Python/Uvicorn을 임시 localhost 포트로 시작하면 stale_claim을 해제하고 HTTP200까지 복구한다. Chrome 종료 후 정리 재시도로 폴더 제거/done/접근410을 확인한다.
+- **활성 세션:** 정상 실행 중인 Job의 작업 폴더는 sweep에서 보호한다. 별도 서버 시작이 중단 Job을 failed로 정리해도 Chrome 잠금 중 폴더는 남으며, 오래된 폴더 sweep은 orphan_tmp/pending 재시도를 기록한다. Chrome 종료 후 작업 폴더만 삭제되고 세션/첨부2개/접근200은 보존된다. 다른 활성 세션의 파일 바이트와 등록 원본도 네 경우 모두 동일하다.
+- **검증:** 앱 시작 경로만 쓰던 첫 표본4건 통과(26.67초). 임시 포트 Uvicorn/실제 HTTP 복구를 추가한 최종 `tests/test_be09.py -q -p no:cacheprovider --disable-warnings --maxfail=2`는 **43 passed / 1 warning / 실패0 / 76.78초**, 건너뜀0건이다. v9/v11 fixture는 foreign_keys=ON, integrity_check=ok, foreign_key_check=0건도 확인한다. .env 자동 로딩/배경 sweep/pytest 캐시는 끄고 실행했다. diff 공백 검사 통과, 전체 저장소 pytest는 이번에 재실행하지 않았다.
+- **상태/제한:** 제품 코드·API/DB/계약/템플릿·프론트·Agent·시연 서버/DB·원문·공개 허가·승인 변경 없음. BE-09 서버 완료 및 BE-10/F-08 진행중 유지. 실제 AI 호출 중 중단과 실제 사용자 편집·출력 요청 중 서버 강제 종료를 이 검사로 완료 처리하지 않는다. 다음은 별도 HTTP 서버의 요청 중단 뒤 문서 적용/출력 중복 방지 검사다.
+
+<a id="publication-page-matrix-20261006"></a>
+
+### [F-06/08 · BE-07/08/10] → 분량별 PDF·DOCX 검사/승인 통합 회귀 (2026-10-06)
+
+- **누락/보완:** 기존 DOCX 렌더 단독 검사는1·4·6·8·10쪽을 확인하지만 API 검사→승인→Export→다운로드 완주는 PDF/DOCX 각각4쪽만 검사했다. 기존 `tests/test_be08.py`의 Flow에 목표 분량 옵션(기본4)을 추가하고 두 기존 통합 검사를 다섯 분량으로 확장했다. 별도 테스트 파일·제품 기능·API/DB/템플릿·프론트·Agent 변경은 없다.
+- **확인 동작:** 가상 TXT와320×160 PNG를 세션 API로 업로드하고 mock 초안/내용 검증 뒤 실제 Chrome PDF 또는 LibreOffice DOCX로 검사한다. 목표/논리/실제 쪽수·미리보기 개수·한글 제목/페이지 순서·사진 포함·DOCX 텍스트 편집 가능성을 확인한다. 사용자 미확인 승인과 다른 형식의 검사 결과를 쓰는 승인은422로 거절해야 한다. 동일 승인 키 재요청은 같은 응답, 재다운로드는 같은 바이트, 다운로드 해시는 검사 artifact와 같고 draft Job은1개만 있어야 한다. 승인 뒤 수정하면409, 세션 종료하면410과 세션 폴더 정리를 확인한다.
+- **검증 결과:** 분량별 첫 실행10건 통과(66.46초). 형식 교차 승인 차단 추가 뒤 최종 `tests/test_be07.py tests/test_be08.py` 관련 회귀는 **100 passed / 8 skipped / 1 warning / 실패0 / 364.44초**다. 실제 Chrome/LibreOffice를 사용하고 `.env` 자동 로딩·pytest 캐시를 끄고 실행했다. Windows의 플랫폼 전용8건은 통과로 계산하지 않는다. 전체 저장소 pytest는 이번에 재실행하지 않았다. 기존 넘침·빈 쪽·사진 배치·동시 출력·파일 변조·허가 철회·승인 무효화·접근 격리·복구 회귀도 포함한다. diff 공백 검사 통과.
+- **범위/다음:** 임시 DB·가상 자료·mock/준비된 AI 응답을 사용하며 유료 AI·실사용 DB·실자료·실제 사용자 승인을 실행하지 않았다. 이 표본에서 목표/실제 쪽수 일치는 모든 실제 문서의 쪽수 보장이 아니다. 제품 기능·프론트 변경이 없으므로 서버 재시작도 하지 않는다. BE-10/F-06/F-08 진행중 유지, 실제 모델 품질/사람 검수는 별도다. 다음은 실제 Chrome 자식 프로세스 종료·서버 재시작 뒤 세션 정리 검증이다.
+
+<a id="real-material-audit-20261006"></a>
+
+### [F-08 · BE-10] → 실자료·사진 원본 및 현재 연결 검수 (2026-10-06)
+
+- **방법/보호:** 현재 시연 DB를 SQLite URI `mode=ro`와 `PRAGMA query_only=ON`으로 조회했다. `.env`·실자료·선택 목록·사진 설명/공개 허가·문서·승인·서버 설정은 수정하지 않았다. 유료 AI·OCR·보류 중 이미지 연결 묶음 적재도 실행하지 않았다. PDF는 Poppler로 메모리 렌더했으며 새 보고서/임시 파일을 저장소에 만들지 않았다. 기존 task 문서2개만 갱신한다.
+- **파일/DB:** 삭제되지 않은 등록 자료21개(실자료7개·시연14개), 이미지21개(실사진19개·가상2개)의 파일 존재·SHA-256·자료 바이트 크기·이미지 전체 디코딩/저장 크기 모두 일치했다. integrity_check=ok, foreign_key_check=0건, 진행 작업0건. 총 sources31/삭제 표시10, assets21, segments223, documents33, document_revisions54이며 마지막 조회에도 해당 행 수가 같았다. 실자료7개의 근거136구간은 자료 버전 일치/빈 텍스트0건, 총11,315자다. PDF 텍스트 층이 없는 자료의 기존 수동 발췌를 이번에 파서로 새로 읽었다고 기록하지 않는다.
+- **사진 원본:** 19개 모두 PPTX slide/shape(그룹 내부 포함)를 찾아 해당 잘라내기·회전을 반영하면 저장 이미지와 크기/RGB 픽셀이 완전히 일치했다. 9개는 원본 그대로, 10개는 회전/잘라내기 반영본이다. `original_hash_matches=false` 10개는 원본/파생 바이트 차이이며 이번에는 손상/사진 교체가 아니다. 19개를 직접 열어 현재 설명의 눈에 보이는 외관과 대조했다. 한 변300px 미만인 원본9개는 실제 배치 크기의 선명도 확인이 후속이다.
+- **미확정 설명/허가:** P11_S299의 단일 공정명, P17_S465의 정확한 장비명/측정 용도, P17_S474 검사 지그의 시험 용도는 사진만으로 확정하지 않는다. 일반 외관 설명/확인 필요 표현을 유지하고 사용자에게 해당3개 정보를 요청했다. DB의 실사진19개 공개 허가=true/가상2개=false를 확인했지만 이번 검사로 권한자·최신 유효성을 새로 확정하지 않는다.
+- **카탈로그/인증:** 카탈로그8쪽을 시각 확인했다. 과거 공정/연락처/인증 내용이므로 현재 회사 근거 기본 제외를 유지한다. ISO 14001/45001 국영문4쪽의 최초 승인일 불일치와 두 규격의 같은 인증번호는 원본에도 있으며 수동 발췌 오류가 아니다. 확인 전 제외를 유지하고 인증 자체가 무효라고 단정하지 않는다. SSQ1쪽의 기간/지속 유지조건을 기존 발췌와 대조했다. AS9100/KSPC는 PDF 원문에서 기간·범위·유지조건을 읽었다. 발급기관 현재 상태 조회/회사 확인은 미실행이다.
+- **현재 연결:** 활성 세션은 실자료4개+시연14개를 선택하고 카탈로그/ISO2개는 제외한다. 최신 supported 사실105개/근거208개는 선택 자료·source/segment·버전·locator·excerpt 일치, 참조 오류0건이다. 참조 구조 검사는 사실 의미/현재 인증 상태 보증과 구분한다. 현재8쪽 문서의 실사진6개는 모두 존재/허가 기록=true이나 캡션은 일반 문구로 구체 설명 검수가 후속이다. 열린 배치 blocker2개는 template_v7의 기존 DOCX 11쪽 검사에서 왔고 이 DB의 template_v8 재검사 결과는 아직 없다. 내용 passed와 배치는 별개이며 승인/문제를 임의 갱신하지 않았다.
+- **결과/다음:** 파일·사진 대응·참조 구조 검수 완료, 실자료 전체 의미·인증·공개 허가의 사람 검수와 실문서 최신 형식별 배치 재검사/명시 승인은 남았다. BE-10/F-08 진행중 유지, Agent 상태·프론트 코드 변경 없음. 다음 백엔드 작업은 목적별1·4·6·8·10쪽 출력/승인 흐름의 기존 검사 범위를 대조하고 부족한 경우를 보완한다. 실제 사용자 문서 승인은 사용자가 수행한다.
+
+<a id="c05-ui-20261006"></a>
+
+### [F-04/08 · BE-01/05/06/10] → 자료 변경 후 편집 복귀 화면 연결 (2026-10-06)
+
+- **연결 범위:** C:\frontend의 기존 API·자료/AI/publication hook·SourceSelectionView·DocumentWorkspace에 C-05를 연결했다. 미저장 편집/진행 요청이 있으면 자료 변경 시작을 막고, 명시 시작 후 자료 선택·첨부·삭제·작성 조건 변경과 재점검을 허용한다. 문서를 재조회해도 같은 편집 컴포넌트를 유지하며 자동 단계 이동을 없앴다. 조회 실패에도 기존 문서를 보존한다. 자동 의미 수정·초안 재생성·Agent 프롬프트/모델 변경은 없다.
+- **확인/선택:** 최신 사실·원문 근거·열린 문제를 표시하고 사용자 확인 후 영향 목록을 조회한다. 영향을 받는 블록은 직접 편집/삭제하거나 최신 supported 사실·근거를 선택한다. 선택한 본문 연산/참조 연결과 유지 사유만 적용하며 선택하지 않은 본문·사진·순서는 유지한다. 필수 문제가 유지 사유만으로 해결되지 않으며 서버의 범위·버전·참조·승인 가드도 유지한다. 적용 뒤 전체 내용 검증과 기존 경고 확인·형식별 배치·최종 승인을 다시 진행한다.
+- **조회 계약:** 기존 문서 GET에 input_review_required(bool, 기본false)·latest_preflight_id(string|null, 기본null)를 추가했다. 입력 변경과 v11의 연결/최신 점검 차이를 표시해 같은 입력의 재점검도 다룬다. 확인만으로 false가 되지 않고 적용 후 false로 바뀐다. legacy v9 조회는 유지하고 C-05 적용의 v11 이력 조건은 완화하지 않는다. 계약1.9·DB v11·template_v8 유지, contracts.md 문서v1.29·plan4.64·실제 API 타입을 갱신했다. 프론트에 새 계약 사본 파일을 만들지는 않았다.
+- **복원/중복 방지:** 생성 요청의 ID/버전/키만 저장해 응답 유실 뒤 같은 요청으로 확인한다. 새로고침 시 사용자 확인은 초기화한다. 적용은 키/검토ID/본문 해시만 저장하고 문구·근거 인용·유지 사유를 sessionStorage에 넣지 않는다. applied 검토/문서 GET으로 적용 응답 유실을 복원하며 다시 적용하거나 초안을 생성하지 않는다. 미접수 요청은 동일 문구/선택/사유를 재입력할 때 같은 키로만 재전송한다. 정상 적용 응답의 validation_job_id를 먼저 연결하고, Job 완료 뒤 문서/이슈를 같이 조회해 검증 중 조회 불일치를 피한다.
+- **백엔드 확인:** .env/bytecode/cache 자동 로딩과 Chrome을 끄고 `test_api_contract.py test_be05.py test_be06.py test_orm_workflow.py`: **295 passed / 경고1개 / 151.97초**. v9/v11 조회·입력 변경·동일 입력 재점검·확인 전후와 적용 후 메타데이터, 기존 편집/참조/승인 보호 및 실제 localhost C-05 HTTP 검사를 포함한다. 전체 저장소 pytest는 이번 변경 후 미실행이며 이전039b46e 전체1764건과 구분한다.
+- **최종 화면 확인:** 기존 `scripts/check-ai-workflow.mjs`의 mock 전용 `--impact`를 추가했다. `--publication --photos --impact`와 같은 옵션에 `--docx`를 더한 2회가 **result: PASS**. PDF 실제4쪽/27,755바이트, DOCX 실제4쪽/39,083바이트. 자료 교체 전 저장/미저장 보호, 기존 사진/문구 보존, 응답 유실 생성 키 재사용, 같은 입력 재점검의 stale 검토/확인 초기화, 사용자가 선택한 본문·근거만 1회 적용, 적용 응답 유실 GET 복원, 정상 응답의 실제 전체 검증 Job 조회, 승인/동일 바이트 재다운로드/수정 후 차단/종료 정리를 확인했다. 각 실행의 초안 생성은1회로 유지했다. 중간 실패는 검사 클릭의 화면 대기 부족과 예상 경고 상태, 재조회에 따른 자동 단계 이동 및 검증 중 조회 불일치였으며 후자의 제품 문제2개를 수정했다. 이전 PDF 단독 완주도 통과했으나 최종 결과는 이 2회를 따른다.
+- **정적/시각 확인:** 변경 TS/TSX 7개 ESLint와 TypeScript/Vite build 통과, 기존 코드의 Prettier와 diff 공백 검사 확인. 가상 영향 화면 스크린샷을 열어 한국어 표시/근거 확인/편집 이동 버튼 배치를 확인했다. 실제 LLM·실자료 의미 정확성·사진 공개 허가·실문서 최종 승인 확인을 이 결과로 대체하지 않는다.
+- **서버/공유:** 진행 Job0건과 기존 PID를 확인하고 동일 시연 DB/LibreOffice/내용 검증400000자/재시도0으로 서버를 재구동했다. 시작 설정review=400000과 OpenAPI의 새 조회 필드2개·프론트localhost5173 HTTP200을 확인했다. 시연 DB 읽기 전용 integrity_check=ok/foreign_key_check 위반0건. 실제 AI 호출·실문서 승인 없이 적용했다. 프론트는 develop의 bc60151에 별도 커밋했으며 기존 미추적 .claude/는 보존했다.
+- **상태·다음:** BE-05 서버 완료, BE-10/F-04/F-08 진행중 유지. C-05 프론트 연결은 완료, 실제 변경 자료 의미 품질·실자료 전체/사진별 사람 검수·구조 수정 후속은 남았다. backend test와 frontend develop에 분리 커밋하며 원격 push는 하지 않는다.
+
+<a id="backend-regression-20261006"></a>
+
+### [F-06/08 · BE-07/08/10] → DOCX 동시 출력 보존·전체 회귀 (2026-10-06)
+
+- **재현·원인:** DOCX는 임시 파일 이름만 분리하고 최종 document_id/revision 경로를 공유했다. 기존 동시 렌더 검사를 각 결과의 제목·사진·후속 렌더 뒤 바이트 보존까지 확장하니 수정 전 1 failed로 최종 경로 1개 공유를 재현했다. 기존 간헐 Windows 파일 교체 실패와 다른 출력으로 덮어쓰는 원인이 같았다.
+- **변경:** 기존 export_render.py의 최종 DOCX 이름에도 렌더별 무작위 식별값을 추가했다. 반환 파일은 다른 동시/후속 렌더에 의해 교체되지 않는다. 저장 시 기존 artifacts.store가 독립 artifact 경로로 옮기므로 기존 세션 정리와 다운로드를 재사용한다. 사용자 다운로드 이름·문서 내용·template_v8/지문·옵션·API·계약1.9·DB v11은 유지한다. 프론트·Agent·.env는 변경하지 않았다. 결정은 plan4.63.
+- **집중 검증:** DOCX 동시 렌더·mock 미지원 제안·배치 실패/수정 후 형식별 이슈 분리의 기존 실패 목록 3건을 실제 Chrome으로 실행해 **3 passed / 경고1개 / 10.77초**. 뒤 2건은 현재 코드에서 수정 없이 통과했다. 과거 전체 실행의 순서 의존 원인을 이번에 새로 고쳤다고 주장하지 않는다.
+- **전체 회귀:** PYTHON_DOTENV_DISABLED=1, EXPORT_BROWSER_PATH=실제 Chrome, CLEANUP_SWEEP_INTERVAL_S=0으로 `.venv/Scripts/python.exe -X utf8 -B -m pytest -q -p no:cacheprovider --disable-warnings --maxfail=5` 실행: **1,764 passed / 8 skipped / 3 warnings / 실패0 / 559.23초**. 가상 자료·임시 DB·mock/저장 응답을 사용하며 실제 AI를 호출하지 않는다. Windows의 macOS/POSIX 전용 8건은 통과로 계산하지 않는다. 실제 Chrome PDF·LibreOffice DOCX·승인/다운로드·DB/접근 보호·정리 회귀를 포함한다. 실회사 의미 정확성·사진별 공개 허가·사람 검수의 완료를 뜻하지 않는다.
+- **서버 적용:** 진행 Job0건과 기존 서버 PID를 재확인하고 같은 시연 DB/LibreOffice/내용 검증400000자/재시도0으로 재구동했다. 시작 설정의 review=400000, 시연 모드, OpenAPI200을 확인했다. 시연 DB를 읽기 전용으로 확인해 integrity_check=ok, foreign_key_check 위반0건이었다. 서버 시작만으로 실제 AI를 호출하지 않았으며 사용자 문서를 승인하지 않았다.
+- **상태·다음:** BE-07/08 서버 완료, BE-10/F-06/F-08 진행중 유지. 전체 검사 실패 목록은 이번 실행에서 해소됐으며 C-05 프론트 복귀 연결과 실자료 사람 검수는 후속이다. 실제 문서를 자동 승인하지 않는다.
+
+<a id="docx-blank-pages-20261006"></a>
+
+### [F-06 · BE-07/08/10] → DOCX 쪽 나눔 빈 페이지 제거 (2026-10-06)
+
+- **원인:** 사용자 실문서의 논리 8쪽/사진6장은 template_v7에서 실제11쪽, 이미지 분포1/1/1/0/1/0/1/0/1/0/0이었다. 렌더된 3·4·5쪽을 확인해 사진을 포함한 본문은 앞쪽에 맞지만 쪽 나눔용 빈 문단이 다음 쪽으로 밀린 뒤 한 번 더 넘어가 3개 빈 쪽을 만든 것을 확인했다. 최초 진단은 demo_mode=False로 시연 사진 접근이 차단되어 진단 기준으로 폐기했고 실제 서버와 같은 demo_mode=True로 재실행했다.
+- **변경:** 기존 `app/services/export_render.py`에서 별도 add_page_break 문단 대신 다음 논리 쪽의 기존 라벨에 page_break_before를 지정했다. 사진 높이·본문 글자 크기·문구·캡션·순서는 유지한다. 실제 넘침 검사·누락 검사·승인 조건을 완화하지 않았다. Finding의 내부 page_id 타입도 기존 전역 위치(None)에 맞췄다. 프론트 코드는 변경하지 않았다.
+- **실문서 확인:** 시연 DB를 mode=ro/query_only로 읽은 스냅샷에서 수정 후 실제8쪽/layout_ok=True/findings0건, 사진 분포1/1/1/1/1/1/0/0을 확인했다. 수정 전후 비어 있지 않은 모든 문단의 문자열/순서 일치, 사진6장의 OOXML media 바이트 sha256 일치, 모든 inline 사진 width/height 일치. 수정된 3·4·8쪽 이미지를 직접 확인했다. DB의 입력·저장 문서·검증·승인·기존 산출물은 진단으로 바꾸지 않았다.
+- **템플릿:** layout_checks.TEMPLATE_VERSION=template_v8, 지문77bee728ad40c81e24e5abb5b12c24fcaa282399a7da8224f14a9ec9bf82ac88. 계약1.9·DB v11·API·렌더 옵션 해시를 유지하며 contracts.md 문서v1.28과 plan4.62를 갱신했다. PDF/DOCX 공통 템플릿 식별값이 바뀌어 기존 검사는 재검사·재승인해야 한다. 이미 저장한 문서와 내용 검증 결과를 자동 재작성하지 않는다.
+- **집중 회귀:** 가상 4/8쪽의 제목·소제목4개·본문5개·큰 사진·캡션·시연 footer를 실제 LibreOffice로 렌더해 빈 쪽 없이 지정 쪽수와 사진 분포를 확인했다. 본문 전체·반복 사진·원래 높이118.125mm 보존을 검사한다. 이 2건과 지문 가드 **3 passed / 77 deselected / 기존 경고1개 / 14.02초**.
+- **최종 회귀·적용:** `test_be07.py test_be08.py test_be08_rules.py test_api_contract.py`를 .env/bytecode/cache 및 Chrome 실행을 끄고 실행해 **137 passed / 45 skipped / 기존 경고1개 / 102.77초**. skip은 Chrome 미설정 및 Windows에서 실행하지 않는 macOS/POSIX 전용 검사이며 통과로 세지 않는다. 실제 LibreOffice의 1/4/6/8/10쪽, 과도한 본문 실패, DOCX 승인/다운로드 동일 파일 재사용/변경 후 차단도 포함한다. 별도 실제 Chrome의 PDF 1/10쪽·한글·사진·동봉 글꼴 검사는 **1 passed / 79 deselected / 기존 경고1개 / 6.04초**. 전체 저장소 pytest는 미실행이다. 진행 Job0건과 실제 서버 프로세스를 확인한 뒤 같은 시연 DB/내용 검증40만자/LibreOffice로 template_v8 서버를 재구동했다. 문서의 기존 배치 실패 행은 사용자가 화면에서 재검사해 갱신하며 자동 승인하지 않았다.
+- **상태·다음:** BE-07/08 서버 완료 및 BE-10/F-06/F-08 진행중 유지. 실제 화면에서 새 템플릿의 DOCX 배치 재검사·사용자 명시적 승인·다운로드 표본 검수는 다음 단계다. 유료 AI 호출 없이 배치만 보완했고 Agent 상태·프롬프트·모델·.env는 보존했다.
+- **비공개 복사본 정리:** 진단용 `private_runs/docx_fit_diagnostic`의 실제 절대 경로·부모·재분석 지점 여부를 확인하고 임시 DOCX/PDF/PNG를 모두 제거했다. 시연 세션 밖에 실문서 파생 복사본을 남기지 않았으며 원본 시연 DB·등록 자료는 유지했다. 재시작 뒤 OpenAPI200 응답을 확인했다.
+
+<a id="docx-ui-20261006"></a>
+
+### [F-06/08 · BE-07/08/10] → DOCX 화면 연결·헤드리스 실행·조회 오류 보완 (2026-10-06)
+
+- **프론트:** 실제 실행 중인 C:\frontend develop의 publication API/hook/DocumentWorkspace와 기존 브라우저 검사 스크립트를 수정했다. PDF/DOCX 선택으로 검사·미리보기·필수 문제·승인·다운로드를 전환하고 선택 형식만 저장소에 복원한다. 형식 변경·새로고침에 동의 체크가 해제되고 형식에 맞는 현재 검사·승인만 출력할 수 있다. 다운로드 MIME과 확장자도 선택 형식으로 확인한다. LibreOffice 기준과 Word의 글꼴·쪽 나눔 차이를 안내한다. 기존 .claude/ 사용자 변경은 보호했다.
+- **실제 오류:** Node가 실행한 HTTP 서버의 stdin 파이프가 열린 채 변환 자식에 상속되면 LibreOffice 버전 조회는 성공하지만 DOCX 변환이 90초 제한으로 끝났다. 같은 가상 DOCX의 단독 변환은 성공했다. subprocess stdin=DEVNULL로 수정 후 실제 브라우저 변환이 완료됐다. 별도 실사용 시연에서는 논리 8쪽과 DOCX 실제 쪽수 불일치 Finding(page_id=None)이 저장됐으나 응답 모델이 문자열만 받아 문서 GET이 500이었다. 문서 전체 문제의 null 위치를 허용해 조회를 복구했다. 쪽수 불일치를 통과로 처리하지 않는다.
+- **검증 한도·시연:** 사용자가 올린 검증 한도 오류는 전송 입력 204,782자/중복 메타데이터 정리 후 142,537자가 이전 시연 실행 옵션 120,000자를 초과한 경우였다. 이전 명령을 재사용한 백엔드 실행 실수이며 코드 기본값은 이미 400,000자였다. API 호출 없이 CheckOnly로 확인한 뒤 같은 시연 DB에 검증 400,000자로 재시작했다. 이후 사용자 실행의 실제 내용 검증 1회가 성공했다. 이 작업의 자동 검사는 유료 모델을 호출하지 않았다. README에 작성40,000/검증400,000/출력32,000/120초/재시도0의 시연 재시작 명령을 기록했다. .env·모델·프롬프트는 바꾸지 않았다.
+- **서버 회귀:** 새 열린 stdin 검사와 문서 전체 쪽수 실패의 조회/미리보기/승인 차단 검사 추가. 첫 실행 4 passed/2 failed는 기존 동시 DOCX 최종 파일 교체의 간헐 오류 1건과 새 검사 ROOT 오타 1건이었다. 경로 오타 수정 후 관련 DOCX 회귀 **21 passed / 1 skipped / 76 deselected / 기존 경고 1개 / 60.40초**. skip은 브라우저 없는 환경의 옛 HTML/PDF fallback 검사다. API 계약·출력 승인 규칙 **82 passed / 기존 경고 1개 / 33.91초**. 별도 4쪽 실제 DOCX 엔진 검사 **1 passed / 76 deselected / 10.09초**. 전체 저장소 pytest는 미실행이며 동시 교체 실패는 후속 관찰 항목으로 보존한다.
+- **실사용 데이터:** 마지막 DOCX 검사 DTO는 status=failed/actual_pages=11/global Finding 1건으로 정상 읽혔다. 시연 DB 읽기 전용 integrity_check=ok/FK 오류0건. 입력 내용·문서·승인·저장된 검사 결과를 수정하지 않았다. 서버는 위 검증40만자와 수정 코드로 재시작했으며 실제 문서의 8쪽→11쪽 불일치는 배치 수정 대상이다.
+- **화면 최종 검증:** C:\frontend에서 TypeScript/Vite 빌드, 변경 TS/TSX 3개 ESLint, 변경 코드/스크립트 Prettier 및 diff 공백 검사 통과. `node scripts/check-ai-workflow.mjs --publication --docx --photos`와 `--publication --photos` 최종 **PASS**. 각각 임시 ORM v11 DB·mock Agent·별도 HTTP 서버·Chrome을 사용했고 DOCX는 실제 LibreOffice 변환이다. 사진 두 장의 과도한 표지는 실제 5쪽/failed와 승인 차단으로 확인한 뒤 편집 화면에서 기존 사진을 명시적으로 삭제·저장·내용 재검증했다. 사진 1장을 보존한 4쪽 DOCX 39,025바이트/PDF 26,968바이트의 다운로드·동일 바이트 재다운로드, 형식 전환/새로고침 동의 해제, 잘못된 MIME 거부 후 재시도, 수정 후 이전 출력409, 작업 종료 정리를 확인했다. 사진 두 장 상태를 통과로 기대한 초기 스크립트 실패는 정상 넘침으로 기록하고 해결 흐름을 검사에 넣었다. DOCX 승인 화면·쪽별 미리보기·좁은 화면·모바일 스크린샷도 확인했다. 최종 진단 산출물은 OS 임시 폴더 ddalgi-ai-ui-t8Qwbv(DOCX)/ddalgi-ai-ui-aR0fZQ(PDF)에 있으며 커밋하지 않는다.
+- **상태·다음:** BE-07/08 서버 범위 완료 및 BE-10/F-06/F-08 진행중 유지. 다음은 실문서 DOCX의 쪽수·사진 배치 조정과 승인·다운로드 표본 검수다. DOCX 화면 연결 자체는 가상 사진/내용·실제 브라우저/HTTP/LibreOffice로 검증하며 실제 모델의 작성 품질 결과로 확대하지 않는다. 백엔드 test와 프론트 develop의 변경은 별도 커밋하며 원격 push는 하지 않는다.
+
+<a id="windows-cleanup-20261006"></a>
+
+### [F-07 · BE-09] → Windows 실제 잠금·긴 경로·재시작 정리 (2026-10-06)
+
+- **범위:** 기존 `tests/test_be09.py`에 실제 Win32 CreateFileW 공유 삭제 금지 핸들을 사용하는 검사를 추가했다. 가짜 삭제 실패 함수 대신 OS 파일 잠금을 사용하고 finally에서 핸들을 해제한다. 종료·중단 출력 두 시나리오를 기존 v9 및 시연과 같은 ORM v11에서 각각 실행했다. 제품의 긴 경로 삭제·제한 재시도·정리 큐는 기존 구현으로 통과해 추가 변경하지 않았다.
+- **종료·복구:** 260자 초과 Chrome 형태 프로필과 읽기 전용 파일을 만들었다. 잠금 중 DELETE는 closed/cleanup=pending, DB 원문 제거, 조회 410을 반환했다. 정리 작업을 running으로 점유한 채 앱 시작 경로를 다시 실행하면 pending/stale_claim으로 복구하고 접근 차단을 유지했다. 잠금 해제 후 sweep은 done을 기록하고 폴더를 삭제했다. 별도 registered 원본은 보존됐다.
+- **중단 출력:** 활성 세션의 running layout_check와 잠긴 임시 프로필을 남긴 뒤 앱 시작 경로를 실행했다. Job은 failed가 되고 삭제 실패에도 서버 시작과 세션 접근은 성공했다. 오래된 임시 폴더는 sweep 큐에서 재시도하고 잠금 해제 후 삭제됐다. 활성 세션 폴더와 업로드는 보존됐다.
+- **DB·회귀:** 각 시나리오 종료 시 스키마 버전, foreign_keys=1, integrity_check=ok, foreign_key_check 오류 0건을 확인했다. `tests/test_be09.py -q -p no:cacheprovider --disable-warnings --maxfail=2`: **39 passed / 기존 경고 1개 / 51.74초**. 실제 OS 잠금 4건을 포함한 종료·만료·큐·접근·늦은 저장·재시작 출력 회귀 범위다. 전체 저장소 pytest는 실행하지 않았다.
+- **한계·다음:** 앱 시작·복구 코드를 같은 테스트 프로세스에서 실행했으며 실제 프로세스를 강제 종료하거나 Chrome 자식 프로세스의 OSError 145를 그대로 재현한 결과는 아니다. Windows 실제 파일 잠금/긴 경로 정리 후속은 확인 완료, 실제 AI/프론트 반복 시연은 후속이다. 시연 서버·시연 DB·.env·Agent 상태를 변경하지 않았다. 다음 백엔드 순서는 BE-10의 화면 연결 대조와 남은 DOCX 승인·다운로드 화면 검수다.
+
+<a id="preflight-blockers-20261006"></a>
+
+### [F-05/08 · BE-04/06/10] → 점검 문제·미확인 사실의 문서 연결 (2026-10-06)
+
+- **발견:** Agent의 DQ03 준비 기록에 남아 있던 미참조 needs_confirmation/UNSUPPORTED_CLAIM blocker는 Preflight에만 있고 문서 검사에서는 VALUE_CONFLICT만 전달됐다. 초기 문서의 저장 status 힌트도 조회 시 계산값으로 바뀌므로 문제 행이 없으면 검토 필요 표시가 사라졌다.
+- **보완:** 필수 내용 누락 외의 열린 source/content blocker를 초안 저장 트랜잭션에 origin=preflight로 기록하고 본문 참조 여부와 무관하게 초기 조회·세션 요약·전체/부분 재검증·승인 가드에 연결했다. 같은 입력의 재점검에서 추가되면 기존 승인도 무효화한다. 안내 삭제·확인/제외 버튼으로 닫을 수 없고 원인 제거 후 최신 점검·문서 재검증으로 해결한다. conflict Fact 복구·다른 미해결 문제 보존·경고 수준의 needs_confirmation 처리는 유지한다. REQUIRED_MISSING은 기존 문서 전체 검사에서 대체 사업 설명·사용자 지정 필수 항목까지 재판정한다.
+- **입력 검사:** Agent가 선택 밖 자료/사실·중복 문제 ID·생성 전 블록/배치·임의 확인/해결·resolution을 반환하면 점검 전체를 AGENT_OUTPUT_INVALID로 저장하지 않는다. 과거 저장된 닫힌 Issue에서도 conflict Fact가 남으면 blocker로 복구하는 방어를 유지한다. 공개 API·계약1.9·DB v11·template_v7·프롬프트는 그대로이며 contracts.md 문서v1.26, 기존 handoff 예시와 plan4.60을 갱신했다. Agent 담당의 작업 상태/원본 기록은 바꾸지 않았다.
+- **직접 검증:** 신규 연결·잘못된 응답 거부 선택 검사 **9 passed / 1 warning, 4.96초**. 이후 연결 검사를 legacy v9/현행 ORM v11 양쪽 fixture로 확장하고 종료 시 foreign_keys=ON, integrity_check=ok, foreign_key_check=[]와 버전을 확인했다. 초기 문제·review_required, 본문 미참조 미확인 blocker, 버튼 우회 거부, 부분 검증 보존, 원인 제거 뒤 재검증 해결, 같은 입력의 재점검 승인 무효화와 source blocker/confirmation warning의 구분을 확인했다. 최종 `tests/test_be04.py tests/test_be06.py tests/test_api_contract.py`: **170 passed / 1 warning, 71.51초**. 관련 BE-04/05/06/08 규칙·Agent·계약·ORM 넓은 회귀는 **1435 passed / 2 failed / 1 warning, 259.57초**였으며 두 실패 모두 REQUIRED_MISSING 중복/대체 항목 판정이었다. 해당 제품 수정 뒤 위 170건과 Agent 자료 부족·작성 조건 선택 검사 **38 passed / 1 warning, 3.79초**에서 두 실패와 DQ03 후속을 확인했다. 최종 1438건을 한 명령으로 재실행한 결과나 전체 저장소 pytest 결과로 표시하지 않는다. 중간 회귀에서 초기 분량 검사 캐시를 무조건 덮어쓰는 오류와 대체 사업 설명을 필수 누락으로 고정한 오류를 발견해 제품 코드를 수정했다. 새 Agent의 임의 해결을 허용하던 기존 시험은 과거 저장 점검의 복구 검사로 유지했다.
+- **DB 신뢰성 확인:** 시연 DB를 mode=ro/query_only로 읽었고 내용/자료를 수정하지 않았다. user_version11, Alembic20260929_01, 현행 ORM 모델과 테이블/컬럼/외래키/인덱스/CHECK 구조 일치, SQLite integrity_check=ok, foreign_key_check 오류0건을 확인했다. 임시 DB의 정상 동작과 기존 시연 데이터의 구조 무결성을 각각 확인한 것이며 회사 정보의 사실 정확성·실제 AI 품질·모든 과거 데이터 조합의 안전성을 보장하지 않는다.
+- **상태·후속:** BE-04/06 기존 서버 완료와 BE-10/F-05/F-08 진행중을 유지한다. DQ03의 백엔드 저장·재검증·승인 연결 누락은 보완했으며 실제 모델/프론트 통합 검수는 후속이다. 다음 백엔드 작업은 Windows 세션 정리·재시작 복구 후속이다. 실사용 .env·등록 자료·프론트 파일을 보존했고 실제 유료 모델 호출은 하지 않았다.
+
+<a id="docx-layout-20261006"></a>
+
+### [F-06/08 · BE-07/08/10] → DOCX 실제 배치 검사·승인·출력 (2026-10-06)
+
+- **구현:** 명시 설정 `EXPORT_LIBREOFFICE_PATH`로 LibreOffice headless를 실행해 생성한 DOCX 자체를 PDF로 변환한다. 실제 쪽수·쪽별 전체 본문 순서·사진 수·A4 인쇄 영역과 기존 필수 검사 3종을 확인하고 같은 변환본의 PNG를 제공한다. 통과한 편집 가능한 원래 DOCX를 승인·발행하며 다운로드/재다운로드 바이트·SHA256을 보존한다. 승인·발행 시 실제 측정/엔진/필수 검사 기록을 확인한다. 엔진 미설정·누락·변환/측정 실패·시간 초과·넘침은 계속 차단한다.
+- **발견·보완:** 첫 실제 실행에서 LibreOffice의 기본 inline 그림 여백으로 사진이 인쇄 영역을 벗어났고 Windows 긴 프로필 경로 때문에 변환/폴더 삭제가 실패했다. 그림 거리/위치를 명시하고 같은 폴더의 Windows 짧은 이름으로 엔진을 실행하며 긴 경로 삭제를 지원했다. 쪽수 차이와 쪽별 누락을 함께 기록할 때 None 페이지 ID를 정렬하던 오류도 수정했다. Job별 독립 입력 사본/프로필과 임시 변환본은 세션 폴더에서 정리한다.
+- **환경·계약:** winget 공식 배포로 LibreOffice 26.8.0.3을 설치했다. 계약 1.9·문서 v1.25·template_v7이며 데이터 1.0/DB v11/API 필드는 유지한다. .env.example·README·plan 4.59·기존 handoff 예시를 갱신했다. 이전 PDF/DOCX 검사·승인은 재검사·재승인이 필요하다. 운영 .env는 수정하지 않는다.
+- **직접 검증:** 가상 TXT/PNG·mock Agent·임시 DB로 실제 DOCX 1/4/6/8/10쪽의 본문·숫자·목록·사진/캡션·편집성, 긴 본문의 넘침 차단, 엔진 5종 실패와 누락 차단, 검사 증거 4종 누락/변조의 승인·출력 차단을 확인했다. DOCX API 통합은 Chrome 없는 설정에서도 검사→4쪽 PNG→명시 승인/멱등 재전송→Export→원래 DOCX 반복 다운로드→편집 후 차단→종료 후 410/폴더 정리를 통과했다. 첫 7건 선택 실행은 6 passed/1 failed였고 넘침 결과 저장 오류 수정 뒤 관련 회귀에서 통과했다. 가상 4쪽 변환본의 첫/마지막 PNG를 직접 열어 한글·목록·사진·캡션의 잘림/겹침이 없음을 확인했다. Poppler는 한글 경로 읽기에 실패해 기존 PDFium으로 시각 확인했다.
+- **회귀 실행:** `.env`/bytecode/cache를 끄고 실제 Chrome/LibreOffice로 `tests/test_be07.py tests/test_be08.py tests/test_be08_rules.py tests/test_be06.py tests/test_api_contract.py` 실행: **257 passed / 1 failed / 8 skipped / 1 warning, 326.16초**. 실패는 template_v6로 고정된 기존 기대값 1곳이었다. template_v7로 갱신한 뒤 해당 검사·템플릿 지문·변경된 계약 예시를 재실행해 **45 passed / 1 warning, 7.91초**. 최종 제품 코드에서 선택 266건 중 258건을 확인했고 skip 8건은 Windows에서 실행하지 않는 macOS/POSIX 종료 검사다. 실행 성공으로 계산하지 않는다. 긴 경로 정리 변경의 BE-09 회귀도 별도 실행해 **35 passed / 1 warning, 35.77초**를 확인했다. 전체 저장소 pytest는 미실행이다. 기존 Starlette 경고가 남으며 diff 공백 검사는 통과했다.
+- **시연 서버:** 사용자 요청으로 `test` 브랜치의 `private_runs/demo_preview_20260929_131826/app.sqlite3`(등록 자료 21건)을 지정해 127.0.0.1:8000에 실제 LLM/시연/내용 검증/문구 수정안과 DOCX 엔진을 켰다. 기존 interactive 한도(120초, 입력 40000/검증120000/출력32000, 재시도0, 예산$5)를 유지했다. 첫 실행은 기본 입력 한도가 기존 trial 가드보다 커 startup에서 실패했고 기존 시연 한도로 재실행해 정상 구동했다. 서버 구동 중 실제 AI 호출은 하지 않았다. C:\frontend develop의 기존 Vite 서버 localhost:5173도 정상 응답을 확인했다(백엔드 OpenAPI 200, 프론트 200, API 프록시 401 UNAUTHORIZED). 프론트 브랜치/파일을 변경하지 않았다.
+- **상태·후속:** BE-07/08의 PDF·LibreOffice DOCX 서버 범위 완료, BE-10/F-06/F-08 진행중. 실제 LLM 의미 판단·실회사 DOCX·Word 배치·프론트 DOCX 화면은 이번 검증 대상이 아니다. DOCX는 기존 단일 열이며 Word/다른 글꼴의 동일 쪽 나눔과 PDF 브로슈어 디자인 일치는 보장하지 않는다. 다음 백엔드 순서는 Agent issue/needs_confirmation 저장·연결 확인과 세션 정리/복구 후속이며 프론트 C-05·DOCX 연결과 최종 통합 검수는 별도로 남는다. 커밋은 test, push는 요청하지 않아 실행하지 않는다.
+
+<a id="backend-contract-c05-20261006"></a>
+
+### [F-04/08 · BE-01/05/10] → 계약 1.8 대조와 C-05 실제 HTTP 복귀 검증 (2026-10-06)
+
+- **기준·범위:** 백엔드 `C:\backend`, 브랜치 `test`, 시작 HEAD 0ad3eb2, 시작 시 추적/미추적 변경 없음. 환경에 표시된 `D:\backend`는 접근할 수 없어 사용자 지정 문서가 있는 실제 저장소를 사용했다. 프론트는 `C:\frontend` develop 0771d54이며 `.claude/` 미추적 항목을 보존했다. `D:\frontend`의 15289fb와 구분하며 프론트 파일은 수정하지 않았다.
+- **계약 정리:** contracts.md v1.24와 기존 docs/api_examples_v1.1.json에서 계약 1.8·데이터 1.0·DB v11·template_v6를 현재 기준으로 명시했다. C-05, Brief 추가 필드, editorial_v1/v2, 생성 사유·쪽수, Page.design·승인 무효화의 프론트 후속을 정리했다. 과거 날짜별 계약·검증 이력은 보존했고 새 공개 필드/DB/프롬프트 변경은 없다.
+- **검사 구현:** 기존 scripts/check_s01_http.py에 `--impact`를 추가했다. 실제 HTTP로 제목 직접 편집→보충 자료 업로드·선택→재점검→명시 확인 거부/허용→영향 조회→유지 사유로 적용→같은 키 재전송→최신 문서·입력의 전체 검증→소유자 격리→종료 후 410을 확인한다. 문장·사진·배치 보존과 초안 재생성 없음·외래키 무결성을 검사한다. 기존 tests/test_orm_workflow.py에 같은 흐름의 회귀를 추가했다.
+- **직접 검증:** `.env` 자동 로딩/bytecode/cache를 끄고 `tests/test_api_contract.py tests/test_be05.py tests/test_be06.py tests/test_orm_workflow.py`를 실행해 **290 passed / 1 warning / 136.24초**. 첫 제한 실행은 pytest 임시 폴더 접근 거부로 27 passed / 3 errors였으며 권한 허용 뒤 전체 선택 검사를 통과했다. 경고는 기존 Starlette 관련이다.
+- **실제 HTTP·PDF:** `scripts/check_s01_http.py --impact --publication --photos --timeout 120` → **passed**, Chrome 154.0.8037.57, **4쪽·23,134바이트·사진 1장**. 사진 픽셀·미리보기·승인 artifact/다운로드 해시·재다운로드 동일·후속 편집의 옛 승인/다운로드 차단·종료 정리를 확인했다. 첫 제한 실행의 임시 폴더 접근 거부는 권한 허용 후 재실행으로 해소했다.
+- **남은 범위:** 실제 프론트 화면 연결, 실제 모델 의미 검증, 실회사 전체 자료·사용자 품질 판정은 미실행이다. DOCX 엔진은 LibreOffice를 추천하고 Word와의 차이를 설명했으나 아직 확정되지 않았다. 유료 AI 호출·실사용 DB/등록 자료/환경 파일 변경·서버 재시작은 없다. BE-05 기존 서버 완료·BE-08 PDF 완료/DOCX 미완료·BE-10 진행중을 유지한다.
+
+<a id="draft-pagination-20260930"></a>
+
+### [F-03·06] → 초안 분량 사전 확인·페이지 자동 추가 (2026-09-30, BE-04/07)
+
+- **사용자 결정·범위:** 목표 쪽수 초과 시 내용 보존·페이지 자동 추가를 선택했다. `app/services/export_render.py`에서 실제 PDF 측정을 이용해 소제목/문단 묶음을 이동하고, 한 쪽보다 긴 문단은 문장·공백 경계에서 분할한다. 본문 전체 문자·순서·fact_ids·evidence_refs·사진을 보존한다. 같은 원래 페이지의 연속 페이지를 먼저 채워 불필요하게 비는 페이지를 줄인다. 최대 8회 렌더·40쪽·120초이며 최소 쪽수를 보장하는 최적화는 아니다.
+- **저장 연결·보호:** `app/services/ai_jobs.py`의 새 editorial 초안 경로에서 기존 근거 검사 후 실행한다. 브라우저 작업 동안 쓰기 잠금을 유지하지 않으며 저장 전에 근거·세션·입력 버전·중복 생성을 다시 확인한다. 임시 세션/Job 출력은 정리하고 LayoutCheck·승인 행을 만들지 않는다. 실제 논리 쪽수와 분할/미완료 사유는 기존 EditorialRecord에 저장한다. 사전 확인 미완료 시 저장 status 힌트는 review_required지만 공개 Document.status는 기존 검증/승인 계산 규칙을 유지한다. 기존 저장/편집본·승인본은 자동 변경하지 않는다.
+- **회귀·시각 확인:** `tests/test_be07.py`에 실제 Chromium의 항목 묶음/초대형 문단/사진 보존·정상 문서 불변·렌더 불가·분할 불가·횟수/쪽수 상한을, `tests/test_be04.py`에 저장 연결·입력 변경·변조 참조 거부·중복 호출/임시 파일 정리를 추가했다. 합성 1쪽 항목 사례는 3쪽, 긴 문단 사례는 4쪽으로 분리됐다. 최종 실행 수치와 서버 반영 결과는 아래 후속 기록을 따른다.
+- **최종 확인 결과:** `tests/test_be04.py tests/test_be07.py -k 'editorial_draft_layout_preparation or draft_pagination or editorial_photo_fit or template_fingerprint or identity_values'`에서 **17 passed / 75 deselected / 기존 경고 1개 / 85.05초**. PDF에서 페이지별 머리말/꼬리말을 제외한 전체 문자가 입력 블록과 정확히 같고 사진·근거·순서가 보존됨을 확인했다. 최종 3쪽/4쪽 미리보기 7장을 모두 직접 열어 잘림·겹침을 확인했다. 긴 항목을 보존하기 위해 표지 성격의 첫 쪽이나 사진 쪽에 여백이 남을 수 있다. 앞선 BE-04·BE-08 회귀에서는 **40 passed / 4 failed / 1 deselected / 380.08초**였으며 실패 4건은 새 가짜 비동기 Agent 시험에서 await를 빠뜨린 원인이었다. 이어 공개 상태가 저장 힌트가 아닌 기존 계산값임을 반영하고, 페이지 경계를 넘는 문장 비교에서 머리말/꼬리말을 제거하도록 시험을 수정했다. 수정한 4건은 최종 17건에 모두 포함되어 통과했다. 별도 실제 HTTP 서버 사진 검사는 제외했고 전체 저장소 pytest는 재실행하지 않았다.
+- **서버 반영:** 진행 중 Job 0건을 확인한 뒤 23:16에 시연 서버를 재시작했다. 로그는 `%TEMP%/ddalgi-backend-20260930-231631.*.log`다. 검증 입력 400000자·일반 입력 40000자·출력 32000토큰·120초·재시도 0을 유지하고 이전 프로세스의 누적 비용을 차감해 예산 $4.927330200를 전달했다. 이번 수정 검증의 유료 AI 호출은 0회이며 실사용 문서/승인을 직접 변경하지 않았다.
+- **기동 확인:** 새 백엔드 PID 41956의 시작 완료, `/docs` 및 프론트 5173 `/`의 HTTP 200을 확인했다. BE-04/07 자동 분할 후속 구현·검증·시연 서버 반영을 완료했다.
+- **남은 범위:** 실제 모델 추가 호출과 실사용 DB 쓰기 없이 가상 자료로 검사했다. 기존 편집본의 자동 재배치는 포함하지 않는다. 긴 제목·분할할 공백 없는 본문·과도한 사진 설명·렌더 환경 문제와 작업 한도 초과는 최종 배치 검사에서 확인해야 한다. 프론트의 생성 사유 표시·계약 사본은 미갱신이며 DOCX 실제 배치/승인도 기존 후속이다. BE-04/07 기존 완료 범위, F-03/06 공통 진행중 및 Agent 상태를 유지한다.
+
+<a id="pdf-photo-fit-20260930"></a>
+
+### [F-06] → PDF 사진 높이 맞춤·넘침 검사 유지 (2026-09-30, BE-07/08)
+
+- **문제:** 사용자 저장 문서 버전 1의 논리 6쪽에서 표지 1쪽/본문 4쪽이 각각 10.8mm/33.8mm 넘쳤다. 실제 PDF의 2·6번째 쪽으로 사진만 밀려 총 8쪽이 됐다. 이전 템플릿의 사진 높이는 표지 119mm·일반 74mm로 고정돼 있었다.
+- **변경 파일·동작:** `app/templates/export/company_intro_v0.html`은 서체 로딩 후 초과하는 Page.design 페이지의 contain 사진 상자 높이만 남은 공간에 맞춘다. 사진 최소 높이는 36mm, 최대 3회로 제한한다. 본문 11pt·캡션·사진 비율·블록 순서와 저장 문서는 변경하지 않는다. crop/정상 페이지는 유지하고 최소 높이로도 맞지 않는 내용은 기존 넘침 검사에서 계속 거부한다. `app/services/layout_checks.py`의 TEMPLATE_VERSION을 v6로 올리고 `tests/test_be07.py`의 지문과 회귀를 맞췄다. 공개 API/데이터/DB는 유지하며 출력 동작은 `contracts.md` 문서 v1.19에 반영했다. 프론트 사본은 미갱신이다.
+- **실문서 로컬 확인:** 같은 읽기 전용 스냅샷으로 OS 임시 폴더에 렌더한 PDF가 실제 6쪽·layout_ok=true·findings 0건이다. 표지 사진 상자는 약 107.2mm, 4쪽은 약 39.2mm로 맞춰졌으며 나머지는 조정하지 않았다. 전후 PDF에서 쪽마다 반복되는 시연 꼬리말을 제외한 전체 추출 문자가 동일하고 이미지 5개도 유지된다. 6쪽 PNG를 모두 직접 확인했다. 입력 문서 불변·DB 쓰기 0·AI 호출 0이다. 임시 시험 파일은 승인본이나 사용자 다운로드 artifact로 등록하지 않았다.
+- **최종 회귀:** `tests/test_be07.py tests/test_be06.py tests/test_be08.py`에서 아래 2건을 제외하고 실행해 **155 passed / 8 skipped / 2 deselected / 기존 경고 1개 / 483.12초**를 확인했다. skip 8건은 Windows에 없는 POSIX `os.pread` 전용 프로세스 검사다. 기존 요청 코드 400/422 기대 불일치인 `test_stress_document_layout_failed_then_fixed_and_issue_separation`과 별도 HTTP 서버 검사 `test_real_http_photo_upload_approve_and_pdf_download`는 제외했다. 전체 저장소 회귀·실제 AI 의미 검증 결과로 확대하지 않는다.
+- **서버 반영:** 실행 중 queued/running Job 0건을 확인한 뒤 2026-09-30 22:54에 시연 서버를 재시작했다(PID 8840, 로그 `%TEMP%/ddalgi-backend-20260930-225415.*.log`). 검증 입력 400000자·일반 입력 40000자·출력 32000토큰·120초·재시도 0을 유지했다. 기존 프로세스에서 사용자가 실행한 2회 누적 추정 비용 $0.018004185를 차감해 남은 예산 $4.941905155를 전달했다. `/docs`와 프론트 5173 `/` 모두 HTTP 200, 새 서버 시작 완료를 확인했다. 이번 수정 확인에서 추가 AI 요청은 하지 않았다.
+- **검증 범위·남은 일:** 새 회귀는 실제 Chromium에서 고정 높이 실패→사진 맞춤 성공, 본문/이미지 보존, crop·정상 페이지 유지, 긴 본문은 최소 사진 높이에서도 넘침 거부를 확인한다. 최초 합성 본문 사례가 최소 높이로도 맞지 않는 분량이어서 통과 기대가 틀린 1건을 확인했고, 경계 거부 검사를 유지하면서 성공 사례의 분량을 수정했다. 사용자 화면에서는 새 PDF 배치 검사를 실행하고 미리보기를 확인한 뒤 명시적으로 승인해야 한다. 기존 승인본을 덮어쓰거나 배치 검사를 통과로 조작하지 않는다. BE-07/08 사진 맞춤 후속 구현·검증·서버 반영은 완료했으며, F-06 진행중과 DOCX 승인·다운로드 미완료 상태는 유지한다.
+
+기능별로 끝낸 부분의 기록이다. 날짜·가짜 응답·실제 AI·실제 파일 확인 범위를 함께 읽는다. 기능 전체의 현재 상태는 2절을 따른다. 기존 절 번호 링크는 해당 기능 기록으로 연결되도록 보존했다.
+
+<a id="f-01"></a>
+<a id="62-be-02-구현-결과-2026-09-25"></a>
+<a id="63-be-03-구현-결과-2026-09-25"></a>
+<a id="612-등록-자료-적재-2026-09-26"></a>
+<a id="619-로컬-자료-용량-정리-2026-09-28"></a>
+<a id="620-카탈로그-서비스용-pdf-최적화-적용-2026-09-28"></a>
+<a id="633-현재-프론트-s01-연결과-별도-시연-db-적재-2026-09-29"></a>
+
+<a id="f-01-자료-접수선택파일-읽기-기반"></a>
+
+### [F-01 자료 선택·파일 읽기] → 자료 접수·선택·파일 읽기 기반
+
+- [x] **2026-09-25, BE-02/03**: 첨부와 선택을 구분하고 지원 형식의 읽기 상태·원문 위치를 반환했다. 손상·암호·미지원 파일이 다른 정상 파일의 읽기를 막지 않도록 했다.
+- [x] **2026-09-26~28, BE-03 후속**: 등록 자료 적재 도구와 선택 자료 전달, 카탈로그 서비스용 사본 준비를 완료한 기록이 있다. 현재 자료 적재 보류를 유지한다.
+- [x] **2026-09-29, BE-02/03·BE-10 후속(6.33)**: 사용자 요청으로 별도 임시 DB `private_runs/demo_preview_20260929_131826`에 실제 자료 7개·시연 자료 11개(AI 생성 사진 2장 포함), 추출 구간 215개·사진 21개를 적재했다. 기본 `erd_v2` DB는 등록 자료 0개로 보존했다. 현재 프론트 S01의 세션 생성/복원·등록 자료 조회·작성 조건 저장·첨부/읽기·선택·삭제·종료를 연결하고 실제 Chrome 검사 10개를 통과했다.
+- **핵심 결정사항/메모**: 파일당 10MB·세션당 10개이며 용량·개수 제한을 넘으면 접수를 거부한다. 자료당 추출 글자는 100,000자까지 사용하며, 글자 제한 초과·스캔본은 일부 읽음과 보완 안내를 표시한다. OCR과 문서 내부 그림 자동 추출은 포함하지 않는다. 등록 원본은 선택 해제만으로 삭제하지 않는다. 시연 DB는 `PRIVATE_RUNS_DIR`/`DB_PATH`를 주입해 실행하며 `DEMO_MODE=true`가 아니면 시연 세션 생성이 403이다.
+- **코드·검증**: `app/parsers/`, `app/services/sources.py`, `registered.py`, `scripts/import_registered.py`, `scripts/rebuild_database.py`. 프론트 `src/api/sources.ts`, `src/hooks/useSources.ts`. QA-03은 당시 통과, QA-04는 파일 읽기 범위만 확인했고 수치의 의미 판단은 Agent 후속이다.
+
+<a id="f-02"></a>
+<a id="626-s01-중복-요청동시-저장실패-복구-2026-09-28"></a>
+<a id="634-현재-s01의-실제-ai-점검초안-연결-2026-09-29"></a>
+
+<a id="f-02-선택-자료-점검과-입력-변경-처리"></a>
+
+### [F-02 자료 점검·작성 조건 추천] → 선택 자료 점검과 입력 변경 처리
+
+- [x] **2026-09-25, BE-04**: 선택한 자료 중 사용할 수 있는 구간만 Agent에 전달하고 점검 결과·누락·충돌·추천을 조회하도록 했다.
+- [x] **2026-09-28, BE-02/04 후속**: 첨부 재전송·동시 저장·점검 작업 재사용과 실패 복구를 보완했다.
+- [x] **2026-09-29, BE-04·BE-10 후속(6.34)**: 현재 프론트에 점검 요청→Job 조회→사실/근거/추천/문제 표시→명시 확인→초안 요청→저장 문서 조회를 연결했다. 새로고침은 GET만, 응답 유실은 같은 키 재전송, 입력 변경 시 점검·확인 폐기, 자동 조회 최대 120회다. 실제 LLM 서버·시연 DB에서 점검 1회·초안 1회 화면 완주를 확인했다.
+- [x] **2026-09-29, 실자료(6.43)**: 거산 실자료 4개 원문 8,280자·106구간의 실제 점검 1회(약 50.64초, 입력 8,723/출력 6,763토큰)로 사실 25개(근거 있음 23)·can_generate=true·문제 0개를 확인했다. 앞선 2회는 61초 무응답과 `incomplete/max_output_tokens`로 실패했고 그 기록을 보존했다.
+- **핵심 결정사항/메모**: 자료나 작성 조건이 바뀌면 입력 번호가 바뀌며 옛 점검·사용자 확인을 사용할 수 없다. 작성 조건용 첨부는 회사 사실의 근거에서 제외한다. 추출 프롬프트에 같은 근거의 불필요한 반복·주변 문단 전체 복사를 줄이는 규칙을 추가했고 서로 다른 사실·충돌 후보·조건은 생략하지 않는다(plan 4.29).
+- **코드·검증**: `app/services/preflights.py`, `ai_jobs.py`, `idempotency.py`, `app/prompts/extract.txt`. 프론트 `src/api/aiWorkflow.ts`, `src/hooks/useAiWorkflow.ts`, `AiWorkflowPanel.tsx`.
+
+<a id="f-03"></a>
+<a id="64-be-04-구현-결과-2026-09-25"></a>
+
+<a id="f-03-사용자-확인-후-초안-생성"></a>
+
+### [F-03 사용자 확인·초안 생성] → 사용자 확인 후 초안 생성
+
+- [x] **2026-09-25~28, BE-04**: 최신 점검에 대한 명시적 확인 후 초안을 생성하고 저장·조회한다. 중복 요청은 진행 중인 작업을 재사용하며 오래된 입력의 결과는 저장하지 않는다.
+- [x] **2026-09-29, BE-04·BE-10 후속(6.34·6.42·6.43)**: 화면의 명시 확인 체크 후 초안 생성을 연결했다. 새 초안 제목은 `회사명: 이름` 원문 발췌와 일치할 때만 이름으로 표시하고 그 외에는 추출값을 보존한다. 실자료 초안 1회(약 22초, 출력 2,184토큰)로 4개 논리 페이지·37블록을 생성했다.
+- **핵심 결정사항/메모**: 텍스트 근거가 없으면 생성하지 않는다. AI 실패는 실패로 알리고, 이미 있는 편집 문서를 새 초안으로 덮어쓰지 않는다. 결과 확인 체크는 문제 해결이나 최종 승인이 아니다.
+- **코드·검증**: `app/routers/drafts.py`, `app/services/ai_jobs.py`, `jobs.py`. QA-07의 입력 변경·옛 점검 거부를 확인했다. S01의 제한된 실제 AI 시험은 [Agent F-03](task_agent.md#f-03)이 원본이다.
+
+<a id="f-04"></a>
+<a id="f-04-직접-편집ai-수정안사진--편집수정안-적용복원-api"></a>
+<a id="f-04-편집수정안-적용복원-api"></a>
+<a id="65-be-05-구현-결과-2026-09-25"></a>
+<a id="638-s02-텍스트-수정안-api-연결과-복구-검증-2026-09-29"></a>
+<a id="639-s02-실제-llm-문구-수정안-코드-연결-2026-09-29"></a>
+<a id="640-실제-문구-수정안-시험과-검증-입력-크기-보완-2026-09-29"></a>
+<a id="644-사진-후보-편집과-실제-이미지-검증-연결-2026-09-29"></a>
+
+<a id="f-04-편집수정안-적용복원-api와-실제-수정안사진"></a>
+
+### [F-04 직접 편집·AI 수정안·사진] → 편집·수정안 적용·복원 API와 실제 수정안·사진
+
+- **2026-09-30, 이미지 연결 보류(사용자 결정)**: 다음 날 발표는 텍스트 고도화에 집중한다. 이미지 보충 묶음은 시연 DB 아래 `image_link_bundle`, 미적용 코드 6개와 패치는 `image_link_audit/deferred_code`·`deferred_image_work.patch`에 보관하고 작업 코드에서 분리했다. 시연 DB는 등록 자료 21개·이미지 21개 그대로이며 추가 적재·현재 선택·기존 초안 변경 없음. 보충 묶음 dry-run은 신규 자료 1개·이미지 연결 154개·기존 자료 새 읽기 이력 7개 예정으로 통과했지만 실제 적용하지 않았다. 적재 이력 테스트 47개는 통과했고, 사진 후보 필터를 포함한 후속 전체 검사는 실행 권한/임시 폴더 접근 제한으로 미완료다. 재개 시 패치 검토·회귀·DB 백업·적재 후 실제 후보 조회 검증이 필요하다. F-04 전체 상태는 진행중 유지.
+
+- [x] **2026-09-25, BE-05**: 문구·페이지·블록을 저장하고 수정안을 적용·거절하거나 이전 내용을 새 버전으로 복원한다. 실패한 저장은 원본을 보존한다. 오래된 제안 적용을 거부하고 같은 요청의 재전송·동시 적용이 문서를 두 번 바꾸지 않도록 했다.
+- [x] **2026-09-29, BE-05·BE-10 후속(6.38)**: 현재 프론트 S02에서 선택한 제목·본문·목록 블록 1개→수정 요청→Proposal Job 조회→원문/제안/이유 비교→명시적 적용 또는 취소를 연결했다. 요청·제안 본문은 브라우저 저장소에 넣지 않고 ID/버전/키/요청 해시만 보관한다. mock 브라우저 검사 17개 통과.
+- [x] **2026-09-29, BE-05 후속(6.39)**: `LlmAgent.propose`를 구현했다. 원문 근거가 연결된 한 블록만 대상으로 strict JSON 응답의 블록 ID·발췌·숫자 토큰·목록 항목 수를 검사하고 코드가 `replace_block_content` 하나만 구성한다. `OPENAI_ENABLE_TEXT_PROPOSALS`(기본 false, 최대 2회)를 추가했다. 당시 458 passed.
+- [x] **2026-09-29, 실제 수정안(6.40)**: 가상 납기 자료의 실제 수정안 1회가 수치·시작 기준·영업일·특수 주문 예외를 보존한 제안을 반환했고 명시적 적용 시 한 버전만 증가했다.
+- [x] **2026-09-29, BE-05·BE-06 후속(6.44)**: S02 사진 후보 선택·교체를 연결했다. 후보는 선택 자료의 실제 사진 목록이며 나열에 유료 호출이 없다. 내용 검증 시 선택 PNG/JPEG 바이트(파일당 5MiB/1,600만 화소, 합계 20MiB, 최대 20장)를 모델에 전달하고 IMAGE_MISMATCH/IMAGE_UNVERIFIABLE을 확인 클릭 불가 blocker로 저장한다. 합성 이미지 실제 2회 시험에서 32×24 단색 사진은 오탐했고 640×480 사진은 정상 설명 통과·잘못된 설명 차단을 확인했다(추정 $0.001293975). 관련 테스트 528 passed, 브라우저 검사 19개 묶음 통과.
+- [x] **2026-09-30, BE-05 후속(C-05)**: 자료 변경 후 재점검 확인·영향 조회·선택 적용·최신 입력 연결 API 구현과 백엔드 회귀 검증을 완료했다. 프론트 복귀 화면·실제 모델의 변경 자료 의미 검증은 후속이다. [상세 기록](#c05-edit-return-20260930).
+- **핵심 결정사항/메모**: AI 제안을 만들거나 취소해도 현재 문서는 바뀌지 않는다. 복원으로 옛 승인이나 다른 입력의 내용을 현재 자료에 연결하지 않는다. 사진 교체 시 이전 설명·근거를 지우고 적용 후 재검증이 필요하다. 원문 인용·숫자 검사가 의미의 정확성을 보장하지 않으며 자동 이미지 검증도 정확성 보장으로 안내하지 않는다. Agent의 구조 수정·여러 블록 수정안·C-05 자동 의미 수정안은 후속이다. Agent 담당(AG-05/06)에게 이 초기 구현과 실모델 품질 확인 범위를 인계해야 한다.
+- **코드·검증**: `app/services/documents.py`, `doc_ops.py`, `proposals.py`, `app/agent_llm.py`. 프론트 `src/api/publication.ts`, `src/hooks/usePublication.ts`, `DocumentWorkspace.tsx`. QA-11의 버전 충돌·중복 적용은 가짜 응답으로 통과했다.
+
+<a id="f-05"></a>
+<a id="3-현재-진행-작업-f-05-내용-검증경고-확인승인-now"></a>
+<a id="f-05-내용-검증경고-확인승인--필수-문제-차단과-개별-경고-확인"></a>
+<a id="f-05-필수-문제-차단과-개별-경고-확인"></a>
+<a id="613-be-06-검증문제-해결승인-2026-09-26"></a>
+<a id="632-d-07-개별-경고-확인과-승인-강제-2026-09-29"></a>
+<a id="635-현재-프론트-문구-편집내용-검증승인pdf-연결-2026-09-29"></a>
+<a id="636-내용-검증-진단과-실제-llmpdf-전체-연결-재시험-2026-09-29"></a>
+<a id="641-저장-결과를-이용한-실제-내용-검증-재시험과-응답-진단-2026-09-29"></a>
+<a id="642-실제-내용-검증pdf-재시험-통과와-출력-품질-보완-2026-09-29"></a>
+
+<a id="f-05-필수-문제-차단개별-경고-확인실제-llm-내용-검증"></a>
+
+### [F-05 내용 검증·경고 확인·승인] → 필수 문제 차단·개별 경고 확인·실제 LLM 내용 검증
+
+- [x] **2026-09-26, BE-06**: 부분 재검증에서도 다른 영역의 미해결 필수 문제를 유지하고, 필수 누락을 단순 제외·확인으로 해결하지 못하게 했다.
+- [x] **2026-09-29, BE-06 후속(D-07)**: 경고 확인을 최신 문서·입력·완료된 검증과 연결하고 승인·출력·다운로드에 같은 유효성 검사를 적용했다. 당시 전체 894 passed / 20 skipped.
+- [x] **2026-09-29, BE-05/06/08·BE-10 후속(6.35)**: 현재 프론트에 문구 편집·저장, 개별 경고 확인(사유 입력), PDF 배치 미리보기·최종 승인·다운로드를 연결했다. `OPENAI_ENABLE_CONTENT_REVIEW` opt-in(검증 최대 2회, 기존 합계 8회/$1 공유)을 추가했다. mock 브라우저 검사 통과. 첫 실제 LLM 검증은 `AGENT_OUTPUT_INVALID`로 실패해 기록을 보존했다.
+- [x] **2026-09-29, 진단·재시험(6.36)**: 거부 단계·사용량만 남기는 진단 로그를 추가한 뒤 실제 LLM으로 점검→초안→편집·저장→내용 검증→시연 경고 개별 확인→PDF 배치→승인→다운로드(4쪽·19,759바이트)를 완주했다(3회 추정 $0.00149192). 이전 실패는 재현되지 않아 원인을 확정하지 않는다.
+- [x] **2026-09-29, 응답 형식·입력 크기(6.40·6.41·6.42)**: 검증 입력의 반복 locator 정리(11,306→9,653자), 문제당 블록 1개 생성 스키마, `response_status`/`incomplete_reason` 기록, 검사 목록 길이·ID enum 제한, 간결한 이유 요청을 추가했다. 두 번의 실제 실패(단일 블록 규칙 위반, 출력 8,000토큰 도달) 뒤 저장 결과 재사용 시험 2회가 검증·승인·PDF(2쪽·21,174바이트)까지 통과했다. 모델이 지적한 반복 표현 경고 1건은 원문과 대조해 타당함을 확인했다. 당시 474 passed.
+- [x] **2026-09-29, 실자료 검증(6.43)**: 검증 입력 67,122자를 자료별 sources/segments·evidence_index로 묶어 39,669자로 줄이고 완전 복원 일치를 확인했다. 실제 검증에서 주소 표기 문제는 사용자의 ‘충청남도가 맞다’ 확인을 별도 근거 파일로 첨부해 해소했고, AS9100 유지 조건 누락 blocker는 원문 구간을 직접 편집으로 덧붙여 해소했다. 최종 검증 1회 passed·문제 0개.
+- **핵심 결정사항/메모**: 정확성과 출력 이용에 영향 없는 허용 경고만 확인 후 승인할 수 있다. 사실·수치 오류, 필수 누락, 사진 공개 허가 문제, 사진 불일치는 차단을 유지한다. 원문을 몰래 정정하거나 검증 문제를 클릭으로 해소하지 않는다. 같은 문서의 앞선 검증이 인증 조건 누락을 놓친 사실을 남겨 검증 1회 통과를 사실 정확성의 보장으로 보지 않는다. 계약 **1.5**, 데이터 형식 **1.0**, DB **v11**이다.
+- **코드·검증**: `app/services/validation.py`, `issues.py`, `approvals.py`, `exports.py`, `app/agent_llm.py`, `tests/test_orm_workflow.py`, `tests/test_agent_llm.py`. 실행 옵션은 `scripts/run_llm.ps1 -Demo -ContentReview -TextProposals`이며 실제 `.env`는 바꾸지 않았다. QA-14/16/17의 부분 검증·승인 우회·변경 후 무효화를 확인했다.
+
+<a id="f-06"></a>
+<a id="614-be-07-pdfdocx-출력-도구템플릿-검증-2026-09-26"></a>
+<a id="615-be-08-배치-검사승인-연결출력다운로드-2026-09-27"></a>
+<a id="643-거산-실자료-시험과-시간입력-한도-보완-2026-09-29"></a>
+
+<a id="f-06-pdf-승인본-내려받기와-docx-생성-기반"></a>
+
+### [F-06 PDF·DOCX 내려받기] → PDF 승인본 내려받기와 DOCX 생성 기반
+
+- [x] **2026-09-26, BE-07**: 가상 문서 4종으로 PDF/DOCX 생성·한글·사진·DOCX 본문 편집성을 확인했다.
+- [x] **2026-09-27, BE-08 PDF**: 실제 배치 검사·쪽 이미지 미리보기·승인·반복 다운로드를 연결했다.
+- [x] **2026-09-29, BE-08·BE-10 후속(6.35~6.43)**: 현재 프론트 S03에서 PDF 배치 검사·미리보기·최종 승인·다운로드·동일 바이트 재다운로드·후속 편집 시 기존 다운로드 409를 실제 LLM 검증본으로 확인했다. 빈 페이지가 남는 문제는 프론트의 명시적 `빈 페이지 정리`(기존 delete_page API)로 해결했다. 실자료 최종 PDF는 **4쪽·48,474바이트**, 33블록이며 회사명·주소·인증 유지 조건을 미리보기로 확인했다.
+- [x] **2026-09-29, 실자료 시험 상한(6.43)**: `OPENAI_TIMEOUT_SECONDS`/`OPENAI_TRIAL_TIMEOUT_LIMIT_SECONDS`(최대 120초)와 `OPENAI_MAX_INPUT_CHARS`/`OPENAI_TRIAL_INPUT_CHAR_LIMIT`(최대 40,000자)를 명시 지정할 때만 확장한다. 기본값 60초/10,000자는 유지한다. SDK 대기 초과와 연결 실패를 구분해 기록하고 응답을 받지 못한 호출의 비용을 0으로 취급하지 않는다. 실자료 시험 실제 호출은 추출 3·초안 1·검증 3, 사용량 확인 6회 추정 합계 $0.020459985이며 미확인 예약액 $0.2685를 별도 차감했다.
+- **핵심 결정사항/메모**: PDF는 HTML/CSS와 설치된 Chrome/Edge, DOCX는 python-docx를 사용한다. DOCX는 파일 생성·PDF 기준 미리보기까지이며 `actual_pages=null`, `overflow=not_checked`로 승인·다운로드가 차단되고 화면에는 준비 중으로 표시한다. 목표 쪽수와 실제 PDF 쪽수가 다르면 S03 확인 결과에 차이를 표시한다.
+- **코드·검증**: `app/services/export_render.py`, `layout_checks.py`, `exports.py`, `app/templates/export/`, `scripts/run_llm.ps1`. QA-18은 PDF 및 DOCX 생성 범위의 부분 통과, QA-19는 승인된 같은 파일 재사용과 AI 재생성 없음 확인이다. 사진은 외부 사용 허가가 있어야 출력한다.
+
+<a id="f-07"></a>
+<a id="616-be-09-세션-종료만료-정리-2026-09-27"></a>
+<a id="621-sqlalchemy-core-도입-2026-09-28"></a>
+<a id="622-erd-v2-orm과-새-db-재적재-2026-09-28"></a>
+<a id="624-alembic-구조-변경-이력-관리-2026-09-28"></a>
+<a id="628-이전-db-삭제-2026-09-28"></a>
+<a id="631-erd-관계-제약과-v11-마이그레이션-2026-09-29"></a>
+
+<a id="f-07-세션-접근-보호임시-자료-정리저장-관계-검사"></a>
+
+### [F-07 세션 보호·종료 정리] → 세션 접근 보호·임시 자료 정리·저장 관계 검사
+
+- [x] **2026-09-27, BE-09**: 종료·만료 즉시 접근을 막고 첨부·본문·수정안·출력 캐시를 정리한다. 삭제 실패 재시도와 늦은 저장 방지를 확인했다.
+- [x] **2026-09-28~29, BE-02 후속**: SQLite에 SQLAlchemy 저장 연결·25개 업무 테이블·Alembic 변경 이력을 도입했다. v11에서 자료·입력·문서·승인·출력 간 16개 관계 제약을 추가했다. 당시 전체 879 passed / 20 skipped.
+- [x] **2026-09-29, 시험 세션 정리(6.43·6.44)**: 실자료·사진 시험의 임시 세션은 모두 종료해 정리 큐 done을 확인했다. 프론트의 작업 종료는 첨부·초안·검증·출력 파일 정리와 브라우저 상태 초기화를 함께 수행한다.
+- **핵심 결정사항/메모**: 무활동 120분과 생성 후 24시간 중 먼저 오는 때 만료한다. 조회만으로 연장하지 않는다. 등록 원본은 보존한다. Windows Chrome 프로필 폴더의 자동 정리가 OSError 145로 재시도 대기되는 경우가 있어 별도 후속이며 해결된 코드라고 주장하지 않는다.
+- **DB 기록**: 코드 기준 최신 구조는 v11 / `20260929_01`. 현재 PC의 기본 DB `private_runs/erd_v2/app.sqlite3`는 등록 자료 0개, 시연 DB `private_runs/demo_preview_20260929_131826/app.sqlite3`는 등록 자료 18개·사진 21개, `quick_check=ok`·FK 오류 0건이다.
+- **코드·검증**: `app/db.py`, `orm_models.py`, `migrations/versions/`, `app/services/cleanup.py`, `sweeper.py`. QA-02는 당시 세션 접근 범위 확인, QA-20은 서버 정리·재시도 확인이며 전체 AI 운영 검증은 후속이다.
+
+<a id="f-08"></a>
+<a id="f-08-실제-화면-연결품질-평가--공통-규격과-제한된-화면-통합-확인"></a>
+<a id="f-08-공통-규격과-제한된-화면-통합-확인"></a>
+<a id="61-be-01-확인-결과-2026-09-25"></a>
+<a id="66-개발-전-문서-정리-2026-09-27"></a>
+<a id="67-stitch-prd-정합성-문서-반영-2026-09-27"></a>
+<a id="68-화면-설계-참고-문서-추가-2026-09-27"></a>
+<a id="69-prd-개편-후-관련-문서-동기화-2026-09-27"></a>
+<a id="610-로그인-mvp-제외-결정-반영-2026-09-27"></a>
+<a id="611-mvp-체크리스트-정리-2026-09-27"></a>
+<a id="617-시연-데이터-수용-기반-2026-09-27-be-09-후속"></a>
+<a id="618-develop-병합과-정합성-확인-2026-09-27"></a>
+<a id="623-화면apidb-연결표와-남은-작업-2026-09-28"></a>
+<a id="6231-읽는-방법과-확인-범위"></a>
+<a id="6232-공통-기능"></a>
+<a id="6233-s01--자료-선택사전-확인"></a>
+<a id="6234-s02--초안-편집"></a>
+<a id="6235-s02s03--검증승인출력"></a>
+<a id="6236-erd에-있지만-아직-화면-기능으로-완성되지-않은-부분"></a>
+<a id="6237-현재-프론트-코드와의-차이"></a>
+<a id="6238-다음-작업-순서와-완료-기준"></a>
+<a id="6239-사용자가-제시한-11단계-개발-순서와-현재-위치"></a>
+<a id="625-pydantic-요청응답과-계약-13-정리-2026-09-28"></a>
+<a id="627-실제-http-검사와-s01-프론트-연결-2026-09-28"></a>
+<a id="629-s02-편집과-s03-pdf-승인다운로드-연결-2026-09-28"></a>
+<a id="630-백엔드-pr-19-충돌-해결과-통합-검증-2026-09-28"></a>
+<a id="637-화면설계도-기준-s01s02s03-적용-및-프론트-경로-이전-2026-09-29"></a>
+
+<a id="f-08-공통-규격화면-통합-확인설계도-적용"></a>
+
+### [F-08 실제 화면 연결·품질 평가] → 공통 규격·화면 통합 확인·설계도 적용
+
+- [x] **2026-09-25~28, BE-01 후속**: 담당 경계·요청/응답·27개 API·실제 코드 연결을 정리했다. 로그인은 첫 버전 범위에서 제외하고 세션 보호를 유지한다.
+- [x] **2026-09-28, PR #19 통합**: 당시 전체 845 passed / 20 skipped. PR #19는 92dde3d, PR #20은 dcc1aaa, 현황판 양식은 ca3ecf4로 원격 develop에 있다.
+- [x] **2026-09-29, 프론트 경로 이전·설계도 1차 적용(6.37)**: 사용자가 `D:\frontend`를 `C:\frontend`로 복사했고 이후 프론트 기준은 C 경로다. 화면설계도 PDF 5·8·11·14쪽 기준으로 S01~S03을 분리하고 훅을 유지해 미저장 편집을 보존했다. 1280px 미만은 오른쪽 패널을 접고 여는 방식이다.
+- [x] **2026-09-29, 설계도 배치 재적용(BE-10 후속, 작업 ID 미지정)**: 원격 `develop`의 정적 시안 화면(`DraftEditorView`·`ApprovalExportView`·시안 S01)과 로컬 실제 연결 화면을 대조해, 시안의 배치·스타일을 실제 API 데이터로 채우는 방식으로 `App.tsx`, `SourceSelectionView.tsx`, `AiWorkflowPanel.tsx`, `DocumentWorkspace.tsx`, `index.css`를 수정했다. S01은 단계 배지·작성 설정 안내(목적 설명·방향 안내·추천 쪽수·사진 비중 세그먼트)·자료 카드(체크·아이콘·크기·상태 배지)·첨부 영역·사전 점검 카드(범주별 근거 상태·추천 구성·추가 자료·확인 체크)·하단 독, S02는 목차 블록 트리·편집 도구막대·A4 캔버스 블록 도구·AI 편집 보조(기존/제안 비교·이유·적용/다시 요청/취소)·사진 후보, S03은 검수 상태 배지·카드 보기·페이지 보기(목차 레일·미리보기·페이지 상세)·출력 형식·확인 결과·최종 동의·하단 독으로 맞췄다. 시안의 임의 신뢰도 점수(88%)·내부 도구명 문구·승인 전 PDF 빠른저장·워터마크 표시는 설계도 7·13·15쪽 검토 메모대로 넣지 않았다. 헤더에 작업 회사 배지·자동 저장 표시·상태 안내(E01~E10 모달), 푸터를 복원했다.
+- [x] **2026-09-29, 검증**: TypeScript·ESLint·Prettier·Vite 빌드 통과. `check-ai-workflow.mjs --publication --photos` 19개 검사 묶음 통과(시연 PDF 4쪽·26,213바이트). 첫 실행은 ‘페이지 보기’ 버튼 안의 ‘추천’ 배지 때문에 스크립트 문구 비교가 실패해 배지를 버튼 밖으로 옮긴 뒤 재실행해 통과했다. 검사 스크립트가 쓰는 `data-*` 속성·aria-label·버튼 문구는 유지했다. 실제 LLM 서버(시연 DB)에서 시연 세션 시작·등록 자료 18개 표시·자료 선택 저장까지 화면으로 확인했고 유료 호출은 하지 않았다.
+- [x] **2026-09-29, 백엔드 전체 회귀**: 1,034 passed / 3 failed. 실패 3건은 3절 DoD에 적었으며 원격 develop에서도 같은 상태(be08)이거나 순서 의존(be05·be07)이다.
+- **핵심 결정사항/메모**: 설계도에 있지만 백엔드 API가 없어 넣지 않은 것은 페이지 추가·드래그 순서 변경(S02 ④·⑥), 자료 변경 배너 E05(S02 ③), 굵게 등 서식 도구, DOCX 출력이다. 설계도의 ‘작업 시작 / 이어하기’ 없는 즉시 진입 구조는 서버 세션 모델과 달라 시작 버튼을 유지하되 검토 메모의 상태별 시안 누락 항목으로 남긴다. 과거 Mac PDF 시간 초과 기록과 Windows 성공 기록은 구분한다.
+- **현재 남은 검수**: BE-10은 진행중. 실자료 전체 품질·사진별 검수·자료 변경 복귀·DOCX·프론트 FE-08과의 통합 검수를 함께 확인해야 한다. 프론트 소유 QA-08/10/15는 별도 저장소의 담당 기록을 따르며, 이번 프론트 변경은 `C:\frontend`에 미커밋 상태다.
+
+- **2026-09-29 문서 표기 정리**: **[F 번호 기능명] → 세부 업무**를 적용하고 기존 BE/AG 번호는 참조로 구분했다. 현재·다음 업무와 기능별 이력의 이름을 공통 현황판과 맞췄다. 기존 상태·선행 조건·검증 결과는 유지하며 이번 정리에서 백엔드 코드·DB·화면 검사는 재실행하지 않았다.
+- **표기 확인 결과**: 기능 번호·이름의 공통 표 일치, 기존 상태·선행 조건·검증 수치 보존, 문서 링크와 `git diff --check`를 확인했다. 남은 기능 업무는 4절을 따른다.
+
+<a id="brochure-layout-20260929"></a>
+
+### [F-03/04/06/08] → 설계도 화면 유지·브로슈어형 문서 배치 (2026-09-29)
+
+- **범위/상태**: BE-10 후속, 상위 기능은 진행중. 이번 PC 경로는 `C:\vscode\Backend` / `C:\vscode\Frontend`다. 백엔드는 `codex/brochure-layout`, 프론트는 별도 저장소의 기존 작업 트리이며 커밋·push하지 않았다. S01~S03의 탐색·검증·승인 구조를 유지하고 문서 캔버스와 PDF만 사진 카드·캡션·남색/청록 배치로 개선했다.
+- **코드**: `agent_bridge.py`의 내부 SourceIn 사진 설명, `preflights.py`의 선택/허가 사진 메타데이터, `agent_llm.py`의 초안 사진 배치, `proposals.py`의 캡션 연결, `layout_checks.py`의 템플릿 v2/허용 배치, `export_render.py`와 기존 HTML 템플릿을 수정했다. 프론트는 `aiWorkflow.ts`, `DocumentWorkspace.tsx`, `index.css`를 수정했으며 편집 textarea 크기 관찰의 반복 콜백도 보완했다. 새 코드 파일·DB 변경·새 의존성 없음. contracts.md 원본 미수정, 전달 사항은 plan.md 4.37절과 기존 handoff 예시에 기록했다.
+- **정책 보존**: 내부 demo와 legacy mock은 구분한다. 사진 공개 허가·MOCK_VALUE 차단·근거 검사·승인 artifact 재사용은 유지한다. 자동 사진 선택은 캡션/원문 출처 기반 규칙이며 이미지 의미를 판정한 AI 추천으로 기록하지 않는다. 기존 승인본은 template_v2 기준 재검사·재승인이 필요하다. DOCX 승인·다운로드는 여전히 미완료다.
+- **로컬 자료**: Git 제외 경로 `private_runs/brochure_demo_v1/`에 주제별 6개 시연 자료·27개 구간·신규 사진 0개를 구성했다. 동일 CLI의 dry-run 및 실제 import가 통과했으며 이전 source/mock fixture를 덮어쓰지 않았다. 기존 현재 사용자 세션의 자료 선택은 변경하지 않았다. 사진은 기존 실제 자료의 현재 공개 허가 true 자산만 사용한다. 실제 회사명·임시 문장·사진·산출물은 커밋 대상에서 제외한다.
+- **배치 시안**: `private_runs/brochure_demo_v1/preview/brochure_layout_preview_rev1.pdf`는 직접 구성한 미승인 배치 시안이다. 6쪽, layout_ok=true, findings=[]이며 전 페이지 PNG로 사진·캡션·시연 footer·넘침을 확인했다. 실제 LLM이 생성한 승인 문서라고 취급하지 않는다. 기존 사진이 생산라인/검사장비 위주이고 저해상도 사진이 많아 제품 근접 사진·고해상도 대표 사진은 추가 확보가 필요하다.
+- **검증**: 신규 회귀 11개 사례(사진 선호·mock/작은 사진/설명 없음/제외 주제·현재 공개 허가·HTML 순서·알 수 없는 배치·실제 PDF 5배치/넘침). 프론트 최종 TypeScript·ESLint·Prettier·Vite 빌드 통과. 별도 DB/mock Agent의 실제 브라우저 `check-ai-workflow.mjs --publication --photos` 19개 검사 묶음 PASS, PDF 4쪽·27,397바이트, 승인 바이트와 다운로드 일치. 실제 생성 파일·원본 삭제까지 확인했다. 전체 pytest와 실제 LLM 결과는 아래 최종 결과에 기록한다.
+- **최종 pytest**: `PYTHON_DOTENV_DISABLED=1 CLEANUP_SWEEP_INTERVAL_S=0 .venv/Scripts/python.exe -X utf8 -B -m pytest -q` → **1,161 passed / 1 failed / 3 warnings, 772.71초**. 실패는 기존 `test_stress_document_layout_failed_then_fixed_and_issue_separation`의 acknowledged 요청에 D-07 필수 input_revision/validation_id가 없어 400 INVALID_REQUEST를 받는 사례다. 현재 테스트는 422 RESOLUTION_NOT_ALLOWED를 기대한다. 본문 상단의 기존 실패 기록과 같은 원인이며 이번에는 서버 규칙이나 해당 기존 테스트를 바꾸지 않았다. 신규 11개 포함 나머지 통과. 과거 순서 의존 실패 2개는 이번 전체 실행에서 재현되지 않았다. 따라서 전체 통과로 기록하지 않는다.
+- **실제 LLM/HTTP**: 사용자가 회사 자료의 현재 OpenAI API 전송·유료 시험을 명시적으로 승인한 뒤, 별도 검증 세션에서 새 시연 6개+기존 사진 포함 실제 자료 1개로 점검→초안→PDF 배치를 실행했다. 점검 37facts·can_generate=true, 6쪽 초안·사진 10장·배치 passed·실제 PDF 6쪽·fail_reasons=[]를 확인했다. 배치 키는 process_steps 3쪽/product_grid 1쪽/text_photo 1쪽/text 1쪽이었다. **UNSUPPORTED_CLAIM 6개가 남았고 내용 검증·최종 승인/Export는 실행하지 않았다.** 실제 LLM의 출력 사실성을 승인한 결과가 아니다. 이 검증 세션은 종료해 cleanup=done을 확인했다. 집계 결과는 로컬 `private_runs/brochure_demo_v1/preview/live_llm_check.json`에 있으며 위 배치 시안 PDF와 별개다. 새 코드로 백엔드 LLM+demo 및 프론트 서버를 재기동했고 기존 사용자 세션의 내용/자료 선택은 변경하지 않았다.
+- **남은 일**: 실제 목적/첨부 조건별 문장·사진 관련성 평가, 더 나은 사진 확보, 브로슈어 디자인 추가 조정, DOCX. 현재 시안을 시연 준비 완료나 사진 의미 검증 완료로 표시하지 않는다.
+- **2026-09-29 후속 데이터 초기화(사용자 요청)**: 실제 등록 자료만 남기고 시연/mock을 다시 만들기 위해 현재 로컬 DB의 비실제 등록 자료 21개(방금 만든 브로슈어 6개 포함), 구간 122개, 가짜 사진 6개를 삭제했다. 대응 등록 파일 27개와 로컬 시연 묶음 2개(`registered_src/demo`, `brochure_demo_v1`)를 삭제했으므로 위 시안 PDF·집계 파일의 경로는 현재 존재하지 않는다. 연결된 활성 작업 1개는 기존 종료/내용 제거 경로로 closed·cleanup=done 처리했다. 실제 등록 자료 7개·사진 19개의 DB 내용과 저장 파일 26개의 SHA-256은 전후 동일했다. 실제 원본 묶음·테스트 fixture·프로그램 코드는 보존했고 감사 메타데이터는 기존 정책대로 유지했다. 새 시연 데이터는 아직 만들지 않았다.
+
+<a id="brochure-quality-v2-20260929"></a>
+
+### [F-03/04/06/08] → 구체 정보 중심 브로슈어 품질 기준 시안·시연 자료 준비
+
+- **사용자 확인**: 8쪽 시안 방향 유지, 정보의 구체성 강화. 실제 사업·연혁·기술 설명·제공 인증서의 범위와 날짜를 가상 품목·도면·수량·검사값·남은 확인 사항과 구분했다.
+- **로컬 산출물**: Codex 시각화 폴더 `2026/09/29/01a0eccc-061a-7a41-be80-d553702a888f/brochure-quality-v2/`에 편집 가능한 문자·도식의 8쪽 `geosan_design_reference_v2.pdf`, 생성 콘셉트 2장, 기존 허가 true 실제 사진 4장, 시연 자료 8개·56구간, 출처/이미지 해시 명세·페이지 구성·검증 기록을 저장했다. 실회사 내용은 저장소에 추가하지 않았다.
+- **실제 검증**: 최종 PDF 8쪽 렌더와 전 페이지 시각 확인(겹침·잘림 없음), 한글 추출·전 페이지 시연 footer 확인. 기존 적재기 dry-run source 8/segment 56/asset 2, errors 0/hash_unverified 0. DB 4개 테이블의 행 수가 전후 동일하며 실제 적재하지 않았다. 생성 사진은 원본 대응을 추정하지 않았고 공개 허가 null을 유지한다.
+- **현재 상태**: 사람이 편집한 품질 기준 시안과 자료 준비 완료. 현재 앱의 자동 생성·내용 검증·승인 결과가 아니다. 이번 후속은 제품 코드를 수정하지 않았고 pytest/LLM 호출/모델 비교를 새로 실행하지 않았다. 기존 전체 테스트 결과를 갱신하거나 성공으로 바꾸지 않는다.
+- **남은 일**: 이 정보 밀도와 시각 구성을 재현할 페이지 계획·Agent/렌더 연결, 실제 입력 조건별 차이, 근거 의미 검증 및 모델 비교. 서버에는 기존 실제 등록 자료 7개가 유지된다. 시연 준비 완료로 기록하지 않는다. 결정은 plan.md 4.38, 진행 상태는 공통 F-06 연결표에 반영했다.
+
+<a id="brochure-integration-20260929"></a>
+
+### [F-03/04/06/08] → 새 시연 자료 적재·페이지 계획 초안·자동 검토 PDF
+
+- **구현**: `agent_llm.py`에 출처 종류별 추출 지침과 페이지 계획 내부 응답/엄격 검사를 추가했다. 4쪽 이상+허용 사진일 때 한 초안 호출에서 제목·요약·정보 목록·사진을 구성하며 기존 Page/Block으로 변환한다. 기존 텍스트 중심 경로, MOCK_VALUE, 근거·공개 허가·승인 규칙은 유지한다. PDF 템플릿 v3의 카드/단계/표지와 별도 프론트 `C:/vscode/Frontend/src/index.css` 읽기 모드 표현을 연결했다. 새 제품 파일·의존성·DB 변경은 없고 contracts.md 미수정이다.
+- **로컬 자료**: 시연 8개·56구간·생성 사진 2장을 적재했다. 사진 2장은 사용자 명시 허가 후 기존 공개 허가 재적재 경로로 true를 반영했고 실제 사진의 값은 변경하지 않았다. 실제 등록 자료 7개는 보존했으며 기존 근거 금지 3개는 시험에서 제외했다. 일반 목록의 demo 숨김은 유지한다.
+- **실제 LLM/HTTP**: 첫 초안은 새 형식 검사에서 실패했고, 응답 스키마에 허용 ID·개수·필드별 길이 제약을 보강했다. 중간 HTTP 시험은 점검→8쪽/사진 6장 초안→PDF 배치 passed→검증 Job succeeded까지 진행했으나 demo 사실 누락을 발견했다. 이 결과를 시연 완료로 취급하지 않는다. 추출 지침 보완 후 62 facts·demo 근거 51개를 확인했으며 회사명/납기 확인 등 사전 문제 6개는 그대로 남겼다.
+- **최종 서비스 단위 시험**: 누적 호출 8회 한도에서 마지막 1회로 저장된 점검을 재사용해 실제 모델 초안→기존 렌더러 PDF를 생성했다. 8쪽·사진 7장·demo 근거 연결 블록 6개, layout_ok=true/actual_pages=8. 전 페이지 PNG와 가상 수량/도면/검사 값·footer를 확인했고 겹침/잘림은 관측되지 않았다. 결과는 Codex 시각화 폴더 `brochure-quality-v2/geosan_app_generated_review.pdf`의 **검토본**이며 앱 DB에 문서/승인 artifact로 저장하지 않았다. 마지막 모델 응답은 로컬에 보존했고 집계 스크립트의 to_dict 이름 오류 수정 후 재렌더는 API를 추가 호출하지 않았다.
+- **자동 검증**: 영향받는 Agent/BE-04/demo/BE-07 707 passed. 최종 필드별 스키마 제약 변경 후 Agent 603 passed 재확인. 카드의 수량/예외 조건 보존 포함 브로슈어 PDF 3개도 통과했다. 프론트 TypeScript·Vite build·ESLint·변경 CSS Prettier 통과. 이번에는 전체 pytest를 재실행하지 않았고 기존 전체 실패 기록을 덮어쓰지 않는다.
+- **남은 한계**: 최종 demo 풍부한 결과의 의미/사진 검증·HTTP 전체 재확인·승인/Export 미실행. 템플릿별 정보 밀도·사진 관련성 차이와 회사명/납기 확인 문제가 남는다. 조건별 실제 결과 차이·다른 모델 비교도 미실행. 사용자 편집/확인 없이 문제를 없애거나 승인하지 않았다. 커밋·push 없음. 판단은 계획 4.39에 기록했다.
+- **호출 집계**: 실제 8회, 현재 코드 가격표 기준 추정 0.030089380 USD. 공급자 청구 확정값이 아니며 세부 건수·시간은 로컬 `integration_verification.json` 참조.
+
+<a id="brochure-ux-20260930"></a>
+
+### [F-02/03/04/05/06/08] → 제목 중복·점검 안내·AI 수정안·실제 시연 내용/배치 검증 (2026-09-30)
+
+- **사용자 요청/수정**: S03 카드/상세 미리보기는 첫 heading 블록이 있으면 페이지 제목을 추가 출력하지 않는다. 프론트 `DocumentWorkspace.tsx`, `AiWorkflowPanel.tsx`, `profileLabels.ts`, `api/aiWorkflow.ts`에서 기존 저장 결과까지 한국어 항목명·권장 조치·확인할 문장/원문을 보여준다. 심각도·문제 ID·경고 확인·승인 규칙은 변경하지 않는다.
+- **AI 수정안**: 현재 로컬 서버를 LLM + Demo + ContentReview + TextProposals로 재시작했다. 별도 실제 시험에서 수정안 proposed, 적용 전 현재 문서 동일, 선택 목록 블록 적용 후 revision 2, 근거/수치 보존을 확인했다. 기본 실행에서 TextProposals를 생략하면 꺼지는 정책은 유지하며 README에 재실행 명령을 기록했다.
+- **오탐 수정**: `validation.py`는 캡션/alt를 각각 검사한다. 단순 출처 머리말 ‘소개서의’의 ‘개’를 수량으로 오인하지 않는다. 선택·허가가 유효하고 저장된 설명과 정확히 같은 비수치·비성능 설명만 길이 제한으로 차단하지 않는다. 숫자/인증/최대 등 주장은 등록 설명이어도 근거가 필요하다. `agent_llm.py` 검증 입력의 서버 출처·등록 설명으로 AI 생성/시연 고지를 대조하며 실제 이미지 검사는 유지한다. MOCK_VALUE·사진 공개 허가·근거 및 조건 손실 검사는 유지한다.
+- **실제 생성에서 발견한 추가 문제**: 초기 초안 2회 실패(첫 원인 상세 미확정, 두 번째 page_text_budget). 개별 필드 한도 합계가 페이지 한도를 넘지 않게 내부 스키마를 제목 40/요약 160/항목 90자·최대 4개로 맞췄다. 시연 접두어까지 합계 600자 이내인 회귀 검사를 추가했다. 내용 잘라내기·AI 자동 재시도·승인 우회는 추가하지 않았다.
+- **실제 HTTP/LLM 확인**: 실제 근거 4개 + 기존 시연 8개, 4쪽·균형 사진·납기 제외 조건에서 초안 생성 → 수정안 요청 → PDF 배치 passed(4쪽) → 내용 검증으로 인증 유지 조건 누락 1건 검출. 별도 시험 문서의 AI 수정안으로 끊긴 문장을 완결하고 ‘지속 감시 심사 및 LRQA Korea Limited 인증 기준 준수’를 복원한 뒤 명시적 apply 및 재검증했다. 최종 blocker 0, 시연 경고 4건은 실제 가상 표기·원문을 확인하고 사유를 기록해 Validation passed, PDF LayoutCheck passed/4쪽, 문서 ready_for_approval 확인. 최종 승인·Export는 요청하지 않았고 기존 사용자 문서는 변경하지 않았다. 기존 데이터로 가능한 사례를 확인한 것이며 모든 자동 초안이 수정 없이 통과한다는 뜻은 아니다.
+- **산출물**: Codex 시각화 폴더 `brochure-quality-v2/ux-check/validated_demo.pdf`, 전 페이지 PNG/overview, API 결과·수정안·문제·사용량 기록. PDF 전 페이지 시각 확인, 시연 footer 4/4·인증 유지 조건 추출 확인. 잘림·겹침 없음. 실제 회사명·사진·시험 출력은 저장소 외부/기존 private_runs에만 둔다.
+- **회귀 결과**: Agent/BE-06/demo 719 passed(216.28초), 이후 스키마 총량 및 진단 변경 후 Agent 최종 606 passed(46.23초). 새 회귀는 캡션/alt 중복·등록 설명 없는 경우/인증/수치 과장 차단, 사진 출처 전달·원본 보존, 한국어 조치와 blocker 유지, 페이지 합계 상한이다. 프론트 별도 격리 브라우저 검사 20묶음 PASS(제목 중복·한국어 안내·수정안 적용·내용/배치·승인·동일 바이트 다운로드 포함). 마지막 안내 문장/근거 표시 추가 후 TypeScript·ESLint·Prettier·Vite build 통과. 전체 pytest는 이번에 실행하지 않았으며 기존 전체 실패 기록을 성공으로 바꾸지 않았다.
+- **실패 기록 보존**: 초기 신규 캡션 테스트 2건은 ‘소개서’ 오탐 보완 후 통과. 스키마 총량 수정 후 가짜 모델이 예전 6개 항목을 반환한 4건은 새 입력 한도를 따르도록 테스트 모델을 맞춰 통과했다. 브라우저 신규 단언은 본문 속 회사명까지 제목으로 세던 부분을 직접 제목 요소 비교로 고친 뒤 통과했다. 실제 시험 스크립트의 input_revision 누락 400은 요청을 보완했으며 초안 재호출 없이 이어갔다.
+- **현재/다음**: BE-10과 품질 평가는 진행중. 내용 검증은 최초 생성에서 잡힌 조건 누락을 수정한 사례이며 일회 통과를 일반 사실성/자동 품질 보장으로 기록하지 않는다. 사용자는 저장 중인 편집을 저장한 뒤 새로고침하고 기존 문서는 내용 검증을 다시 실행해야 최신 오류 판정이 적용된다. 새 제품 파일·DB·의존성·contracts.md 변경·커밋/push 없음. 기존 task.md F-06 최신 참조를 동기화했다.
+
+<a id="company-name-preflight-20260930"></a>
+
+### [F-02/04] 회사명 표기 오탐과 로컬 AI 시험 제한 확인 (2026-09-30)
+
+- 최근 실제 점검은 원문 회사명 항목·인증 대상 조직에 명시된 국문/법인/영문 표기 3개를 모두 needs_confirmation으로 반환했다. 직전 같은 원문은 supported였으므로 특정 이름 금지가 아닌 모델 판단 불일치로 확인했다.
+- app/prompts/extract.txt에서 직접 명시된 회사명, 법인기호/공백 차이, 원문 주소·식별정보에 근거한 국영문 연결과 실제 회사 귀속 불확실성을 구분했다. 이름 문자열 화이트리스트·서버 상태 강제 승격은 추가하지 않았다. agent_llm.py는 실제 불확실한 회사명 안내를 회사명 항목/주소 대조로 구체화했다. 공개 계약·DB·승인 규칙은 유지했다.
+- tests/test_agent_llm.py의 test_company_name_variants_preserve_evidence_and_uncertainty 3개 매개 사례는 supported/needs_confirmation/conflict의 원문·상태 및 blocker 보존을 확인한다. Agent 전체 609 passed / 기존 경고 1개(37.96초). 가짜 모델 검사는 실제 의미 판정 정확성을 증명하지 않는다.
+- 사용자 승인 범위의 실제 LLM 점검 1회: 같은 선택 자료 12개, 회사명 3개 supported·회사명 관련 Issue 0개, 전체 Issue 3개 유지. 사용자 DB 결과·문서·승인을 변경하지 않았다. 기존 화면의 저장 결과는 재점검해야 바뀐다. 단일 실행 결과이며 모델 오탐이 영구 제거됐다는 보장은 아니다. 전체 pytest·브라우저 재검증은 이번 범위에서 미실행.
+- 추가 화면의 AI 시험 중단은 operation_limit. 기존 프로세스에서 content_review 2회/company_info 1회/draft_sections 1회/text_proposal 2회 이후 중단됐다. 총 8회보다 수정안 2회 기능별 한도가 먼저 적용됐다. 한도·예산 정책은 변경하지 않고 진행 Job 0개 확인 후 로컬 서버 재시작으로 새 제한된 실행을 제공한다. 반복 시연에서 한도/오류 안내 개선은 후속이며 제한 없는 사용으로 기록하지 않는다.
+
+### [F-04] AI 문구 수정안 전용 2회 제한 제거 (2026-09-30)
+
+- 사용자 요청으로 TrialLedger의 text_proposal 전용 2회 제한을 제거했다. 명시 활성화는 유지하며 기존 서버 프로세스 전체 8회/$1 안에서 반복 수정한다. 다른 기능별 상한·동시 호출 방지·근거/출력 검사·명시적 적용·오류 중단은 유지한다. 세션별 예산/독립 중단 정책까지 구현한 것으로 기록하지 않는다.
+- 실제 API를 차단한 Agent 전체 609 passed / 경고 1개(28.98초). 이후 혼합 호출 회귀 보강 후 관련 2개 재실행 passed(4.94초). 수정안 3회 성공·원문 미변경·수정안만 8회 후 추가 호출 차단, 수정안 3회 이후 내용 검증 가능·총량 차단을 확인했다. 전체 pytest와 유료 수정안 호출은 이번에 실행하지 않았다.
+- README·plan.md에 적용 범위를 갱신했다. 실행 Job 0개 확인 후 백엔드를 같은 LLM/Demo/ContentReview/TextProposals 옵션으로 재시작하고 HTTP 200 확인. DB·contracts.md 변경 없음. F-04 진행중 상태 유지, 커밋/push 미실시.
+
+<a id="runtime-limits-20260930"></a>
+
+### [F-02/03/04/05] 일반 AI 횟수·비용·동시 작업 가드 제거 및 입력 확대 (2026-09-30)
+
+- 일반 실행은 RuntimeLedger로 전환했다. 전체 8회/$1·기능별 횟수·서버 동시 AI 1개 차단 없음. thread-local 작업 상태로 한 요청의 실패와 후속/동시 요청을 분리하며 사용량만 누적한다. 명시적 수동 중단과 근거·형식·버전·승인 검사는 유지한다. 기존 TrialLedger의 제한은 명시 평가/기존 회귀에만 남는다.
+- 스크립트 기본값·.env.example·README: 입력 200,000자/검증 400,000자/출력 64,000토큰/SDK 대기 300초/일시 오류 재시도 최대 2회. 실제 외부 API 자체 한도와 재시도 전체 시간이 별개임을 기록했다. 기존 추출 내부 상한도 200,000자로 맞췄다. 수정 요청 문장은 서버와 별도 프론트 DocumentWorkspace.tsx 모두 10,000자로 확대했다. 페이지 분량과 한 블록 편집 방식은 유지한다.
+- 최종 Agent 전체 616 passed / 기존 경고 1개(35.36초). 새 회귀: 기능별 10회·총 40회·추정 $1 초과 이후 정상 실행, 동시 두 요청의 반환/사용량 격리, 실패 뒤 다음 작업 성공, 비용 미확인 표시·수동 중단 유지, 기본 런타임 선택, 20만자 원문 보존/초과 거부, 1만자 수정 지시와 확대 SDK 설정 전달. 초기 동시 테스트 1건은 가짜 usage의 추론 토큰이 전체 출력보다 큰 모순을 고친 후 통과했다. 실제 과금 호출은 하지 않았다. 프론트 tsc -b 및 해당 컴포넌트 ESLint 통과. 전체 pytest·브라우저 자동 검사·최대 크기의 실제 모델 품질 검사는 미실행.
+- 실행 Job 0개 확인 후 동일 Demo/ContentReview/TextProposals 옵션으로 로컬 서버에 반영했다. 새 제품 파일·DB·의존성·contracts.md 변경 없음. F-02~05 진행중 상태 유지. 이전 회사명 오탐 수정과 함께 미커밋 상태이며 정책 결정은 plan.md 4.41 참조.
+
+
+<a id="name-and-sentence-20260930"></a>
+
+### [F-02/03/04/05] 회사명 명시 확인·문장 완결성·문제 위치 안내 (2026-09-30)
+
+- 사용자 확인 별칭을 config.py의 COMPANY_NAME_ALIASES로 읽고 agent_llm.py의 회사명 변환/내용 검증, validation.py의 회사명 값 대조에 반영했다. 실제 이름은 로컬 .env만 변경했으며 레포에는 빈 설정과 가짜 테스트만 저장했다. 원문 인용 없는 값이나 다른 회사가 섞인 충돌은 승격하지 않는다. 기존 이름 관련 강제 승격 미추가 기록은 이번 명시적 사용자 정책(4.42)으로 대체된다. 저장된 점검 결과의 소급 수정은 하지 않았다.
+- 필수 내용 오류를 표기 누락·근거 미확인·미연결로 분리하고 관련 블록을 표시한다. 별도 프론트의 DocumentWorkspace.tsx/profileLabels.ts에서 기존 메시지 안내, 쪽·블록·문구 표시, 편집/자료 점검 이동을 추가했다. 위치를 모르는 문제는 문서 전체 검사로 표시한다.
+- AI 문구 수정은 목록 항목별 숫자 보존을 모델에 전달하고 실패 이유를 구체화했다. 실제 로컬 문서로 읽기 전용 수정안 호출 1회가 성공(4항목 유지)했으며 사용자 문서/수정안 DB에는 적용하지 않았다.
+- 실제 잘린 초안은 LLM 브로슈어 90자 항목 안에서 미완결 문장을 반환한 사례다. 서버 저장 코드의 문자열 절단은 없었다. 160자 항목+쪽 전체 600자 검사로 바꾸고, 알려진 잘린 어미/분량 초과는 저장 전 1회 재작성한다. 반복 실패는 명시 오류이며 저장되지 않는다. 기존 사용자 초안은 덮어쓰지 않았다. 모든 의미 손실이나 실제 LLM 생성 품질을 보장하는 것은 아니다.
+- 검증: 별칭/오류 위치 변경 시 Agent+BE-06 698 passed(91.75초). 검증 입력 별칭 전달 추가 후 영향 208 passed(10.71초). 최종 문장 완결성 변경 후 Agent 전체 627 passed(43.73초), 기존 경고 1개. 잘린 부정문·미정문·한자 미완결 끝, 1회 보정 후 성공/재실패, 과밀 페이지 거부, 다른 회사 비승격, 근거 보존을 확인했다. 전체 pytest는 미실행.
+- 프론트 tsc/해당 파일 ESLint 통과. check-ai-workflow.mjs --publication은 격리 mock 서버/가짜 자료에서 PASS: 오류 위치→편집 이동, 경고 확인, 실제 4쪽 PDF 배치·승인·동일 바이트 다운로드. 최초 검사는 문제 0건 fixture에 위치 카드를 기대해 실패했고, 가짜 안내 문단을 추가해 경고를 생성한 뒤 재실행했다. 결과는 OS 임시 폴더 ddalgi-ai-ui-N8sgUF. 실제 LLM으로 새 생성 완결성은 아직 미검증이다.
+- 새 제품 파일·의존성·DB·contracts.md 변경 없음. F-02~05 진행중 상태 유지(task.md와 동일). 기존 미커밋 변경 보존, 커밋/push 미실시.
+
+
+### [F-03/05] 초안 사진 중복·개수 오류 보완 (2026-09-30)
+
+- 실제 실패는 사전 점검 성공 뒤 draft의 photo_scope_or_reuse였다. 하나로 묶인 로그만으로 과거 응답의 중복/개수/범위 중 어느 것인지는 확정할 수 없다.
+- agent_llm.py: 허용 범위의 사진 중복·초과는 순서대로 정리하며 본문/근거를 보존한다. 첫 배치만 유지하고 사진이 없는 쪽은 text_photo로 전환한다. 미허용 ID는 정리 전에 모두 검사하고 photo_out_of_scope 및 구체 안내로 실패한다. 그래프 재개 실패의 재점검 필요 정책은 변경하지 않는다.
+- tests/test_agent_llm.py: 같은 쪽 3중복, 다른 쪽 재사용, balanced 개수 초과, 표지 초과/빈 표지, 버려질 위치의 미허용 사진도 차단, 입력·근거 보존/추가 호출 없음. 최종 Agent 전체 631 passed, 기존 경고 1개(29.06초).
+- 실제 실패 세션의 동일 선택 자료·저장된 점검으로 읽기 전용 LLM 초안 시험 성공: 4쪽, 사진 4장/고유 4장. 실제 PDF 4쪽, layout_ok=True. 사용자 문서·DB에는 저장하지 않았다. 결과: OS 임시 폴더 ddalgi-photo-fix-hkbkprff/local_photo_check_rev1.pdf. 내용 의미 검증·승인·다운로드·전 페이지 육안 검사는 이번 시험에서 미실행. 전체 pytest 미실행.
+- 진행 Job 0개 확인 후 서버 반영. 새 파일/의존성/계약/DB 변경 없음. F-03/05 진행중 유지, 기존 변경 보존 및 커밋/push 없음.
+
+### [F-06 / BE-07] macOS PDF 실패 재확인 (2026-09-30)
+
+- **실행·결과**: `PYTHON_DOTENV_DISABLED=1 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -B -m pytest -q -p no:cacheprovider --tb=line tests/test_be07.py`를 현재 병합 작업본에서 재실행했다. **31 passed / 7 failed / 기존 경고 1개, 12.92초**. 실패는 스냅샷 이미지 PDF, 쪽수·폰트·문자, 넘침·깨진 이미지·자리표시자, 측정 실패 처리, 매 쪽 시연 footer, 브로슈어 배치, 긴 본문 넘침 검사다. 7건 모두 PDF 생성 단계에서 실패했으며 이후 배치 검사를 통과한 것으로 보지 않는다.
+- **실행 제한 안의 증거**: 실제 렌더러와 가상 1쪽 입력을 진단하니 Chrome이 약 0.09초 만에 `returncode=-6`(SIGABRT)로 종료했고 stdout/stderr와 PDF가 없었다.
+- **권한 제한 밖의 증거**: macOS 14.6.1 x86_64, Chrome 154.0.8037.59에서 동일 가상 문서의 30,433바이트 PDF와 `be07-measure` DOM이 생성됐으나 Chrome 부모 프로세스가 종료되지 않았다. PDF 자체는 pypdf로 1쪽·Pretendard Regular/Bold 포함을 확인했다. 원래 90초 재시도 실패 기록에 더해 이번 18~25초 진단에서도 종료 대기가 재현됐다. 프로세스를 종료한 뒤에도 PIPE 수집이 10초 더 지연된 경우가 있다. stdout/stderr를 임시 파일로 바꿔도 부모 프로세스의 종료 지연은 유지됐다.
+- **분리 확인**: 프로젝트 HTML을 사용하지 않는 `about:blank`도 DOM 40바이트 출력 후 종료되지 않았다. PDF만 출력하는 경우와 `--use-mock-keychain`, `--test-type`, `--disable-background-mode`, `--enable-automation`을 각각 사용한 비교도 같은 현상이었다. 프로세스 표본의 주 스레드는 macOS 이벤트 루프에서 대기했다. 회사 자료·브로슈어 CSS·폰트만의 문제로 설명되지 않으며, 정확히 어떤 Chrome/macOS 종료 처리에서 멈추는지는 미확정이다. [Chromium 명령 완료 처리](https://chromium.googlesource.com/chromium/src.git/+/main/components/headless/command_handler/headless_command_handler.cc)와 [종료 구조](https://www.chromium.org/developers/shutdown/)도 참고했으나 설치 버전의 내부 원인을 확정한 근거로 사용하지 않는다.
+- **변경·남은 일**: 제품 코드·테스트 기대값·시간 제한·템플릿 지문·승인 조건은 변경하지 않았다. 기존 병합 내용과 BE-07 완료/BE-08 PDF 완료·DOCX 미완료의 기존 기능 상태는 유지하며, 이번 Mac의 PDF 실행 확인은 실패로 남긴다. 다음 확인은 정상 종료 가능한 Chrome 실행 환경에서 위 명령을 다시 수행하는 것이다. 이번 실제 AI 호출·실회사 자료 접근·커밋·push는 없다.
+
+<a id="macos-pdf-photo-workflow-20260930"></a>
+
+### [F-06 / BE-07·08] macOS PDF 종료 보완·사진 포함 통합 확인 (2026-09-30)
+
+- **현상과 수정**: 위 실패 기록 이후 사용자 요청으로 `app/services/export_render.py`의 macOS PDF 실행을 보완했다. 임시 Chrome에 CDP `Browser.close`를 보내면 실제 종료 코드 0으로 끝나는 것을 먼저 확인했다. PDF 쓰기 완료 메시지·바이트 수·DOM 완료를 확인한 뒤 종료를 요청하고, 정상 종료와 제어 요청의 경합도 처리한다. timeout/제어 실패/비정상 종료는 실패로 남으며 PDF·측정값·넘침·승인 조건은 유지한다. 정확한 Chrome/macOS 내부 정지 원인은 여전히 미확정이다. 앞선 31 passed/7 failed 기록은 수정 전 결과다.
+- **파일·영향**: `export_render.py`, `tests/test_be07.py`, `tests/test_be08.py`를 수정했다. `pyproject.toml`·`uv.lock`에는 기존 설치 버전 16.1.1을 유지한 `websockets>=16,<17` 직접 의존성을 반영했고 `uv lock --check --offline`이 통과했다. README·plan.md 4.44·공통 task.md F-06을 갱신했다. 새 제품 파일·API·DB·템플릿 변경은 없다.
+- **실제 검사**: `.env` 로딩과 bytecode/cache 생성을 끄고 `.venv/bin/python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_be07.py tests/test_be08.py`를 Chrome 실행이 허용된 환경에서 실행했다. **65 passed / 1 failed / 기존 경고 1개, 207.61초**. BE-07은 신규 종료 처리 12건을 포함한 **50건 모두 통과**했다. 남은 1건은 기존 BE-08 스트레스 테스트가 경고 확인 요청의 `input_revision`·`validation_id`를 빠뜨려 400을 받은 것이다. 현재 계약에 맞춰 요청만 수정하고 같은 nodeid를 재실행해 **1 passed / 경고 1개, 16.05초**를 확인했다. 따라서 이번 BE-07 50건·BE-08 16건은 모두 확인했으며, 최종 66건을 한 명령으로 다시 실행한 결과는 아니다. 전체 저장소 pytest는 실행하지 않았다.
+- **사진 포함 흐름**: 신규 `test_llm_photo_normalization_review_blocker_and_pdf_download`는 가상 텍스트·640×480 PNG와 준비된 모델 응답을 사용한다. 실제 LlmAgent·확인 그래프·서버 API·임시 SQLite·Chrome을 거쳐 점검→명시 확인→중복 사진 정리(2쪽·사진 1장)→본문/근거 보존→DB 저장/새 앱 조회→사진 설명 오류의 blocker/승인 차단→직접 수정/재검증→PDF 배치 통과→승인→동일 해시 다운로드/재다운로드를 확인했다. 승인 후 AI·렌더 재호출은 금지하는 테스트다. 단독 실행도 **1 passed / 경고 1개, 9.92초**였다. 생성된 PDF 2쪽의 기존 PNG 미리보기를 직접 열어 한글·사진·캡션의 잘림/겹침이 없는 것을 확인했다.
+- **상태·다음 작업**: BE-07의 로컬 macOS 보완과 BE-08 가상 사진 포함 PDF 통합 확인은 완료했다. BE-08 PDF 완료/DOCX 미완료, F-06 진행중 및 Agent 상태를 유지한다. 모델의 의미 판단은 대역이므로 실제 AI 품질 확인 결과로 보지 않는다. 실자료의 저장·승인, 실제 프론트 연결, Windows/Linux 재실행은 이번에 하지 않았다. 이후 실자료·실제 모델·프론트 품질 검수와 DOCX 승인 범위는 기존 후속으로 남는다. 기존 병합 변경·실사용 DB·환경 파일을 보존했으며 커밋·push는 하지 않았다.
+
+<a id="merge-verification-20260930"></a>
+
+### [F-06·08 / BE-07·08·10] 현재 작업 커밋·원격 병합·전체 회귀 확인 (2026-09-30)
+
+- **Git 작업**: 사용자 요청에 따라 충돌 해결된 기존 병합과 PDF 보완을 `84393ef`로 커밋했다(부모 `c71e7b4`, `30f6e21`). 이어 `git fetch origin`을 실행했고 `origin/develop`은 `30f6e21`이었다. `git merge --no-edit origin/develop` 결과는 `Already up to date`로 추가 충돌·변경이 없었다. 공유 대상은 현재 `develop`이며 기존 두 계열의 이력을 보존한다.
+- **실제 검증**: `PYTHON_DOTENV_DISABLED=1 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -B -m pytest -q -p no:cacheprovider --tb=short` 전체 실행에서 **1,370 passed / 3 warnings / 433.28초**. 실제 Chrome PDF와 사진 포함 저장·검증·승인·다운로드를 포함하며 skip·실패는 없다. 과거 수정안·DOCX 동시 생성 실패도 이번 실행에서는 재현되지 않았다. 이번 병합 재확인 과정에서 추가 제품 수정은 필요하지 않았다.
+- **추가 확인**: `uv lock --check --offline` 통과, 원격 대비 diff 공백 검사와 충돌 표시·미해결 인덱스 확인 통과. `.env`·`.venv/`·`private_runs/`는 Git 미추적·제외 상태를 유지했다. 전체 테스트 전 작업 트리는 깨끗했고 이후 변경은 이 검증 기록과 공통 연결표뿐이다.
+- **경고·범위**: Starlette의 AnyIO 별칭 사용 중단 예정 경고 1개와 마이그레이션 검사 복사본에서 `sources`·`source_versions`·`extraction_runs` 간 외래키 순환 정렬 경고 2개가 남았다. 관련 검사들은 통과했으며 이 기록으로 경고 해결을 주장하지 않는다. 실제 AI 과금 호출·실회사 자료 수정·프론트 재실행은 하지 않았다. BE-07 완료, BE-08 PDF 완료/DOCX 미완료, BE-10 진행중과 Agent 상태를 유지하며 실자료 품질·프론트·DOCX 후속은 기존대로 남는다.
+
+<a id="http-photo-publication-20260930"></a>
+
+### [F-06·08 / BE-08·10] 사진 포함 실제 HTTP·PDF 연결 확인 (2026-09-30)
+
+- **후속 범위·발견**: 병합·push 뒤 다음 작업으로 기존 PDF 경로를 실제 localhost HTTP에서 확인했다. 첫 `--publication` 실행은 검사 스크립트의 브라우저 후보에 macOS 경로가 없어 `requires an installed Chrome/Edge browser`로 실패했다. Chrome 경로를 명시하면 기존 글 중심 4쪽 PDF가 통과했으므로 `scripts/check_s01_http.py`에 `/Applications`의 Chrome·Edge 자동 탐색을 추가했다.
+- **구현·파일**: 같은 스크립트에 `--publication --photos`를 추가했다. 메모리에서 만든 640×480 PNG 1장을 TXT와 같은 묶음으로 업로드하고 선택한다. 원본 asset의 바이트·캐시 보호, 쿠키 없음 401/다른 소유자·다른 세션 404, 편집 전후 이미지 블록 보존, 필수 배치 검사 3종, 서로 다른 4쪽 PNG 미리보기, PDF에 이미지 1장·원본 RGB 픽셀 일치, 검사→승인→Export의 artifact 연결과 저장 SHA256·크기, 반복 다운로드, 편집 후 승인 무효화와 종료 후 사진 410/자료 정리를 확인한다. `tests/test_be08.py`에 실제 HTTP 회귀 1건을 추가하고 README에 명령·범위를 기록했다.
+- **실제 실행**: 자동 탐색을 사용한 `--publication --photos --timeout 120`은 **passed / Chrome 154.0.8037.59 / PDF 4쪽·22,582바이트·이미지 1장**이었다. 같은 자료의 다운로드 해시가 저장 artifact 및 재다운로드와 일치했다. 사진 없는 `--publication --timeout 120`도 **passed / PDF 4쪽·18,459바이트·이미지 0장**이었다. 최종 픽셀·미리보기 중복·필수 검사 보강 뒤 `test_s01_real_http_smoke`, `test_s01_http_server_stops_and_removes_temp_files_on_failure`, `test_real_http_photo_upload_approve_and_pdf_download`를 직접 실행해 **3 passed / 기존 경고 1개 / 10.70초**를 확인했다. 앞의 두 검사는 `tests/test_orm_workflow.py`, 새 사진 검사는 `tests/test_be08.py`에 있다.
+- **격리·한계**: 임시 ORM DB v11·가상 TXT/PNG·mock Agent를 사용했고 실제 AI 호출·실회사 자료 읽기·실사용 DB 쓰기는 없다. 서버·세션 폴더·임시 루트가 정리된 것을 검사했다. 제품 API·계약·DB 스키마·의존성·프론트 변경은 없다. 프론트 사진 UI, 실제 LlmAgent/모델의 의미 판단과 사진 선택 품질 검증 결과로 표시하지 않는다. 전체 pytest는 이번 변경 후 다시 실행하지 않았다(앞선 1,370건 통과는 병합 커밋 기준).
+- **상태·다음 작업**: BE-10의 사진 포함 실제 HTTP 검사 단계 완료, BE-10/F-08 진행중·BE-08 PDF 완료/DOCX 미완료를 유지한다. 다음 기능 우선순위는 기존 C-05 자료 변경 후 편집 보존·재점검 복귀의 연결 규격이며, DOCX 승인 범위·실자료/실제 모델/프론트 품질 확인도 남아 있다. 이번 수정은 C-05와 함께 `9449973`에 커밋했다.
+
+<a id="c05-edit-return-20260930"></a>
+
+### [F-04 / BE-05, BE-04·06 연결] C-05 자료 변경 후 편집 복귀 (2026-09-30)
+
+- **구현·동작**: 계약 1.6으로 `POST .../documents/{did}/impact-reviews`, `GET .../impact-reviews/{rid}`, `POST .../impact-reviews/{rid}/apply`를 추가했다. 최신 입력의 점검을 명시적으로 확인하고 영향 목록을 검토한 뒤 선택한 편집 연산·참조 수정·유지 사유를 적용한다. 적용 전 문장·사진·배치·문서 버전은 보존한다. 항목·값·조건·전체 근거가 정확히 같은 supported 사실만 최신 ID로 자동 연결하며 다른 사실·제외 자료를 사유만으로 유효 처리하지 않는다.
+- **버전·보호**: 문서·입력·최신 점검·자료 범위를 적용 시 다시 검사한다. 새 문서 버전, 현재 입력/정확한 점검 연결, `impact_keep` 확인, 전체 검증 Job과 멱등 응답을 한 트랜잭션으로 저장한다. 재전송·동시 적용으로 중복 저장하지 않으며 과거 승인·수정안·경고 확인을 되살리지 않는다. 다른 입력 버전의 과거 내용을 복원해 영향 검토를 우회하는 경로도 차단한다.
+- **파일·계약·DB**: `app/models.py`, `app/routers/documents.py`, `app/services/documents.py`·`refs.py`·`db_history.py`·`validation.py`·`ai_jobs.py`·`approvals.py`, 기존 BE-05·BE-06·계약 테스트를 보완했다. `contracts.md`, 기존 API 예시, README를 계약 1.6에 맞추고 결정은 plan.md 4.45절에 기록했다. DB v11의 기존 `impact_reviews`·`confirmations`·문서/Job 이력을 사용하며 DB 스키마·의존성·데이터 schema_version은 유지한다. v9 DB의 자동 이전은 없고 C-05 요청에 `IMPACT_HISTORY_UNAVAILABLE`을 반환한다.
+- **실제 검증(담당 직접 실행)**:
+  - `PYTHON_DOTENV_DISABLED=1 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -B -m pytest -q -p no:cacheprovider --tb=short` → **1,414 passed / 3 warnings / 473.30초**. 이번 최종 코드의 전체 회귀이며 기존 실제 Chrome PDF·localhost HTTP 검사도 포함한다. 경고는 기존 Starlette AnyIO 사용 예정 변경 1건과 Alembic 검사에서의 순환 FK 정렬 경고 2건이다.
+  - C-05/예시 집중 검사 `tests/test_be05.py tests/test_api_contract.py -k 'impact or handoff'` → **33 passed**. 편집·사진 보존, 정확한 사실 연결, 중복 후보/조건·인용·버전 변화, 선택 제외, 멱등·동시 적용, 마지막 저장 단계 실패의 전체 롤백, 자료 스냅샷/진행 중 점검, 접근·만료·복원 우회 차단을 확인했다.
+  - 검증·승인 경계 `tests/test_be06.py -k 'c05 or v11_without_applied'` → **11 passed**. 전체 재검증·기존 blocker 유지·제외 자료 재삽입·미확인 사실 차단, 같은 입력의 새 점검에 대한 과거 승인/검증 무효화, 영향 확인만 하고 적용을 생략한 승인 차단을 확인했다.
+  - 중간 관련 회귀의 HTTP 2건은 샌드박스의 localhost 포트 제한으로 실패했고, 허용된 환경에서 **2 passed**로 재확인했다. 최종 전체 검사에도 포함되어 통과했다. `git diff --check` 통과. C-05 자체는 임시 DB·가상 자료·mock Agent의 API 연결 검사이며 실제 모델/프론트 통합 확인으로 간주하지 않는다.
+- **남은 일·상태**: BE-05의 기존 범위와 C-05 백엔드 후속 구현·검증은 완료했으며 F-04는 화면/실제 모델 후속으로 진행중을 유지한다. C-05의 프론트 계약 사본·타입·자료 변경 배너·영향 확인/선택 적용 화면은 미연결이다. 실제 모델의 변경 자료 의미 검증과 사용자 통합 흐름, LLM 영향 수정안 자동 생성·편집 그래프는 후속이다. 실제 회사 자료·실사용 DB·`.env`는 변경하지 않는다. 다음 작업은 계약 1.6의 프론트 복귀 연결이다. 다른 Agent 작업 상태는 바꾸지 않았고, 이번 변경은 `9449973`에 커밋했다.
+
+### C-05·사진 HTTP 작업 커밋과 원격 병합 확인 (2026-09-30)
+
+- 사용자 요청에 따라 `develop`의 19개 변경 파일을 `9449973`(`feat: preserve document edits after source changes`)에 저장했다. `.env`·`.venv`·`private_runs`는 제외되어 있으며 Git 추적 대상이 아니다.
+- `git fetch origin` 후 `origin/develop`은 `f2b5abe`였고 추가 원격 커밋은 없었다. `git merge --no-edit origin/develop`은 `Already up to date.`로 끝났다. 충돌과 미해결 index 항목이 없고 원격 develop이 현재 커밋의 조상임을 확인했다.
+- 병합으로 코드가 바뀌지 않아 바로 앞 단계의 전체 **1,414 passed / 3 warnings** 결과가 이번 코드에도 해당한다. 전체 테스트를 중복 실행하지 않았으며 `git diff --check`와 커밋 후 작업 트리 상태를 확인했다. 이 기록의 변경은 문서뿐이다.
+- BE-05/C-05 백엔드 구현·검증 완료와 F-04의 프론트/실제 모델 후속 상태는 `task.md` 연결표와 일치한다. 다음 작업은 계약 1.6의 프론트 복귀 연결이다.
+
+
+<a id="semantic-repetition-cases-20261006"></a>
+
+### [F-08 / BE-10] 유사 표현·추가 정보·수량 오류 의미 검수 (2026-10-06)
+
+- **범위**: 가상 물류 자료와 직접 준비한 1쪽 문서 3개를 기존 LlmAgent.validate에 전달했다. runtime/content review를 활성화하고 로컬 설정의 gpt-6-luna를 사용했다. 실제 AI 검증이며 서버 HTTP·초안 생성·프론트·승인·출력 시험은 아니다. 서버 측 숫자 검사 결과도 전달하지 않았다.
+- **관측 결과**:
+  - 제목 `고객 물품의 창고 보관` / 본문 `고객의 물품을 창고에 보관합니다.`: issues 0. 사전에 기대한 REPETITION 경고는 나오지 않았다. 제목이 본문을 요약하는 정상 구성도 가능하므로 확정된 오류 누락으로 단정하지 않는다. 허용할 제목 요약과 불필요한 반복의 품질 기준을 Agent 후속으로 남긴다.
+  - 같은 제목 / 본문 `물품을 입출고할 때 수량을 확인합니다.`: issues 0. 별도 원문 근거가 있는 추가 정보를 반복으로 잘못 경고하지 않았다.
+  - 원문 `지게차 4대` / 본문 `지게차 5대를 보유하고 있습니다.`: body의 VALUE_MISMATCH blocker 1건. 원문 인용과 4대로 수정하라는 안내가 있으며 반복 경고로 낮추지 않았다.
+- **평가 한계**: 사전에 정한 관측 조건은 2/3 일치했다. 첫 사례의 기준 자체가 추가 판단을 필요로 하므로 이 수치를 정확도나 일반 AI 품질 성능으로 해석하지 않는다. 각 사례 1회이고 반복 안정성·다른 업종 전체를 검증한 결과가 아니다. 입력 요청 3개는 실행 전후 동일함을 검사했다.
+- **실행·보호**: 첫 샌드박스 시도는 첫 AI 요청의 연결 실패(SERVICE_TEMPORARY_FAILURE)로 중단되어 판정 결과가 없었다. 네트워크 허용 환경에서 3건을 실행해 위 결과를 얻었다. 시연 DB·저장 문서·프론트·모델 설정 파일·프롬프트를 변경하지 않았다. 준비 입력은 메모리에서 만들었으며 새 저장소 파일도 생성하지 않았다.
+- **상태·다음 기준**: 이번 제한된 의미 검수 단위는 완료했다. BE-10의 일반 통합 품질 진행중과 Agent 상태는 유지한다. 완전히 같은 문구·근거의 항목 제목 생략은 이전 구현/검증 결과를 유지한다. 유사 표현까지 자동 삭제하거나 경고하도록 범위를 넓히지 않았다. 제품 코드 변경이 없어 pytest·서버 재시작은 하지 않았다. 결과는 기존 task_backend.md와 공통 task.md에 동기화했다.
+
+
+<a id="backend-remaining-scope-20261006"></a>
+
+### [F-08 / BE-10] 백엔드 잔여 범위·현황판 정리 (2026-10-06)
+
+- **이번 변경**: 현재 요약의 BE-08 미완료 전제, C-05 실제 AI 미검수, DOCX 실자료 미검수 문구를 기존 완료 기록과 맞췄다. BE-01~09 서버 완료와 BE-10 진행중 기준의 단순 가중 진행률은 95%다. 기존90%는 완료8개/부분완료1개를 전제로 계산한 값이므로 최신 상태에 맞춰 수정했다. 전체 서비스 완료나 Agent 작업 완료를 뜻하지 않는다.
+- **완료 범위**: 서버 구현·C-05 추가/수치 교체/제외 실제 표본·고객용8쪽/품질용9쪽 PDF/DOCX 시연·프론트 일반 연결/가상 미리보기·로컬 인계와 제한된 물류 의미 검수가 기록되어 있다. 완료 결과를 반복 검사하거나 임의의 새 백엔드 기능을 추가할 이유는 현재 없다.
+- **남은 범위**: Agent 일반 의미·문체·사진 관련성/반복 안정성 평가, 회사의 과거 카탈로그 현재성·제외 인증 상세·미사용 사진 명칭 확인. 원문 조회 C-01은 미정 범위이며 구현 완료를 이유로 자동 추가하지 않는다. 원격 push/병합/운영 배포도 별도 요청 전에는 수행하지 않는다. 공개 사용 허가는 이미 확인되었으며 다시 요청하지 않는다.
+- **검증·상태**: 기존 완료 기록과 현재 현황판의 참조/상태를 대조하고 문서 diff를 확인했다. 제품 코드·DB·실행 환경·프론트·Agent task 상태는 변경하지 않았다. AI 호출·pytest·서버 재시작은 하지 않았다. BE-10/F-08 진행중과 다른 담당 상태를 유지하고 공통 task.md F-08에 이번 정리 위치를 동기화했다.
+
+<a id="frontend-merge-review-fixes-20261006"></a>
+
+### [F-05·06·08 / BE-06·07·10] 프론트 pull 병합·연결 결함 수정 (2026-10-06)
+
+- **범위**: 사용자 요청에 따라 C:/frontend develop의 b0f58ac와 기존 c1088d0 병합 내용을 함께 검토하고 수정했다. 미해결 병합을 해소하면서 C-05 복귀, 응답 유실 시 요청 재사용, 명시적 가상 미리보기를 보존했다. 앞선 서버 완료 기록은 결함 부재의 보증이 아니며 이번 검토에서 추가 결함을 확인했다.
+- **서버 수정**: 내용 검증·배치 검사에서 진행 중인 같은 작업에 합류한 새 Idempotency-Key도 저장한다. 작업 완료 뒤 같은 키 재요청은 기존 응답을 재사용하고 다른 본문은 409로 거부한다. validations.py/layout_checks.py 및 tests/test_be06.py를 수정했으며 API·DB 스키마 변경은 없다.
+- **프론트 수정**: PDF/DOCX 전환 시 이전 출력 ID를 해제하고 버튼·다운로드 실행 조건을 일치시켰다. 서버에 없는 공개 자료를 화면에만 추가하는 경로를 제거하고 자동 수집 미연결 상태를 표시한다. 회사 변경은 화면 표시 이름 변경으로 명시하고 파일명만으로 내용 충족을 단정하지 않는다. PHOTO_CONTENT_REVIEW의 서버 미지원 확인 버튼을 제거했다.
+- **크롤러 수정**: 사설 IP/DNS/리다이렉트 재검사, 검증한 DNS 주소 고정, TLS 검증, 응답 크기·시간·이미지 MIME 제한을 적용했다. 실패·빈 결과를 가짜 회사 사진으로 채우는 fallback을 제거했다. Vite 개발 서버용 기능이며 운영 수집 서버나 원본 사진의 백엔드 자료 등록 구현을 완료한 것은 아니다.
+- **실행 검증**: BE-06 파일 전체 96 passed/기존 경고 1개(52.40초). 프론트 TypeScript/Vite build 및 수정한 TS 파일 ESLint 통과. 기존 브라우저 검사 스크립트의 --publication --photos --impact --docx 통과: C-05, 업로드·저장 응답 유실, 승인·4쪽 DOCX 다운로드(52,542바이트), 양쪽 형식 승인 후 전환 시 잘못된 출력 방지와 기존 DOCX 재사용 확인. --screen-preview도 3단계·편집·새로고침·API 미호출·일반 저장소 격리 통과. 추가 격리 회귀는 private IP/DNS/redirect·DNS pinning·TLS·MIME/크기·가짜 fallback 부재를 확인했다. 최종 정적 정리 뒤 build/ESLint/격리 회귀를 다시 통과했고 전체 브라우저 검사를 불필요하게 반복하지 않았다.
+- **한계·상태**: 임시 DB·가상 자료·mock AI로 확인했고 유료 AI·실사용 시연 DB·환경 파일·400000 한도·Agent 코드는 변경하지 않았다. 전체 저장소 pytest와 실제 외부 사이트 수집은 실행하지 않았다. 실행 중인 시연 백엔드는 재시작하지 않았다. BE-06/07 서버 완료, BE-10/F-08 통합 품질 진행중을 유지한다. 공개 자료 자동 수집과 운영 크롤러 연결은 별도 구현 범위로 남는다. 원격 push 없이 검증 단위를 로컬 커밋한다.
+
+<a id="frontend-first-integration-20261006"></a>
+
+### [F-08 / BE-10] 프론트 화면을 기준으로 연결 방향 수정 (2026-10-06)
+
+- **사용자 확정**: 프론트의 화면 구현이 기본이며 백엔드를 그 동작에 맞춘다. 앞선 검토의 공개 자료 가져오기/충족도 화면 축소 및 회사 변경을 표시 이름 변경으로 축소한 접근은 최종 채택하지 않는다. plan.md 4.74에 기준을 반영했다.
+- **실제 Git 상태**: 백엔드 중복 요청 결함 수정/96건 검증은 test 44db92b에 커밋했다. 프론트 develop은 기존 pull 병합과 검토 수정이 미커밋 상태다. 앞선 검사 통과는 그 중간 코드에 대한 결과이며 방향 수정 이후 완성된 화면 검증으로 재사용하지 않는다.
+- **다음 순서**: (1) 기존 회사 변경·공개 자료·충족도 UI 유지/회복, (2) 회사별 작업/자료 범위와 저장 API, (3) 실제 공개 자료 수집→원문/출처 저장→서버 ID 선택, (4) 사전 점검 facts/issues로 충족도 연결, (5) 전체 화면 흐름 검증. 출력 형식·멱등성·C-05·TLS/SSRF 결함 수정은 보존한다.
+- **확인 필요**: 사용자는 API 키가 있다고 답했다. C:/backend와 C:/frontend의 환경 파일에서 변수명만 확인했고 현재 OpenAI 키만 식별되어, 보유한 공공 API의 서비스명과 설정 경로/변수명을 추가 질문했다. 키 값은 출력하거나 채팅에 요청하지 않았다. 외부 경로가 미정인 상태에서 임의의 공급자/샘플을 실연동으로 처리하지 않는다.
+- **상태**: 연결 보완 진행중이며 새 API·회사 변경 저장·실제 수집은 아직 구현 완료가 아니다. BE-10/F-08 진행중 유지. DB/환경 파일/시연 서버는 변경하지 않았다.
+
+<a id="frontend-company-coverage-20261006"></a>
+
+### [F-01·02·08 / BE-02·04·10] 프론트 기준 회사 변경·충족도·외부 연결 준비 완료 (2026-10-06)
+
+- **사용자 지시/범위**: 프론트 화면을 기준으로 백엔드를 연결하고, 공개 자료 API 키는 아직 신청 전이라는 확인에 따라 외부 호출 없이 가능한 단위를 완료했다. 회사 변경·공개 자료 가져오기 버튼·충족도 막대를 회복했고 화면 기능을 제거하던 앞선 중간 변경을 대체했다.
+- **회사 저장**: 기존 Brief.target_company와 PATCH inputs를 재사용한다. 작업 전 회사 선택은 생성 요청에 포함하고 작업 중 변경은 새 brief와 빈 자료 선택을 한 요청으로 저장한다. 서버 revision 갱신·점검/승인 무효화, 새로고침 복원, 이전 파일·문서 보존, 초안 이후 C-05 변경 모드 보호를 유지한다. 회사명은 앞뒤 공백을 정리하고 공백만/제어 문자를 거부한다. 프론트는 실패/응답 유실에서 성공으로 표시하지 않고 같은 시도 키를 재사용한다.
+- **충족도**: Preflight GET에 sufficiency를 추가한다. 개요/공정/실적/인증 분야당 근거 있는 supported 사실이면 25점이며 충돌·확인 필요·연결된 blocker는 우선 제외한다. 필수 문제 존재도 따로 표시한다. 회사명 입력·파일명 추측으로 점수를 만들지 않는다. 100%는 사실의 진위·필수 항목 전체 충족·승인 통과를 뜻하지 않으며 기존 승인 정책은 유지한다. 화면은 입력 revision 변경/미저장 조건 변경 후 이전 점수를 숨긴다.
+- **공개 자료**: 보호된 GET public-data와 POST public-data/import를 추가했다. 현재 키/수집기 미설정 상태를 반환하고, 가져오기에서는 회사 미선택422/오래된입력409/미설정503을 구별한다. 반복 실패 시 자료·Job·revision 변화가 없다. 실제 외부 수집은 구현 완료가 아니며 키를 넣는 것만으로 활성화되지 않는다. DART/KIPRIS/G2B 개별 어댑터·조회/원문 저장·실제 인증 검증은 후속이다.
+- **검증**: BE-02·04 파일 전체 **70 passed/기존 경고1개, 19.94초**. 계약 검사는 **43 passed/1 failed**였고 실패는 API 개수 기대값30을 신규2개에 맞춰 갱신하지 않은 테스트였다. 개수32/새 경로 검사 반영 후 해당1건 **passed/1.87초**, 계약44건을 모두 확인했다(최종44건 한 번의 재실행 결과는 아님). 최초 BE 검사 중 제어 문자 대신 역슬래시 문자열을 넣었던 테스트2건은 올바른 문자로 수정했고 위70건 재실행에 포함됐다. 최초 샌드박스 임시폴더 권한 오류는 권한 허용 환경으로 재실행했다.
+- **실제 브라우저**: 기존 scripts/check-ai-workflow.mjs --publication --photos --impact --docx **30개 검사 묶음 PASS**, 4쪽 DOCX 52,542바이트. 회사 선택/변경/해제/파일 보존/복원, 미설정 응답의 무변경, 서버 충족도/변경 후 숨김 및 기존 C-05·사진·응답 유실·저장·형식별 승인·다운로드/재사용을 확인했다. 첫 실행의 'company reload' 실패는 기본 등록 탭에서 숨겨진 첨부를 기다린 검사 절차였고 첨부 탭 선택 후 전체 재실행이 통과했다. --screen-preview도 3단계/편집/복원/가상승인/실제API0/일반저장소 보존 PASS. 최종 TypeScript/Vite 빌드·수정 TS ESLint 통과, 실제 S01 캡처에서 UI 배치를 확인했다.
+- **계약·Git**: contracts.md 문서v1.33/계약1.9 호환 확장·DB v11 유지, 실제 모델·예시·프론트 타입/README/기존 WORK_SUMMARY를 맞췄다. 프론트 develop **a3629f2**로 기존 pull 병합과 검토 수정·이번 화면 연결을 커밋했다. 기존 .claude/는 제외했다. 전체 pytest/실제 외부API/유료AI 재검증은 하지 않았고 원격 push도 없다.
+- **전달/서버**: 사용자 요청으로 원본 변경 없이 SQLite backup과 상대경로 자료232파일의 ZIP(약101MB)을 생성했다. DB integrity/foreign key/참조 파일·ZIP CRC를 검사했고 디스코드용 9,000,000바이트 이하12개로 분할해 합산 SHA256을 확인했다. API 키/.env/코드는 제외하고 팀원 안내/합치기 스크립트를 포함했다. 실행 안내는 아래 시연 명령에 맞춰 보정·재분할했다. 원본/분할 파일은 private_runs의 Git 제외 산출물이다.
+- **시연 구동**: 기존8000/5173 리스너는 샌드박스 조회에서 보이지 않았으나 실제 HTTP는 정상이라 권한 허용 조회로 기존 프로세스를 확인했다. 새 기본 실행은 로컬 interactive 입력 한도 설정과 충돌해 시작 전 실패했다. 진행 중 Job 없음 확인 후 README대로 입력40000/검증400000/출력32000/120초/재시도0으로 재구동했고 LlmAgent·interactive·demo=true 및 HTTP200을 확인했다. .env·모델·예산값은 변경하지 않았다.
+- **상태/남은 일**: 이번 프론트 기준 연결 단위 완료. BE-10/F-08 통합 품질 진행중과 Agent 상태 유지. 실제 공공 API 수집·회사별 실자료 표본·일반 의미 품질은 다음 범위다. 공개 자료 가입 폼은 사용자가 작성하며 키는 채팅/프론트에 넣지 않는다.
+
+- **브랜치 지시 반영**: 사용자 요청에 따라 양쪽 저장소에 fix/frontend-backend-integration을 생성했다. 프론트 a3629f2는 새 브랜치에 보존하고 develop 포인터는 직전 b0f58ac로 복원했다. 백엔드의 이번 미커밋 기능·검증·기록은 새 브랜치에 커밋하며 기존 test에는 추가하지 않는다. .claude/와 실행 중 파일·시연 DB는 그대로이고 원격 push는 없다.
+
+
+<a id="draft-generation-recovery-20261007"></a>
+
+### [F-03·08 / BE-04·10] 프론트 기준 초안 실패 복구 (2026-10-07)
+
+- 사용자 기준은 프론트 화면이다. 기존 화면을 유지하면서 실패 Job의 retry_draft 안내, 새로고침 복원, 확인 체크 재설정, 같은 자료로 초안 다시 생성 버튼을 연결했다. 실패 결과만 다시 조회하는 버튼은 완료된 실패에서 숨기고 응답 유실 복구에는 유지했다.
+- 서버는 이전 draft Job이 재시도 가능한 오류로 실패했고 같은 세션·입력·최신 점검이며 저장 문서가 없을 때에만 확인 체크포인트를 다시 준비한다. 새 요청에는 명시 확인과 새 멱등 키가 필요하다. 같은 키는 기존 실패를 반환하며 취소·진행 중·완료·변경 입력·새 점검·없는 Job의 복구는 거부한다.
+- 날짜/수치가 있는 supported 연혁은 명시 선택된 기존 whole-fact point에서 전체 값을 사용해 날짜 축약을 방지한다. 실제 내용·수치·근거 검사는 유지한다. 실제 interactive/runtime 작성의 선별·본문·쪽수 실패에는 최대 1회 재작성하고 재분석/통신 자동 재시도는 하지 않는다. 제한 평가와 일반 fixture는 단일 호출 유지다.
+- 검증: 초기 관련 회귀 393 passed, BE-04/계약 전체 80 passed. 재작성 추가 후 관련 회귀는 394 passed/1 failed(기존 단일 호출 기대값); 기대값 수정 후 해당 묶음 8 passed로 누락 상황의 최대 2회 호출·실패 유지·입력 보존을 확인했다. 제한 평가·수동 중단에서 추가 호출 없음까지 별도4건 통과했다. 최종 전체 pytest는 실행하지 않았다.
+- 프론트: TypeScript/Vite build, 수정 TS ESLint, 검사 스크립트 문법 통과. 격리 mock 브라우저 --draft-recovery --publication --photos --impact --docx에서 30개 검사 묶음 PASS. 실패 복원·확인 초기화·새 키 재시도·추가 점검 없음·C-05·사진·승인·4쪽 DOCX 52,542바이트까지 확인했다. 검사 코드의 sessionState 참조 오류 수정 후 전체 통과했으며 실제 시연 DB는 사용하지 않았다.
+- 실자료: 팀원 ZIP의 읽기 전용 사본(104 facts/18자료/연혁21건/8쪽)으로 기본 조건은 1회/56.4초 생성·서버 검사 통과했으나 연혁은 제외되어 날짜 수정 검증으로 보지 않는다. 임시 필수 연혁 조건은 최초 1회/63.8초 selection_coverage 실패했다. 재작성 추가 후 한 실행은 생성 뒤 검사 결과 출력의 calls 키 오류로 실패하여 완전 통과로 기록하지 않는다. 최종 재검사는 최초 selection_coverage 누락9건 후 1회 재작성하여 총2호출/109.7초, 8쪽·필수 연혁21/21건 본문 포함·validate_draft 통과다. 이는 생성/서버 검사 결과이며 해당 실자료의 승인·출력 전체를 다시 실행한 결과는 아니다. 원본 DB/.env/모델/시연 서버는 변경하지 않았다.
+- 범위: 계약1.9/DB v11, 새 API 없음. BE-10/F-08 일반 품질 진행중 유지. 실제 AI의 모든 표현 품질·모든 실패 제거를 보장하지 않는다. DART 연동은 사용자 지시에 따라 후속이다.
+
+
+<a id="docx-font-parity-20261007"></a>
+
+### [F-06·08 / BE-07·08·10] PDF/DOCX 글꼴 통일 (2026-10-07)
+
+- 원인: PDF는 동봉 Pretendard를 포함하지만 DOCX는 이름만 지정해 미설치 환경에서 대체됐다. 같은 Regular/Bold TTF 전체를 OOXML 난독화 파트·관계·fontTable/settings에 포함했다. 원본 글꼴의 OS/2 fsType=0 및 기존 OFL을 확인했다. 글꼴 파일 누락은 RenderError로 실패한다. 새 파일/의존성/프론트 코드 추가는 없다.
+- template_v11·지문 갱신으로 기존 검사/승인의 재사용을 차단한다. 단일 열·본문·사진·글자 크기·DB/API/.env는 유지한다. 실제 내용 생성/검증 AI는 호출하지 않았다. 과거 산출물은 보존하며 새 출력은 배치 재검사·명시 재승인을 거친다.
+- 검증: 원본 TTF 복원 바이트 일치/전체 글리프/설정/지문 집중3건 통과. BE-07/08 DOCX·템플릿·식별값 관련39 passed/1 skipped/93 deselected(115.11초); 실제 쪽수·사진·편집·캐시·승인·다운로드 회귀 포함. 전체 pytest는 미실행이다.
+- 현재 시연 DB의 doc_4256086563a5497d revision2를 읽기 전용으로 렌더했다. 실제6쪽 PDF에서 Pretendard-Regular/Bold만 확인했고 문서 스킬 렌더6쪽 전체 시각 검수에서 누락/겹침/잘림 없음. Word 직접 렌더는 미실행이다. 산출물은 OS 임시폴더이며 원본 DB를 변경하지 않았다. 첫 진단 출력의 함수/속성명 오류는 수정하여 기존 렌더 결과를 확인했고, 스킬의 cp949 출력 디코딩 경고에도 PNG6개/종료0을 확인했다.
+- 사용자 추가 요청으로 프론트 develop(ad853a1)을 재구동하고 HTTP200을 확인했다. 백엔드도 새 글꼴 코드로 재구동해 /docs HTTP200을 확인했다. 사전 조회에는 queued/running이 없었지만 재구동 사이에 새 점검 요청이 들어와 1건이 SERVICE_TEMPORARY_FAILURE로 중단 정리됐다. 이후 새 preflight 실행을 확인했고 추가 재시작은 하지 않는다. 이는 글꼴 렌더 테스트 실패가 아니다. 기존 .claude/ 보존. BE-10/F-08 전체 품질 진행중 상태는 유지한다.
+
+
+<a id="target-company-notation-20261007"></a>
+
+### [F-03·08 / BE-04·10] 대상 회사명 법인 표기 오류 수정 (2026-10-07)
+
+- 실제 화면의 draft job_65546830e6b94328은 INVALID_REQUEST였다. brief.target_company=거산케미칼과 supported fact.value=㈜거산케미칼을 완전 문자열 비교하여 정상 자료를 막았다. AI 통신·추출 실패가 아니라 초안 진입 조건의 표기 처리 결함이다.
+- app.config.company_names_match에서 NFKC·공백·대소문자·앞/뒤의 ㈜/(주)/주식회사만 정규화하고 초안 guard에서 사용한다. 영문 번역은 기존 명시 확인 별칭 그룹만 허용하며 부분 이름/다른 회사/빈 법인표기/미확인 사실을 허용하지 않는다. 원문·facts·근거·점검·.env·API/DB는 변경하지 않았다. prompts/모델 설정/Agent 담당 상태도 유지한다.
+- 가상 모델 검사13건 통과: 회사명 표기 차이에서 초안 성공·단일 작성 호출·점검 원본 보존, 다른 회사/부분 문자열/번역 추정 거부, 명시 별칭만 허용. BE-04/06 및 Agent LLM 관련 전체는 1,241 passed/2 failed/경고1(141.51초). 실패는 test_paraphrase_trial_preserves_legacy_inputs_and_answers, test_holdout_review_trial_freezes_cases_and_preserves_previous_evaluations의 고정 입력 해시이며 HEAD의 커밋된 테스트 모듈로도 같은 assertion 실패를 재현했다. 기대 해시/정답을 임의 갱신하지 않았다. 전체 pytest는 미실행이며 이 해시 실패2건은 후속이다.
+- 실제 저장 점검 pf_aa5ba2c8ddf44a4d를 읽기 전용으로 비교해 거산케미칼↔㈜거산케미칼=True, 임의 영문 번역=False를 확인했다. 유료 AI/초안 재생성은 수행하지 않았다. 진행중 queued/running=0 확인 직후 백엔드를 재구동하여 HTTP200을 확인했다. 프론트 develop(ad853a1)·HTTP200 유지.
+- 이미 저장된 INVALID_REQUEST 실패는 자동 수정/실행하지 않는다. 소비된 확인 지점은 기존 정책에 따라 새 점검·명시 확인이 필요하다. 수정 이후에는 이 법인 표기 차이가 차단하지 않는다. 점검의 기술 근거 부족 blocker는 별개로 보존한다.
+- 사용자 질문에 따른 다음 검토 순서: 프론트 다음 단계 버튼 조건과 서버 guard/오류를 전수 대조→경계값/저장 AI 응답 변형→전체 UI 완주→유료 반복은 별도 예산 확정. 이번 단위에서 전수 검토나 모든 AI 오류 해결을 완료했다고 표시하지 않는다. BE-10/F-08 진행중 유지.
+
+
+<a id="draft-entry-audit-20261007"></a>
+
+### [F-02·03·08 / BE-04·10] 프론트 기준 초안 진입 조건 대조·보완 (2026-10-07)
+
+- 범위는 자료 선택→점검→명시 확인→초안 접수/복구이며 실제 UI 회귀에서는 편집→PDF/DOCX 승인/다운로드도 확인했다. 사용자는 원래 작업 브랜치에서 이어가도 된다고 확인했다. 백엔드 fix/draft-generation-recovery를 유지하고 프론트 같은 브랜치에 develop ad853a1을 병합해 자료 복원 변경과 이전 초안 재시도를 보존했다. 임시로 만들었던 프론트 fix/draft-entry-checks에는 커밋하지 않았다. 다른 담당 상태와 .claude/·.env는 보존했다.
+
+| 확인 지점 | 프론트·서버 대조/최종 동작 | 검증 위치 |
+|---|---|---|
+| 세션·소유·만료 | 세션 없으면 시작 경로, 서버401/404/410/시연403 보호 유지 | BE-04/계약·기존 브라우저 정리 |
+| 선택·읽기·저장 | 자료 없음/미저장 조건/업로드·읽기 중 차단. 사진만 선택한 점검도 차단 | SourceSelectionView·사진 전용 실제 UI |
+| 점검과 현재 입력 | 입력 revision 변경 시 이전 점검·확인 불가 | BE-04·그래프·UI 입력 무효화 |
+| 같은 입력의 새 점검 | 이전 GET은 can_generate=false, 접수 전409·확인/Job 생성 없음. latest_preflight_id로 GET 복원 | BE-04 최신점검·실제HTTP409 브라우저 |
+| 대상 회사 | 기존 회사명 정규화·명시 별칭만 적용. 없는/다른 회사 근거는 점검 단계 안내 | 공유 draft_input_problem·API 행렬 |
+| 필수·제외 조건 | 근거 존재 여부와 무관하게 명시 필수·제외 충돌 사전 안내 | API/Agent 누락·존재 행렬 |
+| 자동 필수 사업 설명 | 제외한 개요 대신 명시 제외되지 않은 다른 사업/제품 설명 선택 | Agent 실제 변환 가상 응답 |
+| 확정 사실 없음 | 사용할 supported 사실이 없으면 사전 안내. 일반 열린 blocker·일부 필수 누락은 검토용 초안 일괄 차단 아님 | API 행렬·기존 승인 보호 |
+| 사용자 확인 | 버튼·POST confirmed·저장 확인·그래프 체크포인트 모두 유지. 새로고침/실패/최신 결과 복원 뒤 확인 해제 | BE-04·그래프·UI |
+| 중복/응답 유실 | 같은 키는 같은 응답, 같은 active 작업 합류. 유실은 같은 키 재전송 | BE-04·기존 UI 유실/GET 복구 |
+| 초안 실패 복구 | 재시도 가능한 실패만 같은 최신 점검·새 키·명시 확인. 취소/입력변경/저장 문서는 재생성 안 함 | 그래프 안전 복구·실제UI |
+| 실행 중 한도/모델 결과 | 기존 입력·비용·시간·중단 및 형식/선별/본문/수치/인용/사진/쪽수 검사 유지 | Agent 회귀; 실제 AI 반복 평가는 후속 |
+
+- 구현: app.agent_llm의 결정적 draft_input_problem을 GET 점검과 POST drafts에서도 재사용한다. GET은 필요한 보완 사유/can_generate만 복사 결과에 반영하고 저장된 facts/점검/확인/Issue를 바꾸지 않는다. 초안 접수는 조건 오류를 확인·Job 생성 전에422로 반환한다. 현재 입력의 최신 점검 ID를 기존 응답의 선택적 읽기 필드 latest_preflight_id로 추가했다(계약1.9 호환 확장·DB v11·template_v11). 원문/미확인 사실을 확정하거나 기존 blocker를 삭제하지 않는다.
+- 프론트는 실제 보완 사유를 표시하고 회사명 문제가 텍스트 없음으로 표시되지 않게 한다. 최신 점검을 GET만으로 복원하며 진행 중 요청을 임의로 바꾸지 않는다. 접수409에서도 서버 세션을 조회해 같은 입력이면 최신 점검 복원, 다른 revision이면 오래된 점검/확인을 버리고 자료 새로고침을 안내한다. 초안만 재시도하는 화면은 원래 커밋8e07a2c를 최신 develop과 병합해 복원했다.
+- 기존 평가 해시2건은 sufficiency=null 기본 조회 메타데이터가 옛 입력에 추가된 원인이었다. legacy_contract_view에서 기본 None의 새 조회 메타데이터만 제외하고 원문·정답·기대 해시를 그대로 유지해 두 검사가 다시 통과했다. 실제 모델의 흔들림으로 분류하지 않았다.
+- 백엔드 검증: 신규 집중 검사에서22통과/1실패(고정 가상 작성기가 제외된 개요를 반드시 찾던 문제), 대체 사업 설명을 쓰는 가상 작성기로 보완했다. 관련 전체 최초는1,203통과/2실패(오래된 점검을 failed Job으로 받던 기대값), 새 접수전409 동작과 무호출 검사를 반영한 최종 전체 **1,205 passed/경고1,98.56초**. 최신 점검 조회 필드 추가 이후 관련 **78 passed/1,127 deselected/경고1,26.79초**도 통과했다. 전체 저장소 pytest/실제 유료 모델 호출은 미실행이다.
+- 브라우저 검증: 격리 mock DB/HTTP/Vite/Chrome으로 PDF **27묶음 PASS·4쪽26,968바이트**, 최종 DOCX **33묶음 PASS·4쪽2,410,998바이트**. 점검차단4종 표시/확인 비활성/새로고침/추가AI없음, 사진만 선택 차단, 실제 오래된점검POST409→최신GET 복원→확인 재설정, 실패 초안 새키 재시도/재분석 없음 및 C-05/사진/직접편집/경고/형식별 승인·바이트 동일 다운로드/정리를 확인했다. 실제DB를 쓰지 않았다. 최초 사진 검사 옵션 누락은 시작 전 거부됐으며 올바른 --publication으로 재실행했다. TypeScript/Vite 최종 build·수정TS ESLint·JS문법 통과. 병합된 원격 문서의 EOF 빈 줄만 정리하고 본문은 유지했다.
+- 서버 적용: 실제 .env의 agent_mode=llm과 queued/running=0을 확인한 직후 백엔드를 재구동했다. 백엔드 /docs와 프론트 / HTTP200, 정상 시작 로그를 확인했다. 시연 DB/환경을 검사 설정으로 덮어쓰지 않았다.
+- 다음: 실행 후 발생하는 AI 선별/문장/근거/수치/분량의 변동을 저장 결과 변형과 예산을 정한 실제 반복 시험으로 평가한다. 한 모델 응답의 통과/이번 회귀를 모든 생성물의 품질 보장으로 취급하지 않는다. BE-10/F-08 전체 품질 진행중 및 다른 담당 상태 유지.
+
+
+<a id="dart-integration-20261007"></a>
+
+### [F-01·02·08 / BE-02·10] DART 실제 자료 연결·회사 검색 (2026-10-07)
+
+- 사용자 요청은 DART만 연결하고 회사 변경 창에서 입력과 같거나 비슷한 실제 기업을 선택하는 것이다. 서버 로컬 .env에 제공 키를 저장했으며 Git 제외를 확인했다. 원문 실자료·Agent 모드/한도·모델·다른 담당 상태를 보존했다.
+- 기존 sources/sessions/API 모델·설정 파일에서 DART adapter와 GET /companies를 연결했다. 메모리 회사목록24시간캐시, 전체/접두/부분 일치 최대20개, 명시 corp_code 저장·검증, 회사명만 있으면 전체 이름 유일성 검사다. 네이버 공식 이름 NAVER/00266961은 확인된 검색 별칭만 적용하고 회사정보 자체를 번역/추정하지 않는다.
+- 실제 공개 자료 import202/read Job, 멱등 재전송/active 합류·원문JSON/ZIP·출처/접수일·텍스트 구간/추출 이력을 저장했다. 기업개황 및 최신공시 최대1건, 본문25000자/설정상한·부분읽기 공개다. HTML이 .xml에 든 실제 DART 공시도 텍스트만 읽고 head/script/style을 제외한다. 외부 엔티티 금지·고정HTTPS/redirect금지·ZIP메모리읽기·크기/시간 제한과 인증값 없는 오류/출처를 적용했다. 입력 변경/종료/용량 실패 시 DB와 새 파일을 함께 롤백한다. 자동 자료선택/revision변경/AI호출은 없다.
+- 프론트 고정 기업예시를 실제검색으로 교체하고300ms 지연/AbortController/이전응답무시·검색중/없음/실패를 표시한다. 정식 이름·고유번호를 함께 저장하고 직접 수정 시 고유번호를 해제한다. 공개자료의 목록/개수 판정을 PUBLIC_OPEN_DATA로 통일했다. 수집 Job ID/요청키를 sessionStorage에 보존하여 응답유실/새로고침 시 폴링으로 완료/오류를 안내한다. C-05·기존 회사변경 파일보존/선택해제 유지.
+- 백엔드 API/BE-02/ORM 최종 **186 passed, 경고1,70.37초**. 최초 새검색 검사2건은 법인표기 동일 이름의 이름순 정렬 기대값 문제로182통과/2실패였고 기대값만 정렬정책에 맞췄다. DART+OpenAPI+기존 평가 입력해시 집중 **31 passed/1189 deselected, 경고1,9.74초**. 새 Brief 필드 기본None만 옛계약투영에서 제외해 원문/정답/고정해시는 보존했다. 전체pytest/유료AI시험은 미실행.
+- 실제 DART 키 company.json 상태000, 삼성전자 기업개황/최신공시2개·원문 읽기 성공. 실제 Chrome으로 공개 자료2건/완료메시지/공개탭선택/저장·거산케미칼 미등록 오류에서0자료·0 AI호출 확인했다. 회사검색 Chrome은 네이버 결과17개·첫회사NAVER/00266961 선택/세션저장·빠른 검색변경 최신결과·결과없음·직접입력 고유번호해제·0 AI호출 PASS. 각 시험의 새 세션만 종료/정리했다. 현재 시연 DB·기존회사자료는 보존.
+- 프론트 TypeScript/Vite build·전체 ESLint 통과. 최종 격리 mock HTTP/Chrome/PDF UI **27묶음 PASS·4쪽26,968바이트**(ddalgi-ai-ui-BINx81). 기존 초안복구/선택/편집/사진/경고/승인/다운로드/정리 통과. 실서버 재구동은 진행중queued/running=0 검사 후 적용했다.
+- 계약문서v1.38/계약1.9·API33개·DB v11/template_v11, plan4.79·task 연결행 동기화. 프론트 계약사본 파일은 없으며 실제 타입/호출/WORK_SUMMARY를 갱신했다. 특허청/나라장터·일반 AI 반복평가 후속. BE-10/F-08 진행중 유지.
+
+
+<a id="dart-legal-name-fix-20261007"></a>
+
+### [F-01·02·08 / BE-02·10] DART 목록명·법인명 차이로 수집 실패 보완 (2026-10-07)
+
+- 사용자 화면의 DART_COMPANY_MISMATCH를 읽기 조회해 실제 NAVER 대상 실패3건을 확인했다. 실제 company.json: corp_code00266961/corp_name네이버(주)/stock_nameNAVER다. 앞선 실제수집시험은 삼성전자였고 NAVER는 검색/선택만 검사하여 수집명 차이를 놓쳤다.
+- 목록으로 고유번호/전체 이름 선택을 먼저 검증하고 company.json의 corp_code 일치와 법인명 또는 공시등록명 전체 일치를 요구한다. 원문에 없는 이름으로 덮어쓰거나 다른 회사/부분 이름을 허용하지 않는다. 실제 법인명과 공시등록명을 텍스트에 함께 보존한다. NAVER/네이버는 공급자/공식사이트로 확인한 단일 명시 이름표를 검색·회사명 비교에서 공유하여 점검/초안입력의 같은 이름 차이도 막지 않는다. 다른 번역은 추정하지 않는다. 네이버랩스/네이버클라우드 차단 유지.
+- 프론트 비동기수집 실패/취소 시 이전 '조회 중' notice를 지워 완료 상태와 모순된 표시를 제거했다. 요청키/새 재시도/소유/입력revision/부분읽기/정리/AI한도는 유지했다.
+- 관련 DART·회사명/초안입력 검사 **55 passed/1135 deselected, 경고1,11.18초**. legacy/ORM 각각 등록명-법인명 차이/NAVER/다른고유번호/다른명칭의 성공·차단·실패무잔여를 확인했다. 첫 검사3실패는 새테스트의 존재하지않는 extracted_text 컬럼 조회이며 실제 저장구간 테이블 조회로 수정했다. 프로덕션수집은 해당사례들에서 이미 성공했고 최종명칭/구간단언도 통과했다. 기대원문/사실/해시는 바꾸지 않았다.
+- 실제 격리 Chrome으로 NAVER/00266961 수집 성공 **기업개황10구간·최신공시191구간/2자료 complete** 및 완료안내/공개탭선택/서버저장 PASS. 미등록거산은0자료/진행notice없음/0AI호출 PASS. 각 새시험 세션만 종료·정리했다. 사용자 작업의 기존 실패 Job/선택/입력은 자동 변경하지 않았다.
+- 프론트 TypeScript/Vite·전체ESLint PASS. 진행중queued/running0 확인 후 현재 시연서버에 적용, 실제 모델 호출/초안 자동생성 없음. 계약문서v1.39/계약1.9·DBv11·template_v11 유지. BE-10/F-08 진행중 유지·전체pytest/UI전체재실행은이번단위에서미실행.
+
+
+<a id="selected-source-analysis-20261007"></a>
+
+### [F-01·02·08 / BE-04·10] 공개·첨부 단독 AI 점검 실행 (2026-10-07)
+
+- 사용자 요청은 등록 자료를 선택하지 않고 공개 연동 자료 또는 이번 작업 첨부만으로 점검 버튼을 누르는 것이다. 서버는 원래 선택한 세션 자료만으로 점검 가능했다. 프론트의 미선택 자료까지 포함한 pending 조건을 selectedPending으로 바꿨다. role=evidence/use_as_company_evidence 및 complete|partial 텍스트를 선택 자료에서 확인하며 자료 scope/탭은 실행 조건에 사용하지 않는다. 편집 입력 대기도 선택 자료에 한정하고 총 읽기 상태 표시는 유지했다. 사진만 선택/미저장조건/진행요청/응답유실/C-05·소유·버전 정책 유지.
+- tests/test_be02.py에 DART 가져오기→공개 자료2개만 선택→점검 Job 성공/usable_source_ids 및 근거가 해당 선택 범위 안에 있는지를 legacy/ORM으로 확인했다. 기존 첨부 단독 점검/다른 경계 검사와 함께 **69 passed/52 deselected, 경고1,20.69초**. 프로덕션 백엔드/API/DB/Agent 코드 변경은 없다.
+- 프론트 브라우저에 미선택 reading 등록 자료를 넣고 실제 첨부만 선택/공개 탭으로 표시한 같은 선택 자료에서 각각 버튼 활성화와 등록자료0선택을 확인했다. 공개 탭 UI 시험은 응답 warnings의 PUBLIC_OPEN_DATA 표시 fixture이며 실제 외부 수집이나 유료AI를 호출하지 않았다. 서버의 실제 DART import 경로는 위 가상 공급자 API 검사로 별도 확인했다. 선택하지 않은 reading 자료를 시험에서 제거한 뒤 기존 점검/초안/사진/편집/승인/다운로드/정리까지 **가상 UI28묶음 PASS·4쪽PDF26,968바이트**(ddalgi-ai-ui-GojN4H).
+- TypeScript/Vite build·전체ESLint·JS문법·git diff --check 통과. 현재 Vite HTTP200/HMR 적용, 시연DB/.env/기존선택/점검/유료AI 실행을 변경하지 않았다. 계약문서v1.40/계약1.9·DBv11 유지. 전체pytest/실제유료AI반복은미실행. BE-10/F-08 진행중 유지.
+
+
+<a id="numeric-notation-equivalence-20261007"></a>
+
+### [F-02·03·05·08 / BE-04·06·10] 명확한 숫자·날짜 표기 차이 자동 허용 (2026-10-07)
+
+- 실제 NAVER 점검/문서의 미해결을 읽기 전용으로 대조했다. 설립일 19990602, 1조2,000억원/괄호 숫자, 표의 자산총액·백분율 단위, 같은 연도의 날짜 범위 등4건이 공통 숫자 검사에서 needs_confirmation으로 내려갔다. 사업 설명 근거 누락 및 의결권 확보 주체 오류는 별도 실질 문제이며 이 수정으로 우회하지 않는다.
+- app/services/validation.py의 공통 숫자 비교에 명시 날짜/동일연도 범위·정확한 원화 Decimal 환산·인용 표 머리글/괄호 단위를 정규화했다. 금액·퍼센트의 부호를 보존하며 실제 수치/날짜 변경, 잘못된 그룹 쉼표, 타 통화/길이 단위, 식별자 날짜 오인, 불명확한 연도 전환은 계속 거부한다. 추출/초안/내용 검사 공유 경로에 적용하며 사실의 주체·조건·인증 적용 범위는 별도 의미 검증 대상이다. 원문/인용/기존 저장 상태를 자동 변경하지 않는다.
+- tests/test_agent_llm.py의 기존 숫자 경계/추출/초안-서버 연결 시험을 확장했다. 초기 표기/초안 검사58건 통과. 넓은 회귀 최초 실행은1,023 passed/3 failed(기존 중단·재시작 시험의 latest_preflight_id 기대가 입력 변경 전 confirmed 응답을 그대로 사용). 해당 시험은 입력 변경 후 실제 응답의 사실/confirmed_at/원래 input_revision 보존 및 최신 점검 없음까지 검증하고 재시작 후 같은 상태를 비교하도록 보완했다. 제품의 버전 검사를 완화하지 않았다.
+- 최종 tests/test_agent_llm.py + tests/test_be06.py + tests/test_be04.py: **1,306 passed/경고1,145.98초**. 모델은 가짜 응답/격리 DB이며 실제 유료 호출0회. 현재 NAVER 저장 인용의 F004/F020/F023/F025를 새 함수로 읽기 전용 재현하여4건 모두 unmatched_tokens=[]를 확인했다. 저장된 Fact/Issue를 자동 해결 처리하거나 실제 점검을 다시 실행하지 않았다.
+- 계약문서v1.41·API1.9·DBv11·template_v11 유지. 프론트 코드/Agent 담당 상태/.env/시연 원자료 변경 없음. 기존 점검 결과는 새 자료 점검 후 반영되며 입력 변경/사용자 확인/C-05 및 명시 승인 정책 유지. 전체 pytest·실제 모델 반복 평가는 미실행. BE-10/F-08 진행중 유지.
+
+
+<a id="preflight-review-actions-20261007"></a>
+
+### [F-02·03·05·08 / BE-04·06·10] 점검 항목의 명시 제외·복원과 자료 보완 연결 (2026-10-07)
+
+- POST preflights/{pid}/reviews와 Preflight의 excluded_facts/reviewable_fact_ids를 추가했다. 소유/만료/현재입력/최신점검/실행중작업/근거 범위/멱등성을 검사한다. 기존 점검과 원래 Fact/Issue는 보존하고 새 점검에 서버 작성 FACT_EXCLUDED 표시를 저장한다. 복원은 원래 근거 상태와 미해결을 되살리며 회사명·필수 내용·마지막 확인된 사업 설명·필수/시연 위반은 제외하지 못한다. 확인을 초기화하고 실제 확인 그래프를 재연결한다. 유료 AI 추가 호출 없음.
+- 기존 문서는 자동 삭제/수정하지 않는다. 점검 변경 시 내용 검증/승인을 무효화하고 제외 사실이 남은 본문은 EVIDENCE_INVALID로 삭제/복원 경로를 안내한다. 입력 변경·새 AI 점검에 제외 결정을 자동 이월하지 않는다. 실제 근거 누락/주체/조건 오류를 단순 확인으로 통과시키지 않는다.
+- 프론트에 이 항목 제외/항목 복원/근거 자료 보완을 연결했다. 문서가 있어도 저장한 편집을 보호하며 자료 보완을 시작한다. filename 기반 가짜 supported 사실·인용/문제 은폐, 공개 연동 실패 후 가상 자료 생성, 서버 선택 실패의 로컬 성공 표시를 제거했다. 실제 서버 선택/공개 연결 상태/충족도를 사용하고 업로드 자동 선택의 실패는 첨부 성공과 구분한다.
+- 백엔드 최종 관련 회귀 tests/test_be04.py + tests/test_be06.py + tests/test_api_contract.py + tests/test_agent_llm.py: **1,357 passed/경고1,171.53초**. legacy/ORM, 제외·복원/불변/재전송/최신점검/필수 및 회사 보호, 제외 사실의 초안 누락/재도입 차단, 실제 그래프의 가짜 모델 재개를 확인했다. 첫 실행의3개 실패는 신규 빈 메타데이터가 기존 평가 해시에 포함되던 시험2개와 입력 revision 충돌보다 확인 불일치가 먼저 반환되던1개였다. 평가 원문/정답/기존 해시를 보존하고 빈 기본 필드만 투영 제외했으며 그래프는 현재 revision을 먼저 검사한다.
+- 격리 mock 브라우저 --draft-entry --draft-recovery --publication --photos --impact: **31개 묶음 PASS**, 실제4쪽 PDF27,755바이트. 응답 유실 후 같은 리뷰 키 재전송/새로고침 제외 유지/원래 Fact 복원/추출 호출 증가 없음/확인 초기화, 초안 실패복구/C-05/사진/편집충돌/검증/승인/다운로드/종료를 확인했다. TypeScript/Vite 빌드와 전체 ESLint 통과. 실제 시연 DB/.env/원자료를 수정하거나 유료 모델을 호출하지 않았다. 실제 모델 반복 품질 평가·이번 변경의 DOCX 추가 검사는 미실행이다.
+- 계약문서v1.42/API1.9 호환 확장·DBv11/template_v11 유지. 프론트에는 API 타입을 반영했으며 별도 계약 사본은 없다. Agent 담당 상태는 바꾸지 않고 BE-10/F-08 진행중을 유지한다. 남은 일은 실제 자료별 누락/주체/문구 보완 및 실제 AI 품질 반복 측정이다.
+
+
+<a id="unresolved-issue-audit-20261007"></a>
+
+### [F-05·08 / BE-06·10] 미해결 분류와 화면 처리 경로 대조 (2026-10-07)
+
+- 사용자 요청에 따라 현재 시연 DB를 mode=ro로 조사했다. 세션27개는 closed23/expired4이며 active0이다. Preflight30개와 Issue54개는 ID/코드/상태 등 흔적만 남아 facts 및 문제 문구는 모두 정리되어 있다. 과거 open 흔적4개(REPETITION2/REQUIRED_MISSING1/UNSUPPORTED_CLAIM1)를 현재의 미해결4개나 새 오류로 판정하지 않는다. 정리된 원문을 되살리거나 새 사용자 세션/유료AI 요청을 만들지 않았다.
+- 아래는 원문이 있는 다음 실자료 검수의 분류 기준이다. 코드만으로 수치 표기 오탐·주체 오류를 확정하지 않는다.
+
+| 분류 | 확인할 증거 | 처리 |
+|---|---|---|
+| 표기 오탐 | 인용 원문과 수치/날짜 정규화 후 값·단위·부호가 같고 주체/조건도 같음 | 이미 적용한 공통 표기 검사 사용; 기존 저장 상태는 별도 재점검 필요 |
+| 실제 근거 부족 | 선택 자료/버전/인용 구간에 내용이 없거나 필수 사실을 확인할 수 없음 | 실제 자료 보완/올바른 자료 선택·근거 연결; 선택 항목만 제외 가능 |
+| 잘못된 주체·문구 | 원문의 수치/적용 조건/인증 범위/사실 주체와 본문이 다름 | 관련 문구 편집·근거 비교 또는 선택 항목 제외; 확인 클릭으로 통과 불가 |
+| 화면 처리 불가 | 문제에 실행 가능한 편집·근거 확인 경로가 없거나 조회 불일치로 복원이 실패 | 아래 확인된 프론트 연결 보완 |
+
+- 코드 대조 결과 서버 IssueOut은 fact_ids/source_ids를 반환하지만 프론트 Issue 타입/편집 위치는 block_ids만 사용했다. preflight_conflicts는 자료 충돌 등을 fact/source ID로만 반환하므로 문서 전체 문제로 표시되고 위치를 잃었다. 근거 점검 이동 버튼도 REQUIRED_MISSING/EVIDENCE_INVALID 두 코드에 한정돼 있었다.
+- 프론트는 실제 존재하는 직접 블록 위치를 우선하고, 없으면 연결 fact/source ID의 관련 블록을 표시한다. 관련 위치는 AI가 직접 지적한 문장으로 오인하지 않게 별도 안내한다. 충돌/수치/조건/인증/근거 없는 주장 및 preflight 미해결에 근거 점검 이동을 제공한다. 배치 문제·이미 해결된 문제에는 이 버튼을 추가하지 않으며 blocker의 확인 처리도 허용하지 않는다. 위치를 추정해서 본문을 자동 수정하거나 근거를 승격하지 않는다.
+- 문서 GET과 문제 GET 사이에 버전/검증이 바뀌면 전체 상태를 GET으로 한 번만 다시 읽는다. 계속 불일치하면 이전 편집을 유지하고 오류를 표시한다. AI나 변경 요청을 자동 재시도하지 않는다. C-05 통합 시험은 새 점검에 맞는 과거 적용 결과 복원이 끝난 뒤 확인하도록 조정했다.
+- 최종 프론트 빌드·전체 ESLint·수정 파일 ESLint·JS 문법·git diff --check 통과. 격리 mock 브라우저 --draft-entry --draft-recovery --publication --photos --impact의 **33개 묶음 PASS·4쪽 PDF27,755바이트**. 가상 오류7종의 직접/사실/자료/사라진 블록/전체 문서 위치, 배치/해결 항목의 근거 버튼 제외, blocker 확인 불가, GET1회 불일치 복구/지속 불일치2회 중단/문서 보존/추가AI 없음 및 기존 C-05/편집/사진/승인/다운로드를 확인했다. 실제 AI0회이며 이번 DOCX 추가 검사는 미실행이다. 처음 C-05 검사의 확인 클릭이 비동기 복원보다 앞서던 부분과 추가 조회 검사의 완료 대기를 보완했다. 서버 제품 코드/API/DB 스키마/시연 원자료/.env 및 Agent 담당 상태는 변경하지 않았다. BE-10/F-08 진행중 유지. 다음 실자료 분류에는 새로운 작업의 원문·점검 결과가 필요하며 실제 AI 반복 평가는 별도 횟수/비용 상한으로 수행한다.
+
+
+<a id="real-registered-audit-20261007"></a>
+
+### [F-02·03·05·06·08 / BE-04·06·07·10] 실제 등록 자료 점검·초안·검증·배치 표본 (2026-10-07)
+
+- 기존 시연 DB는 읽기 전용 SQLite backup으로 복제했고 별도 localhost 서버/임시 DB의 새 작업만 사용했다. 거산 PPTX·AS9100·KSPC·SSQ 실자료4개/기존 추출문8,280자를 선택했다. 원본 DB·자료·.env·사용자 문서는 변경하지 않았다. 최초 원본 재첨부 점검은 SSQ PDF의 글자 추출 없음(partial/text_available=false)을 발견해 AI0회에서 중단했다. 등록본의 사전 추출문이 있는 것을 확인한 뒤 이를 사용했으며 OCR을 추가하지 않았다.
+- gpt-6-luna 실제 호출 상한4회/$1·대기120초·일반 입력40,000자·내용 검증400,000자. 실제 추출1/초안1/검증1 총3회, 확인된 추정비용$0.016903400·미확인 예약액$0. 점검 사실74개/can_generate=true, 같은 점검 요청 키 재전송은 동일 Job/추가 AI0회. 초안4쪽/50블록/revision1 저장.
+- PDF Chrome154 및 DOCX python-docx1.2.0/LibreOffice26.8.0.3 실제 배치는 모두4쪽/passed/배치 findings0건. 내용 검증은failed로 별도 기록하며 승인·최종 다운로드는 실행하지 않았다. 전체 완주/내용 품질 통과로 과장하지 않는다.
+- 실제 문제3건: (1) 원문350여 업체 → 약350개 업체는 수량 표기 오탐. (2) 공정9종은 인용 목록에서 AI가 계산한 총수이며 원문에9가 명시되지 않아 근거 추가/항목 제외가 필요. (3) 흑색산화피막의 용도를 처리 방식이라 소개한 문구는 실제 의미 오류로 본문을 용도로 한정해 편집해야 한다. 전자는 검사 수정 대상이고 후자는 확인 클릭으로 통과시키지 않는다.
+- 공통 numeric_evidence_tokens에서 약N개 업체/N여 업체의 대략값과 N업체/N개 업체의 확정값을 별도 수량 토큰으로 비교한다. 대략↔확정 변경·값 변경·사람/설비 단위 변경은 차단하며 사실/인용/주체/조건을 자동 수정하지 않는다. 최초 관련102건 통과 후 확정값3사례를 추가한 Agent·내용 검증 전체 회귀는1,272건 통과/기존 경고1개(129.44초)다. 수정 코드로 실제 저장 인용을 읽기 전용 재대조하면 고객·시장 missing token은0, 공정 수는number9가 남는다. 기존 저장 점검 상태는 자동 변경하지 않았고 수정 후 실제 AI 재검증은 아직 하지 않았다. 현재 시연 서버는 재구동하지 않았으므로 새 검사 코드는 다음 서버 재구동 때 적용된다.
+- 진단 산출물은 시스템 임시폴더 ddalgi-real-audit-wmi4k285에 보존했다. 새 저장소 파일/의존성/API/DB 스키마 변경 없음. BE-10/F-08 진행중과 Agent 상태 유지. 다음은 현재 점검의 명시적 선택 항목 처리·잘못된 문구 편집 후 내용 재검증/승인·다운로드이며 일반 실제 AI 반복 측정은 별도다.
+
+
+<a id="unused-preflight-review-20261008"></a>
+### 2026-10-08 사용하지 않은 선택 사실의 검증 화면 처리 (BE-06·10 / F-08)
+
+- 최신 시연 문서 doc_4ddb5ccd9b604115를 읽기 전용 대조: 크로메이트 168hr와 1A종/3종 기술 사실 2개는 needs_confirmation이며 본문 64블록에서 사용하지 않았다. 사전 점검 blocker가 유지되어 내용 검증이 failed였다. 원문 수치를 틀린 값으로 판정하거나 본문 오류 64건으로 집계하지 않는다.
+- 기존 Preflight reviews 제외/복원 API를 재사용한다. 프론트 S03에서 미해결 preflight/content/UNSUPPORTED_CLAIM 중 서버가 reviewable로 허용하고 본문 fact_ids에 없는 사실을 명시 클릭으로 묶어 제외한다. 회사명/필수/시연 위반/충돌/본문 사용 항목은 일괄 버튼 대상이 아니다. 50개 초과는 버튼을 비활성화하고 기존 자료 점검 처리 경로를 유지한다.
+- 원문과 진실 상태를 바꾸거나 AI 판단을 supported로 승격하지 않는다. 제외는 새 불변 점검으로 저장하고 기존 C-05 확인·본문 유지/변경 반영·전체 재검증을 따른다. 저장된 실제 사용자 문서를 자동 제외·검증·승인하지 않았다. 복원하면 원래 문제가 재개된다.
+- 미해결 개수와 처리 기록을 분리하고 자료 확인/내용 검사/배치 검사 구분을 표시한다. 특정 fact_ids가 있으면 같은 자료의 모든 블록을 수정 위치로 표시하지 않고 해당 사실의 참조 위치만 보여준다.
+- legacy/ORMv11 격리 DB에서 명시 제외→반복 검증 통과→복원→반복 검증 실패·기존 사실 needs_confirmation 보존·재추출/초안 재생성 0회를 검증했다. 관련 API 회귀 41건 통과/경고1개. 초기 샌드박스 임시폴더 생성 제한은 권한 승인 후 재실행했다.
+- 프론트 build/ESLint/보호 helper 회귀 통과. 실제 HTTP/브라우저 mock 검사 27묶음과 4쪽 PDF 출력 통과(Temp ddalgi-ai-ui-tt4NY3). 이 검사는 새 일괄 버튼의 보호 helper와 기존 제외/복원/멱등·C-05·재검증·처리 기록 표시 경로를 확인했으며 실자료 유료 AI 추가 호출/현재 시연 세션 변경은 없었다.
+- 백엔드 운영 코드/API/DB 변경 없이 기존 정책을 사용한다. 계약1.9·DBv11 유지. BE-10/F-08 진행중·Agent 담당 상태 유지.
+
+
+<a id="one-click-exclusion-validation-20261008"></a>
+### 2026-10-08 선택 항목 제외에서 내용 재검증까지 이어지는 화면 (BE-06·10 / F-08)
+
+- 이전 S03 제외 버튼은 새 Preflight 저장에서 끝나 C-05 미반영 상태에서 내용 검증이 잠겼다. 프론트의 명시적 제외 버튼을 제외→영향 조회→본문 유지 적용→반환된 validation Job 폴링으로 연결했다. 이미 제외한 상태에는 기존 본문 유지하고 다시 검사 버튼을 제공하고 내용 검증 자리도 변경 반영하고 다시 검사로 안내한다.
+- 자동 반영은 서버 영향 결과가 pending·동일 입력 revision·INPUT_CHANGED 안내만 존재·requires_change 없음·fact_rebindings의 모든 ID가 동일할 때만 수행한다. 변경 자료/다른 사실 연결/본문 편집 필요/사진·근거 누락/오래된 결과는 기존 상세 선택 절차로 돌린다. 필수 문제 판정·명시 승인 조건은 바꾸지 않았다.
+- 제외 응답 유실은 S03에서 처리 결과 확인하고 검사 이어가기 버튼으로 같은 멱등 키를 재전송한다. 새로고침 뒤에도 복구한다. 영향 생성/반영은 기존 멱등 키와 저장된 결과 조회를 재사용한다. 프로필 점검/초안 생성은 재호출하지 않는다. 자료 갱신 조회가 진행 중 수정 잠금을 잘못 풀지 않도록 보완했다.
+- TypeScript/Vite build·전체 ESLint·diff check·자동 반영 보호 helper 회귀 통과. 격리 DB/실제 HTTP/브라우저 --publication --impact --unused-review --unused-review-lost 28묶음 및 실제 PDF4쪽 승인·다운로드 통과(Temp ddalgi-ai-ui-vSNhy5). 별도 테스트 fixture의 미사용 needs_confirmation 사실 2개를 실제 API에서 제외하고 UI Issue 응답만 합성하여 화면 행동을 유발했다. 이 검사는 실제 모델 의미 판단 품질을 증명하지 않는다.
+- 최초 추가 테스트에서 기존 검사 스크립트의 normalReview 변수 제거, 고정 null 검증ID, 요청 집계 시점 때문에 후속 검사 실패가 있었으며 fixture를 수정한 뒤 전체 경로가 통과했다. 제품 성공과 시험 실패를 구분한다.
+- 현재 시연 DB는 읽기만 했다. 이전 확인 문서는 2026-10-08T04:51:54Z에 closed/cleanup done 상태여서 해당 문서의 새 실자료 적용 검사는 할 수 없었다. 이번 작업의 운영 DB 쓰기·실제 AI 호출·원격 push 없음. 백엔드 운영 코드/API/DB 변경 없음, 계약1.9/DBv11 유지. BE-10/F-08 진행중 유지.
+- 정상 응답 경로 --publication --unused-review도 최종 코드에서 26묶음/PDF4쪽 통과(Temp ddalgi-ai-ui-3ifK4R). 한 번 클릭으로 미사용2개 제외→본문 유지→검증 완료→새로고침 후 상태 복원·revision1회 증가·추출/초안 추가 호출0회를 확인했다. 28묶음 복구 검사와 중복 항목을 합산하지 않는다.
+
+
+<a id="editor-finding-save-validation-20261008"></a>
+### 2026-10-08 본문 오류 맥락 유지·저장 후 내용 검사 (BE-06·10 / F-08)
+
+- 문제 카드에서 S02 수정 위치로 이동하면 선택 블록의 직접 지적/관련 사실 지적 이유·권장 조치·연결 원문 근거를 편집 보조 영역에서 확인할 수 있다. 자료 확인 필요와 내용 검사 지적을 구분하며 검사되지 않은 다른 문장을 오류로 승격하지 않는다.
+- 저장하고 내용 검사 버튼은 사용자 편집을 먼저 저장하고 GET으로 저장 revision이 응답 revision과 같고 입력 변경 반영이 필요 없음을 확인한 뒤 해당 revision 검증을 요청한다. 일반 문구 저장은 기존대로 저장만 한다. 저장 실패/버전 충돌/입력 변경 시 자동 검증을 시작하지 않는다.
+- 이어 실행할 검증 요청은 멱등 키·버전만 sessionStorage에 저장한다. 저장할 본문/편집 내용은 기존대로 영구 클라이언트 저장소에 보관하지 않는다. 같은 화면에서 저장 응답 유실을 재시도하면 같은 저장 키로 이어서 검사하며, 검증 응답 유실은 새로고침 후 동일 검증 키로 복구한다. 저장 요청 자체의 새로고침 복구 범위는 늘리지 않았다.
+- TypeScript/Vite build·전체 ESLint·diff check 통과. 검증 응답 유실·새로고침 복구·문서revision1회 증가·검사 revision 일치·편집 화면 지적/원문 표시·PDF4쪽 승인/다운로드를 격리 mock HTTP/UI 25묶음에서 확인(Temp ddalgi-ai-ui-MnyC0q). 최초 테스트는 복원 조회 완료 전 버튼을 눌러 실패해 준비 대기를 보완한 후 통과했다.
+- 백엔드 운영 코드/API/DB·실제 시연 세션은 수정하지 않았고 실제 모델 호출은 없었다. 계약1.9/DBv11 유지·BE-10/F-08 진행중 유지. 다음은 근거 부족/사실 충돌 등 본문 수정만으로 해결할 수 없는 항목의 구체적 보완 안내다.
+- 최종 코드의 저장 응답 유실 경로(--save-review, Temp ddalgi-ai-ui-yz1nqo)와 검사 응답 유실/새로고침 경로(--save-review-lost-validate, Temp ddalgi-ai-ui-365D3z) 각각25묶음/PDF4쪽 통과. 후자는 동일 검증 키·저장 revision1회 증가·해당 revision 검증·sessionStorage 본문 미포함도 단언했다. 중복 항목은 합산하지 않는다.
+
+<a id="fact-evidence-guidance-20261008"></a>
+### 2026-10-08 근거 부족·상충 사실의 보완 안내 (BE-06·10 / F-08)
+
+- 프론트 사전 점검의 문제 카드와 상세 사실에 회사명·연혁·인증·기술·공정·납기·설비 등 항목별 보완 자료 예시를 표시한다. 첨부·선택 후 다시 점검하는 순서를 안내하고, 제외 가능 여부는 서버 reviewable_fact_ids만 사용한다. 제외 불가를 모두 필수라고 단정하지 않는다.
+- 상충 후보는 각각의 evidence_refs로 자료명·원문 위치·인용을 확인한다. 후보에 연결된 근거가 없으면 명시하며 다른 후보의 근거를 대신 붙이지 않는다. 사용자가 사실을 확인할 자료를 추가하거나 잘못 선택한 자료를 해제하도록 안내한다. 후보를 자동 확정하거나 차단을 완화하지 않는다.
+- S03 근거 확인 버튼은 문제의 fact_ids를 S01으로 전달하고 해당 사실의 상세 목록을 펼쳐 강조·포커스한다. 여러 관련 사실을 강조하고 첫 일치 항목으로 이동한다. 연결 사실이 없거나 이전 ID이면 점검 패널로 이동한다. 다른 세션의 이동 대상은 재사용하지 않는다.
+- 최종 TypeScript/Vite build·전체 ESLint·diff check 및 격리 mock HTTP/브라우저 --publication 26묶음/PDF4쪽 승인·다운로드 통과(Temp ddalgi-ai-ui-Gij4mM). 합성 Preflight 응답으로 필수 회사명 누락·기술 상충 3후보·후보별 원문 분리·근거 없는 후보 안내·제외 보호를 확인했다. 실제 검증 화면 fixture에서 정확한 사실 포커스와 전체 문제의 패널 복귀를 검사했고 추가 POST/AI 호출 및 문서 변경이 없음을 단언했다. 첫 빌드에서 optional fact_ids 타입을 발견하여 빈 배열 fallback을 적용한 뒤 통과했다.
+- 이번 변경은 프론트 UX와 기존 검사 스크립트다. 백엔드 운영 코드/API/DB·실제 시연 자료·서버 설정은 변경하지 않았고 실제 모델 호출도 없다. 계약1.9/DBv11·BE-10/F-08 진행중 유지. 실제 AI 의미 판정 품질과 모든 오류 해소를 검증한 결과는 아니다.
+- 다음 작업: 보완 자료 첨부·선택·재점검 후 기존 문서에 변경을 반영하는 흐름에서 사용자가 다음 버튼을 찾지 못하는 구간과 입력 변경/응답 유실 복구를 확인한다.
+
+<a id="supplement-document-continuation-20261008"></a>
+### 2026-10-08 보완 자료 재점검에서 기존 문서 반영까지 (BE-06·10 / F-08)
+
+- 기존 문서가 있는데도 S01 하단이 초안 만들기로 표시되고 실제로는 점검 패널만 열던 경로를 수정했다. 기존 문서 유무와 현재 입력 revision의 점검·읽기·작성 조건 저장·미확인 응답 상태에 따라 버튼을 바꾸고, 최신 점검을 불러오면 기존 문서로 이동하여 변경 영향 영역을 포커스한다. 이동은 POST나 초안 재생성을 실행하지 않는다.
+- 자료 변경 배너에 현재 필요한 순서와 기존 문서 이동 버튼을 제공한다. 문서 작업 잠금이나 미저장 문구가 있을 때 canAnalyze에서도 sourceChangeBlocked를 검사한다. analyze가 잠금을 강제로 false로 덮던 동작은 제거했다. 입력 변경 반영과 최종 승인의 기존 보호는 유지한다.
+- 기존 격리 --publication --impact 시험에 자료 변경을 연 뒤 미저장 편집 상태에서 재점검 차단, 자료 교체 뒤 하단 버튼으로 재점검, 응답 유실/새로고침 후 동일 요청 키 복구, 새 점검 뒤 문서 영향 영역 포커스/추가 POST 없음 확인을 추가했다. 초기 시험은 새로고침 후 문서 복원 전에 S01을 눌러 자동 복귀와 경합했으며 S02 복원 완료 대기를 추가한 뒤 통과했다.
+- TypeScript/Vite build·전체 ESLint·diff check 통과. 최종 mock HTTP/브라우저 29묶음과 실제 PDF4쪽 승인·다운로드 통과(Temp ddalgi-ai-ui-0lhJSO). 기존 C-05 응답 유실·변경 선택·같은 입력 재점검·1회 적용·전체 내용 검증도 함께 확인했다. 실제 모델의 의미 판단 품질을 증명하는 시험은 아니다.
+- 프론트 기존 코드/시험과 백엔드 기록만 변경했다. 백엔드 운영 코드·API 계약1.9·DBv11·실제 시연 자료와 서버 설정은 유지하고 유료 AI 호출은 없다. BE-10/F-08 진행중 유지. 다음은 실제 미해결 항목의 남은 유형을 확인해 사진 설명/필수 근거 등 사용자 조치가 없는 경로를 우선 보완한다.
+
+<a id="photo-required-recovery-20261008"></a>
+### 2026-10-08 사진·필수 내용 문제의 해결 순서 (BE-06·10 / F-08)
+
+- 사진 내용 불일치·식별 불가·기존 PHOTO_CONTENT_REVIEW에는 실제 사진/설명 비교, 확인되지 않은 명칭·수치 수정, 사진 교체/삭제, 저장 후 내용 검사를 안내한다. BROKEN_IMAGE·PLACEHOLDER_REMAINING에는 사진 교체/삽입/삭제 후 선택 형식 배치 재검사를 안내한다. 확인 기록으로 차단을 해제하지 않는다.
+- REQUIRED_MISSING은 preflight 자료 부족과 문서 본문 누락을 구분한다. 자료를 보완해 재점검하거나 근거와 연결된 본문에 필수 내용을 명시하도록 안내한다. 자동 사실 확정/필수 사실 제외/본문 자동 추가는 하지 않는다.
+- 동일 해결 순서를 S03 문제 카드와 S02 선택 블록 지적 영역에 표시한다. 사진/배치 지적을 문장/내용 검사라고 잘못 부르던 표시를 구분했다. 수정 위치 포커스는 입력란이 없는 사진 자리에서도 블록 컨테이너로 이동하도록 보완했다.
+- TypeScript/Vite build·전체 ESLint·diff check 통과. build에는 500kB 청크 크기 경고가 있으나 빌드는 성공했다. 경고 한도를 높이거나 관련 없는 번들 구조 변경은 하지 않았다.
+- 격리 mock --publication --photos HTTP/UI 30묶음/PDF4쪽 승인·다운로드 통과(Temp ddalgi-ai-ui-2vuGLV). 합성 사진 Issue 3종의 해결 안내·확인 기록 금지·사진 설명 편집 포커스·편집 화면 안내, 필수 누락 안내를 검사했다. 실제 사진 후보 API 교체·caption/alt 동시 저장·응답 유실 복구·사진 삭제·PDF 배치 경로도 통과했다. helper는 사진/필수 코드6종과 처리 완료 항목 안내 숨김을 확인했다.
+- 프론트 코드/기존 시험 및 백엔드 기록만 변경. 실제 DB·서버 설정·유료 AI 호출 없음. 실제 사진 의미 판단 품질/모든 필수 누락 자동 해결을 검증한 결과는 아니다. 계약1.9/DBv11·BE-10/F-08 진행중 유지. 다음 후보: 원문 근거는 있지만 본문에 연결 위치가 전혀 없는 필수 사실을 명시적으로 삽입하는 흐름.
+
+<a id="required-fact-insertion-20261008"></a>
+### 2026-10-08 근거가 있는 필수 사실의 본문 추가 (BE-06·10 / F-08)
+
+- S03의 열린 서버 content/REQUIRED_MISSING에서 issue.fact_ids와 최신 점검을 대조해 supported·비어 있지 않은 값·원문 근거 보유·어떤 본문 블록에도 아직 연결되지 않은 사실만 표시한다. 근거 부족/상충/제외 사실이나 처리 완료 문제에는 추가를 제안하지 않는다. 동일 회사명이 다른 문장에 있지만 회사명 사실의 근거가 연결되지 않은 경우도 명시 추가할 수 있다.
+- 사용자가 사실 원문과 근거를 보고 넣을 사실 및 페이지를 각각 선택한 뒤 버튼을 누르면 페이지 마지막에 paragraph로 삽입한다. fact.value·fact_id·evidence_refs를 그대로 유지한다. 다른 문장은 변경하지 않는다. 미저장 편집·진행 요청·자료 변경 반영·점검 버전 불일치 시 차단하며 hook에서도 최신 Issue/Fact/Page를 재검사한다.
+- 기존 PATCH insert_block/expected_revision/멱등 키와 저장 후 내용 검사를 재사용한다. 저장 응답 유실은 같은 화면에서 같은 키와 블록 ID로 복구하고, 저장 revision이 확인되면 내용 검사를 이어간다. 저장 본문을 sessionStorage에 보관하지 않는 기존 원칙과 저장 요청 자체의 새로고침 복구 범위는 유지한다. 새로고침 후 이미 삽입된 사실에는 다시 추가 버튼이 생기지 않는다.
+- 프론트 Operation 타입에 기존 서버 insert_block을 반영하면서 화면 전용 가상 adapter도 삽입을 처리하도록 맞췄다. 서버 API/DB 변경은 없다. 최초 빌드에서 가상 adapter의 기존 replace-only 타입 분기를 발견해 보완했다.
+- TypeScript/Vite build·전체 ESLint·diff check 통과(기존 청크500kB 경고 유지). helper 회귀에서 미확인/상충/빈 값/근거 없음/다른 문제 출처/이미 연결된 사실을 제외했다. 격리 mock --publication --required-insert HTTP/UI27묶음/PDF4쪽 통과(Temp ddalgi-ai-ui-Yerqhk).
+- 실제 격리 API로 회사명 연결 블록을 삭제→서버 필수 문제 검출→사용자 사실/2쪽 선택→삽입 저장 응답 유실→같은 키 재시도→revision1회 증가·원문 근거 보존·다른 블록 불변·해당 필수 문제 해소·새로고침 중복 방지를 확인했다. 초기 시험에서 회사명이 개요 문장에 남은 경우 추가 후보를 잘못 숨기는 조건을 발견해 미연결 사실 기준으로 바로잡았다. 추가 추출/초안 생성은 없었다.
+- 실제 DB·서버 설정·유료 모델 호출 없음. 실제 모델 의미 판단 품질이나 모든 종류 필수 누락이 해결된다는 보장은 아니다. BE-10/F-08 진행중·계약1.9/DBv11 유지. 다음 후보는 이미 사실 ID가 연결되어 있지만 본문이 삭제/축약된 필수 항목의 명시적 문구 복구다.
+
+<a id="required-text-restoration-20261008"></a>
+### 2026-10-08 근거가 연결된 필수 본문 문구 복구 (BE-06·10 / F-08)
+
+- 열린 서버 content/REQUIRED_MISSING에서 supported 사실 하나만 연결된 paragraph의 현재 문구와 복구할 fact.value를 비교한다. 원문 근거의 source/version/segment/excerpt/locator가 실제 블록에 연결되어 있어야 한다. 여러 사실·목록·사진·제목·미확인 사실·이미 같은 문구는 복구 후보에서 제외한다.
+- 사용자가 현재 블록 전체 문구가 교체됨을 확인하고 명시 버튼을 누르면 replace_block_content로 text만 교체한다. 다른 content 속성·fact_ids·evidence_refs·다른 블록을 보존한다. 최신 점검/입력 버전·Issue 상태·대상 블록을 hook에서 다시 검사하며 미저장 편집/진행 작업/자료 변경 반영은 기존 actionBlocked로 차단한다.
+- 기존 저장/멱등 키/저장 후 내용 검사 경로를 재사용한다. 사용자 문구를 몰래 자동 복구하지 않으며 다중 사실 문장은 기존 직접 편집으로 남긴다. 저장 본문은 sessionStorage에 기록하지 않고 저장 응답 유실은 같은 화면의 기존 재시도로 복구한다.
+- build·전체 ESLint·diff check 통과(기존500kB 청크 경고 유지). helper에서 다중 사실·사진/목록·근거 없음·같은 문구·처리 완료/다른 오류/미확인 사실을 배제했다. 격리 --publication --required-insert mock HTTP/UI28묶음/PDF4쪽 통과(Temp ddalgi-ai-ui-UjsGdh).
+- 앞선 필수 삽입 검사를 그대로 실행한 뒤 삽입 본문을 실제 API로 축약→서버 필수 누락 발생→화면 비교/복구→저장 응답 유실/같은 키 재시도→revision1회 증가·해당 버전 재검증·필수 문제 해소·모든 다른 블록 및 근거 보존·새로고침 후보 사라짐까지 확인했다. 추가 추출/초안 생성 없음. 실제 모델 의미 판단 품질 시험은 아니다.
+- 프론트 기존 코드/시험과 백엔드 기록만 변경했다. 실제 DB·서버 설정·유료 AI 호출 없음. 계약1.9/DBv11·BE-10/F-08 진행중 유지. 다음은 현재까지의 화면 복구 경로를 통합 회귀하고 남은 미지원 유형을 실제 오류 기준으로 정리한다.
+
+<a id="recovery-integration-20261008"></a>
+### 2026-10-08 오류 복구 흐름 통합 회귀 (BE-06·10 / F-08)
+
+- 자료 교체/C-05·사진 후보/교체·선택 사실 제외·저장 후 검증·필수 사실 추가/복구·각 응답 유실 재시도를 같은 격리 문서에서 조합했다. PDF 통합 명령은 --publication --impact --photos --unused-review --unused-review-lost --save-review --save-review-lost-validate --required-insert다.
+- 첫 조합에서는 필수 회사명 본문을 다른 페이지로 옮겨 표지 분량이 줄면서 기존 사진2장 넘침 가정이 성립하지 않았다(실제 PDF 정상 배치). 선택된 사진을 독립된 시험 블록3개로 반복하여 넘침을 확실히 만든 뒤 사용자 편집 UI로 모두 삭제하도록 기존 스크립트를 수정했다. 구현 중 시험 함수의 범위 오류도 수정했다. 제품 코드의 배치 기준이나 승인 조건은 완화하지 않았다.
+- 최종 PDF 통합36묶음·실제4쪽 승인/다운로드 통과(Temp ddalgi-ai-ui-iZnh5t). 전체 ESLint·diff check 통과. 이번 변경은 시험 스크립트와 기록뿐이며 제품 빌드는 직전 기능 변경에서 검증된 상태다.
+- 백엔드 test_be06의 unused_optional_blocker/unreferenced_conflict/excluded_only/restore_does_not_revive 선택 회귀7건 통과(91 deselected/1 warning). 처음에는 샌드박스의 pytest 임시 경로 생성 권한으로 setup에서 중단되어 권한 승인 후 재실행했다.
+- 미지원/별도 검증 범위: 다중 사실·제목·목록의 문구는 직접 편집한다. 미확인·상충 사실은 근거 보완/선택 항목 제외가 필요하다. 실제 LLM의 반복 추출·의미 검증 품질은 이번 mock 연결 시험으로 확인하지 않았다. 저장 요청 본문의 새로고침 복구 범위도 기존대로이며 본문을 브라우저 저장소에 넣지 않는다.
+- 실제 운영 DB·실자료·서버 설정 변경 및 유료 AI 호출 없음. 계약1.9/DBv11 유지·BE-10/F-08 진행중 유지. 다음은 실제 사용자 자료의 현재 미해결 항목을 읽기 전용으로 분류하여 지원된 해결 경로로 처리 가능한지 확인한다.
+- DOCX는 --publication --photos --required-insert --docx로35묶음·실제4쪽 승인/다운로드 통과(Temp ddalgi-ai-ui-9SJ3Se). 넘침 차단·사진 삭제 후 통과·필수 사실 추가/복구·동일 키 재시도·형식 전환 동의 초기화·잘못된 MIME 거부·PDF/DOCX 출력 ID 구분까지 확인했다. PDF 통합 검사와 중복되는 항목은 합산하지 않는다.
+
+<a id="live-session-recovery-audit-20261008"></a>
+### 2026-10-08 실제 시연 문서 복구 기록 읽기 전용 확인 (BE-06·10 / F-08)
+
+- 현재 .env의 PRIVATE_RUNS_DIR에 해당하는 시연 SQLite를 mode=ro로 열었다. 활성 세션 sess_a2528e60bffc4bbb의 doc_898f0a4969724f3b, 현재 revision2를 확인했다. 다른 종료/만료 세션의 과거 오류를 현재 문서 오류로 집계하지 않았다. DB/세션/서버 상태를 변경하지 않았다.
+- revision1의 val_2fc7316d7c034f45는 UNSUPPORTED_CLAIM(preflight)1건으로 failed였다. 대상 fact_55e98922f57a4978_F093은 other_info/needs_confirmation·원문2건이며 원래 본문에 사용되지 않았다.
+- 새 pf_ca6f8380ba274150에는 이 사실의 FACT_EXCLUDED/excluded 명시 마커가 저장되어 있다. 원시 facts115개와 원래 문제는 보존되고 서비스 조회 시 제외 마커가 적용되는 구조다. 원시 JSON의 open만 보고 현재 문제로 단정하지 않았다. 기존 점검과 새 점검의 사실 데이터는 동일했다.
+- C-05 영향 반영이 applied로 완료됐으며 문서 revision1/2의 pages 전체가 동일했다(7쪽/64블록). revision2 val_702212a3b8a14787은 passed, agent_called=true, server:ok67/agent:ok64, 현재 문서 열린 Issue0건이었다. 저장된 실제 실행 결과를 읽은 것이며 이번 작업에서 모델을 새로 호출하지 않았다.
+- revision2 PDF와 DOCX 배치 모두 passed·actual_pages7·layout_ok/publication_policy_ok=true다. 최종 approval 및 export 기록은 아직 없다. 내용/배치 통과는 최종 승인 완료와 구분한다. 사용자 최종 확인을 대신 실행하지 않았다.
+- 현재 문서에서 추가 수정해야 할 열린 오류가 없어 제품 코드/프론트 변경은 하지 않았다. 이미 구현한 선택 항목 제외→본문 유지→재검증 경로가 실제 자료의 저장 결과에서도 일치함을 확인했다. 실제 자료 전체와 새 입력의 모델 변동성까지 보장하는 결과는 아니다.
+- 다음은 사용자가 화면에서 PDF/DOCX 미리보기와 내용 확인 후 형식별 최종 승인·다운로드를 진행하는 단계다. 새로운 미해결 오류가 생기면 그 문서/버전의 현재 Issue를 기준으로 추가 처리한다. 계약1.9/DBv11·BE-10/F-08 진행중 유지.
+
+<a id="real-publication-recovery-20261008"></a>
+
+### [F-02·03·05·06·08 / BE-04·06·07·10] 실자료 미해결 처리·검증·형식별 승인 완주 (2026-10-08)
+
+- 최신 병합본 backend test/5353d57와 frontend develop/0537704를 갱신하고 시연 서버를 구동했다. 이번 수정은 별도 fix/real-material-publication-20261008 브랜치에서 수행했다. 진행중 Job 0 확인 후 백엔드를 수정 코드로 재구동했고 백엔드 /docs·프론트 5173 HTTP200, llm 모드·내용 검증 한도400000 유지와 같은 값/다른 값·단위 비교를 최종 확인했다. 프론트 코드 변경은 없으며 .claude/와 .env·등록 원자료·사용자 DB를 보존했다.
+- 시연 DB의 읽기 전용 SQLite backup을 별도 임시 DB로 복제하고 실제 등록 PPTX/AS9100/KSPC/SSQ 4자료·기존 추출문 8,280자로 실제 HTTP 검수했다. 사진·DART·신규 OCR은 포함하지 않았다. 첫 시도는 71사실/4쪽 초안에서 공정 개수의 계산 총수, 168hr→168시간 표기 오탐과 원문의 충정남도/본문의 충청남도 차이를 발견해 승인 전에 중단했다. 원문 오타를 자동 수정하거나 기존 점검 상태를 승격하지 않는다.
+- 공통 quantity_tokens에서 hr/hrs/hour/hours(대소문자 포함)를 시간과 같은 단위로 비교한다. 같은 값의 문자 표기만 허용하며 169시간·168일·10080분 및 hrcode 등 식별자 접미사는 거부한다. 시간-분/일 환산이나 사실 주체·조건·인증 범위의 완화는 없다. 기존 테스트 파일에 추출 경계 8건을 추가했다. 집중 검사 112 passed, tests/test_agent_llm.py + tests/test_be06.py 최종 **1,280 passed/경고1/133.80초**, diff 검사 통과. 이 회귀는 가짜 모델/격리 DB이며 유료 호출은 별도다.
+- 수정 적용 후 두 번째 실제 점검은 69사실/can_generate=true. 인용 목록을 계산한 공정 9종은 기존 리뷰 API에서 선택 항목으로 명시 제외했고 새 불변 점검/확인 초기화와 추가 AI 0회를 확인했다. 필수 사실은 유지했다. 같은 확정 점검으로 4쪽/40블록 초안을 만들고, 내용 검사에서 발견한 2016년 설립·설비 투자 조건 누락을 관련 문단 하나에 근거대로 편집했다. revision1→2 후 같은 문서의 내용 재검증 passed/열린 문제0. 재추출·새 초안 생성은 하지 않았다.
+- PDF Chrome154와 DOCX python-docx1.2.0/LibreOffice26.8.0.3의 실제 배치 검사는 각각 **4쪽/passed/findings0**. 격리 검수 작업에서 명시 승인·출력·다운로드·동일 바이트 재다운로드까지 확인했다. PDF **62,422바이트**, DOCX **2,397,500바이트**이며 DOCX Regular/Bold 글꼴 2개 임베딩을 확인했다. PDF 4쪽과 실제 DOCX 배치 미리보기 4쪽을 모두 시각 검수해 읽기/겹침/잘림을 확인했다. Word 자체 출력과의 쪽 나눔 일치는 별도다.
+- 오늘 두 번의 실제 시험 합계는 상한 8회/$1 안에서 **7회/확인된 추정비용 $0.036549035/미확인 예약액0**. 첫 시험3회와 수정 후 시험4회(추출1/초안1/내용검증2)다. 진단 산출물은 시스템 임시폴더 ddalgi-real-audit-6rmpxlbk 및 ddalgi-real-audit-ltxg136s에 보존했다. 사용자 DB의 기존 세션·문서·선택·승인은 변경하지 않았다.
+- API1.9/계약문서v1.42/DBv11/template_v11 유지, plan4.86·공통 task 연결 위치 동기화. BE-10/F-08 일반 품질 진행중 및 Agent 상태 유지. 이번 1세트 완주는 모든 AI 응답의 품질 보장이 아니며 같은 입력 반복 측정·다른 목적/사진/자료 세트의 품질 검수는 남는다. 첫 시도의 주소 원문 오류는 최종 문서에 해당 주장을 넣지 않아 재현되지 않았으며 전역 해결로 기록하지 않는다. 다음은 예산을 정한 동일 입력 반복 측정으로 누락/인용/조건 오류 빈도를 비교하는 것이다.
+
+<a id="extraction-repeat-measurement-20261008"></a>
+
+### [F-02·03·08 / BE-04·10] 같은 입력의 실제 추출 반복 측정 (2026-10-08)
+
+- 사용자 다음 작업 요청에 따라 같은 자료·설정의 추출 결과 변동을 먼저 측정했다. 앞선 격리 DB의 거산 PPTX/AS9100/KSPC/SSQ 4개·106구간/8,280자를 읽기 전용으로 사용했다. 같은 AnalyzeRequest/Brief/자료ID·버전·구간·사진 메타데이터/모델·추론 설정을 고정했다. 실제 전송 instructions/payload/schema의 SHA256도 4회 모두 동일했다. 과거 표본은 이번 4회 통계에 섞지 않는다.
+- 기존 TrialLedger의 company_info 최대4회 정책을 유지하여 새 추출 **4회/예산 최대$1**, gpt-6-luna·reasoning medium·대기120초·입력40,000자·출력32,000토큰으로 단일 프로세스에서 순서대로 실행했다. 리트라이0, 초안/내용검증/출력 호출0, 호출·예산 제한 우회/초기화 없음. 실제4회 모두 구조화 응답·기존 근거 검사·결과 변환 성공, 확인된 추정비용 **$0.01381444**, 미확인 예약액0. 서버 .env/사용자 DB/점검·문서·승인과 실행 서버는 변경하지 않았다.
+- 동등성 기준은 문장이나 생성 fact ID가 아니라 field_key/status/정규화 수치 토큰/실제 source ID·version·segment ID 집합이다. 필수 기준은 대상 회사명의 supported 근거와 적어도 하나의 supported 사업 사실이며 선택 정보10개는 별도 검사했다. 이 고정 Brief에는 추가 required_fields가 없다.
+
+| 회차 | 전체 사실 | supported | 확인 필요 | 필수 회사·사업 누락 | 인용 위치/문구 오류 | 선택 내식성168시간 |
+|---|---:|---:|---:|---:|---:|---|
+| 1 | 72 | 69 | 2 | 0 | 0 | 있음 |
+| 2 | 83 | 81 | 1 | 0 | 0 | 있음 |
+| 3 | 61 | 58 | 2 | 0 | 0 | 누락 |
+| 4 | 81 | 78 | 2 | 0 | 0 | 누락 |
+
+- 필수 회사·사업 누락0/4, 실제 초안 진입 결정 검사 오류0/4, 존재하지 않는 인용/원문에 없는 인용0/4. 숫자 토큰이 근거에 없는데 supported로 남은 경우도0/4다. 이는 서버의 문자·수치·근거 검사 결과이며 모든 주체/조건의 의미 정확성을 보증하지 않는다. 구조화 응답 성공과 승인 가능도 구분한다.
+- 계산 총수: **4/4**에서 AI가 번호01~09의 목록을 합산한 공정9종을 만들었다. 원문의 명시 총수와 구분하는 기존 수치 검사에 의해 needs_confirmation이며, 그중 **2/4**는 같은9개 주장을 processes에도 넣었다. 잘못된 단위 표기 오탐이 아니라 현재 정책에서 명시 근거가 없는 파생 수량이다. 자동 확인/근거 승격을 하지 않았다.
+- 실제 오류: **1/4**에서 자격관리번호2019-001545를 2019년 취득으로 해석했다. 원문에는 실제 날짜2021.03.20이 있고 번호의2019는 연도 근거가 아니므로 other_info의 확인 필요로 걸러졌다. 사용자 확인만으로 이를 사실로 승격하지 않는다.
+- 선택 정보 누락: 내식성168hr 설명은2/4만 포함되고2/4는 해당 구간 연결 자체가 빠졌다. 포함된 두 번의168hr/168시간은 모두 supported여서 직전 시간 표기 수정의 오탐은 재현되지 않았다. 2000/2014/2016 연혁, 약350업체, AS9100 만료연도/유지 조건, KSPC범위, SSQ만료연도/유지 조건 등 나머지9개 선정 항목은4/4 포함했다. 이 검사는 원문의 모든 세부 정보가 빠짐없이 추출됐다는 뜻이 아니다.
+- 6개 회차 쌍의 정규화 사실·인용 집합은 모두 달랐고 Jaccard31.48~56.19%였다. 사실의 묶음/분할·선택 정보·인용 구간 변화가 섞인 지표이며 의미 오류율이나 모델 정확도로 해석하지 않는다. 확정 결과 재사용은 여전히 필요하다. 자동 부분 재추출은 이번 표본의 필수 누락이 없으므로 추가하지 않는다. 다음 우선순위는 원문에 없는 목록 합산/번호의 연도 오인을 줄이는 좁은 추출 지침과 회귀 검수다. 필요하면 별도 예산으로 동일 시험을 다시 비교한다.
+- 임시 결과 위치: ddalgi-extraction-repeat-nuzd3c5s(input/report/run-1~4 JSON), 재현 스크립트는 시스템 임시폴더 ddalgi-extraction-repeat-20261008.py. 새 저장소 파일·API·DB·제품 코드·프롬프트·모델·프론트 변경 없음. 이번 단위는 실제 반복 측정과 기존 자료의 오프라인 결정 검사이며 pytest/서버 재시작은 불필요하여 미실행. 계약1.9/DBv11/template_v11 유지, BE-10/F-08 일반품질 진행중 및 Agent 상태 유지. 기존 task_backend/task/plan에 기록하고 원격 push는 하지 않는다.
+- 사용자 보관 위치 요청: 앞으로 팀원 전달용 ZIP·분할 파일의 기본 저장 위치는 **C:\Users\이강욱\Downloads**다. 기존 demo_db_team_20261006.zip과 demo_db_discord_20261006은 앞선 전달/디스코드 요청의 산출물이며 실행 DB에서 참조하지 않는 것을 읽기 전용으로 확인했다. 이번에 삭제/이동하지 않았다. 실행 DB·앱 내부 저장 경로 정책과 외부 전달 파일 위치는 별개다.
+
+<a id="extraction-count-date-guidance-20261008"></a>
+
+### [F-02·03·08 / BE-04·10] 목록 합산·식별번호 연도 오인 지침 보완 (2026-10-08)
+
+- 사용자 진행 요청에 따라 app/prompts/extract.txt의 기존 공통 추출 지침에 두 문단만 보완했다. 목록 번호/마지막 번호/행 수를 계산하여 process_count 또는 다른 항목에 새 총수를 만들지 않는다. 명시 총수가 없으면 process_count=not_found이며 실제 공정 이름·설명·범위는 보존한다. 원문에 직접 총수가 있으면 그대로 추출한다. 자격·인증 등의 식별번호는 원문 표기를 보존하고, 번호 일부를 발급/취득/설립/승인 연도로 바꾸지 않는다. 별도 날짜도 원문의 표제와 사건 연결을 보존한다.
+- 이 변경은 목록이나 실제 자격 사실을 지우는 전처리가 아니다. 응답의 수치·원문 인용·주체/조건 검사, needs_confirmation 처리·승인 정책을 완화하지 않는다. 서버/API/DB/프론트 타입 변경 없이 기존 14개 필드·구조화 출력·source_units 근거 형식을 유지한다. Agent 담당 상태를 변경하지 않고 사용자가 승인한 좁은 추출 보완만 수행했다.
+- 기존 tests/test_agent_llm.py에 경계8건을 추가했다. 번호 목록의 올바른 계산값이어도 원문 명시 총수로 승격하지 않음, 명시3개 허용/4개 변경 차단, 번호2019-001545에서2019년 추론 차단, 원문 번호/별도2021.03.20 날짜 보존, 번호 변경/없는 날짜 차단을 확인했다. 가짜 모델의 잘못된 응답도 원문/값을 보존한 needs_confirmation과 blocker로 남는다. 관련 추출 검사 **152 passed/1040 deselected/경고1/7.04초**, tests/test_agent_llm.py + tests/test_be06.py 최종 **1,288 passed/경고1/129.71초**. 단위 검사는 실제 모델의 지침 준수를 증명하는 것으로 취급하지 않는다.
+- 같은 거산 실자료4개/106구간/8,280자·자료ID/버전/구간/Brief/모델/추론/출력/입력 한도를 고정하고 수정 후 추출4회를 다시 실행했다. 입력 SHA256은 이전4회와 완전히 같고 실제 전송 지침 SHA256만 달라졌으며, 수정 후4회 지침·payload·schema 해시도 모두 같았다. 이전/이후 통계를 각각4회로 구분했다. 기존 trial company_info4회·합계4회/$1 제한을 유지했고 신규4회만 사용했다. 실제 모델 gpt-6-luna/reasoning medium, 재시도0, 대기120초, 입력40,000자/출력32,000토큰/내용검증400,000자. 확인된 신규 추정비용 **$0.01553139/미확인 예약액0**.
+
+| 관측 항목 | 보완 전4회 | 보완 후4회 |
+|---|---:|---:|
+| 목록을 계산한 공정 총수로 확인 필요 | 4/4 | 0/4 |
+| 위 계산값을 processes에도 넣음 | 2/4 | 0/4 |
+| 자격번호의2019를 취득 연도로 오인 | 1/4 | 0/4 |
+| 필수 회사·사업 누락 | 0/4 | 0/4 |
+| 실제 초안 진입 결정 검사 오류 | 0/4 | 0/4 |
+| 인용 위치/문구 오류 | 0/4 | 0/4 |
+| 원문에 없는 수치 토큰을 supported로 유지 | 0/4 | 0/4 |
+| 선택 내식성168시간 누락 | 2/4 | 2/4 |
+
+- 보완 후 사실74/79/72/67개, supported72/77/70/65개, needs_confirmation은 매회0이다. process_count는4회 모두missing이지만 실제9개 공정 이름은 supported 사실에서4회 모두 유지됐다. 연혁2000/2014/2016·약350업체·AS9100 만료연도/유지조건·KSPC범위·SSQ만료연도/유지조건의 선정9개 항목도4회 모두 유지됐다. 숫자가 없거나 필요한 사실이 빠진 것을 무조건 통과한 성공으로 바꾸지 않는다.
+- 남은 선택 정보 변동:168시간은 여전히2/4만 포함, 자격관리번호2019-001545는3/4 포함(다른1회도 실제 자료 기재일2021.03.20과 자격명은 보존). 분할·묶음/선택정보/인용구간 변화로 사실 집합도 서로 다르다. 작은 표본4회의 두 오인 미재현을 모든 응답의 완전 해결이나 모든 원문의 누락 없음으로 확대하지 않는다. 추가 자동 재추출/temperature·seed 변경/숨은 재시도·캐시 기능은 넣지 않았다. 다음은 선택 정보 포함 범위와 사용자 필수 요청을 구분해 누락을 측정·보완하는 것이다.
+- 격리 결과는 시스템 임시폴더 ddalgi-extraction-repeat-5u2t1uj5에 report/input/run-1~4/comparison JSON으로 보존했다. 사용자 DB/점검/초안/선택/승인·.env·실자료를 쓰거나 다시 생성하지 않았다. 기존 서버 /docs와 프론트5173 HTTP200 확인. load_extract_prompt는 매 추출 요청에 파일을 다시 읽으므로 다음 AI 점검부터 보완 지침이 적용되며 기존 저장된 점검을 자동 변경하지 않는다. 서버 재시작/추가 AI 초안·내용검증·출력은 실행하지 않았다.
+- 계약1.9/DBv11/template_v11 유지, plan4.89/공통task 연결 위치 동기화. BE-10/F-08 일반품질 진행중과 Agent 상태 유지. 새 저장소 파일·의존성 없음. 검증된 기존5파일만 같은 작업 브랜치에 커밋하며 원격 push는 요청하지 않아 수행하지 않는다. 팀원 전달용 ZIP/분할파일의 Downloads 저장 기준은 유지한다.
+
+<a id="technical-extraction-coverage-20261008"></a>
+
+### [F-02·03·05·08 / BE-04·06·10] 기술 상세 누락 보완·원승인일 금액 오탐 수정 (2026-10-08)
+
+- 기존 app/prompts/extract.txt에 기술/공정 상세 구간별 소재·처리 대상·방법·피막·치수·내식성·시간·온도·농도와 적용 조건/제한을 대조하도록 보완했다. 자료 점검에서 중요도나 초안 분량 때문에 직접 명시된 기술 사실을 버리지 않는다. 추출 뒤 초안에 넣을 내용의 선택은 별도이며 선택 정보를 필수 사실로 바꾸지 않는다. 관계가 불명확하면 근거와 함께 확인 필요로 남기고 시험 종류·성능 보증·인증 유효성을 추정하지 않는다. 특정 회사나168이라는 값에 맞춘 지침·새 필드·새 호출·자동 재시도는 추가하지 않았다.
+- 직전 지침의 비교군4회(ddalgi-extraction-repeat-5u2t1uj5)와 동일한 거산 실자료4개/106구간/8,280자·자료ID/버전/구간/Brief/모델/추론·한도로 신규 추출4회를 실행했다. 입력 SHA256 cf5549a45262557adc36277e19c437a59e22d42d85734727b2afd63abf6c7c8a는 같고, 새 전송 지침 해시는682202ea43cc0d610452674502a44f6ede0eb70f7f3819f0690b3daee961d668로4회 모두 같았다. 기존 company_info4회/합계4회/$1 제한을 유지했다. gpt-6-luna/reasoning medium·리트라이0·대기120초·입력40,000자/출력32,000토큰·내용검증400,000자. 확인된 신규 추정비용 **$0.01675713/미확인 예약액0**. 초안/내용검증/출력 유료 호출은0이다.
+
+| 관측 항목 | 직전 지침4회 | 기술 상세 지침4회 |
+|---|---:|---:|
+| 내식성168hr/168시간 supported 근거 포함 | 2/4 | 4/4 |
+| 목록 계산 공정 총수 생성 | 0/4 | 0/4 |
+| 자격번호2019를 사건 연도로 오인 | 0/4 | 1/4, 기존 수치 검사로 확인 필요 |
+| 필수 회사·사업 누락 | 0/4 | 0/4 |
+| 인용 위치/문구 오류 | 0/4 | 0/4 |
+| 원문에 없는 수치 토큰을 supported로 유지 | 0/4 | 0/4 |
+
+- 신규 사실 수94/90/76/76개이며 원래 검사 결과의 supported92/87/73/68개·확인 필요0/1/1/6개를 그대로 보존했다. 2회차의 'AS9100 원승인일과 ISO9001 원승인일'에서 '원'을 화폐로 읽어 수량/금액9001·9100을 만들던 결정적 오탐을 발견했다. app/services/validation.py의 공통 원화 단위 패턴에서 원승인일/원발행일만 제외하고 일반 수량·원화 환산·괄호 금액·currency 토큰 경로에 같은 규칙을 적용했다. 날짜·규격 숫자·실제 금액 변경 검사와 주체/조건·인증 범위 검사는 유지한다. 저장 원문/사실이나 기존 사용자 점검 상태를 자동 수정하지 않는다.
+- 저장된 모델 응답4개를 최종 공통 검사로 오프라인 재변환했다(**추가 AI0회**, 실제 재호출 결과와 구분). 2회차 오탐만 해소돼 supported92/88/73/68개·확인 필요0/0/1/6개이며168시간과 AS9100 만료2028년의 supported 근거는 모두4/4이다. 기존 초안 입력 결정 검사는4회 모두 오류 없음이다. 원래 report/run JSON은 수정하지 않고 replay JSON을 별도로 보존했다.
+- 3회차의 자격번호2019→연도 오인은 지침에도 재현됐으며 기존 수치 검사에 의해 확인 필요로 유지된다. 4회차의 주소 표기/공장 귀속·연락처·대표자·연도 없는 매출·약력 등6개 모델 확인 필요도 자동 승격하지 않는다. 2회차 기술 사실의 공정 귀속에 대한 불확실한 문구 등 의미 품질도 후속이다. 기술 수치4/4 보존이나 앞선 번호 오인0/4 결과를 전체 정확성 보장으로 해석하지 않는다. 기존 점검 재사용·원문 대조·필요한 문구 편집/자료 보완/선택 항목 제외로 처리하고 자동 부분 재추출은 추가하지 않았다.
+- 기존 tests/test_agent_llm.py에 기술 값240hr→240시간 및 소재/적용 제한의 모든 인용 보존3건, 원승인일/원발행일·정상/변경 날짜/규격·일반/괄호 실제 금액 변경 경계13건을 추가했다. SDK 대역 시험은 변환 보존을 검증하며 실제 모델 품질로 취급하지 않는다. 공통 수치 수정 후 tests/test_agent_llm.py + tests/test_be06.py **1,300 passed/경고1/157.79초**. 이후 괄호 원화 경로와 경계4건까지 반영한 최종 tests/test_agent_llm.py **1,208 passed/경고1/96.43초**. 두 실행은 중복 범위이므로 통과 수를 합산하지 않는다. 중간 focused 실패2건은 currency 토큰 분기의 원승인일 제외 누락이었고 공유 패턴 반영 후181건 통과 및 위 전체 회귀로 해소했다.
+- 임시 산출물은 시스템 임시폴더 ddalgi-extraction-repeat-rf_esm86의 input/report/run-1~4/replay-1~4/replay-summary JSON이다. 사용자 시연 DB·기존 문서/세션/승인·원자료·.env·프론트는 변경하지 않는다. API1.9/계약문서v1.42/DBv11/template_v11 유지. plan4.90/task 연결 위치를 함께 갱신하며 BE-10/F-08 일반품질 진행중 및 Agent 상태는 유지한다. 다음은 남은 의미 오류의 근거별 수정/처리 경로 검수다. 원격 push는 하지 않는다.
+- 서버 적용: 실행 DB의 queued/running 작업0을 읽기 전용으로 확인하고 정확한 기존 백엔드/launcher만 검증해 재시작했다. 기존 .env의 llm·시연 DB·내용검증400,000자 설정을 그대로 사용했다. 최신 backend8000 OpenAPI와 기존 frontend5173은 HTTP200이며 프론트 프로세스는 유지했다. 실제 사용자 점검/문서/승인을 재검사·자동 변경하지 않았다.
+
+<a id="numeric-preflight-diagnostics-20261008"></a>
+
+### [F-02·03·05·08 / BE-04·06·10] 수치 검사 실패 이유의 화면 안내 보완 (2026-10-08)
+
+- 남은 실제 추출 오류를 원문과 대조했다. 자격번호2019-001545를2019년 자격 취득으로 해석한 사실은 기존 수치 검사에서 확인 필요로 걸러졌지만 화면에는 일반 근거 부족 문구만 표시됐다. app/agent_llm.py의 Issue.message를 기존 공통 numeric_evidence_tokens 차집합으로 설명한다. '연혁 내용에 인용 원문에서 확인되지 않는 수치가 있습니다: 연도2019년'처럼 연도/날짜/금액/비율/수치·단위를 구분하고 같은 값의 중복 숫자/금액 표현은 줄인다. 금액/비율의 부호와 단위를 보존하며 대표3개와 추가 개수만 표시한다. 대체 날짜·회사·조건을 추측하거나 잘못된 사실을 자동 교정하지 않는다.
+- 원문 근거가 있어도 모델이 주체/조건을 확인 필요로 남긴 항목에는 수치 실패라는 이유를 새로 붙이지 않는다. 기존 회사명 전용 안내와 conflict·필수 사실 검사를 유지했다. 일반 안내는 문법을 정리하고 '선택 항목이면 제외 가능'으로 한정해 필수 항목도 제외 가능하다고 안내하지 않는다. 기존 제외 허용 계산·확인/승인 정책·Issue 코드/심각도/상태/참조는 바꾸지 않는다.
+- 현재 frontend develop의 AiWorkflowPanel은 서버 Issue.message를 확인할 사항에 표시하고 사실/원문·근거 자료 보완·허용된 항목 제외 경로를 제공한다. readableIssueMessage도 새 수치 안내를 덮어쓰지 않는 것을 코드로 대조했다. 이번에는 프론트 코드 변경이나 브라우저 추가 시연을 하지 않았다. 기존 최종 서버 preflight_conflicts는 Issue.message와 blocker/fact/source 연결을 보존한다.
+- 직전 실제 추출4회(ddalgi-extraction-repeat-rf_esm86)의 저장 응답을 오프라인 재변환했다. **추가 AI0회**이며 전체 사실의 field/value/status/conditions/alternatives/원문 참조가 기존 최종 재변환과 완전히 같음을 비교했다. 확인 필요0/0/1/6과 사실94/90/76/76을 유지한다. 3회차만 미근거 연도2019년을 구체적으로 안내하고4회차6개는 의미/근거 확인 안내를 유지한다. 원래 report/run/replay JSON은 보존하고 diagnostic-replay-1~4/diagnostic-summary JSON만 시스템 임시폴더에 저장했다. 기존 사용자 DB·점검·문서·승인과 원자료·.env는 자동 수정하지 않았다.
+- 남은6개는 raw other_info 전체의 needs_confirmation이 Fact6개에 공통 적용된 결과이며,6개의 독립 모델 판정으로 해석하면 안 된다. 주소/공장 귀속·기준일 없는 매출 등 실제 의미 확인과 직접 기재된 연락처/대표 정보가 섞여 있다. 명확한 사실까지 공통 상태로 묶는 구조와 긴 약력의 잘못된 사건 연도는 후속 점검 대상이다. 이번 안내 개선은 그 의미 오류 자체를 해결한 결과가 아니다.
+- 기존 tests/test_agent_llm.py에 대표 수치 진단9건/의미 불확실성 분리1건/다른 사실의 근거 혼입 및 안내 상한1건을 추가했다. 새 안내가 최종 서버 검사에도 그대로 이어지고 확인 클릭으로 blocker를 해제할 수 없음을 확인했다. 핵심 변경 후 tests/test_agent_llm.py + tests/test_be06.py **1,315 passed/경고1/133.56초**. 이후 안내 표현/중복 금액 부호를 다듬고 음수 변경2건까지 추가한 최종 focused 검사 **74 passed/1,147 deselected/경고1/3.77초**. 전체와 focused는 중복 범위이므로 합산하지 않는다. 추가 유료 모델 반복/새 초안·내용 검증·PDF/DOCX 출력은 미실행이다.
+- API1.9/계약문서v1.42/DBv11/template_v11 유지, 새 저장소 파일·의존성·프롬프트 변경 없음. plan4.91·task의 F-02/F-08 위치를 같은 커밋에 연결하고 Agent 담당 상태는 유지한다. BE-10/F-08 일반 품질은 진행중이다. 다음은 필드 공통 상태 때문에 명확한 사실까지 확인 필요가 되는 경로의 개별 사실 판단 구조를 검토하는 것이다. 원격 push는 하지 않는다.
+- 적용 확인: 실행 시연 DB의 진행 작업0을 읽기 전용으로 확인하고 식별한 backend/launcher만 재시작했다. 기존 llm/시연 DB/내용검증400,000자 설정을 유지하며 backend8000 OpenAPI·frontend5173 HTTP200을 확인했다. 프론트 develop 프로세스와 사용자 기존 점검/문서/승인은 유지한다. 새 점검부터 새 안내가 저장되며 기존 저장 메시지는 자동 변경하지 않는다.
+
+<a id="per-fact-extraction-status-20261008"></a>
+
+### [F-02·03·05·08 / BE-04·06·10] 항목 공통 상태를 개별 사실 판단으로 분리 (2026-10-08)
+
+- 직전 반복 응답의 기타 정보6개는 한 개의 field status=needs_confirmation이 모든 Fact에 복사된 결과였다. 운영 create_bridge는 per_fact_status=True로 내부 추출을 연결한다. 모델의 strict 스키마는 각 fact에 supported/needs_confirmation/conflict를 요구하며 항목 공통 status는 모델에 요구하지 않는다. 빈 facts는 not_found, 나머지 항목 요약 상태는 개별 상태로 어댑터가 계산한다. 항목 요약 상태를 다시 개별 사실에 복사하지 않는다.
+- app/agent_legacy.py의 기본 프로필 스키마·독립 추출/검사/ID 부여 경로는 이전 형식을 유지한다. 운영 내부 확장에만 개별 상태를 보존하고 형식/허용 상태/항목 요약/충돌 최소2후보/빈 값/선택 원문 위치/원문 일치 검사를 적용한다. 기존 결과를 새 형식으로 자동 승격하지 않으며 잘못된 새 응답을 이전 형식이나 mock으로 대체하지 않는다. 추가 AI 상태 판정 호출·자동 재시도는 없다.
+- 같은 항목에서 명확한 사실·확인 필요·충돌 후보를 함께 반환할 수 있다. 충돌 후보만 기존 conflict Fact의 alternatives로 묶고 다른 독립적인 supported/needs_confirmation 사실은 따로 보존한다. 사실별 수치/날짜 검사와 원문/자료 버전/위치 복원·blocker·확인/승인 정책을 유지한다. 같은 사실/근거의 supported 완전 중복만 줄이고 미확인/충돌 후보는 삭제하지 않는다. 회사명의 운영자 확인 별칭 규칙은 기존 이름의 동일성에만 적용한다.
+- app/prompts/extract.txt는 호출 스키마에 status가 있는 경우 각 사실을 독립 판단하고 동일 항목의 불확실성을 다른 사실에 전파하지 않도록 보완했다. 명시된 원문 기록과 현재 유효성/보증을 구분하며 다른 대상/시점/조건은 충돌로 묶지 않는다. 현재 frontend develop은 이미 Fact별 status·원문·문제 연결을 표시하므로 API1.9/계약문서v1.42/DBv11/template_v11과 프론트 타입/코드는 변경하지 않았다.
+- 가짜 SDK의 신규17건은 mixed/잘못된 연도/충돌/완전중복 및 순서 역전, 누락/미허용/불리언 상태·not_found 사실·잘못된 구간 참조·단일 충돌·운영 활성화/기본 형식 보존을 검사했다. 명확한 사실을 유지해도 잘못된 숫자는 별도 확인 필요와 blocker로 남는다. 처음 실패3건은 테스트 기대 코드가 INVALID_OUTPUT인 반면 기존 공개 코드가 AGENT_OUTPUT_INVALID였기 때문이며 기대를 맞췄다. 전체 첫 실행의 서버3건 실패는 SDK 대역이 이전 항목 상태 형식을 반환한 문제였다. 대역을 실제 요청 스키마에 맞춰 바꾼 뒤 관련36건이 통과했다. 최종 tests/test_agent_llm.py + tests/test_be06.py + tests/test_be08.py **1,340 passed/33 skipped/경고1/177.87초**. 33건은 브라우저·LibreOffice 조건에 따른 출력 엔진 시험으로 통과로 계산하지 않는다. 추가 실제 PDF/DOCX 출력은 미실행이다.
+- 같은 거산 실자료4개/106구간/8,280자·자료ID/버전/구간/Brief/모델/추론/한도로 신규 실제 추출4회를 실행했다. 입력 SHA256 cf5549a45262557adc36277e19c437a59e22d42d85734727b2afd63abf6c7c8a는 이전 표본과 같고, 새 지침/스키마 SHA256 920082cc5bbf2976247ee4a74d0c6bf7851813175cc5b316220da8bf531b32d5는4회 모두 같았다. 기존 company_info4회/합계4회/$1 제한을 유지했다. gpt-6-luna/reasoning medium·대기120초·리트라이0·입력40,000자/출력32,000토큰·내용검증400,000자. 신규 추정비용 **$0.017884375/미확인 예약액0**. 사용자 DB는 쓰지 않고 기존 격리 원문을 읽기 전용으로 사용했다.
+
+| 회차 | 전체 사실 | supported | 확인 필요 | 대표/연락처 근거 | 168시간 근거 | 초안 입력 검사 |
+|---|---:|---:|---:|---|---|---|
+| 1 | 101 | 95 | 4 | supported | supported | 통과 |
+| 2 | 97 | 92 | 3 | supported | supported | 통과 |
+| 3 | 87 | 83 | 2 | supported | supported | 통과 |
+| 4 | 80 | 78 | 0 | supported | supported | 통과 |
+
+- 필수 회사·사업 누락0/4·인용 위치/문구 오류0/4·근거에 없는 수치를 supported로 유지0/4이며 번호2019→연도 오인은 이번 표본에서 미재현이다. 이는 의미/모든 입력의 정확성 보장이 아니다. 원문에 기준 시점/통화가 없는 인원·매출, AI/SUS 품목 표기 등의 판단은 회차마다 다르다. 거래업체350여 정보는 원문 참조와 함께4/4 보존됐지만 supported2/4·needs_confirmation2/4로 변동했다. 이 차이를 정보 누락이나 전역 오류 해결로 기록하지 않는다.4회 모두 실제 초안 입력 결정 검사 문제 없음이며 남은 확인 필요 항목은 현재 Brief의 선택 항목이라 기존 화면 제외 가능 목록에 들어가는 것을 추가 AI 없이 확인했다. 원문 대조·자료 보완/선택 제외는 여전히 필요하다.
+- 기존 사용자 점검/확인/문서/승인·.env·등록 원자료는 자동 변경하지 않았다. 시스템 임시폴더 ddalgi-fact-status-repeat-n4a73a20에 input/report/run-1~4/comparison JSON을 보존했다. 재현 도구는 시스템 임시폴더 ddalgi-fact-status-repeat-20261008.py이며 저장소 새 파일/의존성은 없다. 초안·내용 검증·출력 유료 호출은0이다. BE-10/F-08 일반 품질 및 Agent 담당 상태는 진행중/기존 상태를 유지하며 plan4.92/task 연결 위치를 함께 갱신한다. 다음은 시점이 없는 기록의 자료 기재 사실과 현재 확정 주장을 구분하는 의미 판단/사용자 처리 흐름 검수다. 원격 push는 하지 않는다.
+- 운영 적용: 실제 시연 DB의 진행 작업0과 기존 정확한 backend/launcher를 확인해 백엔드만 재시작했다. 기존 .env의 llm/시연 DB/내용검증400,000자 설정과 frontend develop 프로세스를 유지했다. 새 운영 bridge의 per_fact_status=True와 backend8000 OpenAPI/frontend5173 HTTP200을 확인했다. 새 AI 점검부터 적용되며 기존 저장 결과/사용자 확인/문서/승인을 자동 변경하지 않았다.
+
+<a id="undated-record-scope-20261008"></a>
+
+### [F-02·03·05·08 / BE-04·06·10] 기준일 없는 수치의 자료 기록 범위 보존 (2026-10-08)
+
+- 직전 동일 입력4회에서 매출40억/인원36명/거래업체350여가 자료의 기재 내용으로 한정돼도 supported 회차가 각각1/4·2/4·2/4로 달랐다. app/prompts/extract.txt에 명확한 대상·직접 값의 기록과 현재 실적 주장을 구분하는 규칙을 추가했다. 기준 시점이 없으면 자료 기재 범위와 시점 미기재를 같은 사실 문구에 남기고, 통화 없는40억·350여의 근사 표현을 유지한다. 시점 부재만으로 명확한 기록을 확인 필요로 만들지 않되 실제 대상/판독/적용 관계 문제·현재성 주장·모순은 기존 상태로 남긴다. 코드로 needs_confirmation을 자동 승격하거나 수치/인용/승인 검사를 해제하지 않았다.
+- 호출 JSON Schema에 맞춰 status의 위치를 설명하고 운영 fact별 형식에 항목 status를 추가하라는 기존 지침 충돌을 제거했다. 기준 시점/통화 미기재는 현재 실적으로 오해하지 않게 하는 기록의 한계로 문구에 보존한다. app/prompts/draft.txt의 기존/운영 editorial_v2 양쪽 지침에 같은 범위와 근사·통화 한계를 유지하도록 연결했다. load_draft_prompt(editorial=True)는 구분선 뒤만 읽으므로 운영 구간 반영을 별도로 확인했다. 기존 내용 검증은 주체·수치·시점·조건·확실성의 의미를 대조하며 supported만으로 관계를 보충하지 않는 규칙을 유지한다.
+- tests/test_agent_llm.py의 신규13건: 기록 범위의 매출/인원/거래업체3건, 현재 주장3건의 needs_confirmation 보존, 통화 추가·인원 변경·근사→정확 개수·가짜 연도4건의 수치 차단, 운영 초안 SDK로 기록 지침/사실 전체 문구/원문 근거가 전달·복원되는3건. 가짜 SDK이며 실제 모델의 의미 판정 보장이 아니다. 초기 focused41 passed/1,207 deselected/경고1/3.74초. 관련 전체 tests/test_agent_llm.py + tests/test_be06.py **1,344 passed/경고1/133.80초**. 이후 운영 초안 지침과3건을 추가한 최종 focused **44 passed/1,207 deselected/경고1/3.76초**. 중복 범위를 합산하지 않으며 최종3건은 마지막 focused에서 확인했다.
+- 동일 격리 거산4자료/106구간/8,280자·같은 Brief/자료ID/버전/원문·gpt-6-luna/reasoning medium으로 실제 추출4회를 실행했다. 입력 SHA256 cf5549a45262557adc36277e19c437a59e22d42d85734727b2afd63abf6c7c8a는 직전과 같고, 이번 추출 지침/스키마 SHA256 a57fb83ea052bca4624cb776b02515a281b270dda55022cf8aa7bfa35122123f는4회 모두 같다. 기존 company_info4회/전체4회/예산$1·리트라이0·대기120초·입력40,000자/출력32,000토큰·검증400,000자를 유지했다. 비용 **$0.01578797/미확인 예약액0**. 사용자 DB에 쓰지 않고 격리 원문 DB를 읽기 전용으로 사용했다.
+
+| 회차 | 전체 사실 | supported | 확인 필요 | 매출/인원/거래업체 기록 | 필수·인용·supported 수치 오류 | 초안 입력 검사 |
+|---|---:|---:|---:|---|---|---|
+| 1 | 76 | 74 | 0 | 모두 supported·한계 보존 | 없음 | 통과 |
+| 2 | 80 | 77 | 1 | 모두 supported·한계 보존 | 없음 | 통과 |
+| 3 | 66 | 64 | 0 | 모두 supported·한계 보존 | 없음 | 통과 |
+| 4 | 78 | 76 | 0 | 모두 supported·한계 보존 | 없음 | 통과 |
+
+- 각 회차 missing2개는 원문에 없는 공정 총수/구체 납기이며 fabricated 값으로 채우지 않았다. 매출·인원·거래업체는 대상 원문 구간을 연결한 기록/기준 시점 미기재로4/4 보존됐고 매출 통화 미기재·거래업체 근사 의미도4/4 유지했다. 10개 기존 선택 probe(168시간·인증 조건/기간·연혁 등)는4/4 유지됐다. 사용자 필수 회사·사업 누락0/4, 인용 위치/문구 오류0/4, unsupported 수치를 supported로 유지0/4. 실제 초안 입력 결정 검사4/4 문제 없음을 추가 AI 없이 확인했다. 문장/항목 분류/전체 사실 수는 여전히 다르며 정보 전체의 recall·의미 정확성·완전 재현을 보장하지 않는다.
+- 회차2의 AI/SUS 주요품목은 의미가 불명확한 확인 필요로 남았다. 모델이 fact 문구에 unit70/71 번호를 덧붙여 원문 수치 차이 검사도 유지됐다. 현재 Brief에서 이 선택 항목은 기존 화면 제외 가능 목록에 있으나 사용자 자료 보완/원문 확인 없이 실제 소재 의미를 추측하지 않는다. 매출/인원 항목이 capabilities/business_areas/company_summary 등으로 달라지는 분류와 회차4의 거래업체 중복도 후속 품질 항목이다. 이번4회 표본의 상태 개선을 이러한 문제나 모든 오류의 해결로 해석하지 않는다.
+- 결과는 시스템 임시폴더 ddalgi-record-scope-repeat-apkjff7f의 input/report/run-1~4/record-comparison JSON, 실행 도구는 임시폴더 ddalgi-record-scope-repeat-20261008.py에 남겼다. 시연 전달 ZIP을 생성하지 않았으며 저장소 새 파일·의존성·API/DB/template 변경도 없다. 실제 새 초안·내용 검증·PDF/DOCX 출력은 호출하지 않았다. 준비 응답의 초안 보존 시험과 실제 모델 추출 시험을 구분한다.
+- 적용: 추출/초안 프롬프트를 요청마다 읽으므로 backend PID11280/frontend PID35588을 재시작하지 않았다. llm/운영 per_fact_status=True/기존 시연 DB·진행 작업0·검증400,000자와 backend8000 OpenAPI/frontend5173 HTTP200을 읽기 전용으로 확인했다. 새 점검/초안 요청부터 적용되며 기존 점검/문서/승인·.env·등록 원문·프론트 develop 및 untracked .claude/는 보존했다. 기존 점검을 자동 재추출하지 않는다.
+- BE-10/F-08 일반 품질·Agent 담당 상태는 유지한다. plan4.93/task 연결 위치를 같이 갱신하며 원격 push는 하지 않는다. 다음은 같은 원문 사실의 항목 분류·중복/내부 참조번호 노출을 검수하고 실제 초안/내용 검증에서 기록 한계가 유지되는지 별도 범위를 정해 확인하는 것이다.
+
+<a id="backend-task-tracing-20261008"></a>
+
+### [F-01·02·03·05·06·08 / BE-02·03·04·06·07·10] 첨부 과제의 실행·전달·단계 추적·파싱/출력 (2026-10-08)
+
+- 사용자 첨부 message (3).txt의 백엔드4범위를 기존 파일에서 수행했다. 실행기/모델 구분, 원문→파싱 구간→Agent 입력의 날짜·버전·근거 상태 전달, 한 요청의 Job/점검/문서 revision 추적, 제조업 표·사진/레이아웃 출력 검수다. 프론트 화면과 API1.9/DBv11/template_v11·.env·원자료·기존 점검/문서/승인은 유지한다. Agent 자료 제작/평가나 리드타임 구현·평가는 이번 범위에 추가하지 않았다.
+- app/models.JobProgress의 선택적 trace와 기존 progress_json으로 연결했다. 설정 모드와 실제 MockAgent/OpenAIRequester/custom 실행을 구분하고 모델명을 보존한다. agent_invoked는 메서드 호출이며 유료 요청 수를 뜻하지 않는다. parser/DART public_api/renderer/승인 artifact의 비AI 실행도 구분한다. 단계별 자료ID/버전·구간/파싱 글자/사진 수·사실 상태별 수·점검/문서 참조·렌더 쪽수/검사 결과를 기록한다. 파싱 글자 수는 직렬화 요청/토큰 크기와 다르다.
+- 자료 제외는 scope 밖/선택 추출 불가/읽기 불가의 고정 이유 코드로만 기록한다. 초안 사실 제외의 상세 이유는 기존 EditorialRecord에 두고 Job은 분류별 수와 기존 result_ref로 연결한다. 원문/파일명/경로/키/프롬프트·자유 사유 문구를 공통 trace에 복제하지 않는다. 최대16단계/64KiB와 생략 표시, 완료/실패/취소 후 늦은 덮어쓰기 금지, 성공한 Job을 포함한 종료/만료 trace 삭제를 회귀로 확인했다. 검증 Job 성공은 검증 통과가 아니다.
+- SourceIn.metadata는 기존 source의 document_date/document_date_verified/date_from_filename와 구간의 chunk_id/evidence_status/document_date/extraction_method를 보존한다. 파싱 저장에 source 날짜와 parser 방법을 연결하고 DART 날짜는 파싱 전에 저장한다. 선택한 옛 source 버전에는 현재 source의 날짜/힌트/검증 상태를 붙이지 않는다. 기존 버전 이력에 날짜 스냅샷이 없는 제한은 null로 공개하며 선택 추출 구간의 날짜는 보존한다. 날짜를 사실의 기준일/현재성/확정으로 바꾸지 않도록 SDK 입력에 경계를 설명하고 근거ID/버전/원문 인용 검사를 유지한다. 새 API/DB 테이블/마이그레이션·의존성·저장소 파일은 없다. 계약 문서v1.43/plan4.94/task 연결표를 갱신했다. 프론트 contracts.md가 없으므로 사본 갱신 완료로 보고하지 않는다.
+- 기본 회귀: tests/test_agent_llm.py/test_be03.py/test_be04.py/test_be06.py/test_be07.py/test_be08.py/test_be09.py/test_api_contract.py/test_orm_workflow.py **1,668 passed/62 skipped/경고1/432.13초**. 62건은 출력 엔진 설정/운영체제/선택 시험 조건으로 생략돼 성공으로 합산하지 않는다. 이후 고객 목적3건/실행기2건/옛 버전 메타 등을 확인한 focused **16 passed/1,304 deselected/경고1/8.28초**. DART 기록 추가 후 **40 passed/34 deselected/경고1/11.03초** 확인했고 날짜 저장 순서 보완 후 마지막 focused 결과는 아래에 기록한다. 중복 범위를 합산하지 않는다.
+- 신규 제조업 표 회귀3건은 공정/장비/시험/168시간 조건의 DOCX 가상 표4행×2열과 문단3개를 mock 경로로 처리한다. 행/열/원문8셀과 전체11구간·추출 방법·ID/버전·Job→점검→초안 연결을 검사했다. 품질 담당/생산기술 담당/신규 고객 목적의 데이터 전달 회귀이며 Agent 담당의 실제 고객 목적별 의미 품질 평가를 완료한 것이 아니다.
+- 실제 출력 엔진: Chrome와 LibreOffice에서 PDF 표 레이아웃(product_grid/fact_sheet/certification_summary)3건, 사진 배치(cover_photo/text_photo)2건, DOCX 구조1건과 실제1/4/6/8/10쪽5건을 실행해 **11 passed/83 deselected/경고1/68.94초**. 기존 사진 asset 연결·레이아웃 검사를 유지했으며 모든 layout_key·모든 사용자 실문서를 실제 출력한 것으로 확대하지 않는다. 사용자 실문서 재승인/출력은 하지 않았다.
+- 실제 LLM: 기존 격리 실자료 DB를 읽기 전용으로 복제한 별도 임시 DB에서 새 세션만 생성했다. 거산4자료/106구간/8,280자/사진19개·신규고객 목적·4쪽·사진none·gpt-6-luna/per_fact_status=True/reasoning medium·리트라이0·120초·입력40,000자/출력32,000토큰/검증400,000자, 총4호출/$1 상한으로 company_info→draft_sections→content_review **3회** 실행했다. ledger 기록 추정비용 **$0.017373400/미확인 예약0**이며 실제 청구서 금액이 아니다. SDK 응답 elapsed_ms는 각각44,412.709/41,415.189/13,237.224다. 시험 script의 단계 elapsed_seconds는 background 대기 뒤 조회 시간이라 모델 지연 수치로 사용하지 않는다.
+- 세 실행 Job은 succeeded이며 trace에서 실제 llm/모델·선택 버전·점검/문서 참조를 확인했다. 사전 점검은75사실(supported70/확인필요2/충돌1/missing2), 초안은4쪽/34블록·편집분류 required3/excluded53/optional14/review5였다. **내용 검증은 failed**이며 확인필요2건의 UNSUPPORTED_CLAIM과 연혁 VALUE_CONFLICT1건을 유지했다. 승인/다운로드는 실행하지 않았다.
+- 실제 오류 재현: 연혁 충돌 후보가 slide11/seg_0d628739a5e6450b의 원문2016년을2021년으로 서술했다. slide6/seg_ab8142ec650942c5의2016년 후보와 가짜 충돌을 만들었다. 원문 인용이 맞더라도 요약 후보 수치가 틀릴 수 있으며 날짜 메타데이터가 원인이라고 확정하지 않는다. 다른2건은 아연도금5/13/25µm 적용 조건과 알루미늄 후처리168hr 범위/조건의 확인 필요다. 원문에 없는 조건을 보충하거나 자동확정하지 않았다. 다음 Agent 의미 품질 과제는 conflict alternatives의 수치/인용 대조와 원문 날짜/자료 날짜 혼동을 고정 응답 재현 및 제한 실제 반복으로 확인하는 것이다.
+- 결과는 시스템 임시폴더 C:\Users\이강욱\AppData\Local\Temp\ddalgi-backend-trace-live-sd33olbv의 report/preflight/draft/validated-document/issues/각Job JSON과 격리 DB에 보존했다. 도구는 같은 임시폴더의 ddalgi-backend-trace-live-20261008.py다. 공통/영구 자료 저장이나 시연 전달ZIP은 만들지 않았고 원래 시연 DB에 테스트 세션을 쓰지 않았다. 이후 팀 전달 파일은 기존 사용자 지시대로 다운로드 폴더를 사용한다.
+- 첨부 백엔드4항목의 구현/범위 내 검수는 완료하며 BE-10/F-08 일반 품질과 Agent 담당 상태는 진행중/기존 상태를 유지한다. 연혁 추출 오류·3개 고객 목적의 실제AI 평가·모든 자료/레이아웃 조합은 미완료다. 자신의 변경만 현재 fix/real-material-publication-20261008 브랜치에 로컬 커밋하고 원격 push는 하지 않는다. 서버 적용·마지막 focused 검수 결과는 아래에 추가한다.
+
+- 마지막 focused: 날짜 전달/공개 수집/구간·SDK·실행 추적 **56 passed/1,357 deselected/경고1/15.57초**. 최초2건 실패는 DART 공시 자료의 내부 파일명에 감사보고서가 있다고 가정한 시험 식별 문제였다. 기존 안전 파일명 동작을 유지하고 원문 구간으로 시험 보고서를 식별한 뒤 통과했다.
+
+- 운영 적용: 시연 DB 진행 작업0/quick_check ok와 기존 정확한 backend/launcher를 확인하고 백엔드만 재시작했다. llm/기존 시연 DB/내용검증400,000자·사용자 .env와 frontend develop/PID35588을 유지했다. 새 OpenAPI JobProgress.trace와 backend8000/frontend5173 HTTP200을 확인했다. 새 요청부터 실행 기록이 남고 기존 결과는 trace를 소급 생성하거나 다시 추출하지 않는다.
+
+<a id="conflict-candidate-evidence-20261008"></a>
+
+### [F-02·03·05·08 / BE-04·06·10 연결] 충돌 후보의 숫자·원문 대조 (2026-10-08)
+
+- 직전 실제 LLM 응답의 history conflict 후보는 slide11 원문2016년을2021년으로 바꿔 slide6의2016년과 충돌시켰다. _facts의 supported 후보만 numeric_evidence_tokens로 검사하고 conflict alternatives는 원문 인용 복원만 수행하던 차이를 확인했다. 기존 저장 응답을 유료 호출 없이 재현해 잘못된 VALUE_CONFLICT가 사라지고 원래2후보/인용을 확인 필요로 보존하며2021년 불일치를 안내하는 것을 확인했다.
+- app/agent_llm.py의 기존/개별 사실 추출 경로가 같은 후보 검사를 사용한다. 각 후보의 수치는 자신의 인용문과만 비교한다. 근거가 없는 후보는 needs_confirmation+기존 UNSUPPORTED_CLAIM blocker로 남기며 그 값을 임의 교정/삭제하지 않는다. 남은 후보가2개 이상이면 실제 충돌 상태를 유지하고1개뿐이면 의미를 자동확정하지 않는다. 동일 항목의 독립 supported 사실, 회사명 별칭, 정확한 날짜·수량 표기 동등성은 유지한다. 숫자가 인용에 존재해도 사건/주체/관계가 틀린 의미 오류는 이 결정적 검사만으로 해결되지 않는다.
+- app/prompts/extract.txt는 각 충돌 후보의 직접 근거, 자료 날짜/사건 날짜 분리, 같은 사건의 일치하는 날짜와 다른 사건의 구분을 명시한다. 모델/temperature/SDK 설정·자동 재시도·AI 추가 복구 호출은 변경하지 않았다. API1.9/계약문서v1.43/DBv11/template_v11·.env·시연 원자료/사용자 문서와 프론트 develop은 유지한다. 저장 결과의 자동 승격/재추출은 없으며 새 점검부터 적용한다.
+- 새 SDK 대역 회귀20건은 기존/개별 상태 형식×후보 역순×가짜 연도/실제 충돌/다른 후보 숫자 차용/정상2후보+오류1후보/동일 날짜 표기5종이다. 자료 metadata와 미인용 구간에2021년이 있어도 원문2016년 후보의 근거로 쓰지 않는다. 원래 값·근거ID/위치/버전·응답 객체와1회 호출을 보존한다. 수정 전 가짜 연도 회귀 실패를 확인한 뒤 관련33건이 **33 passed/1,243 deselected/경고1/4.26초**로 통과했다. 전체 관련 회귀와 실제 LLM 검수 결과는 아래에 기록한다.
+- 실제 검수는 별도 임시 DB에서 동일 거산4자료/106구간·Brief로 추출2회→두 번째 점검의 초안→내용검증을 최대4호출/예산$1로 제한했다. gpt-6-luna/reasoning medium/120초/재시도0/입력40,000자/출력32,000토큰/내용검증400,000자다. 첫 점검 실패 시 중단하고 어느 실패도 추가 유료 호출로 자동 반복하지 않는다. 운영 시연 DB에 시험 세션/점검/문서를 쓰거나 승인/다운로드를 수행하지 않는다.
+- 실제 LLM 결과: 추출1은82사실(supported78/확인필요2/충돌0/missing2), 추출2는89사실(supported85/확인필요2/충돌0/missing2)이다. 두 회차 모두 본사 준공2016년을 원문 인용과 보존했고 가짜 연도/후보 충돌·인용에 없는 수치0건이다. 이2회 표본은 전체 추출의 결정성이나 모든 의미 오류 해결을 증명하지 않는다. 저장된 이전 오류 응답을 고정 재현한 검사와 실제 새 응답의 지침 효과를 구분한다.
+- 같은 두 번째 점검으로 실제4쪽/42블록 초안 생성과 내용검증 실행이 성공했다. 내용검증 결과는 **failed/UNSUPPORTED_CLAIM blocker2건**이며 연혁 VALUE_CONFLICT는0건이다. 남은 기술1A/3종의 처리 대상 연결과 고객/시장의 현재 거래 관계 확인 필요는 원문에 없는 의미를 보충하지 않고 유지했다. 두 항목 모두 기존 reviewable_fact_ids에 포함돼 현재 프론트의 선택 제외/원문 보완 경로로 처리 가능하다. 사용자 대신 제외·확정하거나 승인하지 않았다.
+- 실제 company_info2회/draft_sections1회/content_review1회 총4호출, ledger 추정비용 **$0.022306965/미확인 예약0**이다. 시험 결과는 시스템 임시폴더 ddalgi-conflict-guard-live-gzl8qu_q의 report/preflight-first/preflight/draft/validated-document/issues/Job JSON과 격리 DB, 도구는 시스템 임시폴더 ddalgi-conflict-guard-live-20261008.py에 있다. 기존 사용자 DB·등록 원문·문서/승인에는 시험 결과를 쓰지 않았다.
+- 첫 전체 회귀는 Windows 샌드박스에서 test_network_guard_allows_standard_socketpair 부근에 대기했다. 완료로 계산하지 않고 해당 시험 프로세스만 종료했다. 같은 시험을 승인된 샌드박스 밖에서 실행하자 지점을 정상 통과했다. 실제 API는 테스트 내부 보호구로 차단하며 테스트를 건너뛰거나 보호구를 해제하지 않았다. 최종 전체 결과와 운영 적용은 아래에 기록한다.
+- 최종 관련 전체 tests/test_agent_llm.py + tests/test_be04.py + tests/test_be06.py **1,436 passed/경고1/160.94초**. 새로운20건이 포함돼 있으며 앞선33건과 중복 합산하지 않는다. git diff --check를 통과했다. 이번 숫자 검사/지침 작업에서 PDF/DOCX 렌더나 실제 사용자 승인을 추가로 수행하지 않았다.
+- 적용: 앱 재실행 뒤 서버 리스너가 없는 것을 확인했다. 현재 작업 브랜치의 백엔드와 프론트 develop을 숨김 프로세스로 구동하고 backend8000 OpenAPI/frontend5173 HTTP200을 확인했다. 기존 llm/시연 DB/검증400,000자와 DB quick_check ok·진행 작업0을 확인했고 환경 파일·등록 원문·기존 문서/승인·프론트 코드는 유지했다. 기존 저장 점검은 자동 변경하지 않으며 새 AI 점검에 적용한다.
+- 현재 fix/real-material-publication-20261008 브랜치에 자신의6개 변경 파일만 로컬 커밋한다. 원격 push는 하지 않는다. BE-10/F-08 일반 품질과 Agent 담당 상태는 유지하며 plan4.95/task 연결표에 기록했다. 후속은 남은 처리 대상·현재 거래 관계 항목이 원문에 비해 과도하게 확인 필요로 분류되는지 의미 대조하는 것이다. 사용자 회사 사실을 추측하거나 확인 필요를 자동 승격하지 않는다.
+
+
+<a id="source-scope-extraction-20261008"></a>
+### [F-02·03·05·08 / BE-04·06·10] 명시된 적용 범위와 분석상 자료 부족 구분 (2026-10-08)
+
+- 직전 실제 점검의 기술1A/3종 확인 필요는 같은 인용 첫 문장의 알루미늄 대상을 놓친 판단이었다. 고객/시장 확인 필요는 과거 승인과 품목 용도를 합쳐 “현재 거래 관계는 확인되지 않는다”라는 분석 문장을 만든 경우였다. 실제 고객 관계를 확정할 근거가 생긴 것은 아니다.
+- 기존 app/prompts/extract.txt만 수정했다. 문단의 공통 대상과 종속 목록을 함께 보존하고, 명시된 적용 분야와 거래 관계를 구분하며, 모델이 만든 자료 부재 설명을 새 fact로 만들지 않는다. 직접 언급이 없는 항목의 not_found와 실제 모호한 언급의 needs_confirmation은 구분한다. 다른 항목의 연혁·용도는 보존한다. 추가로 별도 제목과 설명의 연결에는 원문 근거를 요구하고, 근거 없이 특정 공정명을 붙이지 않도록 했다. API/DB/서버 판단 코드·프론트 develop·모델·.env·기존 원자료와 문서는 변경하지 않았다.
+- 관련 기존 회귀(undated_records/conflict_candidates_require/per_fact/source_and_segment_metadata) 50 passed/1,226 deselected/경고1/3.82초. 첫 샌드박스 실행은49통과 후 tmp_path 폴더 생성 권한 오류1건이 있었으며, 동일50건을 승인된 호스트에서 재실행해 통과했다. SDK 대역 검사이며 실제 LLM 판단 품질 증거로 혼동하지 않는다. 프롬프트 문구를 그대로 검사하는 새 테스트는 추가하지 않았다.
+- 실제 검수는 같은 거산4자료/106구간/8,280자·4쪽 Brief와 복제 DB를 사용했다. 첫 묶음은 최대4호출/$1, 공정명 혼동 발견 후 최종 지침을 추가 검수한 둘째 묶음은3호출/예산$1(기존 도구 ledger 상한4)이다. gpt-6-luna/medium/120초/재시도0/입력40,000자/출력32,000토큰/내용검증400,000자를 유지했다. 원본 시연 DB에 시험 결과를 쓰거나 문제를 임의 제외·확정·승인하지 않았다.
+
+| 지침/회차 | supported / 확인필요 / 충돌 / missing | 실제 후속 결과 |
+|---|---|---|
+| 공통 대상·자료 부재 구분 후 추출1 | 79 / 0 / 0 / 2 | 기존2항목 미재현. 그러나 원문에 없는 부동태 공정명을 기술 설명에 붙인 의미 오류를 수동 대조로 발견. 이 결과는 초안에 사용하지 않음 |
+| 같은 지침 추출2 | 75 / 0 / 0 / 2 | 같은 점검으로4쪽/48블록 초안·내용검증 passed/열린 문제0. 첫 회차의 의미 오류까지 해결됐다는 증거는 아님 |
+| 공정명 직접 연결 지침 추가 후 추출3 | 70 / 1 / 0 / 2 |4쪽/44블록 초안 성공. 내용검증 failed: 기술 연결 UNSUPPORTED_CLAIM1 + 설립 사건 주체 VALUE_MISMATCH1 |
+
+- 세 추출 모두 인용에 없는 수치0건이며 고객 관계 부재 분석 fact는 미재현이다. 최종 기술 사실은 임의 공정명을 붙이지 않았지만 처리명 미표시 때문에 여전히 needs_confirmation이었다. 최종 다른 사실은 “2016년 본사 공장 설립”을 “도금 생산라인이2016년 본사 공장에 설립”으로 바꿔 썼으며 기존 실제 의미 검증이 이를 차단했다. 숫자가 인용에 있다는 것만으로 주체·관계가 맞는 것은 아니다. 최종 버전의 내용검증을 passed나 전체 오류 해결로 표시하지 않는다.
+- 원본 PPTX16쪽을 읽기 전용으로 대조했다. shape417(알루미늄 상세)은 y43.7mm, 제목shape419(08.크로메이트)은 y41.9mm이고, shape418(부동태 상세)은 y109.8mm, 제목shape420(09.부동태)은 y110.5mm다. 현재 등록 구간 locator는 slide16만 포함하며 제목·상세는 별도 구간이다. 일반 PPTX 파서도 도형 순서/ID 위치만 저장하며 x/y 배치 관계는 전달하지 않는다. 이번에는 위치만으로 사실을 자동 연결하거나 원본 DB를 재적재하지 않았다. 후속은 원문 배치/제목 연결을 보존하는 범용 전달과 문장별 사건 주체 보존 검수다.
+- 실제 호출 총7회(company_info3/draft_sections2/content_review2), ledger 추정비용 합계$0.041375455, 미확인 예약0. 중간 결과는 시스템 Temp/ddalgi-conflict-guard-live-d1005_gx($0.022422680), 최종 결과는 Temp/ddalgi-backend-trace-live-dakqatzs($0.018952775)의 report/preflight/draft/validated-document/issues/Job JSON·격리 DB에 보존했다. 둘째 도구의 elapsed_seconds는 POST 반환 뒤부터 측정해 전체 실행 시간이 아니므로 성능 수치로 사용하지 않는다.
+- 프롬프트는 요청마다 파일을 읽으므로 다음 AI 자료 점검부터 반영된다. 기존 점검/문서를 자동 재작성하지 않는다. 원본 시연 DB quick_check=ok·진행 작업0을 읽기 전용 확인했다. BE-10/F-08 일반 품질 진행중 및 Agent 담당 상태 유지. 현재 fix/real-material-publication-20261008에 자신의 변경만 로컬 커밋하며 push는 하지 않는다.
+
+
+<a id="pptx-layout-context-20261008"></a>
+### [F-02·03·05·08 / BE-03·04·06·10] 선택 PPT 배치와 설립 사건 주체 보존 (2026-10-08)
+
+- 원인: 실제 PPT16쪽의 크로메이트 제목과 알루미늄 상세 설명이 각각 별도 텍스트 상자이며 저장 순서는 설명이 제목보다 먼저다. 기존 AI 입력은 원문의 상대 배치 정보를 갖지 않아 부동태 제목을 붙이거나 제목 분리 자체를 확인 필요로 만들었다. 또 사진 설명의 생산라인을 뒤 문장의 본사 공장 설립 주체로 바꾼 사실이 있었다.
+- app/parsers/office.py는 원문 텍스트를 재작성하지 않고 최상위 비회전 텍스트 상자의 slide/box_mm을 읽는다. app/services/preflights.py는 선택한 source_version의 stored_path/content_hash를 사용해 저장 루트·실제 바이트 SHA256·같은 쪽의 공백 정규화 전체 문구를 확인한 유일한 구간에만 metadata.layout을 연결한다. 같은 문구가 그룹/회전/표 안에도 있으면 연결하지 않는다. source locator/segment ID/버전/인용과 DB를 변경하지 않으며 다른 세션·미선택 상자의 문구나 파일 경로를 AI에 넘기지 않는다. 업로드 파일 한도, ZIP5,000항목/해제100MiB 상한을 적용한다. 파일 없음/변경·해시 없음·모호한 문구·지원 밖 배치는 원래 입력을 유지한다.
+- run_preflight_job에서만 설정을 넘겨 배치 정보를 읽는다. 기존 draft/validate/조회 경로에 파일 재파싱을 추가하지 않았다. SourceIn.metadata 확장만 사용하며 공개 API1.9/DBv11/template_v11·프론트 develop·.env/모델은 유지한다. contracts 문서v1.44, plan4.97에 내부 전달 규칙을 기록했다. 프론트 계약 사본은 변경하지 않았다.
+- 추출 지침은 제목과 상세의 unit_id를 함께 인용하고, 좌표를 회사의 수치로 쓰지 않으며, 정상적인 제목/본문 분리를 새 확인 필요 fact로 만들지 않도록 한다. 실제 주체/조건의 모호함과 충돌은 유지한다. 사진 속 생산라인과2016년 본사 공장 설립 사건을 합치지 않도록 주체·행위·대상·장소 보존을 명시했다. 추가 자동 AI 재시도/상태 승격은 없다.
+- 새 결정적 회귀15건: 일치/문구변경/다른쪽/중복/회전/그룹중복/회전중복/해시불일치/해시없음/파일없음/크기초과/루트밖/손상13종과 기존SQLite·ORM 선택 버전/실제 API 전달2종이다. 기존 SDK 메타 전달3건도 layout과 원본 인용·확인 필요 보존을 함께 확인한다. 첫 ORM 시험 fixture는 current_run_id 외래키 제약에 맞게 수정했다. 중복 회전/그룹 사례2건의 실제 실패를 확인한 뒤 전체 문구 중복 판정에 포함시켜 차단했다.
+- 검증: 처음 관련16건 통과. 관련 전체 tests/test_be03.py/test_be04.py/test_agent_llm.py/test_be06.py는 **1,468 passed/경고1/168.59초**. 전체 실행 시작 후 발견한 중복 경계2건을 고친 최종 코드에서 관련18건 **18 passed/경고1/5.81초**, 파서·사전점검 전체 **98 passed/경고1/29.49초**를 확인했다. 횟수를 중복 합산하거나 첫 전체 실행에 뒤늦은2건이 포함됐다고 표시하지 않는다. 실제 API가 없는 SDK 대역/임시DB 회귀와 아래 유료 실검수를 구분한다.
+- 실제 검수는 원래 운영 DB를 변경하지 않고 동일 거산4자료/106구간/8,280자·4쪽 Brief와 복제 DB/PPT로 시행했다. 각 묶음 최대4호출/$1, gpt-6-luna/medium/120초/재시도0/입력40,000자/출력32,000토큰/내용검증400,000자를 유지했다. 실제 PPT96구간 중44구간에 유일한 원문 배치가 연결됐으며 나머지 수동발췌/표/중복 등 구간은 삭제 없이 원래대로 전달했다.
+
+| 묶음 | 추출1 supported/확인필요/충돌/missing | 추출2 | 후속 결과 |
+|---|---|---|---|
+| 배치 전달·사건 주체 지침 최초 | 68/0/0/2 | 82/2/0/2 | 두 번째에서 제목 분리를 분석하는 확인필요1·원문2020에없는2019년 승인1을 기존 검사로 차단. 초안/검증 실행 성공이지만 내용failed |
+| 정상 제목/본문 분리 지침 포함 최종 | 81/0/0/2 | 80/0/0/2 | 두 번째 점검으로4쪽/36블록 초안 생성·실제 내용검증passed·열린 Issue0 |
+
+- 최종 두 추출 모두 크로메이트 제목seg_9c6e0ed77984477a와 상세seg_c11a735c67024f0c를 함께 인용한1A/3종 용도를 보존했고, 2016년 본사 준공은 원문seg_ab8142ec650942c5의 주체로 유지했다. 인용에 없는 수치0이며 두 기존 오류는 이2회에서 미재현이다. 최종 초안의 생산라인 설명은 탱크/설비 투자와 공정별FOOL PROOF를 보존하며 설립 연도를 새로 붙이지 않았다.1A/3종과2016년 연혁은 이번4쪽 선별 본문에는 없으므로 내용검증 통과를 그 두 문장 자체의 출력 검수로 오인하지 않는다. 사진/PDF/DOCX 배치·승인/다운로드는 이번 변경의 실검수 범위가 아니다.2회 표본을 전체 품질 보장으로 표시하지 않는다.
+- 실제 총8호출(company_info4/draft_sections2/content_review2), ledger 추정 합계 **$0.045042600**, 미확인 예약0. 초기 묶음 Temp/ddalgi-pptx-context-live-3nzmb11r($0.023274045), 최종 Temp/ddalgi-pptx-context-final-7_aq7hue($0.021768555)에 report/preflight-first/preflight/draft/validated-document/issues/Job JSON과 격리 DB/PPT가 있다. 기존 임시 검사 스크립트를 메모리에서 사용했으며 새 저장소 파일은 만들지 않았다.
+- BE-10/F-08 일반 품질 진행중 및 Agent 담당 상태 유지. 후속은 다른 PPT 배치·자료와 동일 입력 반복에서 오류율/사실 누락을 비교하고, 사용자가 실제 선택하는 분량·사진 포함 출력까지 검수하는 것이다. 기존 점검·문서는 자동 변경하지 않으며 새 AI 자료 점검부터 적용한다.
+
+- 운영 반영: 원본 시연 DB quick_check=ok·활성 Job0을 재확인한 뒤 현재 백엔드 프로세스만 종료/숨김 재기동했다. llm·내용검증400,000자·시연 DB 경로를 유지했다. backend8000 OpenAPI와 frontend5173 모두 HTTP200이며 프론트는 재시작/수정하지 않았다. 로그는 시스템 Temp/ddalgi-pptx-context-e1f921c4b988473fafee88a002b0250e.{out,err}.log, 백엔드 launcher PID24928이다. 현재 fix/real-material-publication-20261008의 자신의11개 변경만 로컬 커밋하고 원격 push는 하지 않는다.
+
+
+<a id="layout-heldout-evaluation-20261008"></a>
+### [F-02·08 / BE-03·04·10] 다른 PPT 배치와 실제 모호함·충돌의 대조 검수 (2026-10-08)
+
+- 직전537df37의 배치 전달이 특정 회사/한 장면에서만 동작하는지 확인하기 위해 프롬프트에 넣지 않은 합성 회사 예시배치기업의4종 PPT를 기존 tests/test_be04.py에 추가했다. 정상 두 열과 좌우/도형 저장 순서 변형은 같은 원문을 사용한다. 막처리A(알루미늄/22도/48시간), 세정B(스테인리스/35도/12시간), 출하 성능 보증 아님, 2018년 제2공장 준공/2022년 설비 교체가 비교 대상이다. 이 합성 내용은 실제 회사 자료가 아니며 사용자 DB에 등록하지 않았다.
+- 나머지2종은 같은 위치에 두 공정 제목이 있지만 소재·12/48시간의 공정별 대응이 명시적으로 미확정인 자료, 동일2024-12-31 A공장 설비대장4대/현장조사6대의 충돌 자료다. 원문이 모호하거나 충돌하는데 supported로 확정하지 않는지를 반대 사례로 확인한다. 예상 결과 객체는 시험용이며 모델 입력에 전달하지 않는다.
+- 새 결정적4건은 좌우 이동·역순에도 같은 텍스트와 해당 좌표/인용 위치를 보존하고, 겹친 제목에 코드가 임의 관계를 붙이지 않으며, 충돌 원문 양쪽을 유지하는지 검사한다. 기존 PPT 회귀 포함 **19 passed/64 deselected/경고1/3.91초**. 프로덕션 코드·프롬프트·모델·환경·API/DB에는 변경이 없어 전체1,468건을 불필요하게 반복하지 않았다.
+- 실제 gpt-6-luna/medium 추출은 합성 PPT→기존 파서→해시/문구 대응→SourceIn metadata→실제 SDK로4호출만 수행했다. 한도4회/$1, timeout120초/재시도0/입력40,000자/출력32,000토큰이며 원본 세션/DB/문서·승인·서버 실행에는 쓰지 않았다. 이번은 직접 Agent 추출 시험으로 HTTP Job/UI/초안/내용검증/출력 시험이 아니다.
+
+| 사례 | supported/확인필요/충돌/missing | 실제 판정 |
+|---|---|---|
+| 정상 두 열 | 6/0/0/10 | 공정별 제목+설명 인용, 소재/온도/시간/보증 제외·두 연혁의 주체 보존, Issue0 |
+| 좌우/저장 순서 변경 | 8/0/0/8 | 같은 핵심 관계/조건/인용 보존, Issue0 |
+| 대응 미확정 | 4/1/0/11 | 공정명 존재만supported, 소재/검사시간 대응은needs_confirmation 및 UNSUPPORTED_CLAIM blocker 유지 |
+| 같은 기준의4대/6대 충돌 | 4/0/1/9 | 두 후보와 각자의 원문 보존, VALUE_CONFLICT blocker 유지 |
+
+- 저장된 실제 응답을 다시 대조하는4사례 assertions도 통과했다. 정상 두 사례의 공정별 소재·수치·원문 인용과 보증 제외,2018년 공장/2022년 설비의 분리, 모호한 대응의 확정 금지,4/6대 후보별 직접 인용·blocker를 확인했다. 네 호출 모두 인용 밖 수치0. 정상 사례의supported 총수6/8은 회사 개요/사업/제품 분류 중복 차이이므로 문장·항목 구성까지 같은 결정적 응답이라고 표시하지 않는다. 핵심 의미/조건 보존은 이번 두 변형에서 확인됐으며 전체 필드 중복·더 큰 자료의 누락과 반복 안정성은 후속이다.
+- 총4호출, ledger 추정 **$0.005301420**, 미확인 예약0. 결과는 시스템 Temp/ddalgi-layout-heldout-lnl3j6kv의4개PPT·case-input/output.json·report.json에 있다. 프롬프트 SHA256=35666490b989a74f50c18ca651851f72e77eb24eb1fbf62bb841593fbce9e5fb. 합성 입력 생성기와 expected는 기존 회귀 파일에 보존해 같은 입력으로 재시험할 수 있다. 사례별1회이므로 일반 오류율·반복 결정성·실자료 전체 통과를 추정하지 않는다.
+- 현재 fix/real-material-publication-20261008에 시험/기록4개 파일만 로컬 커밋한다. 운영 코드는537df37 그대로이며 서버 재시작/프론트 변경/원격push는 없다. BE-10/F-08 일반품질 및 Agent 담당 상태 유지. 후속은 같은 의미의 항목 중복/긴 원문 누락과 사진 포함 실제 사용 흐름의 품질 검수다.
+
+
+<a id="recovery-branch-integration-20261008"></a>
+### 2026-10-08 최신 test/develop과 복구 작업 통합 (BE-06·10 / F-08)
+
+- 사용자 요청에 따라 두 저장소에 release/20261008-recovery-integration을 만들고 backend origin/test 3d99920과 frontend origin/develop 20b08a0을 병합했다. 백엔드 작업 문서 충돌은 양쪽 기록을 보존했다. 기존 Agent 품질 PR은 별도 범위로 유지한다.
+- 프론트 공개자료 import 호출에서 빠진 멱등 키·응답 유실 복구와 Job 성공/실패 안내를 복원했다. 새로 유입된 테스트 middleware가 실제 제외 API를 가짜 성공으로 바꾸고 있어 C-05가 연결된 점검으로 거절되는 문제가 재현됐다. 우회 middleware를 제거하고 실제 서버 저장·재전송·변경 반영·검증을 사용한다.
+- 통합 코드에서 tests/test_be06.py 전체 98 passed/경고1, frontend build/전체 ESLint 통과. 최종 PDF 격리 통합 36묶음/4쪽 승인·다운로드 통과(Temp ddalgi-ai-ui-kCq9Ef). 최초 통합 검사의 위 두 실패를 통과로 표시하지 않는다. 기존 500kB 번들 경고 유지. 실제 AI 호출·원본 시연 DB 쓰기·환경 설정 변경 없음.
+- API1.9/DBv11·BE-10/F-08 진행중·Agent 담당 상태 유지. 실제 AI 일반 품질과 추가 자료 검수는 별도이며 모든 오류 해결을 선언하지 않는다.
+
+
+<a id="customer-purpose-quality-baseline-20261008"></a>
+### 2026-10-08 고객 목적 3종의 실제 LLM·정보 전달·출력 대조 (BE-04·06·07·10 / F-08)
+
+- 첨부 message (3).txt의 후속 공통 검수다. 기존 Agent 품질 PR #41(feat/agent-quality-eval, a902265)의 오프라인 비교/stage_runner와 결과를 읽었다. 해당 PR은 아직 미병합이며 현재 test에 없는 template_v13/정책/프롬프트를 임의 반영하지 않았다. 이번 기준은 병합된 backend test 35ce245의 제품 코드이며 실제 사용자의 세션/원자료는 바꾸지 않는다.
+- 기존 tests/test_be04.py에 공통 가상 원문 CUSTOMER_QUALITY_SOURCE와 목적3종 CUSTOMER_QUALITY_CASES/customer_quality_brief를 보존했다. 예시정공의 공정·CNC/측정기·알루미늄 시편200mm·ISO9001 시험부품 제조/2025~2027·시편 염수분무168시간/양산 보증 아님·연구용 지그 적용 사례가 대상이다. 납기 기능/평가는 넣지 않았다. 정답 presence probe는 별도 평가 정보이며 Agent에게 전달하지 않는다. 목적별 핵심 내용을 required_fields로 API에 지정한 시험이며 현재 프론트의 필수항목 선택 UI를 검사한 결과는 아니다.
+- 신규/기존 결정적6건은 목적/필수 필드와 원문 구간·조건·위치·버전이 실제 analyze 입력까지 유지되고 probe/rubric이 Source.metadata에 섞이지 않는지 확인했다. 6 passed/80 deselected/기존 경고1. MockAgent를 의미 품질 평가에 사용하지 않았다.
+- 실제 LLM은 새 격리DB/세션3개에서 HTTP 업로드→파싱→선택→점검→명시 확인한 초안→내용 검사로 실행했다. gpt-6-luna/reasoning medium/timeout120초/SDK 재시도0/입력40,000자/출력32,000토큰/검증400,000자, 총9호출/$1 상한. interactive ledger의 기능별 시험 제한을 해제하되 외부 requester에서 전체9호출을 고정해 초과 호출을 막았다. 실패를 추가 AI 호출로 복구하거나 반복하지 않았다. 원문 파일 SHA256=04ad8b282640b69aa7b45d3e356d79f227bed063af1a68cdb81f4136f964eec6.
+
+| 목적 | 추출 사실 수 | 핵심 probe: 사실→초안→PDF | 내용 검사 | PDF/DOCX 실제 배치 |
+|---|---:|---|---|---|
+| 품질 담당 | 17 | 인증 범위/기간·시편 시험/보증 한계2묶음 모두 유지 | failed: 확인필요1 | 각각1쪽/통과 |
+| 생산기술 담당 | 17 | 공정·설비·소재/200mm3묶음 모두 유지 | failed: 확인필요1+표현 지적1 | 각각1쪽/통과 |
+| 신규 고객 | 16 | 브래킷/커버·연구용 지그 적용2묶음 모두 유지 | failed: 확인필요1 | 각각1쪽/통과 |
+
+- 원문11줄은 세 파싱 입력 모두 유지됐다. 핵심 presence7묶음은 사실→Block.content.text→PDF 추출 텍스트에 각각 남았고 해당 문단을 직접 읽어 인증 범위/기간, 시험시편/양산 보증 제외, 소재·가공길이, 지그 적용 주체를 대조했다. 이7묶음은 전체 사실 recall/전체 의미 정확성/동일 응답 안정성을 뜻하지 않는다. 프론트 브라우저·이미지·4/6/8/10쪽·최종 승인/다운로드는 이번 범위가 아니다.
+- 모든 목적의 확인필요1건은 원문에 명시한 ‘다른 소재의 가공 한계는 확인 필요’다. supported로 승격하지 않았고 본문은 알루미늄 범위를 유지했다. 품질/신규고객 목적에서는 기존 명시 제외 API로 처리 가능한 선택 항목이다. 생산기술은 시험에서 capabilities를 필수 지정했으므로 제외 불가이며 추가 근거가 필요하다. 필수 설정을 몰래 해제하거나 저장 결과를 자동 제외하지 않았다.
+- 생산기술의 실제 초안은 ‘중성 염수분무 시험을168시간 실시했다’로 작성했고 content_review는 원문의 ‘시험 시간은168시간’에 시험 완료가 명시되지 않았다는 VALUE_MISMATCH를 생성했다. 같은 문장의 ‘시험시편 결과’ 표현도 고려해야 하므로 객관적 잘못이라고 단정하거나 모든 완료 동사를 금지하지 않는다. 원문대로 ‘시험 시간은168시간이며 … 보증은 아니다’로 쓰면 불필요한 완료 해석을 줄일 수 있다. 이는 날짜/숫자 손실과 구분한 작성·검사 해석 차이이며 후속 비교 대상이다.
+- 실제 Job9개 trace에서 모두 actual_mode=llm/model=gpt-6-luna와 단계 참조를 확인했다. Job succeeded는 내용 passed가 아니다. PDF/DOCX는 실제 renderer/LibreOffice로 각1쪽 layout_ok=true·not_checked0을 확인했지만 검사 failed 문서를 승인/배포하지 않았다. 격리 렌더는 테스트 산출물이다.
+- 총9호출의 ledger 추정 합계 $0.013376465/미확인 예약0이다. 결과는 시스템 Temp/ddalgi-customer-quality-f9iaxqi8의 report/rubric/source·목적별 preflight/draft/validated/issues/Job JSON·PDF/DOCX와 격리DB에 있다. 실행 도구는 시스템 Temp/ddalgi-customer-quality-20261008.py다. 최초 presence 집계가 존재하지 않는 Block.text를 읽어 비어 있었으므로 저장한 결과에서 실제 Block.content.text/items를 읽도록 재집계했다. AI 재호출/본문 수정 없이 보정했으며 report.measurement_note와 코드/프롬프트 SHA256에 남겼다. PDF PNG는 로컬 fitz 미설치로 미생성했고 시각 육안 검수로 보고하지 않는다.
+- 이번은 목적별1회 baseline이다. BE-10/F-08 일반품질/Agent 상태는 진행중 유지. 다음은 같은 원문에서 시험 시간/수행 상태 표현을 대조하고, 확인필요의 선택 제외·필수 근거 보완 후 기존 초안을 유지한 재검증을 실제 LLM으로 확인하는 것이다. 제품 프롬프트·정책·API/DB·.env·원본 시연 DB·프론트는 변경하지 않았다.
+
+
+<a id="test-state-and-evidence-recovery-20261008"></a>
+### 2026-10-08 시험 조건/수행 상태 보존과 실제 LLM 복구 검수 (BE-04·06·07·10 / F-08)
+
+- 직전 생산기술 결과를 단계별로 다시 대조했다. ‘168시간 실시했다’는 처음 초안 작성에서 생긴 문구가 아니라 저장된 추출 사실 F006.value에 이미 존재했다. 초안은 같은 사실 문구를 사용했다. 원문의 ‘시험시편 결과’가 수행을 함의하는지 검토 모델과 추출 모델의 해석이 달랐으므로 숫자 손실/프론트 표시 오류로 분류하지 않는다. 이전 기록의 작성·검사 해석 차이를 추출 단계까지 좁힌 결과다.
+- app/prompts/extract.txt와 app/prompts/draft.txt에 시험 조건/시간/규격과 실제 수행/완료/통과를 구분하는 공통 지침을 추가했다. 조건만 있는 자료에서 완료·합격을 추가하지 않고, 명시적인 수행/완료/판정은 유지한다. 특정 회사·고정 수치·동사 일괄 금지나 저장 사실 자동 치환은 없다. 기존 tests/test_be04.py에 조건만/실시 명시/완료 명시3종 CUSTOMER_TEST_STATE_CONTROLS를 보존했다. 기존 API/DB/검증·승인 정책과 SDK 설정·모델은 변경하지 않았다.
+- 결정적 회귀: tests/test_agent_llm.py/test_be04.py/test_be06.py **1,460 passed/기존 경고1/164.51초**. 준비된 응답·임시DB 회귀이며 실제 모델 품질 평가는 아래 호출로 별도 확인했다.
+- 실제 추출 대조3회(gpt-6-luna/medium)는 같은 소재·시험 방법·168시간·시편/양산 보증 제외에 수행 상태만 달리한 원문을 사용했다. 조건 사례는 ‘시험 시간168시간으로 기재’, 실시 사례는 ‘168시간 실시’, 완료 사례는 ‘실시하고 완료’로 각각 supported 사실을 유지했다. 각 원문의 조건과 인용을 함께 대조했고 완료/합격을 조건 사례에 추가하지 않았다. 3회 표본이며 모든 어순/표현·반복 안정성을 증명하지 않는다.
+- 첫 복구 준비는 직전 평가DB의 복사본에서 409 IMPACT_HISTORY_UNAVAILABLE로 중단됐다. 원인은 해당 평가DB가 기본 초기화의 legacy v9였기 때문이며 운영 DB 오류가 아니다. 보호된 v9를 임의로 v11로 바꾸거나 오류를 우회하지 않았다. 첫 묶음은 상태 대조3호출만 실행했고 API 거절 후 추가 호출은0이다.
+- ORMv11 새 격리DB에서 직전 **실제 저장 응답**을 baseline fixture로 재사용했다. 동일 합성 원문을 새 세션에 업로드하고 정확히 같은 인용 문구에 새 source/segment ID만 대응했다. CachedBaseline의 analyze/draft는 저장된 사실/문서 재현이며 새 실제 LLM 추출/작성으로 보고하지 않는다. 이후 validate와 보완 자료 analyze만 실제 OpenAIRequester를 사용한다. 원본 사용자 시연 DB/세션/자료는 읽거나 변경하지 않았다.
+
+| 복구 행동 | 실제 결과 |
+|---|---|
+| 품질용 미사용 선택 사실 명시 제외→C-05 적용 | 본문/쪽 구성 그대로·revision1회 증가·같은 키 재전송1회 적용·실제 내용검증passed |
+| 생산기술용 필수 확인필요 사실의 제외 시도 | 422 차단 유지 |
+| 생산기술용 시험 문구를 원문의 시간 표현으로 저장→검사 | 참조/나머지 문구 보존·시험 VALUE_MISMATCH 지적 해소·필수 확인필요는 유지 |
+| 확인된 스테인리스 시편100mm를 포함한 합성 보완 자료 선택→재점검 | 실제 추출의 확인필요0/Issue0·명시 적용 전 기존 문서 불변 |
+| 새 근거를 명시 연결하고 확인된 스테인리스 문단1개 추가→C-05 | 같은 문서ID·기존 모든 content 보존·revision1회·멱등 재전송1회 적용·실제 내용passed/미해결0 |
+
+- 보완 자료의 최신 fact값/원문/행을 직접 읽고 이전 사실9개와 대응시킨 reference_updates를 명시 선택했다. 서버가 일치한다고 보장하지 않은 근거를 사용자 모르게 자동 연결하는 제품 기능을 만든 것이 아니다. 필수로 지정된 새 가공 범위 사실은 원문 값·fact_id·evidence_refs를 가진 문단1개로 명시 추가했다. 실제 회사에 스테인리스100mm 조건이 있다고 주장하지 않으며 합성 시험에만 존재한다.
+- 보완 후 기존 문서의 PDF/DOCX 실제 렌더는 각각1쪽/layout_ok=true/not_checked0이다. 승인/배포하지 않았다. 별도의 실제 초안 작성1회는 보완된 same-source Facts/Brief로 실행했고 기존 문서에 저장/적용하지 않았다. 그 시험 문구는 ‘시험 시간은168시간으로 기재…양산 제품의 성능 보증은 아니다’여서 이번 사례의 수행 해석은 재발하지 않았다. 이 미저장 초안 자체의 전체 의미 검사/출력은 별도이며 복구된 문서의 검증/배치 통과와 혼동하지 않는다.
+- 실제 총8호출: 상태추출3+품질 재검증1+생산기술 편집 검증1+보완추출1+보완 적용 검증1+미저장 작성1. SDK 재시도0/timeout120초/입력40,000자/출력32,000토큰/검증400,000자, 각 단계 외부 호출 상한3/3/2와 확정 비용·예산으로 전체$1 안에 제한했다. ledger 추정 합계 **$0.008815460/미확인 예약0**이며 청구서 실금액이 아니다. 자동 재추출·자동 사용자 문서 재생성·추가 반복은 없다.
+- 상태 결과/첫 거절은 Temp/ddalgi-state-recovery-k1z_31lv, ORM 복구·최신 점검/본문/Job/Issue·PDF/DOCX·미저장 초안은 Temp/ddalgi-state-recovery-orm-mtwlc2_t에 있다. 실행 도구는 Temp/ddalgi-state-recovery-20261008.py/ddalgi-state-recovery-orm-20261008.py/ddalgi-state-recovery-apply-20261008.py다. extract/draft SHA256=3b71d215ec96b0d343181c0eefdb1d35bedf1b66ec377aa2a8d5f0861b560f9c/5d2fff73df7ddb6308ad2a225853daab90d91d6a6b8c5e455dc170945da58f28. 새 저장소 파일/의존성/프론트 변경 없음. 프롬프트는 요청마다 읽으므로 다음 자료 점검/작성부터 반영하며 기존 사용자 결과는 자동 수정하지 않는다.
+- BE-10/F-08 일반 품질과 Agent 담당 상태는 유지한다. 다음은 다른 회사·긴 자료·다른 분량에서 같은 상태/범위가 유지되는지 비교하고, 실제 프론트에서 보완 자료와 신규 필수 사실 선택을 끝까지 수행하는 화면 검수다. 이번 완료는 위 대조/복구 표본에 한정한다.
+
+<a id="supplement-required-ui-recovery-20261008"></a>
+
+### 2026-10-08 보완 자료 적용 후 새 필수 사실의 화면 복구
+
+- BE-06·10/F-08 연결. 백엔드 작업 브랜치는 eval/customer-purpose-quality-20261008, 프론트는 release/20261008-recovery-integration에서 만든 test/supplement-required-ui-20261008이다. 기존 `.claude/`는 보존한다. 프론트 usePublication.ts·기존 check-ai-workflow.mjs·README.md와 백엔드 기존 계획/현황 문서만 변경한다. 백엔드 실행 코드/API/계약/DB 스키마/프롬프트/환경 설정 변경은 없다.
+- 기존 PDF 통합 조합36묶음은 먼저 Temp ddalgi-ai-ui-KSdwMU에서 통과했다. 새 --supplement-required는 동일 합성 원문을 가진 대체 자료에 알루미늄 시험시편200mm 대응 범위를 추가한다. 격리 세션 inputs API로 required_fields와 expected_input_revision을 설정하는 단계는 시험 준비이며 작성 조건 화면의 구현을 새로 확인한 것으로 보고하지 않는다. 이후 선택·재점검·근거 연결·반영·필수 사실 추가는 실제 UI/서버에서 실행한다.
+- **제품 문제 재현:** C-05 적용 응답을 잃고 새로고침하면 서버는 반영 완료/input_review_required=false인데 프론트가 예전 boundPreflightId를 유지했다. 새 supported 대응 범위의 실제 REQUIRED_MISSING은 화면에 나왔지만 ‘자료 변경 반영을 먼저 마쳐 주세요’라는 잠금으로 추가할 수 없었다(Temp ddalgi-ai-ui-YdGpaj). 기존 통합 검사는 곧바로 새 점검/C-05를 실행해 이 잠금을 놓쳤다.
+- **수정:** 조회한 review.status가 applied이고 pending recovery가 있을 때 review.preflight_id를 boundPreflightId로 복원한다. applyImpact의 이미 적용된 요청 확인 경로에도 같은 처리를 넣었다. 최신 점검이 따로 변경됐으면 기존 ID 불일치 차단은 유지한다. 서버의 근거/필수/승인 검사를 약화하거나 확인필요 사실을 supported로 바꾸지 않는다.
+- **수정 후 화면 확인:** 필수 사실과 페이지를 각각 선택해야 추가 가능·같은 문서ID/원문 값/최신 fact·refs 저장·문서 revision1회 증가·기존 모든 블록 보존·실제 필수 blocker0·기존 안내 문구 경고 유지·새로고침 후 중복 추가 대상 제거·추가 과정에서 분석/초안 요청 증가0. 각 최종 실행의 초안 요청은1회이며 의도적인 점검/응답 유실 재요청은7회다. 경고가 남은 needs_review를 전체 passed로 부르지 않으며 최종 승인 전 별도 경고 처리도 수행했다.
+- **최종 확인:** `AI_CHECK_BACKEND=C:/final/backend`, `AI_CHECK_LIVE=0`의 `node scripts/check-ai-workflow.mjs --publication --impact --supplement-required --photos --required-insert`는 PDF4쪽/27,426바이트 승인·동일 바이트 다운로드까지 PASS(Temp ddalgi-ai-ui-RpGeUm). 같은 명령의 --docx는 실제 LibreOffice DOCX4쪽/2,410,968바이트 승인·동일 바이트 다운로드까지 PASS(Temp ddalgi-ai-ui-z49PIe). 새 점검 후 이전 C-05 무효화, 정상 반영/Job 추적, 사진/본문 보존, 필수 회사명 추가/연결 문구 복구, 넘침 승인 차단, 편집 후 옛 다운로드 차단·종료 정리도 포함한다. 중복 검사를 합산하지 않는다.
+- build·변경 TS/검사 스크립트 ESLint·git diff --check 통과. 기존 JS 청크507kB 경고 유지. 첫 샌드박스 실행은 캐시 EPERM/브라우저 실행 제한, 추가 시험 준비는 버전 필드 누락/복원 탭 선택 대기 실패가 있어 수정 후 재실행했다. 별도 경고가 남은 결과를 passed로 기다리던 검사 조건도 needs_review/실제 blocker0로 바로잡았으며 제품 경고 기준은 유지했다.
+- 실제 사용자 시연 DB·자료/세션·API 키는 사용하거나 변경하지 않았고 유료 호출0이다. 이번 결과는 가상 AI의 실제 브라우저/API/파일 출력 회귀이며 직전 실제 LLM 복구 시험을 대체하지 않는다. BE-10/F-08 일반 품질·Agent 상태는 진행중 그대로다. 다음은 다른 회사·장문/표 자료·분량의 실제 LLM 품질 비교이며 모든 오류의 자동 해결 완료로 보고하지 않는다.
+
+<a id="heldout-long-table-quality-20261008"></a>
+
+### 2026-10-08 다른 회사·장문 DOCX 표의 실제 품질 비교
+
+- BE-04·06·07·10/F-08 연결, 기존 eval/customer-purpose-quality-20261008에서 진행했다. 실제 회사 자료 대신 이전 예시정공과 다른 가상 회사 예시유체를 사용했다. 기존 tests/test_be04.py의 LONG_TABLE_QUALITY_ROWS/배경/평가 기준/바이트 생성 함수와 파서→Agent 입력 회귀2종을 추가했다. 새 저장소 파일·의존성·프론트/SDK/API/DB/환경 설정 변경은 없다. 기존 설치된 python-docx로 시험 입력을 만들었고 제품의 새 출력 엔진을 추가한 것이 아니다.
+- 핵심10행이 같은 TXT526자/10구간과 DOCX4,832자/95구간(배경 문단72개+표)을 비교했다. 문서 형식·길이·배경이 함께 달라지는 견고성 표본이지 길이만의 인과 효과나 모든 DOCX 표의 품질을 측정한 것은 아니다. 같은 목적·필수 capabilities/technology/certifications/lead_time·4쪽 Brief를 사용했다. 표는 실제 셀 locator(table/row/col), TXT는 실제 line locator를 가진다. 시험 정답/평가 기준은 모델 입력에 넣지 않는다.
+- 핵심4묶음은 소재별 알루미늄200mm/스테인리스100mm, 시험시편의35L/min/0.6MPa·물20±2°C·1,450rpm·양산 보증 제외, ISO9001 조립 범위/2025-01-01~2027-12-31, 표준 주문 도면 승인 후 영업일7일/시제품 사양 확정 후 영업일20일이다. 토큰 존재 검사는 공백/천 단위 쉼표를 정규화한 보조 측정이며 의미 판정과 구분한다. 실제 fact/본문/인용을 읽어 조건의 연결과 공정 순서 미지정을 함께 확인했다.
+
+| 단계 | TXT | 긴 DOCX 표 |
+|---|---|---|
+| 처음 실제 추출 | supported15/전체19, 확인필요·충돌0 | supported18/전체21, 확인필요·충돌0 |
+| 처음 실제 초안/검증 | 핵심4묶음 보존, needs_review/중복 경고1 | 핵심4묶음 보존, needs_review/중복 경고1 |
+| 작성 지침 보완 후 저장 추출 재사용 | 핵심 보존, passed/문제0 | 핵심 보존, needs_review/중복 경고1 유지 |
+| 남은 문단의 명시 수정 후 실제 검증 | 추가 수정 없음 | 같은 문서 revision2, passed/문제0 |
+
+- 처음 중복은 company_summary/business_areas가 같은 연구용 냉각 모듈 조립·시험을 서로 다른 말로 두 번 설명한 것이다. app/prompts/draft.txt에 같은 제품·업무 설명은 한 문장으로 합치고 사용하는 사실·근거를 함께 연결하되 서로 다른 조건은 보존하도록 추가했다. TXT는 재발하지 않았지만 긴 DOCX에서는 재발해 **작성 지침만으로 자동 제거 완료라고 보고하지 않는다**. TXT의 재작성 구성 기록은 중복 business_areas를 excluded로 설명했고 저장된 추출 사실은 그대로다. 모든 원래 사실 ID가 새 본문에 들어갔다고 주장하지 않는다.
+- 긴 DOCX의 실제 저장 응답은 새로 소유한 격리 세션에 재현했다. locator와 원문 excerpt가 유일하게 일치하는 경우에만 source/segment ID를 대응했다. 재현 analyze/draft는 새 실제 호출이 아니다. 지적된 첫 문단을 ‘예시유체는 연구용 냉각 모듈을 조립하고 시험하는 가상 기업입니다.’로 명시 PATCH하고 두 연결 사실 ID/근거·나머지 모든 블록을 보존했다. 실제 전체 의미 검사1회는 passed/미해결0이며 재추출·재생성은 없다. 제품의 사용자 자동 적용 기능을 새로 만든 것이 아니고 이번 수정 확인은 기존 API로 수행했다. 화면 저장/검사 경로는 직전 브라우저 회귀와 구분한다.
+- 각 초기·재작성 결과의 PDF/DOCX는 실제4쪽/layout_ok=true/not_checked0이었다. 경고 수정 후 revision2도 두 형식의 실제4쪽 배치가 통과했다. 최종 승인/외부 공개는 실행하지 않았고 사용자 원본 시연DB/자료/세션은 읽거나 수정하지 않았다. 렌더 결과 및 PDF 텍스트 확인이며 별도의 픽셀 단위 디자인 검수는 아니다.
+- 실제 호출은 첫 비교6회(추출2/작성2/검증2), 저장 추출 재사용 후 작성/검증4회, 명시 수정 검증1회로 **11회**다. 각 묶음의 외부 상한6/4/1을 고정했고 SDK 재시도0, timeout120초, 입력40,000자/출력32,000토큰/검증400,000자, gpt-6-luna/medium을 유지했다. 비용 확인 후 다음 묶음의 예산을 줄여 누적$1 안에서 진행했으며 실제 ledger 추정 합계 **$0.026045935/미확인 예약0**이다. 청구서 실금액이나 반복 안정성의 통계 추정은 아니다.
+- 회귀는 파서/입력 보존 선택5건 통과 후 test_agent_llm.py/test_be04.py/test_be06.py **1,462 passed/기존 경고1/170.59초**다. git diff --check 통과. 준비 중 지원되지 않는2쪽/SourceIn dataclass 저장 호출/배타적인 ledger 옵션이 거부됐으며 모두 유료0호출이었다. 기존 시험 클라이언트의 소유 쿠키 없이 조회한 요청도401로 거부됐고 소유 정책을 우회하지 않고 새 소유 세션에 재현했다.
+- 최초 결과는 Temp/ddalgi-long-table-quality-6if6n4_d, 재작성/명시 복구/최종 파일은 Temp/ddalgi-long-table-rewrite-6de2j2lv(report.json/warning-recovery.json)에 있다. 실행 도구3개는 Temp/ddalgi-long-table-quality-20261008.py, ddalgi-long-table-rewrite-20261008.py, ddalgi-long-table-warning-recovery-20261008.py다. 원문 생성 fixture와 평가 기준은 기존 테스트 파일에 남겼다.
+- BE-10/F-08 일반 품질·Agent 담당 상태는 유지한다. 다음은 자연스럽게 작성된 장문·여러 자료의 실제 상충/시점 부족 사례와 확인필요 보완 경로다. 회사 개요의 의미상 중복은 자동 작성에서 여전히 발생 가능한 경고이며, 이번에 명시 편집으로 해결됨을 확인한 것과 재발 방지 완료를 혼동하지 않는다.
+
+<a id="multisource-date-conflict-recovery-20261008"></a>
+
+### 2026-10-08 여러 자료의 날짜별 설비 현황과 실제 충돌 복구
+
+- BE-04·06·07·10/F-08 연결. eval/customer-purpose-quality-20261008에서 기존 tests/test_be04.py에 가상 회사 예시표면의 두 자료 fixture와 날짜/본문/출처/버전/구간 locator 전달 회귀2건을 추가했다. 자료 A/B의 기준일이 다른 경우(2022년3개/2026년4개), 같은 경우(2026년3개/4개)를 구분한다. 평가 항목은 capabilities이며 정답표를 모델 입력에 넣지 않는다. 새 저장소 파일·의존성·백엔드 실행 코드/프롬프트/API/DB/프론트/.env 변경 없음.
+- 최초 시험은 설비 라인 수를 process_count 필수로 잘못 지정했다. 모델은 capabilities로 분류했고 process_count는 missing이므로 초안 후 REQUIRED_MISSING이 발생했다. can_generate=true와 열린 VALUE_CONFLICT가 함께 나오는 것은 계약의 검토용 초안 허용 정책이며 최종 승인 통과를 뜻하지 않는다. 앞서 이 두 결과를 제품 오류로 단정한 설명을 정정한다. 설비 현황 제목/필수 capabilities로 시험 조건을 맞췄으며 제품의 필수·충돌 검사를 완화하지 않았다.
+- 두 번째 시험은 날짜별 본문/검증 통과, 같은 날짜의 capabilities 충돌과 초안 미해결 blocker 보존, 필수 충돌 제외422 RESOLUTION_NOT_ALLOWED까지 확인했다. 자료 B 재선택/재점검 후 다시 drafts를 POST하자409 DOCUMENT_EXISTS가 반환됐다. 이미 문서가 있는 경우 편집을 이어가라는 정상 보호이며 이 부분은 시험 경로 오류다. 세 번째 시험은 기존 C-05 반영 경로로 고쳤다. 준비 중 ledger max_calls9도 기존1~8 상한으로 거부됐고 유료0호출이었다. 최종 상한8을 유지했다.
+
+| 최종 실제 시험 | 결과 |
+|---|---|
+| 서로 다른 기준일 | 2022-10-01의3개/2026-10-01의4개를 각 원문 근거와 함께 초안에 보존. 실제 내용검증passed/열린 문제0, PDF·DOCX 각1쪽/layout_ok=true/not_checked0 |
+| 같은 기준일의 상충 | capabilities.status=conflict와3개/4개 원문 후보·VALUE_CONFLICT 유지. 초안에는 충돌 수치를 확정해서 쓰지 않고 문서 Issue(origin=preflight/blocker/open)에 보존. 필수 항목 제외422. 이 상태의 추가 유료 내용검증/승인/출력은 실행하지 않음 |
+| 명시적 자료 B 재선택 | 입력revision3의 새 점검은 충돌0. 최신 회사명/개요 근거와2026년4개 설비 fact를 직접 대조·명시 선택해 C-05 반영. 기존 문서ID/기존 모든 block.content 보존, 새 문단1개, revision1→2 한 번 증가. 실제 재검증passed/열린 문제0, 이전 충돌 Issue는resolved. PDF·DOCX 각1쪽/layout_ok=true/not_checked0 |
+
+- 최종 source/segment/fact 인용과 출력용 본문을 직접 읽었다. field_key가 같은 supported 후보가 유일한 경우만 시험에서 선택했고 기존 개요가 원문과 맞는지 확인했다. 제품의 자동 근거 교체/자동 수치 선택 기능을 추가한 것이 아니다. 실제 브라우저에서 이번 자료로 조작한 결과나 픽셀 디자인 검사로 보고하지 않는다. 최종 승인/다운로드는 실행하지 않았다.
+- 최종 결정적 회귀는 test_be04.py/test_be06.py 중 자료 전달2건·초안 진입 정책10건·미참조 충돌의 부분 검증/승인 차단1건 **13 passed/175 deselected/기존 경고1/9.54초**. 마지막 항목은 실제 LLM 호출 없는 API 회귀이며 위 유료 표본의 승인 검사를 대신 실행했다고 혼동하지 않는다. 앞선12건/2건과 중복 합산하지 않는다.
+- 실제 호출은 최초 조건 오류4회($0.004366250), 기존 문서 재생성 시험 오류까지6회($0.007150600), 최종 C-05 복구7회($0.005503330), 총17회/ledger 추정 합계 **$0.017020180/미확인 예약0**이다. 최종7회는 추출3/작성2/검증2이며 추가 자동 재시도0, gpt-6-luna/medium/timeout120초/입력40,000자/출력32,000토큰/검증400,000자를 유지했다. 외부 호출 상한은7/8/8, 묶음 예산은1/0.9/0.9달러였으며 다음 묶음 전 확정 비용을 확인해 누적1달러 이내로 제한했다. 최종 실행 승인 설명의0.80달러는 오기이고 실제 ledger 제한은0.90달러다. 비용은 청구서 실금액이 아니다.
+- 결과는 시스템 Temp/ddalgi-multisource-time-ga2enexx(조건 오류), ddalgi-multisource-time-krw8xc4s(중복 생성409), ddalgi-multisource-time-6hwknwlx(최종)의 report/preflight/draft/issues/recovered-document JSON·격리 ORMv11 DB·PDF/DOCX에 있다. 도구는 시스템 Temp/ddalgi-multisource-time-20261008.py이다. 원래 사용자 DB/자료/문서는 사용하거나 변경하지 않았다.
+- BE-10/F-08 일반 품질과 Agent 담당 상태는 진행중 그대로다. 이번 한 세트의 성공을 모든 수치/날짜 충돌 해결이나 통계적 반복 안정성으로 표시하지 않는다. 다음은 같은 입력의 제한된 반복 측정과 기준일이 빠진 자료의 확인필요/보완 경로다. 자신의 시험/문서4개 파일만 로컬 커밋하며 원격push는 하지 않는다.
+
+<a id="extraction-repeat-classification-20261008"></a>
+
+### 2026-10-08 동일 입력5회 추출과 설비 현황 분류 보완
+
+- BE-04·10/F-08 연결. eval/customer-purpose-quality-20261008에서 직전 예시표면의 같은 두 자료(2022-10-01의3개/2026-10-01의4개)와 필수 capabilities를 사용했다. 같은 세션·선택 source/version/segment·Brief·input_revision으로 서로 다른 멱등 키의 점검을5회 실행했다. 호출 전 AnalyzeRequest 전체 SHA256은 각 묶음 안에서5회 동일했다. 제품의 자동 반복 호출 기능이나 새 캐시는 만들지 않았다. 비교 전후는 별도 소유 격리 DB여서 source/segment ID·전체 입력 해시는 묶음 간 다르지만 같은 fixture 원문/조건/모델을 유지했다.
+- 기존 tests/test_be04.py에 기준일 없이 같은 회사의 설비 수가3개/4개로 기재된 fixture만 추가했다. 기존 입력 보존 회귀가 그 자료도 포함한다. app/prompts/extract.txt의 분류 문단에 회사의 설비·라인 수 현황을 capabilities로 분류하고, 과거/기준일 미기재/가상 회사라는 이유만으로 other_info로 옮기지 않도록1문단 추가했다. 현재 능력·실적 보증으로 승격하지 않고 회사 현황과 다른 주문/시험 사례는 분리한다. 전체 프롬프트·모델·서버 판단 코드·프론트/API/DB/환경 파일을 바꾸지 않는다.
+
+| 측정 | 보완 전5회 | 보완 후5회 |
+|---|---|---|
+| 실제 점검 Job 성공 |5/5 |5/5 |
+| 두 기준일·수치의 원문 기록 보존(필드 구분 없이 수동 대조) |5/5 |5/5 |
+| 두 사실이 필수 capabilities의 supported로 보존 |3/5 |5/5 |
+| 날짜·수치의 근거 밖 토큰 |0/5 |0/5 |
+| 다른 시점의 값을 잘못 충돌 처리 |0/5 |0/5 |
+| capabilities의 숫자·상태·전체 인용 집합 서명 종류 |2종 |2종 |
+
+- 보완 전4·5회는 날짜/수치/원문이 other_info에 있어 원문 정보 자체가 사라진 것은 아니지만 capabilities가 missing이었다. 이는 필수 내용 충족에 영향을 줄 수 있는 실제 분류 흔들림이다. 해당 두 결과를 초안/내용검증까지 실행해 REQUIRED_MISSING을 재현한 것은 아니며, 입력 분류 결과와 후속 실패 가능성을 구분한다. 다른 항목의 문구·제품서비스 포함 여부도 달랐으므로 모든 추출 사실이 동일해졌다고 말하지 않는다.
+- 보완 후5회는 같은 핵심 수치/날짜의 원문 segment를 모두 보존했다.2·5회는 같은 자료의 회사 개요 인용을 추가해 가상 기업 문맥을 연결했다. 전체 인용 목록까지 완전히 같은 결과는 아니지만 핵심 인용을 다른 것으로 대체하거나 근거 밖 수치를 추가한 것은 아니다. 숫자 토큰 검사는 공유 numeric_evidence_tokens를 사용한 보조 측정이고 의미/주체/현재성 검사는 실제 facts/value/원문을 읽어 대조했다. 정답·서명 측정은 모델 입력에 넣지 않는다.
+- 기준일 없는3개/4개 자료는 보완 전후 각각1회 실제 점검했다. 양쪽 원문 후보를 보존한 VALUE_CONFLICT/blocker이며 원문에 없는 날짜·현재 값을 확정하지 않았다. 보완 후에는 capabilities에 충돌이 연결된다. 이어 날짜가 명시된 자료 B를 새로 첨부하고 명시 선택·새 input_revision으로 점검하면2026-10-01의4개가 supported/capabilities이고 열린 blocker0이었다. 기존 무기준 자료에 날짜를 자동 붙인 것이 아니라 사용자가 다른 자료를 명시 선택하는 경로다. 이번 단계는 추출까지이며 초안·C-05·내용 검증·PDF/DOCX·승인/다운로드를 추가 실행하지 않았다. 직전 표본의 전체 복구 결과와 혼동하지 않는다.
+- 최종 관련 회귀는 자료 입력/초안 진입 조건·기준일 없는 기록·개별 fact 상태·출처/구간 메타·가상 제품/조건 보존 **49 passed/1,318 deselected/기존 경고1/9.20초**다. 보완 전23건과 중복 합산하지 않으며 SDK 대역 시험을 실제 모델 품질로 계산하지 않는다. git diff --check 통과. 새 저장소 파일/의존성 추가 없음.
+- 실제 총14호출(company_info7+7), 각 묶음 외부 호출 상한7/ledger 예산0.5달러/재시도0. 두 번째 실행 설명의0.4달러는 오기이며 실제 ledger 제한은0.5달러이고 실제 누적 지출은1달러 이내다. gpt-6-luna/medium/timeout120초/입력40,000자/출력32,000토큰/검증400,000자 유지. 추정비용은 전$0.003774000 + 후$0.005879085 = **$0.009653085/미확인 예약0**으로 청구서 실금액이 아니다. 반복 횟수/성공률은 이 한 세트의5회 표본이며 모집단 오류율이나 통계적 개선 보장이 아니다.
+- 전 결과는 시스템 Temp/ddalgi-extraction-repeat-ns3mgh59, 후 결과는 Temp/ddalgi-extraction-repeat-ggzxiha1의 report/dated-1~5-preflight/undated-preflight/supplemented-preflight/Job JSON·격리 ORMv11 DB에 있다. 도구는 Temp/ddalgi-extraction-repeat-20261008.py다. 원본 사용자 DB/등록 자료/문서를 변경하거나 로그에 API 키를 출력하지 않았다.
+- 지침은 다음 AI 자료 점검부터 읽히며 기존 저장된 점검/문서를 자동 변경하지 않는다. BE-10/F-08 일반 품질·Agent 담당 상태는 유지한다. 자신의 지침·기존 테스트·계획/현황5파일을 로컬 커밋하며 원격push는 하지 않는다. 다음은 다른 자연스러운 회사/문서의 필수 항목 분류와 주체·조건 누락을 제한된 표본으로 확인하고, 실제 미해결 항목의 사용자 화면 조치가 부족한 경우에만 수정한다.
+
+<a id="natural-equipment-quality-20261008"></a>
+
+### 2026-10-08 다른 회사의 문장 자료·설비 귀속·시편 조건 검수
+
+- BE-04·06·07·10/F-08 연결. eval/customer-purpose-quality-20261008에서 기존 tests/test_be04.py에 NATURAL_EQUIPMENT_QUALITY_SOURCE와 원문/Brief/출처/버전/구간 locator 전달 회귀1건을 추가했다. 예시절삭이라는 다른 가상 회사의5문단 자료이며 시연 평가용 합성 자료이지 실제 회사 자료가 아니다. 기존 추출 지침 보완이 이 자료의 자연스러운 서술에도 동작하는지 확인했다. 새 저장소 파일·의존성·제품 코드·프롬프트·프론트/API/DB/.env 변경은 없다.
+- 목적은 생산기술 검토, 필수 capabilities/technology, 목표1쪽/사진 없음이다. 핵심은 기준일별5축 머시닝센터2024-06-30의2대/2026-06-30의3대와 생산량·가동률 아님, 연구용 시편에 한정된 알루미늄120mm/스테인리스80mm와 양산 보증 제외, 광학 측정 방식/한 시편의0.02mm 오차와 전체 제품 공차 보증 제외다. 원문에 있는 별도 회사 예시파트너의12대를 대상 회사의 설비로 합치거나15대로 계산하면 오류로 평가한다. 평가 기준은 모델 입력에 넣지 않는다.
+- 실제 company_info1/draft_sections1/content_review1 총3호출. 추출은 각 기준일의 설비2사실과 소재 범위가 supported/capabilities, 5축 동시제어·광학 측정이 supported/technology다. 시편 오차와 보증 제외 조건은 processes에 함께 보존했다. 별도 회사의12대는 그 회사의 설비이며 대상 회사 설비가 아니라는 범위의 other_info다. 인용 밖 수치 토큰0/충돌·확인필요0이며 항목별 모든 value/excerpt를 직접 읽어 귀속·조건을 확인했다.
+- 실제 초안은 날짜별2대/3대, 소재별120mm/80mm와 시편 범위,0.02mm 사례와 보증 제외 조건을 모두 보존했다. 예시파트너의12대를 예시절삭의 보유 설비로 쓰지 않았다. 내용검증passed/열린 Issue0이다. 실제 PDF와 DOCX는 각각1쪽/layout_ok=true/not_checked0이며 PDF 텍스트에도 위 수치/시점/조건이 남아 있었다. 이 결과는 파일 렌더·텍스트 대조이고 픽셀 디자인 검수·실제 브라우저 조작·최종 승인/다운로드 확인은 아니다. 초기 로그의 process_count missing은 기존 공용 도구의 표시 항목이며 이 시험의 필수 조건은 capabilities/technology라 실패가 아니다.
+- 결정적 회귀는 새 문장 자료1건+기존 날짜 다중 자료3건+장문 표2건 **6 passed/86 deselected/기존 경고1/4.94초**다. 실제 LLM 품질과 MockAgent 입력 전달 증거를 구분한다. git diff --check 통과. PDF 읽기 명령은 Python 실행 위치 관련 진단 문구가 있었으나 실제 텍스트를 반환했고 종료0이었다. 제품 실행 경로를 바꾸지 않았다.
+- 실제 호출 상한3/ledger 예산0.5달러, SDK 재시도0/timeout120초/입력40,000자/출력32,000토큰/검증400,000자·gpt-6-luna/medium 유지. ledger 추정비용 **$0.005083150/미확인 예약0**으로 청구서 실금액이 아니다. 한 표본이 통과했다고 전체 모델 품질이나 모든 회사의 설비 분류가 보장된다고 보고하지 않는다.
+- 결과는 시스템 Temp/ddalgi-natural-equipment-xzxgikw9의 report/preflight/draft/validated/issues/Job JSON·격리 ORMv11 DB·PDF/DOCX에 있다. 도구는 Temp/ddalgi-natural-equipment-20261008.py이고 기존 날짜 시험 도구의 준비/검증/렌더 함수를 재사용했다. 사용자 원본 DB/등록 자료/문서는 사용하거나 변경하지 않았고 API 키를 출력하지 않았다.
+- BE-10/F-08 일반 품질과 Agent 담당 상태는 진행중 그대로다. 자신의 기존 시험·계획/현황4파일만 로컬 커밋하며 원격push는 하지 않는다. 후속은 현재 브랜치의 기존 최종 화면 통합 시나리오를 확인하고 완료 범위·알려진 제한·사용자 조치를 정리하는 것이다. 새로운 재현 오류나 요구 없이 합성 자료 품질 시험을 계속 늘리지는 않는다.
+
+<a id="final-recovery-ui-audit-20261008"></a>
+
+### 2026-10-08 현재 브랜치의 오류 복구 최종 화면 검수·마무리
+
+- BE-06·07·08·10/F-08 연결. 백엔드 eval/customer-purpose-quality-20261008의1f8f891, 프론트 test/supplement-required-ui-20261008의 현재 제품 코드로 기존 최종 통합 조합을 확인했다. backend runtime/API/DB/프롬프트/.env 변경은 없다. 프론트 기존 검사 도구/README와 백엔드 기존 계획/현황 문서만 변경했다. 원본 시연 DB/실자료/일반 서버를 쓰지 않고 별도 임시 DB·API 서버·Vite·브라우저를 사용했다. 유료 AI 호출0이다.
+- `AI_CHECK_BACKEND=C:/final/backend`, `AI_CHECK_LIVE=0`의 `node scripts/check-ai-workflow.mjs --publication --impact --supplement-required --photos --required-insert`는 **PDF36묶음 PASS**, 동일 명령의 `--docx`는 **DOCX39묶음 PASS**다. 공통 검사를 중복 합산하지 않는다. AI 의미 판정은 가상 응답이고 HTTP/UI/저장/파일 배치/승인/다운로드는 실제다. 앞선 실제 LLM 측정/복구 기록과 구분한다.
+- 확인한 범위: 등록자료 없이 첨부/공개자료만 선택해 점검, 원문/후보 안내·필수 제외 보호, 선택 사실 제외/복원, 응답 유실/새로고침/멱등 복구, 점검 재조회·초안 중복 생성 방지, C-05 최신 근거·확인·변경 영향·미저장 편집 보존, 신규 필수 사실 추가/연결 문구 복구, 사진 선택/교체/설명 저장, 버전 충돌 시 로컬 편집 보존, 상태 스냅샷 불일치 안내, 넘침 승인 차단, 형식별 동의/배치/승인·잘못된 DOCX MIME 거부, 동일 바이트 재다운로드, 편집 후 옛 승인/다운로드 차단과 종료 정리다. 두 최종 실행은 preflight 요청7/draft1이며 의도적 점검/응답 유실 시험 요청을 자동 AI 호출로 해석하지 않는다.
+- 최초 PDF 실행(Temp/ddalgi-ai-ui-dQCAeK)은 새로고침 중 CDP Runtime.evaluate가 `-32000 Inspected target navigated or closed`를 반환해 중단됐다. 오류 목록은 비었고 페이지 읽기 컨텍스트가 사라진 검사 도구 문제로 추적했다. 실제 앱 오류를 검사 성공으로 숨기지 않고 그 실행은 실패로 남긴다. `scripts/check-ai-workflow.mjs`의 until 상태 대기만 해당 CDP 코드/컨텍스트 소멸 메시지를 기존 시간 제한 안에서 다시 읽도록 보완했다. 클릭/POST/제품 요청을 재실행하지 않으며 다른 오류는 즉시 실패한다.
+- 제한된 대기의 별도4조건은 일시 오류 후 읽기 성공, 다른 CDP 오류 즉시 실패, 같은 메시지의 다른 코드 실패, 지속 컨텍스트 오류의 시간 초과이며 모두 통과했다. 도구는 시스템 Temp/ddalgi-cdp-poll-20261008.mjs에 있다. 검사 도구 ESLint/Node 구문·git diff --check 통과. 프론트 TypeScript/Vite build 성공, 기존 JS507.48kB/500kB 청크 경고 유지. 이번 검사 도구 변경 뒤 제품 빌드 파일을 다시 변경한 것은 아니다.
+- 최종 실제 산출물은 PDF4쪽/27,426바이트(Temp/ddalgi-ai-ui-NgCh37), LibreOffice DOCX4쪽/2,410,968바이트(Temp/ddalgi-ai-ui-GIDNMI)이며 승인·동일 바이트 다운로드까지 통과했다. 검수 세션/브라우저/임시 서버는 도구의 종료 경로로 정리했다. 산출물·스크린샷은 임시 폴더에 보존하며 원본 자료 DB 폴더나 새 공유 ZIP을 만들지 않았다.
+- 프론트 README의 현재 안내를 C:/final 경로·실제 작업 브랜치·template_v11·계약 원본 위치로 바로잡았다. 이전2026-10-06 검사는 날짜를 명시하고 보존했다. 사용자 조치는 필수 누락의 사실/페이지 명시 추가 또는 자료 보완, 실제 충돌의 원문 비교/명시 선택/재점검/C-05 반영, 의미상 중복의 문구 편집/저장/재검증, 연결 중단의 상태 확인/표시된 재시도다. 필수 문제의 단순 확인·제외나 미확인 사실 자동 확정은 허용하지 않는다. 프론트 검사/인계 문서만 **647ae9a**로 로컬 커밋했고 기존 `.claude/`는 보존했다.
+
+| 마무리 범위 | 현재 판정/남은 제한 |
+|---|---|
+| 이번에 재현·수정한 오류와 화면 복구 | 수정 및 해당 회귀/실제 화면 검수 완료. 새 재현이나 요구 없이 같은 합성 시험을 계속 늘리지 않음 |
+| 실제 AI의 필수 분류·수치/조건·인용 품질 | 목적3종·장문 표·시점/충돌·동일5회·다른 회사 문장 표본 확인. 설비 필수 분류3/5→5/5였으나 추가 인용/문장 차이는 남음. 통계적 전체 안정성 보장은 아님 |
+| 의미상 반복/새 자료의 품질 변동 | 생성 지침만으로 완전 제거하지 못함. 관측한 반복은 원문/근거 보존 편집·실제 재검증으로 해결. 미지의 자료 오류는 실제 재현 시 추가 수정 |
+| 원문 사실 부족·진짜 충돌·현재성 | 프로그램이 회사 사실을 만들어 해결하지 않음. 자료 보완·명시 선택·중립 설명/제외가 필요하며 필수/승인 보호 유지 |
+| BE-10 전체와 AG-08 등 다른 담당 범위 | 이번 복구 검수 단위 완료와 별개. 일반 의미 품질/문체/사진 관련성·회사 확인·Agent 선행 상태는 진행중/미확인 유지 |
+| Git 공유·운영 반영 | 현재 두 브랜치의 로컬 커밋까지. 이번 변경의 push/PR/merge는 별도 사용자 요청에 따름 |
+
+- 사용자에게 이번 오류 안정화 작업의 확인된 범위는 마무리됐다고 보고하되 전체 오류0·BE-10 전체100%로 보고하지 않는다. 백엔드에는 새 필수 기능을 임의로 추가하지 않는다. 다음 필수 작업을 막연하게 새 합성 평가로 만들지 않으며, 후속은 사용자 요청에 따른 변경 공유나 실제 업무 자료의 새 오류 재현이다. 자기 문서3개를 로컬 커밋하고 원격push는 하지 않는다.
+
+<a id="backend-full-regression-20261008"></a>
+
+### 2026-10-08 현재 작업 브랜치의 전체 백엔드 회귀
+
+- BE-01~10/F-08 연결. 사용자 후속 요청에 따라 개별·화면 검수와 별도로 최신 변경이 다른 기능을 깨뜨리지 않았는지 전체 검사를 한 번 실행했다. eval/customer-purpose-quality-20261008/ca15a2d 기준이며 검사 중 제품/시험/환경 파일을 변경하지 않았다. 제품 코드·API·DB·프롬프트·프론트 변경과 새 저장소 파일/의존성 추가는 없다.
+- 실행은 C:/final/backend에서 PYTHON_DOTENV_DISABLED=1, BE09_LIVE_AI=0을 설정하고 `.venv/Scripts/python.exe -X utf8 -B -m pytest -q -ra -p no:cacheprovider --disable-warnings --maxfail=5`다. 사용자 원본 시연DB·API 키를 쓰지 않는 임시 DB/가상 입력/MockAgent 또는 준비된 SDK 응답을 사용했다. Chrome·LibreOffice 출력·폰트·사진·넘침·분량·승인·다운로드·프로세스 정리는 실제 엔진으로 검사했다. 유료 모델 판단 품질 시험을 새로 실행한 것은 아니다.
+- **최종2,116 passed / 10 skipped / 3 warnings / 실패0,991.20초, 종료0**. 전체 대상2,126건은 Agent 응답1,276, API계약44, BE-02 74, BE-03 19, BE-04 92, BE-05 81, BE-06 98, BE-07 94, BE-08규칙39/통합39, BE-09 45, demo43, migrations37, ORM DB23/workflow78, 등록자료 적재44건이다. 수집 확인은 테스트 목록만 읽은 것이며 통과 건수에 추가 합산하지 않는다.
+- 건너뛴8건은 test_be07.py의 macOS 출력 프로세스용 POSIX 검사(980행2/1005행3/1017행2/1033행1)다. 나머지2건은 test_be09.py:777의 BE09_LIVE_AI=1 명시가 필요한 유료 AI 검사이며 이번에는0으로 껐다. 그10건을 이번 환경에서 검증됐다고 보고하지 않는다. 실패가 없으므로 테스트를 재실행하거나 승인/내용 가드를 완화하지 않았다. 경고3건은 상세 경고 출력 비활성화 상태로 집계한 수치이며 이번에 별도 원인을 새로 판정하지 않았다.
+- git 작업본을 확인해 제품 변경이 없음을 확인했고 검사 결과·DoD 최신 참조·plan/task 연결표만 갱신한다. 프론트647ae9a와 미추적 `.claude/`는 그대로이며 변경/커밋하지 않는다. 백엔드 기록3파일만 로컬 커밋하고 원격push는 하지 않는다. 기존2026-10-06 전체 회귀 기록은 지우지 않고 최신 링크만 이번 기준으로 연결했다.
+- 전체 회귀 검수 단위는 완료다. 직전 화면 PDF36/DOCX39묶음과 공통 시나리오를 합산하거나 실제 AI의 전체 안정성 보장으로 계산하지 않는다. BE-10 일반 의미 품질과 Agent 선행/담당 상태는 그대로이며 이번 서버 검사를 근거로 다른 담당 작업을 완료 처리하지 않는다. 새 재현/변경 없이 같은 전체 검사를 반복하지 않는다. 다음 후속은 사용자 요청에 따른 변경 공유·병합 또는 실제 업무 자료의 새 재현 오류 대응이다.
+
+<a id="sharing-base-integration-20261008"></a>
+
+### 2026-10-08 최신 기준 브랜치 통합과 공유 준비
+
+- 백엔드 eval/customer-purpose-quality-20261008의 6bdbe07에 origin/test 6bd94c0을 병합했다. 들어온 PR43은 기존 평가 도구2개·테스트·Agent 기록이며 제품 실행 코드/API/DB/승인 정책은 바꾸지 않는다. plan/task의 두 담당 기록을 모두 보존했고 충돌은 없었다. Agent의 후속 PR 제안과 AG 상태를 백엔드 완료 항목으로 바꾸지 않는다.
+- 프론트 test/supplement-required-ui-20261008에 origin/develop e6e0868을 병합한 로컬 커밋은5537e86이다. 병합으로 제품 파일 내용이 추가 변경되지 않았으므로 직전647ae9a 기준 빌드·PDF36/DOCX39묶음 결과를 유지하며 이번에 다시 실행했다고 보고하지 않는다. 미추적 .claude/는 제외한다.
+- 새로 유입된 test_agent_llm.py의8077행 이후 평가 도구 테스트와 test_be07.py의 실제 저장 렌더 비교/단계 재개2개를 선택 실행했다. PYTHON_DOTENV_DISABLED=1/BE09_LIVE_AI=0·임시 자료 사용, **38 passed / 1 warning / 실패0,13.58초**다. Chrome PDF와 DOCX 보존 경로를 포함하며 유료 호출·사용자 시연 DB 변경은 없다. 경고 원인을 이번에 따로 판정하지 않았다.
+- 직전 전체2,116통과 결과는 병합 전 기준이며 이번38건은 추가 도구 검수다. 새 전체 회귀 결과로 합산하지 않는다. 최신 기준 diff·충돌 표시·비밀/로컬 산출물 제외를 확인하고 통합을 로컬 커밋한다. 원격push/PR/merge는 아직 하지 않았다. 다음 공유 대상은 백엔드test, 프론트develop이며 BE-10 일반 의미 품질 진행중 상태는 유지한다.
+
+<a id="demo-format-parity-20261008"></a>
+
+### 2026-10-08 병합 후 최근 시연 문서의 PDF/DOCX 대조
+
+- 사용자 요청으로 두 작업 브랜치를push하고 백엔드PR44(test), 프론트PR24(develop)를 생성했다. 이후 사용자의 병합 완료 안내에 따라 GitHub 상태MERGED/백엔드f6d95d9·프론트647578a를 확인하고 로컬test/develop을 fast-forward했다. 프론트 미추적.claude/는 그대로 보존한다. 후속 검수 기록은 qa/demo-format-parity-20261008에 남긴다.
+- 시연 DB는 읽기 전용mode=ro로 열었다. 최근 문서doc_672640f17ee2441c/revision1/input22의 저장된 실제gpt-6-luna 내용검증passed/Issue0과 기존PDF배치passed7쪽을 확인했다. queued/running Job0, DB quick_check ok, 백엔드openapi와 프론트HTTP200이다. 내용검증Job succeeded와 결과passed를 구분해서 확인했으며 새 유료 호출은 하지 않았다.
+- 화면 세션 조작 도구가 없어 사용자 세션의API/쿠키를 우회하지 않았다. 기존documents.get_current/build_snapshot으로 같은 문서를 고정하고 실제제품render 함수를Chrome PDF/LibreOffice DOCX에 사용했다. 결과는 시스템Temp/ddalgi-format-audit-121xm6ku이며 원본 시연DB에layout_checks/approval/export 기록을 추가하지 않았다. 따라서 이번 통과는 스냅샷 출력 검수이고 화면에서DOCX 검사 완료로 저장된 것은 아니다.
+- PDF와DOCX 각각 **실제7쪽/layout_ok=true/필수not_checked0/findings0**, 사진4개가 유효한해시/자산으로 전달되고DOCX drawing4개다. 사진 공개허가검사ok이며 허가를 새로 변경하지 않았다. 예상헤더/제목/본문/사진 설명 문구를정규화해PDF텍스트·DOCX변환PDF텍스트·DOCX XML에대조한누락은모두0건이다. 순서·근거·회사 사실을새로의미검증한시험으로확대하지않는다.
+- 실제PDF와DOCX변환PDF의사용글꼴은Pretendard Regular/Bold다. DOCX에fontTable Pretendard·Regular/Bold odttf와스타일폰트를확인했고OOXML GUID 마스크를복원한전체바이트SHA256이제품템플릿의두TTF와각각일치했다. 목록의다른기본폰트등록과실제사용폰트를구분했다. 같은서체지만PDF카드/표/색상과DOCX단일열·글자/사진크기는기존설계상차이가있으며동일디자인으로보고하지않는다.
+- 전체7쪽쌍의contact sheet와가장촘촘한3쪽의양쪽PNG를시각확인했다. 검사범위에서잘린글자/겹침/깨진한글·빈쪽은발견하지못했다. 시편조건/원문관계등새AI품질평가나Word엔진검증은미실행이며LibreOffice결과를모든Word환경의쪽수일치로확대하지않는다.
+- 첫임시도구의SnapshotAsset.valid오기는실제ok필드로바로잡았고대조헤더의0시작번호를1시작으로수정했다. 두오류는검사도구오류이며제품결함으로처리하지않는다. 출력재생성없이저장된검수파일로올바른조건을재대조했다. 문서/버전/검증/배치/승인/출력행의전후해시동일·DB quick_check ok를확인했다.
+- 제품코드·프롬프트·프론트·환경·의존성변경이없어전체회귀를반복하지않는다. 자기기록3파일만로컬커밋하며원격push는하지않는다. 이번문서의형식별내용/폰트보존검수는완료이며BE-10/F-08일반품질·Agent상태는유지한다. 사용자최종승인과다운로드는화면에서명시적으로진행할후속이며대신승인하지않았다.
+
+<a id="docx-approval-expiry-check-20261008"></a>
+
+### 2026-10-08 DOCX 승인·다운로드 경로와 시연 세션 만료
+
+- 후속은 최근 시연 문서의 DOCX 검사 결과 저장·승인/다운로드 연결 확인이었다. Computer Use 스킬과 필수 안내를 읽었으나 해당 런타임의 node_repl 도구가 제공되지 않아 화면 조작을 실행하지 않았다. 대신 동일 문서의 읽기 전용 DB 복제에 대한 API 검수를 준비했으나, 첫 읽기에서 현재 문서 본문이 이미 정리된 것을 발견했다. 시연 세션은 expired, purged_at 있음, content_json={}이며 활성 세션은0개다. 앞선7쪽 스냅샷 출력 검수 당시와 상태가 달라졌다.
+- 최초 임시 도구의 직접 documents.get_current 호출은 정리된 본문에서 KeyError:title로 중단했다. 이는 세션 유효성 검사를 먼저 하지 않은 내부 검수 도구 호출이며 사용자 API의500으로 판정하지 않는다. 복제·새 소유자 지정·문서 승인 단계에는 도달하지 않았고 원본 DB를 쓰지 않았다. 정리된 내용을 임시 파일에서 복원하거나 세션 만료 시각·DB 행·사용자 승인 정책을 수정하지 않는다.
+- 최근 세션에서 같은 문서의 실화면 검수는 미실행으로 남긴다. 이 상태에서 동일 문서를 새로 생성/확정하는 유료 호출도 하지 않았다. 현재 시연 DB의 quick_check는ok다. 프론트 useSources의401/410 처리에 저장된 작업 정보를 비우는 동작과 새 작업 안내가 있음을 코드로 확인했으며 브라우저에서 실제 클릭한 검수와 구분한다.
+- 대체 검수는 기존 tests/test_be08.py::test_actual_docx_check_approve_download_reuse_and_invalidate의1/4/6/8/10쪽5건, tests/test_be09.py::test_request_path_expiry_is_persisted_and_cleaned 및 test_idempotent_replay_after_expiry_or_close_returns_410_not_content다. PYTHON_DOTENV_DISABLED=1/BE09_LIVE_AI=0·임시 DB/가상 자료·실제 LibreOffice로 **12 passed / 1 warning / 실패0,49.12초**. 경고 원인은 이번에 별도 판정하지 않았다.
+- DOCX 자체의 변환 미리보기/사진/본문·목표 쪽수, 확인하지 않은 승인과 다른 형식 승인 차단, 동일 키 승인 재사용·다운로드 MIME/바이트/해시, 출력 재사용 시 초안 호출 증가 없음, 편집 뒤 기존 다운로드409·종료 뒤410·정리를 확인했다. 만료 조회/업로드/Job과 멱등 재전송은 내용 유출 없이410 SESSION_EXPIRED이며 늦은 요청이 내용을 되살리지 않는지를 확인했다. 최근7쪽 시연 문서의 직접 승인 통과로 확대하지 않는다.
+- 제품/프론트/환경/의존성 변경이 없고 새로운 제품 결함은 재현되지 않았다. 자기 기록3파일만 기존 qa/demo-format-parity-20261008에 로컬 커밋한다. 다음 실화면 검수는 사용자가 새 작업을 시작한 뒤 현재 입력·점검·문서에서 이어가야 한다. BE-10/F-08 일반품질·Agent 상태는 유지하며 이 확인으로 서비스의 모든 오류가 해결됐다고 보고하지 않는다.
+
+<a id="session-expiry-guidance-20261008"></a>
+
+### 2026-10-08 사용자가 작업 만료를 확인할 수 있도록 안내 보완
+
+- 사용자의 후속 요청과 프로그램 안에서 문제를 알 수 있어야 한다는 기존 요구에 따라 프론트를 대조했다. 기존 만료 시각은 S01 접힌 상세 영역에만 있고 S02/S03에는 표시되지 않았다. App 헤더의 서버 보관 문구는 임시 보관을 드러내지 않았고 SystemStatusModal에는 미구현10분 전 자동 배너·잠금 모달 및120분 연장 버튼이 구현된 것처럼 적혀 있었다. contracts7.5/docs/screens는10분 전 알림·명시 연장을 합의 대기로 기록하므로 해당 기능을 임의 추가하지 않는다.
+- 프론트 develop647578a에서 fix/session-expiry-guidance-20261008을 만들고 기존 SourceSelectionView의 단계별 hidden 영역 밖에 Session.expires_at 안내를 추가했다. 작업이 있을 때만 전 단계에 표시하며 time.dateTime도 서버 값을 사용한다. 저장은 현재 작업 안의 임시 보관, 종료·만료 뒤 첨부/문서 정리와 이미 내려받은 파일 유지가 안내된다. 새 컴포넌트 파일·의존성·타이머·주기 API 요청은 추가하지 않았다.
+- 만료 시각 다시 확인은 기존 work.refresh만 호출한다. 사용자 클릭으로 현재 서버 값을 조회하며 기한 연장·AI 호출·문서 저장을 수행하지 않는다. 저장/작성으로 서버의 만료 시각이 달라질 수 있어 '확인된 작업 만료 시각'으로 표시한다. 작업/AI 진행 중에는 버튼이 비활성이고 만료 응답은 기존401/410 복구 흐름을 따른다. 만료를 추측해 문서를 자동 잠그거나 사실/승인을 바꾸지 않는다.
+- App 헤더를 '현재 작업 안에 임시 저장'으로 정정하고 SystemStatusModal의E09 설명에서 없는 연장 버튼과 자동 알림 약속을 제거했다. 실제 무활동120분/생성24시간 정책과 승인·다운로드/새 작업 경로를 설명한다. 프론트 README에는 병합 기준과 현재 브랜치·안내·검수 제한을 갱신했다. 백엔드 제품/API/DB/TTL·.env와 사용자 자료는 변경하지 않았다.
+- **npm run build(TypeScript/Vite)·변경3개TSX ESLint·git diff --check 통과**. 번들508.76kB로500kB 경고는 유지된다. 코드 위치가 S01/S02/S03 공통 렌더임을 확인했으며 세 단계의 실제 화면 클릭·만료 응답 통합 검수를 새로 수행한 것은 아니다. 텍스트/조회 안내 변경에 전체 회귀나 새 유료 시험을 반복하지 않았다.
+- 프론트4개 파일만 로컬 커밋47a1154이며 미추적.claude/는 제외했다. 백엔드는 자기 기록3파일만 기존 qa/demo-format-parity-20261008에 커밋한다. 원격push/PR은 이번에 하지 않는다. BE-10/F-08 일반품질·Agent 상태는 유지하며 다음은 새 작업이 있는 실제 화면에서 만료 안내/조회와 정상 작성 단계 연결 확인이다.
+
+<a id="session-expiry-ui-check-20261008"></a>
+
+### 2026-10-08 만료 안내의 세 단계 실제 브라우저 검수
+
+- 사용자 후속 요청에 따라 직전 프론트47a1154의 만료 안내를 실제 화면에서 확인했다. 기존 scripts/check-ai-workflow.mjs에 --session-expiry 옵션만 추가했다. 이 옵션은 isolated mock만 허용하며 기존 새 세션/첨부/점검/초안 흐름 후 세 단계를 실제 버튼으로 이동하고 만료 안내의 가시성·서버 시각 일치·조회 효과를 대조한다. 새로운 저장소 파일·제품/서버 로직·의존성·환경 설정을 추가하지 않았다.
+- `AI_CHECK_BACKEND=C:/final/backend`, `AI_CHECK_LIVE=0`, `node scripts/check-ai-workflow.mjs --session-expiry` **PASS,15 시나리오 묶음/오류0/종료0**. 격리 ORMv11 DB·실제HTTP 서버/Vite/Chrome이며 모델 의미 응답은MockAgent다. 요청은 preflight3회(의도적 응답 유실/입력 변경 포함), draft1회, proposal0회이며 유료 AI 호출0이다. 단계별 만료 조회가 점검/초안 요청을 추가하지 않았으며 사용자 원본 시연DB/세션을 대신 생성하거나 승인하지 않았다.
+- S01/S02/S03 각각 화면 상단에 만료 안내가 실제로 보이며 조회 뒤 time.dateTime이 서버Session.expires_at과 일치한다. 조회 전후 expires_at/last_activity_at/input_revision과 DocumentOut 전체(본문·검증·승인 포함)가 동일하다. 클릭 이후 관찰한 모든 API 요청은GET이며 저장·기한 연장·새 AI 호출이 없다. 마지막에는 새 테스트 세션 종료·저장된 AI 참조 정리까지 통과했다.
+- 출력 위치는 시스템Temp/ddalgi-ai-ui-5kihXh다. session-expiry-s01/s02/s03.png를 모두 시각 확인했고 상단 안내/조회 버튼의 잘림·겹침을 발견하지 못했다. 기본 시나리오의 회사 변경/첨부·공개 자료 단독 점검, 선택 없음 차단, 점검/초안 응답 유실·재로드, 사실/근거·필수 제외 보호도 통과했다. 이번 명령은 publication 옵션이 없어 PDF/DOCX 출력·승인 검사를 재실행한 것은 아니다.
+- 추가 검사 스크립트ESLint/Node 구문 검사/git diff --check 통과. 프론트README의 미실행 표시를 이번 실제 검수로 갱신하고2파일을 로컬 커밋ae50182에 저장했다. 미추적.claude/는 제외한다. 제품 코드가 바뀌지 않아 빌드/전체 회귀를 반복하지 않았고 직전 빌드 결과와 번들 경고는 유지한다.
+- 백엔드는 자기 기록3파일만 qa/demo-format-parity-20261008에 로컬 커밋한다. 이번 만료 안내의 구현/화면 검수 단위는 완료이며 원격 공유는 별도 요청에 따른다. 만료된 시연 문서 복원·세션 연장·실제 AI 일반품질 완료로 확대하지 않고 BE-10/F-08 및 Agent 상태를 유지한다.
+
+<a id="expired-workflow-ui-recovery-20261008"></a>
+
+### 2026-10-08 실제 만료 응답 후 새 작업 시작의 화면 검수
+
+- 사용자 후속 요청에 따라 기존 --session-expiry 검사의 마지막 단계에 만료 복귀를 추가했다. 기존 mkdtemp로 만든 ddalgi-ai-ui-*/runs/app.sqlite3와 해당 테스트 세션의 경로/ID만 검증하고 테스트 DB의expires_at을 과거로 설정한다. 제품에 테스트용 라우트·middleware를 추가하거나410응답을 가짜로 만들지 않는다. 이후 세션 정책 검사·내용 정리·410은 기존 실제API가 수행한다.
+- `AI_CHECK_BACKEND=C:/final/backend`, `AI_CHECK_LIVE=0`, `node scripts/check-ai-workflow.mjs --session-expiry` **PASS,16 시나리오 묶음/오류0/종료0**. 실제 격리HTTP/Vite/Chrome·가상 AI·임시 ORMv11 DB다. 점검3/초안1/수정안0요청은 직전과 동일하며 만료 인식과 새 작업 시작에는 점검/초안을 추가하지 않았다. 유료 호출0·사용자 시연DB/세션/환경 변경0이다.
+- S03에서 실제 만료 뒤 만료 시각 다시 확인을 눌렀다. 조회만으로410을 받고 S01 시작 화면에 만료 안내와 작업 시작/이어하기 버튼이 나타났다. 저장된 AI/출력 작업 참조가null이고 이전 초안과 만료 안내 영역이 사라졌으며 숨겨진 이전 초안으로 계속 이동하지 않는다. 기존 세션GET은410이고 새 작업 시작은다른 세션ID를 만든다. 새 세션에는 만료 안내가 다시 보이지만 이전 초안은 없으며 POST는세션 생성만 발생한다.
+- 새 테스트 세션 종료와 AI 참조 정리도 통과했다. 임시 위치는 Temp/ddalgi-ai-ui-7CCFld, session-expired-start.png를 시각 확인해 만료 문구·사용 가능한 새 작업 버튼·비활성 편집/승인 단계·빈 자료 상태를 확인했다. 이 옵션은 기존 문서에서 최종 승인까지 수행하지 않으므로 실제 승인된 산출물의 만료 검수로 확대하지 않는다. 해당 서버 승인/다운로드 만료 검사는 앞선12건 결과로 구분한다.
+- 검사 도구ESLint/Node 구문/git diff --check 통과. 프론트 제품 변경 없이 기존 검사/README2파일을 로컬 커밋292fe2d에 저장하고 미추적.claude/는 제외했다. 백엔드는 자기 기록3파일만 기존qa브랜치에 로컬커밋한다. 전체 회귀·빌드·유료 AI 시험은 새로 반복하지 않았고 원격push/PR도 하지 않는다.
+- 만료 안내/복귀의 구현·실화면 검수 단위는 완료이며 새로운 제품 결함은 발견하지 못했다. 다른 담당 상태와 BE-10/F-08 일반품질은 유지한다. 새 재현 오류나 요구 없이 동일 검사를 늘리지 않으며 다음 공유 대상은 프론트develop과 백엔드test다.
+
+
+<a id="backend-docs-rules-20261013"></a>
+### 2026-10-13 폴더·README 관리 규칙 (백엔드 문서 정리)
+
+- 범위: 기존 README 축약 커밋 `16c1db0`을 이어받은 `codex/backend-docs-rules-20261013`에서 기존 파일만 수정한다. `AGENTS.md` 11·12절에 기존 위치 재사용·새 경로 확인·원본 문서 관리·이동 시 참조 검사·README 작성/갱신 기준을 추가하고 README는 규칙 링크만 보완했다.
+- 보존: 기존 1~10절의 유효한 규칙과 제품/API/DB 코드는 유지한다. `.env`·DB·회사 원문을 열거나 변경하지 않았고 새 폴더·새 문서·파일 이동은 없다. 제품 작업 ID와 Agent 상태는 변경하지 않는다.
+- 코드 대조: `main.py`의 `main:app`, `pyproject.toml`의 Python 3.13/dev 의존성, `scripts/run_llm.ps1`의 옵션, `app/config.py`의 저장 경로와 `.gitignore`를 읽어 README의 안내 기준을 확인했다. 서버·AI·pytest는 실행하지 않았다.
+- 검증: README의 모든 상대 링크 26개, AGENTS의 상대 링크 22개, 작업 기록에 추가한 링크 2개의 경로·앵커를 확인했다(누락 0). 기존 지침 1~10절 보존, README 규칙 링크 1행 외 변경 없음, 변경 파일 4개와 `git diff --check` 통과를 확인했다. 문서 규칙만 변경하여 앱 기능 테스트는 실행하지 않았다.
+- 다음: README 항목별 유지/축약/이동 계획을 사용자에게 제시하고 승인 후 본문을 정리한다. 주요 폴더 구조·역할 설명은 유지한다. 이번 단계는 로컬 커밋까지만 수행하며 push·PR·병합하지 않는다.
+
+<a id="backend-readme-entry-20261013"></a>
+### 2026-10-13 승인한 README 입구 문서 개편
+
+- 사용자 승인 후 현재 문서 작업 브랜치에서 README를 목적·기능·준비/환경설정·실행·검사·폴더·자료 보관·주의·문서 링크로 정리했다. 기존 폴더 트리와 자료 저장 역할은 유지했다.
+- Windows 실제 AI 기본 확인과 최초 환경설정 상세는 기존 plan 9절로 옮겼다. 상세 API·DB 변경·검증·과거 시연은 기존 원본 링크로 찾도록 유지했다. 기존 README의 고유 정보는 README 또는 plan 9절에서 보존한다.
+- pyproject.toml·main.py·app/config.py·run_llm.ps1을 읽어 명령·버전·저장 설정을 대조했다. API·제품 상태·Agent 과제는 유지하며 .env·DB·원본 자료를 열거나 변경하지 않았다.
+- 검증: README 112→96줄, 기존 폴더 트리 보존, README 상대 링크 29개와 새 작업 기록 링크 3개의 경로·앵커 누락 0, README PowerShell 명령 블록 2개의 구문 검사, git diff --check 통과. 축약한 환경설정·Windows 실행·자료 보관 내용의 기존 plan 목적지를 대조했다. 문서 4개만 변경했고 기능 테스트·서버·유료 AI는 실행하지 않았다. 로컬 커밋까지만 수행한다.
+- 규칙 추가 단계의 본문 승인 대기는 사용자 승인으로 해소됐다. 다음은 사용자가 요청할 때 원격 공유하며 임의 push·PR·병합하지 않는다.
+
+<a id="backend-readme-shortening-20261013"></a>
+### 2026-10-13 README 축약·상세 안내 연결 (백엔드 문서 정리)
+
+- 요청: 팀원의 평소 실행/검사/폴더 안내만 README에 유지하고 상세 내용을 기존 문서로 이동. 최신 폴더 구조·실행 데이터 안내는 유지한다. 새 codex/backend-readme-guide-20261013은 origin/test 839a59b에서 시작했다.
+- 변경: README에 일상 실행·기본 테스트·현재 폴더 역할·저장/보관·경로 지정 요약·문서 링크와 접힌 초기 설치 안내를 남겼다. plan.md 9절에 상세 저장/실행/HTTP검사/DB관리/출력/정리/등록 안내를 옮겼고 API 중복은 contracts.md 원본 링크로 대체했다. 기존 문서만 수정한다.
+- 현재 대조: 계약1.13·schema1.0·DBv11·template_v11, 기본 runtime/명시 interactive와 run_llm 옵션, config의 상대 경로·세션 보관 규칙을 대조했다. 옛 미병합/계약1.6·1.9/템플릿v1·v3·v7/경고 확인 UI 후속/DB 적재 대기 표현을 현재 안내에서 제외한다. 과거 개인 PC 기록은 아래에 한정한다.
+- 경계: data/mock·real·private_runs 재구성은 아직 미구현이며 이번에는 폴더 이동/코드/환경/DB/프론트 변경이 없다. BE-10/F-08 일반 품질·Agent 상태는 유지한다. 해당 구현·품질 전체 완료로 기록하지 않는다.
+- 검증: README 481→112행, 새/이동 문서의 로컬 링크·앵커47건 누락0, 구조 경로15곳 존재, Markdown 코드 블록 짝·git diff --check 통과. .env 및 private_runs 원문/DB/WAL/SHM 등49파일의 시작/종료 SHA-256 동일·파일 누락0. 공통 task 2절 이후와 Agent 담당 상태 변경0. 변경은 기존 문서4개뿐이다. 서버/마이그레이션/유료 AI/기능 테스트는 문서 변경이므로 미실행이며 과거 결과를 새 통과로 계산하지 않는다. 로컬 커밋까지만 수행하고 push·PR·test 병합은 하지 않는다. 다음은 사용자 요청 시 문서 공유이며 제품 품질 상태는 유지한다.
+
+#### 이전 README에서 이동한 개인 PC·시연 기록
+
+아래는 README(test 839a59b)에 있던 당시 기록이다. 개인 경로/브랜치/DB 내용/한도/서버 상태는 현재 팀 공통 설정이 아니다. 기존 실행 명령은 읽기 참고용이며 같은 폴더/설정이 지금 존재한다고 가정하지 않는다. 현재 실행은 [README](../README.md), 상세 설정은 [plan 9절](plan.md#backend-ai-run)을 사용한다. 이 작업에서 .env나 DB 내부는 열지 않았다.
+
+**2026-10-12 가상환경 복구 당시 기록:**  같은 Python 3.13.12와 설치 패키지 87개의 이름·버전을 유지하며 활성화 스크립트와 패키지 실행기를 복구했다. Uvicorn·pytest·Alembic의 직접 실행기와 PowerShell/CMD 활성화를 확인했고 관련 테스트295개가 통과했다. `.env`와 DB 관련 파일은 변경 전후 해시가 동일하다. 다른 PC에서는 `.venv`를 복사하지 말고 그 PC에서 `uv sync --locked`로 구성한다. 로컬 `.venv`는 Git 공유 대상이 아니므로 이 복구가 다른 PC에 자동 적용되지는 않는다. [복구 기록](task_backend.md#venv-path-repair-20261012).
+
+**2026-10-06 시연·인계(10-12 경로 갱신) 당시 기록:**
+
+현재 백엔드 작업본은 `C:\final\backend`의 `codex/organize-markdown-docs` 브랜치다. 아래 시연 결과는 2026-10-06 당시 기록이며 현재 세션·출력 파일의 유효성을 보장하지 않는다. 기존 시연 자료를 이어서 사용하려면 아래 폴더와 DB를 지정한다. 서버 재시작은 DB를 재생성하지 않는다. 경로의 DB가 없으면 실행을 멈추고 복원 여부를 확인한다.
+
+```powershell
+Set-Location C:\final\backend
+$env:PRIVATE_RUNS_DIR = (Resolve-Path -LiteralPath '.\private_runs\demo_preview_20260929_131826').Path
+$env:DB_PATH = Join-Path $env:PRIVATE_RUNS_DIR 'app.sqlite3'
+if (-not (Test-Path -LiteralPath $env:DB_PATH -PathType Leaf)) { throw '기존 시연 DB가 없습니다.' }
+$env:EXPORT_LIBREOFFICE_PATH = 'C:\Program Files\LibreOffice\program\soffice.com'
+$env:OPENAI_EXECUTION_MODE = 'runtime'
+.\scripts\run_llm.ps1 -Demo -ContentReview -TextProposals -CheckOnly
+# 설정 확인 후 서버 시작 (8000 포트의 기존 서버가 종료된 상태에서 실행)
+.\scripts\run_llm.ps1 -Demo -ContentReview -TextProposals
+```
+
+스크립트 기본값은 입력 200,000자·내용 검증 **400,000자**·출력 64,000토큰·요청 제한 180초·재시도 2회다. 검증 한도를 별도 옵션으로 낮출 필요가 없다. 이 실행은 실제 AI 호출을 허용하며 `.env`의 모델·키를 그대로 사용한다. `-CheckOnly` 자체는 AI 호출이나 서버 시작을 하지 않는다.
+
+프론트 작업본은 `C:\final\frontend`다. 해당 폴더에서 `npm run dev -- --host 127.0.0.1`로 실행한 뒤 [백엔드 연동 화면](http://localhost:5173/)을 연다. `?preview=1`은 가상 자료 미리보기다. 백엔드 API 문서는 [8000/docs](http://127.0.0.1:8000/docs)에서 확인한다. 이미 서버가 켜져 있으면 중복 실행하지 않는다.
+
+현재 시연 DB에는 고객 제안용 8쪽(revision 7)과 품질 심사용 9쪽(revision 3)의 PDF·LibreOffice DOCX 승인/출력 결과가 있다. 세션·출력 만료와 종료 정리 정책은 계속 적용되므로 DB 보존만으로 승인 파일을 영구 재다운로드할 수 있는 것은 아니다. DOCX 배치 검사는 LibreOffice 기준이며 Word에서는 글꼴·쪽 나눔이 달라질 수 있다.
+
+현재 API 계약은 1.9, 데이터 형식은 1.0, DB는 v11, 출력 템플릿은 `template_v10`이다. 서버 기능 및 두 시연 표본 검수는 완료했다. 전체 회귀 1,807 passed/10 skipped와 이후 사진 분할 관련 10 passed는 각각의 검사 기록이다. 다른 목적·업종의 AI 품질, 제외 ISO 자료의 회사 확인, 별도 프론트 작업 공유는 남아 있다. 완료 범위·제한·검사 근거는 [백엔드 인계 기록](task_backend.md#backend-handoff-20261006)을 따른다.
+
+**2026-09-29 DB 전환 당시 기록:**
+
+사용자 요청으로 자료 적재는 보류했다. `.env`는 `private_runs/erd_v2`를 사용하며, 활성 DB는 **v11 / Alembic `20260929_01`, 업무 테이블 25개·업무 데이터 0건**이다. Alembic 관리 테이블/버전 행은 별도로 유지한다. 이전 `private_runs/app.sqlite3`와 연결 파일은 사용자 요청으로 삭제했다(6.28절). 원본 자료와 새 폴더의 준비용 복사본은 보관하며 이번 구조 변경에서 수정·삭제하지 않았다. 나중에 적재를 요청하면 준비된 `import_packages/real`·`import_packages/demo` 묶음을 기존 적재기로 넣을 수 있다. 기존 대상 폴더에 위 재생성 명령을 다시 실행하면 보호 검사로 중단한다. 다른 PC의 기존 v10 DB는 새 코드를 받은 뒤 서버를 중지하고 `uv run python -m alembic upgrade head`로 갱신한다. 적용·검증 결과는 `task_backend.md` 6.31절을 따른다.
