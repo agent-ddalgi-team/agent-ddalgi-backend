@@ -120,11 +120,11 @@ class Flow:
     """세션 + clean TXT/PNG 업로드 + mock 초안 + 검증(passed). 배치 검사·승인·출력 헬퍼."""
 
     def __init__(self, app, settings, *, upload_png: bool = True, registered_ids: list[str] | None = None,
-                 png_size: tuple[int, int] = (8, 6), target_pages: int = 4):
+                 png_size: tuple[int, int] = (8, 6), target_pages: int = 4, source_text: bytes = CLEAN_TXT):
         self.app, self.settings = app, settings
         self.c = TestClient(app)
         self.sid = self.c.post("/api/v1/sessions", json={"brief": {**BRIEF, "target_pages": target_pages}}).json()["session_id"]
-        files = [("files", ("a.txt", io.BytesIO(CLEAN_TXT)))]
+        files = [("files", ("a.txt", io.BytesIO(source_text)))]
         if upload_png:
             files.append(("files", ("p.png", io.BytesIO(_png(*png_size)))))
         up = self.c.post(f"/api/v1/sessions/{self.sid}/sources", files=files).json()
@@ -167,6 +167,14 @@ class Flow:
         """mock 초안의 안내 문단·사진 자리를 지워 검증이 passed가 되게 한다(BE-06 make_clean_and_validate와 같은 규칙)."""
         ops = []
         for page in self.doc()["pages"]:
+            removable = [b for b in page['blocks'] if (b['type'] == 'paragraph'
+                         and b['content']['text'] == '추가 확인 필요') or b['type'] == 'image_placeholder']
+            remaining = [b for b in page['blocks'] if b not in removable]
+            if not any(b['type'] != 'heading' for b in remaining):
+                # A clean approval fixture cannot leave a heading-only page.
+                # The renderer now correctly reports that as empty-body overflow.
+                ops.append({'op': 'delete_page', 'page_id': page['page_id']})
+                continue
             for b in page["blocks"]:
                 if (b["type"] == "paragraph" and b["content"]["text"] == "추가 확인 필요") or b["type"] == "image_placeholder":
                     ops.append({"op": "delete_block", "block_id": b["block_id"]})
@@ -418,7 +426,13 @@ def test_llm_photo_normalization_review_blocker_and_pdf_download(settings, monke
 @needs_browser
 @pytest.mark.parametrize("pages", [1, 4, 6, 8, 10])
 def test_pdf_layout_check_approve_export_download(app, settings, pages):
-    flow = Flow(app, settings, target_pages=pages, png_size=(320, 160))
+    # Every requested page needs supported body content; empty mock pages are
+    # deliberately removed by clean() and cannot stand in for output coverage.
+    lines = CLEAN_TXT.decode().splitlines() + ["제품: 시험용 부품", "기술: 가상 표면처리 기술",
+        "강점: 모의 검사 기록", "고객: 가상 시험 고객", "인증: 가상 품질 체계",
+        "연혁: 2020년 모의 공정 기록", "공정 목록: 가상 가공과 검사"]
+    flow = Flow(app, settings, target_pages=pages, png_size=(320, 160),
+                source_text="\n".join(lines[:max(2, pages)]).encode())
     v, lc = flow.ready_pdf()
     # 배치 검사 결과: 3종 required ok, 미리보기, artifact, 렌더러. 서버 경로 없음
     assert lc["layout_ok"] and lc["publication_policy_ok"] and lc["fail_reasons"] == [] and lc["findings"] == []
@@ -491,6 +505,10 @@ def test_stress_document_layout_failed_then_fixed_and_issue_separation(app, sett
     assert lc["status"] == "failed" and "overflow:finding" in lc["fail_reasons"] and "placeholder_remaining:finding" in lc["fail_reasons"]
     open_layout = flow.open_issues()
     codes = {i["code"]: i for i in open_layout if i["scope"] == "layout"}
+    # Physical empty/tail pages can add another overflow issue. Keep checking
+    # that the original excessive paragraph is identified, not the last issue.
+    codes['LAYOUT_OVERFLOW'] = next(i for i in open_layout
+        if i['code'] == 'LAYOUT_OVERFLOW' and 'b_long' in i['block_ids'])
     assert set(codes) == {"LAYOUT_OVERFLOW", "PLACEHOLDER_REMAINING"}
     assert all(i["origin"] == "layout" and i["layout_format"] == "pdf" and i["severity"] == "blocker" for i in codes.values())
     assert codes["PLACEHOLDER_REMAINING"]["block_ids"] == ["b_ph"] and codes["LAYOUT_OVERFLOW"]["block_ids"] == ["b_long"]
@@ -570,7 +588,8 @@ def test_docx_page_count_failure_remains_readable_and_blocks_approval(app, setti
     assert response.status_code == 200, response.text
     layout = response.json()["layout_checks"]["docx"]
     assert layout["status"] == "failed" and layout["findings"][0]["page_id"] is None
-    assert layout["actual_pages"] == 5 and len(layout["preview_asset_ids"]) == 5
+    assert layout["actual_pages"] == len(flow.doc()["pages"]) + 1
+    assert len(layout["preview_asset_ids"]) == layout["actual_pages"]
     assert flow.open_issues("LAYOUT_OVERFLOW")
     assert flow.approve(validation["validation_id"], layout["layout_check_id"], fmt="docx").status_code == 422
 

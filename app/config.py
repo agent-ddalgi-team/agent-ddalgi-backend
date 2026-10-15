@@ -93,6 +93,8 @@ class Settings:
     # 렌더 옵션(용지·여백·폰트)은 설정이 아니라 app/services/layout_checks.py의 DEFAULT_RENDER_OPTIONS(해시 대상)다.
     export_browser_path: str | None = None
     export_render_timeout_s: int = 90
+    # Optional local render workspace (HTML/PDF and Chrome profile); no public API field.
+    export_work_dir: Path | None = None
     # DOCX 실배치 검사 opt-in. 운영자가 설치한 LibreOffice 실행 파일의 절대 경로.
     # 미지정/설치 누락 시 DOCX overflow=not_checked로 승인 차단을 유지한다.
     export_libreoffice_path: str | None = None

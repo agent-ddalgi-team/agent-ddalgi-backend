@@ -1,18 +1,18 @@
-"""Opt-in local run archives and offline saved-document comparisons.
+"""Opt-in local evaluation archive and explicitly gated bounded comparisons.
 
-No server hooks, database access, product-policy overrides or automatic retries.
-Run without arguments for a no-call status; --saved-manifest replays offline.
-Paid pilot/main runs require an explicit source archive, company, prompt pair,
-recording flag and a frozen rubric. Inputs and artifacts may contain private
-material: keep them under ignored private_runs; never commit an archive.
+Default: no recording and no model calls. Explicit mode and --record-run are required.
+Archives live outside session directories and survive session expiry by user decision.
+Only explicitly selected source snapshots are read by the CLI; no user DB is written.
 """
 from __future__ import annotations
+
 import argparse
 import dataclasses
 import hashlib
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import time
@@ -31,15 +31,18 @@ if __name__ == '__main__':
 from app import agent_legacy, agent_llm
 from app.agent_bridge import AnalyzeRequest, AnalyzeResult, DraftRequest, SegmentIn, SourceIn
 from app.config import Settings
-from app.models import Brief, Document, Fact, Issue
+from app.models import Brief, Document, Fact, Issue, PreflightOut
 from app.services import export_render
 from app.services.ai_jobs import validate_analyze, validate_draft
+
 
 def stamp() -> str:
     return datetime.now(timezone.utc).isoformat()
 
+
 def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
 
 def json_bytes(value: Any) -> bytes:
     def encode(obj):
@@ -156,6 +159,66 @@ class RunArchive:
             self.state.setdefault('actual_models', []).append(event['actual_model'])
         self.update()
 
+
+def load_registered(db_path: Path, source_dir: Path):
+    """Explicit evaluation selection of ALL files, including three previously unselected PDFs.
+
+    Existing source flags are recorded, not changed. Existing DB segments retain
+    image transcriptions and page/slide locators; their bytes are also snapshotted.
+    """
+    db_path, source_dir = db_path.resolve(), source_dir.resolve()
+    conn = sqlite3.connect(db_path.as_uri() + '?mode=ro', uri=True)
+    conn.row_factory = sqlite3.Row
+    sources, manifest, assets, asset_manifest = [], [], {}, []
+    try:
+        conn.execute('BEGIN')
+        rows = conn.execute('SELECT * FROM sources ORDER BY source_id').fetchall()
+        for row in rows:
+            original = (db_path.parent / row['stored_path']).resolve()
+            if original.parent != source_dir:
+                continue
+            raw = original.read_bytes()
+            if digest(raw) != row['content_hash']:
+                raise ValueError('Original hash differs from registered metadata')
+            segments = [SegmentIn(r['segment_id'], json.loads(r['locator_json']), r['text'])
+                        for r in conn.execute('SELECT * FROM segments WHERE source_id=? ORDER BY ordinal',
+                                              (row['source_id'],))]
+            pictures = conn.execute("SELECT * FROM assets WHERE source_id=? AND status='ready' "
+                                    "AND deleted_at IS NULL AND approved_for_external_use=1 ORDER BY asset_id",
+                                    (row['source_id'],)).fetchall()
+            locators, descriptions = {}, {}
+            for picture in pictures:
+                asset_path = (db_path.parent / picture['stored_path']).resolve()
+                if not asset_path.is_relative_to(db_path.parent):
+                    raise ValueError('Asset outside the registered bundle')
+                data = asset_path.read_bytes()
+                asset = export_render.asset_from_bytes(picture['asset_id'], data,
+                    mime_type=picture['mime_type'], content_hash=picture['content_hash'])
+                if not asset.ok:
+                    raise ValueError('Registered image failed integrity check')
+                aid = picture['asset_id'];assets[aid] = asset
+                locator = json.loads(picture['photo_locator_json'] or '{}')
+                locators[aid] = {k: v for k, v in locator.items()
+                                 if k in ('page', 'slide') and type(v) is int and v > 0}
+                descriptions[aid] = {'caption': picture['caption_candidate'] or '자료 사진',
+                                     'width': picture['width'], 'height': picture['height']}
+                asset_manifest.append({'asset_id': aid, 'source_id': row['source_id'], 'path': str(asset_path),
+                                       'sha256': digest(data), 'locator': locators[aid], 'mime_type': asset.mime_type})
+            sources.append(SourceIn(row['source_id'], row['source_version'], row['kind'], row['name'],
+                                    row['parse_status'], segments, list(locators), row['origin_kind'],
+                                    locators, descriptions))
+            manifest.append({'source_id': row['source_id'], 'source_version': row['source_version'],
+                             'path': str(original), 'sha256': digest(raw), 'bytes': len(raw),
+                             'origin_kind': row['origin_kind'], 'selected_for_evaluation': True,
+                             'prior_use_as_company_evidence': bool(row['use_as_company_evidence']),
+                             'text_origin': 'existing_registered_segments', 'segment_count': len(segments)})
+        selected = {Path(m['path']) for m in manifest}
+        actual = {p.resolve() for p in source_dir.iterdir() if p.is_file()}
+        if selected != actual:
+            raise ValueError('Registered manifest does not cover the entire selected directory')
+        return sources, manifest, assets, asset_manifest
+    finally:
+        conn.close()
 class RecordingRequester(agent_llm.OpenAIRequester):
     """Experiment-only observer of the unchanged product requester and ledger.
 
@@ -165,12 +228,12 @@ class RecordingRequester(agent_llm.OpenAIRequester):
     """
     def __init__(self, options, *, ledger=None, record_call=None, extract_prompt=None):
         super().__init__(options, ledger=ledger)
-        self.record_call = record_call
+        self._record_call = record_call
         self.extract_prompt = extract_prompt
         self._response_record = {}
 
     def _decode(self, response):
-        if self.record_call is not None:
+        if self._record_call is not None:
             self._response_record = {'output_text': getattr(response, 'output_text', None),
                                      'actual_model': getattr(response, 'model', None)}
         return super()._decode(response)
@@ -182,17 +245,19 @@ class RecordingRequester(agent_llm.OpenAIRequester):
                 raise ValueError('Unexpected extraction instructions; refusing prompt replacement')
             # Retain the current server's source_origins/metadata instructions.
             instructions = self.extract_prompt + instructions[len(original):]
-        if self.record_call is None:
+        if self._record_call is None:
             return super().__call__(instructions, payload, schema, schema_name, images=images)
         if images:
             raise ValueError('Evaluation recorder supports text extraction/drafts only')
         wire, wire_schema = payload, schema
         if schema_name == agent_legacy.MODEL_SCHEMA_NAME and schema in (
-                agent_legacy.build_model_output_schema(), agent_legacy.build_model_output_schema(per_fact_status=True)):
+                agent_legacy.build_model_output_schema(), agent_legacy.build_model_output_schema(per_fact_status=True),
+                agent_legacy.build_model_output_schema(claim_status=True),
+                agent_legacy.build_model_output_schema(per_fact_status=True, claim_status=True)):
             wire, wire_schema, _ = agent_llm._extraction_wire_request(payload, schema)
         elif schema_name == 'draft_sections' and payload.get('prompt_version') == 'editorial_v2':
             wire, wire_schema, _ = agent_llm._editorial_wire_request(payload, schema)
-        self.record_call({'event': 'prepared', 'schema_name': schema_name,
+        self._record_call({'event': 'prepared', 'schema_name': schema_name,
                           'instructions': instructions, 'payload': wire, 'schema': wire_schema})
         self._response_record = {}
         discarded = True
@@ -201,7 +266,7 @@ class RecordingRequester(agent_llm.OpenAIRequester):
             discarded = False
             return result
         finally:
-            self.record_call({'event': 'finished', 'schema_name': schema_name,
+            self._record_call({'event': 'finished', 'schema_name': schema_name,
                               'actual_model': None, **self._response_record,
                               'discarded': discarded, 'ledger': self.ledger.snapshot()})
 
@@ -300,8 +365,51 @@ def editorial_checks(page_texts: list[str], document: dict | None = None) -> dic
             'pages': pages, 'totals': totals, 'duplicate_details': duplicates,
             'limits': '표현 빈도는 의미 오류 판정이 아님. JSON이 없으면 행/사실 중복은 null. 원문·이미지 확인 별도.'}
 
+
 class BudgetStop(Exception):
     """No next API call when measured/prospective cost crosses the approved bound."""
+
+
+class CycleBudget:
+    """A separate one-arm cycle: measured cumulative cost, no reservations."""
+    def __init__(self, means):
+        self.means = {k: Decimal(str(v)) for k, v in means.items()}
+        self.planned = {'company_info': 6, 'draft_sections': 24}
+        if set(self.means) != set(self.planned) or any(v <= 0 for v in self.means.values()):
+            raise ValueError('Measured extraction/draft costs are required')
+        self.costs = {k: [] for k in self.planned}
+        self.limit, self.stopped, self.reason = Decimal('1.0'), False, None
+        self.estimated_usage_calls = 0
+
+    def snapshot(self):
+        spent = sum((sum(v) for v in self.costs.values()), Decimal(0))
+        forecast = spent + sum(max(0, self.planned[k] - len(v)) * max(
+            self.means[k], sum(v)/len(v) if v else Decimal(0)) for k, v in self.costs.items())
+        return {'spent_usd': str(spent), 'forecast_usd': str(forecast), 'limit_usd': str(self.limit),
+            'calls_finished': {k: len(v) for k,v in self.costs.items()},
+            'estimated_usage_calls': self.estimated_usage_calls,
+            'stopped': self.stopped, 'reason': self.reason, 'reservation_usd': '0'}
+
+    def __call__(self, event):
+        kind = event['schema_name']
+        if kind not in self.planned:
+            raise BudgetStop('Unplanned operation')
+        if event['event'] == 'prepared':
+            if self.stopped or len(self.costs[kind]) >= self.planned[kind]:
+                raise BudgetStop('Cycle cost/call limit reached')
+            if Decimal(self.snapshot()['forecast_usd']) > self.limit:
+                self.stopped, self.reason = True, 'forecast_exceeds_cap'
+                raise BudgetStop(self.reason)
+            return
+        record = event['ledger']['records'][-1]
+        value = record.get('estimated_cost_usd')
+        if value is None:
+            value = (sum(self.costs[kind])/len(self.costs[kind]) if self.costs[kind] else self.means[kind])
+            self.estimated_usage_calls += 1
+        self.costs[kind].append(Decimal(value))
+        if Decimal(self.snapshot()['forecast_usd']) > self.limit:
+            self.stopped, self.reason = True, 'forecast_exceeds_cap'
+
 
 class ComparisonBudget:
     def __init__(self, pilot_means: dict[str, Decimal]):
@@ -358,34 +466,90 @@ def pilot_measurements(paths: list[Path]):
         raise ValueError('Need both pilot extraction and draft measurements from both arms')
     return {k:sum(v)/len(v) for k,v in values.items()}, {k:sum(v)/len(v) for k,v in times.items()}
 
-def run_case(*, label, brief, sources, manifest, assets, asset_manifest, prompt_bytes,
-             prompt_version, options, record_run=False, repo=ROOT, renderer=None,
-             rubric_sha256=None, rubric_bytes=None, shared_run=None, budget_guard=None):
-    """Observe the current per-fact product path without changing its policies.
 
-    Every case uses the existing bounded trial ledger, with no retry override.
-    Archives are evaluation artifacts, never sessions or approved publications.
+class ExperimentRetryLedger(agent_llm.TrialLedger):
+    """Explicit experiment exception; cumulative measured-cost guard is mandatory.
+
+    Retains the product's usage/validation records and settings checks. Only
+    transport retry capacity and reservation accounting differ from TrialLedger.
     """
+    def __init__(self, *, shared: bool, timeout_retries: int):
+        super().__init__(max_calls=8, budget_usd=Decimal('1'),
+            timeout_limit_seconds=180, input_char_limit=40000, output_token_limit=32000)
+        self._max_calls = (2 if shared else 4) * (1 + timeout_retries)
+        self._operation_limits = {'company_info': 0 if shared else 2 * (1 + timeout_retries),
+                                  'draft_sections': 2 * (1 + timeout_retries)}
+        self._call_reserve = Decimal('0')
+        self._budget = Decimal('1.50')
+
+
+class TimeoutRetryRequester(RecordingRequester):
+    """Repeat the exact request only for an observed request_timeout, at most twice."""
+    def __init__(self, *args, timeout_retries=2, record_retry=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        if type(timeout_retries) is not int or not 0 <= timeout_retries <= 2:
+            raise ValueError('Timeout retries must be 0..2')
+        self.timeout_retries = timeout_retries
+        self.transport_retries: list[dict] = []
+        self.record_retry = record_retry
+
+    def __call__(self, instructions, payload, schema, schema_name, *, images=None):
+        fingerprint = digest(json_bytes({'instructions': instructions, 'payload': payload,
+            'schema': schema, 'schema_name': schema_name, 'images': images}))
+        for attempt in range(self.timeout_retries + 1):
+            try:
+                return super().__call__(instructions, payload, schema, schema_name, images=images)
+            except agent_llm.AgentError:
+                if self.ledger.snapshot()['stop_reason'] != 'request_timeout':
+                    raise
+                retry = {'schema_name': schema_name, 'request_sha256': fingerprint,
+                    'failed_attempt': attempt + 1, 'retry_number': attempt + 1,
+                    'delay_seconds': 5 * 3 ** attempt if attempt < self.timeout_retries else None,
+                    'exhausted': attempt == self.timeout_retries, 'at': stamp()}
+                self.transport_retries.append(retry)
+                if self.record_retry is not None:
+                    self.record_retry(retry)
+                if retry['exhausted']:
+                    raise
+                time.sleep(retry['delay_seconds'])
+                with self.ledger._lock:
+                    if self.ledger._stop_reason != 'request_timeout':
+                        raise
+                    self.ledger._stop_reason = None
+
+
+def run_case(*, label, brief, sources, manifest, assets, asset_manifest, prompt_bytes,
+             prompt_version, options, record_run=False, repo=ROOT, requester_factory=None, renderer=None,
+             rubric_sha256=None, rubric_bytes=None, shared_run: Path | None = None, budget_guard=None,
+             display_company_name=None, demo=False, source_scope='include_demo', confirmed_contact=None,
+             timeout_retries=0, recheck_shared_facts=False):
+    """One extract + draft; explicit transport retries never relax content checks."""
+    if type(timeout_retries) is not int or not 0 <= timeout_retries <= 2:
+        raise ValueError('Timeout retries must be 0..2')
+    if timeout_retries and (budget_guard is None or requester_factory is not None):
+        raise ValueError('Transport retries require a cumulative cost guard and the standard requester')
     archive = RunArchive(enabled=record_run, label=label, repo=repo, secret_values=(options.api_key,))
     if archive.path is None:
-        raise ValueError('Explicit record_run=True is required; no API call made')
-    ledger = agent_llm.TrialLedger(max_calls=2 if shared_run else 4, budget_usd=Decimal('0.50'),
-        timeout_limit_seconds=180, input_char_limit=40000, output_token_limit=32000)
-    def record(event):
-        if budget_guard and event['event'] == 'prepared':
-            budget_guard(event)
-        archive.record_call(event)
-        if budget_guard and event['event'] == 'finished':
-            budget_guard(event)
-            archive.update(batch_budget=budget_guard.snapshot())
-    requester = RecordingRequester(options, ledger=ledger, record_call=record,
-                                   extract_prompt=prompt_bytes.decode('utf-8'))
-    agent = agent_llm.LlmAgent(requester, max_input_chars=options.max_input_chars, per_fact_status=True)
-    required = ['manifest.json','source_units.json','facts.json','fact_locations.json','analysis.json',
-                'draft_raw.json','draft.json','document.json','output.pdf','brief.json','extract_prompt.txt',
-                'render.json','call_1_finished.json'] + ([] if shared_run else ['call_2_finished.json'])
-    stage, started = 'prepare', time.monotonic()
+        raise ValueError('Pilot requires explicit record_run=True; no API call made')
+    ledger = (ExperimentRetryLedger(shared=shared_run is not None, timeout_retries=timeout_retries)
+        if timeout_retries or isinstance(budget_guard, CycleBudget) else agent_llm.TrialLedger(max_calls=2 if shared_run else 4, budget_usd=Decimal('0.50'),
+        timeout_limit_seconds=180, input_char_limit=40000, output_token_limit=32000))
+    if isinstance(budget_guard, CycleBudget):
+        ledger._budget = Decimal('1.0')
+    factory = requester_factory or RecordingRequester
+    render = renderer or export_render.render
+    started = time.monotonic()
+    stage = 'prepare'
+    agent = None
+    requester = None
+    required = ['manifest.json','source_units.json','facts.json','fact_locations.json','analysis.json','draft_raw.json',
+                'draft.json','document.json','output.pdf','brief.json','extract_prompt.txt','render.json',
+                'call_1_finished.json'] + ([] if shared_run else ['call_2_finished.json'])
     try:
+        if confirmed_contact is not None:
+            if not isinstance(confirmed_contact, str) or len(confirmed_contact) > 500:
+                raise ValueError('Confirmed contact must be a string of at most 500 characters')
+            confirmed_contact = confirmed_contact.strip() or None
         archive.write('manifest.json', manifest)
         archive.write('source_units.json', sources)
         if set(assets) != {a['asset_id'] for a in asset_manifest} or len(assets) != len(asset_manifest):
@@ -402,32 +566,58 @@ def run_case(*, label, brief, sources, manifest, assets, asset_manifest, prompt_
         archive.write_bytes('extract_prompt.txt', prompt_bytes)
         archive.write_bytes('draft_prompt.txt', agent_legacy.DRAFT_PROMPT_PATH.read_bytes())
         archive.write('brief.json', brief)
+        archive.write('contact_setting.json', {'value': confirmed_contact or None,
+            'origin': 'company_confirmed_operator_setting', 'configured': bool(confirmed_contact)})
         if rubric_bytes is not None:
             if digest(rubric_bytes) != rubric_sha256:
                 raise ValueError('Rubric hash mismatch')
             archive.write_bytes('rubric.json', rubric_bytes)
         archive.update(git_commit=git_revision(repo), extraction_prompt_version=prompt_version,
-            extraction_schema='per_fact_status', extraction_prompt_file_sha256=digest(prompt_bytes),
-            rubric_sha256=rubric_sha256, source_units_sha256=digest(json_bytes(sources)),
+            extraction_review_version=2, extraction_schema='per_fact_status_claim_v2',
+            extraction_prompt_file_sha256=digest(prompt_bytes), rubric_sha256=rubric_sha256,
+            source_units_sha256=digest(json_bytes(sources)),
             settings={'model': options.model, 'reasoning_effort': 'medium', 'service_tier': 'default',
                       'timeout_seconds': options.timeout_seconds, 'max_retries': options.max_retries,
                       'max_output_tokens': options.max_output_tokens, 'max_input_chars': options.max_input_chars},
-            brief=brief.model_dump(), actual_pdf_pages=None)
+            brief=brief.model_dump(), actual_pdf_pages=None, display_company_name=display_company_name,
+            demo=demo, source_scope=source_scope)
+        def record_call(event):
+            if budget_guard is not None and event['event'] == 'prepared':
+                budget_guard(event)
+            archive.record_call(event)
+            if budget_guard is not None and event['event'] == 'finished':
+                budget_guard(event)
+                archive.update(batch_budget=budget_guard.snapshot())
+        requester = (TimeoutRetryRequester(options, ledger=ledger, record_call=record_call,
+            timeout_retries=timeout_retries,
+            record_retry=lambda event: archive.update(transport_retry_events=[
+                *archive.state.get('transport_retry_events', []), event]))
+            if timeout_retries else factory(options, ledger=ledger, record_call=record_call))
+        def request_json(instructions, payload, schema, schema_name, **kwargs):
+            if schema_name == agent_legacy.MODEL_SCHEMA_NAME:
+                original = agent_legacy.load_extract_prompt()
+                if not instructions.startswith(original):
+                    raise ValueError('Unexpected extraction instructions')
+                instructions = prompt_bytes.decode('utf-8') + instructions[len(original):]
+            return requester(instructions, payload, schema, schema_name, **kwargs)
+        agent = agent_llm.LlmAgent(request_json, max_input_chars=options.max_input_chars, per_fact_status=True,
+                                 display_company_name=display_company_name, source_scope=source_scope)
         sid = 'quality_eval_' + uuid.uuid4().hex
         request = AnalyzeRequest(sid, 1, brief, sources)
         stage = 'extraction'
+        analyze_started = time.monotonic()
         if shared_run is None:
             analyzed = agent.analyze(request)
         else:
-            shared = json.loads((shared_run / 'run.json').read_text(encoding='utf-8'))
+            shared = json.loads((shared_run/'run.json').read_text(encoding='utf-8'))
             if (not shared.get('extraction_validated')
                     or shared['git_commit'] != archive.state['git_commit']
-                    or shared.get('extraction_schema') != 'per_fact_status'
-                    or shared['source_units_sha256'] != archive.state['source_units_sha256']
-                    or shared['extraction_prompt_file_sha256'] != digest(prompt_bytes)
+                    or shared.get('extraction_schema') != archive.state['extraction_schema']
                     or shared['settings'] != archive.state['settings']
+                    or shared['source_units_sha256'] != digest(json_bytes(sources))
+                    or shared['extraction_prompt_file_sha256'] != digest(prompt_bytes)
                     or shared['brief']['target_company'] != brief.target_company):
-                raise ValueError('Shared extraction inputs, schema, settings or code differ')
+                raise ValueError('Shared extraction does not match this exact source/prompt/company')
             saved = {}
             for name in ('facts.json', 'analysis.json', 'extraction_raw.json'):
                 raw = (shared_run / name).read_bytes()
@@ -438,54 +628,106 @@ def run_case(*, label, brief, sources, manifest, assets, asset_manifest, prompt_
             analysis = json.loads(saved['analysis.json'])
             if analysis['facts'] != json.loads(saved['facts.json']):
                 raise ValueError('Shared facts and analysis differ')
+            raw = saved['facts.json']
+            if recheck_shared_facts:
+                archive.write_bytes('facts_input.json', raw)
+                facts, rechecks = agent_llm.recheck_recorded_facts(facts, agent_llm.SourceIndex(sources))
+                archive.write('fact_guard_rechecks.json', rechecks)
+                analysis['issues'] = [issue.model_dump() for issue in agent._issues(facts)]
             analyzed = AnalyzeResult(facts, [Issue.model_validate(i) for i in analysis['issues']],
                 agent._recommendations(request, facts, has_text=True))
-            archive.write_bytes('extraction_raw.json', saved['extraction_raw.json'])
-            archive.update(shared_extraction={'run': str(shared_run), 'facts_sha256': digest(saved['facts.json'])})
+            archive.write_bytes('extraction_raw.json', (shared_run/'extraction_raw.json').read_bytes())
+            archive.write('shared_extraction_usage.json', next(r for r in reversed(shared['ledger']['records'])
+                if r['operation'] == 'company_info' and r['outcome'] == 'json_received'))
+            archive.update(shared_extraction={'run':str(shared_run),'facts_sha256':digest(raw),
+                                             'started_at':shared['started_at']})
         archive.write('facts.json', analyzed.facts)
+        archive.write('extraction_preservation.json', agent.extraction_preservation if shared_run is None
+            else json.loads((shared_run/'extraction_preservation.json').read_text('utf-8'))
+            if (shared_run/'extraction_preservation.json').exists() else {'version': 0, 'replayed_legacy': True})
         archive.write('fact_locations.json', fact_locations(analyzed.facts, manifest))
         archive.write('analysis.json', analyzed)
         if validate_analyze(analyzed, sources):
-            raise ValueError('Existing server analysis validation failed')
-        archive.update(extraction_validated=True, extraction_reused=shared_run is not None)
-        # Preserve test's readiness/blocker policy; do not manufacture can_generate.
+            raise ValueError('Analysis failed existing server reference validation')
+        archive.update(extraction_seconds=time.monotonic() - analyze_started, extraction_validated=True,
+                       extraction_reused=shared_run is not None)
         preflight = ai_preflight(request, analyzed)
         stage = 'draft'
         draft_request = DraftRequest(sid, 1, brief, sources, preflight)
         archive.write('draft_request.json', draft_request)
+        draft_started = time.monotonic()
         result = agent.draft(draft_request)
         archive.write('draft.json', result)
         if validate_draft(result, sources, {f.fact_id for f in analyzed.facts}, preflight):
-            raise ValueError('Existing server draft validation failed')
+            raise ValueError('Draft failed existing server reference validation')
+        archive.update(draft_seconds=time.monotonic() - draft_started)
         document = Document(document_id='evaluation', session_id=sid, document_revision=1,
             input_revision=1, title=result.title, target_pages=brief.target_pages, status='draft',
             pages=result.pages, editorial=result.editorial)
         archive.write('document.json', document)
         stage = 'render'
-        snapshot = export_render.snapshot_from_document(document, assets)
+        effective_demo = demo or bool(agent.used_demo_sources)
+        archive.update(demo=effective_demo, used_demo_sources=agent.used_demo_sources)
         if renderer is None:
-            settings = Settings(private_runs_dir=archive.path, db_path=archive.path/'unused.sqlite3')
-            pagination = export_render.paginate_draft(snapshot, archive.path/'pagination', settings)
+            snapshot = export_render.snapshot_from_document(document, assets, demo=effective_demo,
+                                                            confirmed_contact=confirmed_contact)
+            pagination = export_render.paginate_draft(snapshot, archive.path / 'render',
+                Settings(private_runs_dir=archive.path, db_path=archive.path/'unused.sqlite3'),
+                reduction_priorities=export_render.draft_reduction_priorities(analyzed.facts, brief, result.editorial))
+            agent.review_notes.extend(pagination.review_notes)
             archive.write('pagination.json', pagination)
-            document = document.model_copy(update={'pages': pagination.pages})
-            archive.write('document.json', document)
-            snapshot = export_render.snapshot_from_document(document, assets)
-        rendered = (renderer or export_render.render)(snapshot, 'pdf', archive.path/'render')
+            if pagination.pages != document.pages:
+                document = document.model_copy(update={'pages': pagination.pages})
+                archive.write('document.json', document)
+        rendered = render(export_render.snapshot_from_document(document, assets, demo=effective_demo,
+                                                               confirmed_contact=confirmed_contact),
+                          'pdf', archive.path / 'render')
         archive.write_bytes('output.pdf', rendered.file_path.read_bytes())
         archive.write('render.json', rendered.to_dict())
         stage = 'verify'
-        if any(not (archive.path/name).is_file() for name in required):
+        missing = [f for f in required if not (archive.path / f).is_file()]
+        if missing:
             raise ValueError('Required artifacts missing')
-        archive.update(status='complete', actual_pdf_pages=rendered.actual_pages, layout_ok=rendered.layout_ok,
-                       publication_approved=False)
+        archive.update(status='complete', actual_pdf_pages=rendered.actual_pages,
+                       layout_ok=rendered.layout_ok, publication_approved=False, required_artifacts_missing=[])
     except BaseException as exc:
+        # Error messages/tracebacks can contain credentials or company text; store class and safe code only.
         archive.update(status='failed', failed_stage=stage, error_type=type(exc).__name__,
-                       error_code=exc.code if isinstance(exc, agent_llm.AgentError) else None)
+                       error_code=exc.code if isinstance(exc, agent_llm.AgentError) else None,
+                       validation_message=exc.message if isinstance(exc, agent_llm.AgentError) else None)
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):
             raise
     finally:
-        archive.update(finished_at=stamp(), elapsed_seconds=time.monotonic()-started, ledger=ledger.snapshot(),
-                       required_artifacts_missing=[n for n in required if not (archive.path/n).is_file()])
+        if shared_run is None and agent is not None:
+            archive.write('extraction_preservation.json', agent.extraction_preservation)
+        attempts = agent.draft_attempts if agent is not None else []
+        archive.write('fact_origins.json', agent.fact_origins if agent is not None else {})
+        archive.write('rewrite_audit.json', agent.rewrite_audit if agent is not None else [])
+        archive.write('presentation_facts.json', agent.presentation_facts if agent is not None else [])
+        archive.write('semantic_duplicates.json', agent.semantic_duplicates if agent is not None else {})
+        paths = {item['source_id']: item['path'] for item in manifest}
+        review_notes = [{**note, 'source_files': [
+            {'file': paths.get(ref['source_id']), 'locator': ref['locator'],
+             'segment_id': ref['segment_id']} for ref in note['evidence_refs']]}
+            for note in (agent.review_notes if agent is not None else [])]
+        if not confirmed_contact:
+            review_notes.append({'fact_id': None, 'value': None, 'withheld_from_body': True,
+                'reason': '연락처 미설정: 회사 확인 후 실행 설정에 입력해야 합니다.',
+                'evidence_refs': [], 'source_files': [], 'origin': 'operator_setting'})
+        archive.write('review_notes.json', review_notes)
+        archive.write('photo_review.json', getattr(agent, 'photo_audit', []))
+        archive.update(draft_attempts=attempts, retry_count=max(0, len(attempts)-1),
+                       draft_blocked=stage == 'draft' and archive.state['status'] == 'failed')
+        if timeout_retries:
+            transport = getattr(requester, 'transport_retries', [])
+            exhausted = any(r['exhausted'] for r in transport)
+            archive.update(transport_retry_count=sum(not r['exhausted'] for r in transport),
+                transport_retry_events=transport, transport_retries_exhausted=exhausted,
+                storage_retries=archive.storage_retries)
+            if exhausted:
+                archive.update(draft_blocked=False, failure_kind='api_timeout')
+        archive.update(finished_at=stamp(), elapsed_seconds=time.monotonic() - started, ledger=ledger.snapshot(),
+                       required_artifacts_missing=[f for f in required if not (archive.path/f).is_file()])
     return archive
 
 
@@ -527,6 +769,9 @@ def render_saved_comparison(manifest_path: Path, output: Path) -> list[dict]:
         raise ValueError('Saved comparison requires explicit document/asset paths')
     # An existing run is immutable; a failed run must be reviewed, not overwritten.
     output.mkdir(parents=True, exist_ok=False)
+    work_dir = output.parent / '_tmp'
+    work_dir.mkdir(exist_ok=True)
+    os.environ['TEMP'] = os.environ['TMP'] = str(work_dir.resolve())
     results = []
     for entry in manifest['documents']:
         label = entry['label']
@@ -544,7 +789,8 @@ def render_saved_comparison(manifest_path: Path, output: Path) -> list[dict]:
         folder.mkdir()
         snapshot = export_render.snapshot_from_document(document, assets)
         result = export_render.render(snapshot, 'pdf', folder,
-            Settings(private_runs_dir=folder, db_path=folder / 'unused.sqlite3'))
+            Settings(private_runs_dir=folder, db_path=folder / 'unused.sqlite3',
+                     export_work_dir=work_dir.resolve()))
         if source.read_bytes() != original_bytes or saved_document_signature(document) != before:
             raise ValueError('Saved replay mutated its input')
         # Compare PDF text per block, separately from ID/provenance preservation.
@@ -581,16 +827,24 @@ def render_saved_comparison(manifest_path: Path, output: Path) -> list[dict]:
             raise ValueError(f'Saved replay failed preservation/layout: {label}')
     return results
 
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument('--pilot', action='store_true', help='Two explicit prompts, current product extraction/draft, no automatic repairs')
+    mode.add_argument('--pilot', action='store_true', help='Two arms; includes bounded preservation/draft repairs')
     mode.add_argument('--main', action='store_true', help='Approved comparison: six extractions, 24 drafts')
+    mode.add_argument('--cycle-arm', choices=('before','after'), help='Approved one-arm cycle: 3 extractions, 12 drafts, $1 cumulative cap')
     mode.add_argument('--saved-manifest', type=Path, help='Offline only: explicit saved documents/assets JSON')
     parser.add_argument('--saved-output', type=Path, help='New immutable folder for offline replay')
+    parser.add_argument('--cycle-estimate', type=Path, help='Offline measured costs for the approved cycle')
+    parser.add_argument('--cycle-baseline', type=Path, help='Original main frozen.json; sources/settings must match')
+    parser.add_argument('--cycle-annotations', type=Path, help='Unchanged real/demo/contact rubric annotations')
     parser.add_argument('--pilot-runs', type=Path, nargs=2)
     parser.add_argument('--record-run', action='store_true', default=False)
+    parser.add_argument('--source-scope', choices=('real_only', 'include_demo'), default='include_demo',
+                        help='Draft source scope; extraction and saved facts are not modified')
     parser.add_argument('--target-company', help='Explicit company name for a paid comparison; no company default')
+    parser.add_argument('--confirmed-contact', help='Company-confirmed contact; omitted means no contact in PDF')
     parser.add_argument('--source-archive', type=Path)
     parser.add_argument('--before-prompt', type=Path)
     parser.add_argument('--after-prompt', type=Path)
@@ -603,7 +857,7 @@ def main(argv=None):
         with offline_network():
             render_saved_comparison(args.saved_manifest, args.saved_output)
         return
-    if not args.pilot and not args.main:
+    if not args.pilot and not args.main and not args.cycle_arm:
         print('No API calls. Recording default: off. Select an explicit mode with --record-run.')
         return
     if not args.record_run or args.rubric is None or not args.rubric.is_file():
@@ -626,6 +880,25 @@ def main(argv=None):
     before, after = args.before_prompt.read_bytes(), args.after_prompt.read_bytes()
     commit = git_revision()
     guard = None
+    if args.cycle_arm:
+        if args.source_scope != 'real_only' or not args.cycle_estimate or not args.cycle_estimate.is_file():
+            parser.error('Cycle needs real_only and an existing measured --cycle-estimate')
+        if not args.cycle_baseline or not args.cycle_annotations:
+            parser.error('Cycle needs frozen baseline and annotations')
+        baseline = json.loads(args.cycle_baseline.read_text('utf-8'))
+        if (baseline['source_units_sha256'] != digest(json_bytes(sources))
+                or baseline['rubric_sha256'] != rubric_hash
+                or baseline['annotation_sha256'] != digest(args.cycle_annotations.read_bytes())
+                or baseline['prompt_hashes'] != {'before': digest(before), 'after': digest(after)}
+                or baseline['settings']['model'] != options.model
+                or baseline['settings']['reasoning'] != 'medium'
+                or baseline['settings']['service_tier'] != 'default'
+                or args.confirmed_contact != baseline['settings']['contact']
+                or {(m['source_id'],m['sha256']) for m in manifest} !=
+                   {(m['source_id'],m['sha256']) for m in baseline['manifest']}):
+            raise ValueError('Frozen cycle inputs/settings do not match the original main experiment')
+        estimate = json.loads(args.cycle_estimate.read_text('utf-8'))
+        guard = CycleBudget(estimate['means'])
     if args.main:
         if not args.pilot_runs:
             parser.error('Main comparison requires the two measured --pilot-runs')
@@ -640,16 +913,22 @@ def main(argv=None):
                 for p in args.pilot_runs} != {digest(before), digest(after)}:
             raise ValueError('Pilot prompt pair differs from main comparison')
         guard = ComparisonBudget(means)
-    batch = RunArchive(enabled=True, label='main_batch' if args.main else 'pilot_batch', secret_values=(key,))
+    batch = RunArchive(enabled=True, label='cycle_batch' if args.cycle_arm else 'main_batch' if args.main else 'pilot_batch', secret_values=(key,))
     batch.write('rubric_lock.json', lock)
     batch.write('manifest.json', manifest)
+    if args.cycle_arm:
+        batch.write('baseline_frozen.json', baseline)
+        batch.write_bytes('rubric_annotations.json', args.cycle_annotations.read_bytes())
     batch.update(git_commit=commit, rubric_sha256=rubric_hash, runs=[],
-                 planned_calls={'extraction':6,'draft':24} if args.main else {'extraction':2,'draft':2})
+                 planned_calls={'extraction':3,'supplement_max':3,'draft':12,'draft_repair_max':12}
+                    if args.cycle_arm else {'extraction':6,'draft':24} if args.main else {'extraction':2,'draft':2})
     if guard:
-        batch.update(budget=guard.snapshot(), pilot_mean_seconds=mean_times)
+        batch.update(budget=guard.snapshot(), pilot_mean_seconds=estimate['mean_seconds'] if args.cycle_arm else mean_times)
     stop = False
-    for rep in range(1, 4 if args.main else 2):
+    for rep in range(1, 4 if args.main or args.cycle_arm else 2):
         for condition, prompt, version in [('before', before, digest(before)), ('after', after, commit)]:
+            if args.cycle_arm and condition != args.cycle_arm:
+                continue
             parent = None
             for doc, brief in fixed_briefs(args.target_company.strip()).items():
                 if args.pilot and doc != 'new_customer':
@@ -664,10 +943,12 @@ def main(argv=None):
                                                'status':'skipped_extraction_failed'})
                     batch.update()
                     continue
-                archive = run_case(label=('m' if args.main else 'p')+f'_{condition}_{rep}_{doc}',
+                archive = run_case(label=('c' if args.cycle_arm else 'm' if args.main else 'p')+f'_{condition}_{rep}_{doc}',
                     brief=brief, sources=sources, manifest=manifest, assets=assets, asset_manifest=asset_manifest,
                     prompt_bytes=prompt, prompt_version=version, options=options, record_run=True,
-                    rubric_sha256=rubric_hash, rubric_bytes=rubric_bytes, shared_run=parent, budget_guard=guard)
+                    rubric_sha256=rubric_hash, rubric_bytes=rubric_bytes, shared_run=parent, budget_guard=guard,
+                    source_scope=args.source_scope, confirmed_contact=args.confirmed_contact,
+                    display_company_name=baseline['settings']['display_name'] if args.cycle_arm else None)
                 if doc == 'new_customer' and archive.state.get('extraction_validated'):
                     parent = archive.path
                 item = {'condition':condition,'rep':rep,'document':doc,'run':str(archive.path),

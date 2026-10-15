@@ -3,16 +3,16 @@
 Run with the repository's Python, from the product revision being compared::
 
     python -B scripts/experiments/stage_runner.py stage2 --manifest INPUT.json \
-        --run-dir OUTPUT --expected-template template_v11
+        --run-dir OUTPUT --expected-template template_v14
 
 The private manifest has ``documents`` entries with unique ``label``,
 ``document_path`` and ``assets_dir``. Paths may be absolute or relative to the
 manifest. Asset directories contain asset_manifest.json and archived images;
-stage1 freezes unmodified drafts in baseline/. stage2 uses the current product's
-pagination only; --previous-dir and --baseline-dir can select explicit inputs.
-Stage3/4 caption/body transformations and caption font trials are deferred until
-team policy decisions. --docx-label and --smoke-four select additional checks.
-Target page differences are diagnostics, not a new product approval policy.
+stage3 also needs facts.json/source_units.json, stage4 needs facts.json.
+Stage1 freezes unmodified drafts in baseline/; later stages read the preceding
+stage in --run-dir unless --previous-dir is supplied. --baseline-dir allows a
+separate immutable baseline. Use --docx-label and --smoke-four for smoke checks,
+and --caption-sizes/--caption-label for optional font trials (stage3 only).
 
 No API setup, live database, implicit retries, Git writes or private finalizer.
 The runner never deletes existing output. An incomplete document directory must
@@ -37,8 +37,8 @@ import sys
 import uuid
 
 
-STAGES = {"stage1": "baseline", "stage2": "stage2"}
-PREVIOUS = {"stage2": "baseline"}
+STAGES = {"stage1": "baseline", "stage2": "stage2", "stage3": "stage3", "stage4": "stage4"}
+PREVIOUS = {"stage2": "baseline", "stage3": "stage2", "stage4": "stage3"}
 REGRESSION = ["tests/test_agent_llm.py", "tests/test_be04.py", "tests/test_be06.py",
               "tests/test_demo.py", "tests/test_be07.py"]
 
@@ -137,13 +137,44 @@ def compact(text):
 
 
 def preservation(before, after, stage, audit):
-    """This migration permits pagination only; never rewrite a saved block."""
+    """Compare against the input, never a copy of the already-transformed output."""
     old = [b.model_dump(mode="json") for p in before.pages for b in p.blocks]
     new = [b.model_dump(mode="json") for p in after.pages for b in p.blocks]
     require([b["block_id"] for b in old] == [b["block_id"] for b in new], "Block ID/order loss")
-    require(old == new and not audit, "Unrecorded body change")
+    changed = []
+    edits = {x["block_id"]: x for x in audit}
+    by_id = {b["block_id"]: b for b in new}
+    for left, right in zip(old, new):
+        require(left["type"] == right["type"], "Block type changed")
+        require(set(left["fact_ids"]) <= set(right["fact_ids"]) and
+                all(ref in right["evidence_refs"] for ref in left["evidence_refs"]), "Provenance loss")
+        if left == right:
+            continue
+        if stage == "stage3" and left["type"] == "image":
+            require(left["block_id"] in edits, "Unrecorded caption change")
+            require({k: v for k, v in left["content"].items() if k != "caption"} ==
+                    {k: v for k, v in right["content"].items() if k != "caption"}, "Photo changed")
+            require(right["content"].get("caption", "").startswith(left["content"].get("caption", "")),
+                    "Original caption removed")
+        elif stage == "stage4":
+            event = edits.get(left["block_id"])
+            if left["content"] != right["content"]:
+                require(event is not None and left["type"] == "paragraph", "Unrecorded body change")
+                require(event["before"] == left["content"]["text"] and
+                        event["after"] == right["content"]["text"], "Audit does not describe rewrite")
+                require({k: v for k, v in left["content"].items() if k != "text"} ==
+                        {k: v for k, v in right["content"].items() if k != "text"}, "Non-text data changed")
+                owner = by_id[event["owner_block_id"]]["content"]["text"]
+                kept = owner + " " + event["after"]
+                tokens = re.findall(r"[A-Za-z0-9]+(?:[./%-][A-Za-z0-9]+)*", event["before"])
+                require(all(t in kept for t in tokens), "Number/name token loss")
+            else:
+                require(any(e["owner_block_id"] == left["block_id"] for e in audit), "Unexpected provenance change")
+        else:
+            raise ValueError("Unexpected saved block change")
+        changed.append({"block_id": left["block_id"], "before": left, "after": right})
     return {"blocks": len(old), "block_ids_and_order_preserved": True,
-            "original_provenance_preserved": True, "changes": []}
+            "original_provenance_preserved": True, "changes": changed}
 
 
 def previews(pdf, folder):
@@ -174,6 +205,7 @@ def inspect_pdf(result, document, folder):
     reader = PdfReader(result.file_path, strict=True)
     require(result.layout_ok and result.actual_pages == len(document.pages) == len(reader.pages),
             "Layout/page-count failure")
+    require(result.actual_pages <= document.target_pages, "Target page limit exceeded")
     text = compact("".join(page.extract_text() or "" for page in reader.pages))
     missing = []
     for page in document.pages:
@@ -203,14 +235,18 @@ def main(argv=None):
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--docx-label", action="append", default=[])
     parser.add_argument("--smoke-four", action="store_true")
+    parser.add_argument("--caption-sizes", nargs="+", type=float, default=[])
+    parser.add_argument("--caption-label", action="append", default=[])
     args = parser.parse_args(argv)
     root = Path(__file__).resolve().parents[2]
     base, manifest = args.run_dir.resolve(), args.manifest.resolve()
     output = base / STAGES[args.stage]
     previous = (args.previous_dir or base / PREVIOUS.get(args.stage, "baseline")).resolve()
     baseline = (args.baseline_dir or base / "baseline").resolve()
+    require(args.stage == "stage3" or not args.caption_sizes, "Caption trials only apply to stage3")
+    require(all(6 <= size <= 20 for size in args.caption_sizes), "Invalid caption trial size")
     entries = load_manifest(manifest)
-    require(set(args.docx_label) <= {e["label"] for e in entries}, "Unknown selected label")
+    require(set(args.docx_label + args.caption_label) <= {e["label"] for e in entries}, "Unknown selected label")
     require(not output.exists() or args.resume, "Output exists; use another run directory or verified --resume")
     require(not args.resume or (output / "results.json").is_file(), "No completed resume record")
     if args.stage != "stage1":
@@ -225,7 +261,7 @@ def main(argv=None):
                           "assets": tree_hashes(e["assets_dir"])} for e in entries},
                "previous": tree_hashes(previous) if args.stage != "stage1" else {},
                "baseline": tree_hashes(baseline) if args.stage != "stage1" else {},
-               "options": {k: getattr(args, k) for k in ("expected_template", "docx_label", "smoke_four")}}
+               "options": {k: getattr(args, k) for k in ("expected_template", "docx_label", "smoke_four", "caption_sizes", "caption_label")}}
     record = read(output / "results.json") if args.resume else {"code": code, "context": context, "results": [], "executions": []}
     if args.resume:
         verify_resume(record, code, context, output)
@@ -241,11 +277,11 @@ def main(argv=None):
     os.chdir(root)
     with offline_network():
         from app.config import Settings
-        from app.models import Document
+        from app.models import Document, Fact
         from app.services import export_render as er, layout_checks
 
         require(layout_checks.TEMPLATE_VERSION == args.expected_template, "Wrong product template revision")
-        settings = Settings(private_runs_dir=output, db_path=output / "unused.sqlite3")
+        settings = Settings(private_runs_dir=output, db_path=output / "unused.sqlite3", export_work_dir=temp)
         record.update(root=str(root), renderer_module=er.__file__, template_version=layout_checks.TEMPLATE_VERSION,
                       template_fingerprint=er.template_fingerprint(), api_calls=0)
         write(output / "results.json", record)
@@ -262,15 +298,41 @@ def main(argv=None):
             asset_root = entry["assets_dir"]
             from scripts.experiments.agent_quality_comparison import load_assets
             assets = load_assets(asset_root, read(asset_root / "asset_manifest.json"))
+            if args.stage in ("stage3", "stage4"):
+                facts = {f.fact_id: f for f in map(Fact.model_validate, read(asset_root / "facts.json"))}
+                if args.stage == "stage3":
+                    from app.agent_llm import grounded_photo_captions
+                    from app.agent_bridge import SourceIn, SegmentIn
+                    sources = [SourceIn(**{**s, "segments": [SegmentIn(**x) for x in s["segments"]]}) for s in read(asset_root / "source_units.json")]
+                    pages, audit = grounded_photo_captions(doc.pages, facts, sources)
+                else:
+                    from app.agent_llm import remove_grounded_redundant_clauses
+                    pages, audit = remove_grounded_redundant_clauses(doc.pages, facts)
+                doc = doc.model_copy(update={"pages": pages})
             if args.stage == "stage2":
                 prepared = er.paginate_draft(er.snapshot_from_document(doc, assets), folder / "pagination", settings)
                 require(prepared.outcome == "passed", "Pagination failed")
                 doc = doc.model_copy(update={"pages": prepared.pages})
             preserved = preservation(before, doc, args.stage, audit)
+            if args.stage == "stage3" and (not args.caption_label or label in args.caption_label):
+                ordinary = er.build_html
+                for size in args.caption_sizes:
+                    trial_dir = folder / f"caption_{size:g}pt"
+                    trial_dir.mkdir()
+                    try:
+                        er.build_html = lambda snapshot, size=size: ordinary(snapshot).replace("</style>",
+                            f".brochure figcaption {{font-size:{size}pt}} .brochure.layout-cover_photo figcaption {{font-size:{size - 1}pt}}</style>")
+                        trial = er.render(er.snapshot_from_document(doc, assets), "pdf", trial_dir, settings)
+                        inspect_pdf(trial, doc, trial_dir)
+                    finally:
+                        er.build_html = ordinary
             result = er.render(er.snapshot_from_document(doc, assets), "pdf", folder, settings)
             row = inspect_pdf(result, doc, folder)
             row.update(label=label, execution_id=execution["id"], source_sha256=context["inputs"][label]["document"],
                        preservation=preserved, audit=audit)
+            if args.stage == "stage3":
+                captions = result.details["measure"]["photo_captions"]
+                require(all(abs(c["left_delta_px"]) < 1 and abs(c["gap_mm"] - 2) < .05 for c in captions), "Caption geometry failed")
             if label in args.docx_label:
                 import docx
                 word = er.render(er.snapshot_from_document(doc, assets), "docx", folder, settings)

@@ -124,7 +124,7 @@ def _keep_model_keywords(node: dict[str, Any]) -> dict[str, Any]:
     return kept
 
 
-def build_model_output_schema(*, per_fact_status: bool = False) -> dict[str, Any]:
+def build_model_output_schema(*, claim_status: bool = False, per_fact_status: bool = False) -> dict[str, Any]:
     """profile.schema.json의 company_info 구조에서 GPT용 출력 스키마를 파생한다.
 
     기본 형식은 fact_id(코드가 F001부터 부여)와 strict 미지원 키워드만 제외한다.
@@ -143,6 +143,15 @@ def build_model_output_schema(*, per_fact_status: bool = False) -> dict[str, Any
         defs['field']['properties'].pop('status')
         defs['field']['required'].remove('status')
     company_info = _keep_model_keywords(_PROFILE_SCHEMA['properties']['company_info'])
+    if claim_status:
+        defs['certification_fact'] = copy.deepcopy(defs['fact'])
+        props = defs['certification_fact']['properties']
+        props.update(claim_status={'type': 'string', 'enum': ['supported', 'conflict', 'needs_confirmation']},
+                     conflict_group={'type': ['string', 'null']})
+        defs['certification_fact']['required'] += ['claim_status', 'conflict_group']
+        defs['certification_field'] = copy.deepcopy(defs['field'])
+        defs['certification_field']['properties']['facts']['items'] = {'$ref': '#/$defs/certification_fact'}
+        company_info['properties']['certifications'] = {'$ref': '#/$defs/certification_field'}
     return {**company_info, '$defs': defs}
 
 
@@ -200,10 +209,16 @@ def _check_field_shape(key: str, field: Any, *, per_fact_status: bool = False) -
         raise _invalid_output('field_shape', '항목은 status와 facts 배열만 가져야 합니다.', field=key)
     fact_keys = {*MODEL_FACT_KEYS, "status"} if per_fact_status else set(MODEL_FACT_KEYS)
     for i, fact in enumerate(field['facts']):
-        if (not isinstance(fact, dict) or set(fact) != fact_keys
+        claim_v2 = key == 'certifications' and isinstance(fact, dict) and 'claim_status' in fact
+        allowed = fact_keys | ({'claim_status', 'conflict_group'} if claim_v2 else set())
+        if (not isinstance(fact, dict) or set(fact) != allowed
                 or not isinstance(fact['text'], str) or not isinstance(fact['evidence'], list)):
             raise _invalid_output('field_shape', 'fact는 호출 스키마의 text·evidence 및 허용된 경우 status만 가져야 합니다(fact_id 포함 금지).',
                                   field=key, fact_index=i)
+        if claim_v2 and (fact['claim_status'] not in {'supported', 'conflict', 'needs_confirmation'}
+                or (fact['conflict_group'] is not None and
+                    (not isinstance(fact['conflict_group'], str) or not fact['conflict_group'].strip()))):
+            raise _invalid_output('claim_status', '인증 주장 상태/충돌 그룹이 잘못되었습니다.', field=key, fact_index=i)
         for j, evidence in enumerate(fact['evidence']):
             if (not isinstance(evidence, dict) or set(evidence) != set(EVIDENCE_KEYS)
                     or not all(isinstance(evidence[name], str) for name in EVIDENCE_KEYS)):
@@ -234,6 +249,8 @@ def check_company_info(company_info: Any, agent_input: dict[str, Any], *, per_fa
         if status not in STATUS_FACT_COUNT:
             raise _invalid_output('status_value', '허용된 4개 status가 아닙니다.', field=key, actual=_short(str(status)))
         low, high = STATUS_FACT_COUNT[status]
+        if key == 'certifications' and any('claim_status' in f for f in company_info[key]['facts']):
+            low = 0 if status == 'not_found' else 1  # Conflicts belong to claims, not the field.
         count = len(company_info[key]['facts'])
         if count < low or (high is not None and count > high):
             expected = f'{low}개' if high == low else f'{low}개 이상'
@@ -246,7 +263,10 @@ def check_company_info(company_info: Any, agent_input: dict[str, Any], *, per_fa
             if any(type(status) is not str or status not in {'supported', 'needs_confirmation', 'conflict'}
                    for status in statuses):
                 raise _invalid_output('fact_status_value', '개별 사실의 상태가 허용된 값이 아닙니다.', field=key)
-            if 'conflict' in statuses and statuses.count('conflict') < 2:
+            claim_v2 = key == 'certifications' and all('claim_status' in fact for fact in company_info[key]['facts'])
+            if claim_v2 and any(fact['status'] != fact['claim_status'] for fact in company_info[key]['facts']):
+                raise _invalid_output('claim_status', '인증 주장 상태와 개별 사실 상태가 일치하지 않습니다.', field=key)
+            if not claim_v2 and 'conflict' in statuses and statuses.count('conflict') < 2:
                 raise _invalid_output('conflict_candidates', '충돌 사실에는 최소 두 후보가 필요합니다.', field=key)
             expected = ('not_found' if not statuses else 'conflict' if 'conflict' in statuses
                         else 'needs_confirmation' if 'needs_confirmation' in statuses else 'supported')
@@ -301,7 +321,7 @@ def _deduplicate_supported_facts(company_info: dict[str, Any]) -> dict[str, Any]
                 distinct.append(fact)
                 continue
             evidence = frozenset(tuple(ref[name] for name in EVIDENCE_KEYS) for ref in fact['evidence'])
-            key = (fact['text'], evidence)
+            key = (fact['text'], evidence, fact.get('claim_status'), fact.get('conflict_group'))
             if key not in seen:
                 seen.add(key)
                 distinct.append(fact)
@@ -320,16 +340,13 @@ def assign_fact_ids(company_info: dict[str, Any]) -> dict[str, Any]:
         facts = []
         for fact in company_info[key]['facts']:
             count += 1
-            item = {'fact_id': f'F{count:03d}', 'text': fact['text'], 'evidence': copy.deepcopy(fact['evidence'])}
-            if 'status' in fact:
-                item['status'] = fact['status']
-            facts.append(item)
+            facts.append({'fact_id': f'F{count:03d}', **copy.deepcopy(fact)})
         numbered[key] = {'status': company_info[key]['status'], 'facts': facts}
     return numbered
 
 
 def extract_company_info(agent_input: dict[str, Any], *, request_json: RequestJson,
-                         per_fact_status: bool = False) -> dict[str, Any]:
+                         claim_status: bool = False, per_fact_status: bool = False) -> dict[str, Any]:
     """허용된 source_units에서 company_info 14개 항목을 추출하고 검사한다.
 
     호출부는 JSON 객체만 반환한다. 원 응답 전체 검사 후 supported 완전중복만 줄이고 fact_id를 붙인다.
@@ -337,8 +354,19 @@ def extract_company_info(agent_input: dict[str, Any], *, request_json: RequestJs
     """
     check_agent_input(agent_input)
     instructions = load_extract_prompt()
-    model_output = _request_checked(request_json, instructions, _source_payload(agent_input),
-                                    build_model_output_schema(per_fact_status=per_fact_status), MODEL_SCHEMA_NAME)
+    payload = _source_payload(agent_input)
+    if claim_status:
+        payload['extraction_review_version'] = 2
+        instructions += ('\n인증 점검 v2: certifications는 인증명·대상/사업장·범위·일자·유지 조건을 '
+            '독립 주장으로 분리하고 각 사실의 claim_status를 판정한다. 한 날짜의 충돌을 다른 인증이나 '
+            '주장에 전파하지 않는다. conflict_group은 동일 인증·대상·시점·속성의 충돌 후보끼리만 같은 '
+            '값으로 지정하며, 나머지는 null이다. 서로 다른 인증·사업장·최초/발행/만료일은 별개 주장이다. '
+            '각 text에도 인증명/대상과 해당 속성을 함께 써서 연결을 보존한다. 원문이 모호하면 '
+            'needs_confirmation으로 두고 값을 보정하지 않는다. 필드 status는 요약이며 개별 주장 상태가 우선한다.')
+        if per_fact_status:
+            instructions += '\n개별 사실 status와 인증 claim_status는 같은 판정으로 반환한다.'
+    model_output = _request_checked(request_json, instructions, payload,
+                                    build_model_output_schema(claim_status=claim_status, per_fact_status=per_fact_status), MODEL_SCHEMA_NAME)
     check_company_info(model_output, agent_input, per_fact_status=per_fact_status)
     return assign_fact_ids(_deduplicate_supported_facts(model_output))
 
